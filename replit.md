@@ -1,15 +1,13 @@
-# [Project name]
+# Zero Strategy
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Offline mobile zero-player strategy: draw the first borders, then watch an autonomous world change over time.
 
 ## Run & Operate
 
+- `pnpm --filter @workspace/zero-strategy run dev` — run the mobile app
+- `pnpm --filter @workspace/zero-strategy run typecheck` — typecheck the mobile app
+- `pnpm run typecheck` — full workspace typecheck
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
 
 ## Stack
 
@@ -22,15 +20,21 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/zero-strategy/app/index.tsx` — world setup and game screen
+- `artifacts/zero-strategy/game/engine.ts` — map generation, brush rules, cards, timer, and autonomous turns
+- `artifacts/zero-strategy/constants/colors.ts` — atlas-inspired mobile theme
+- The active game is saved locally with AsyncStorage; no server or account is required.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Keep the first game loop offline and device-local so a world can be played without account setup or a network connection.
+- The world map is a playable geographic approximation and does not yet contain imported elevation, drainage, or humidity datasets.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Choose a world-inspired or newly generated map, then play as a country, the world, or an observer.
+- Draw connected territory with limited ink, affect humidity through event cards, and watch countries expand with each yearly turn.
+- The current playable slice covers founding, expansion, splits, drought, rain, pausing, and automatic local saves. Population systems, faith, dynasties, government, and uprisings from the broader brief are not implemented yet.
 
 ## User preferences
 
@@ -38,7 +42,7 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- The Expo app is the current product surface; the shared API server is not required for the local game loop.
 
 ## Pointers
 

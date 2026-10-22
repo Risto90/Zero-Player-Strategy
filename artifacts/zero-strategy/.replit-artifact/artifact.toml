@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/"
+title = "Zero Strategy"
+description = "An offline mobile zero-player strategy game where players shape countries on generated or world-inspired maps, draw borders with event cards, and watch the world evolve through autonomous yearly turns."
+version = "1.0.0"
+id = "artifacts/zero-strategy"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/" ]
+localPort = 21469
+
+[services.development]
+run = "pnpm --filter @workspace/zero-strategy run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/zero-strategy", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/zero-strategy", "run", "serve" ]
+
+[services.env]
+PORT = "21469"
+BASE_PATH = "/"
