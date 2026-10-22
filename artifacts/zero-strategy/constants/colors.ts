@@ -61,7 +61,9 @@ const colors = {
       '#487f9c', '#8a8f52', '#bd6689', '#5775a4', '#ba805f', '#6c9b97', '#8d83af',
       '#997242', '#62765c',
     ],
-    biomePalette: ['#78966b', '#9aae7a', '#c0aa70', '#799d8b', '#718b78', '#a7ad9b', '#c9b887'],
+    // Ice, tundra, swamp, taiga, cold steppe, broadleaf forest, steppe, desert, savanna, rainforest
+    biomePalette: ['#e7ebe8', '#b3b6a2', '#6c8c7f', '#5d7a63', '#b0ad8b', '#86a062', '#c4b46f', '#e3cb96', '#c99e57', '#4b7c4d'],
+    noFaith: '#c8c3b4',
     culturePalette: ['#a46150', '#4f7e79', '#6e70a0', '#ad803a', '#865d83', '#43818d', '#a75b77', '#667e48'],
     religionPalette: ['#a77c36', '#527b91', '#7770a3', '#728457', '#aa6472', '#6c6b69'],
     unclaimedLand: '#d7cdae',

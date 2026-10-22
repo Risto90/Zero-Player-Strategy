@@ -1,0 +1,1 @@
+- [Zero Strategy balance](zero-strategy-balance.md) — split/faith weights kept low until merge/conquest exists; simulate 150 years in Node to check.

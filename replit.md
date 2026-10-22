@@ -29,12 +29,18 @@ Offline mobile zero-player strategy: draw the first borders, then watch an auton
 
 - Keep the first game loop offline and device-local so a world can be played without account setup or a network connection.
 - The world map is a playable geographic approximation and does not yet contain imported elevation, drainage, or humidity datasets.
+- Biomes follow temperature, humidity and drainage (low drainage = waterlogged); the rule table lives in `BIOMES` in the engine and is shown in the biome legend.
+- Card slots in "all countries" mode are queued as slots and drawn only when they become active, so each card fits the map at that moment.
+- Sea links: coasts on the same connected body of water count as linked at any distance.
 
 ## Product
 
 - Choose a world-inspired or newly generated map, then play across all states, focus on one country, control only world events, or observe.
 - Draw connected territory with limited ink, affect humidity through event cards, and watch autonomous countries play annual event cards.
-- The current playable slice covers founding, expansion, splits, drought, rain, autonomous world events, pausing, and automatic local saves. Population systems, faith, dynasties, government, and uprisings from the broader brief are not implemented yet.
+- Map modes: countries, biomes, cultures, religions — each with a full legend (no cap on entries).
+- Cards: founding (always brings a new culture), expansion, split (keeps population, culture, faith), drought, rain, new faith, culture branch. Cards are drawn only if applicable, and ink never exceeds what the map allows.
+- Cells hold one leading culture and religion; population shares, dynasties, government forms and uprisings from the brief are not implemented yet.
+- Full design brief: `attached_assets/ZSG_1792705944389.txt`.
 
 ## User preferences
 

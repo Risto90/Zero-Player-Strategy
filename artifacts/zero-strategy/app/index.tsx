@@ -1,12 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
@@ -14,15 +16,23 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import {
   advanceTurn,
+  BIOME_NOTE,
+  brushOptionFor,
+  CardType,
   createGame,
+  cultureName,
   GameState,
   getCellColor,
+  getLegend,
   MAP_COLS,
   MAP_ROWS,
   MapKind,
+  MapMode,
   normalizeSavedGame,
   paintCell,
   PlayerRole,
+  religionName,
+  setMapMode,
   tickTimer,
   toggleBrushMode,
   togglePause,
@@ -41,6 +51,23 @@ const roles: { id: PlayerRole; title: string; detail: string }[] = [
   { id: 'world', title: 'Бог мира', detail: 'Только мировые карты' },
   { id: 'observer', title: 'Наблюдатель', detail: 'Мир развивается сам' },
 ];
+
+const mapModes: { id: MapMode; title: string; icon: keyof typeof Feather.glyphMap }[] = [
+  { id: 'political', title: 'Страны', icon: 'flag' },
+  { id: 'biomes', title: 'Биомы', icon: 'feather' },
+  { id: 'cultures', title: 'Культуры', icon: 'users' },
+  { id: 'religions', title: 'Веры', icon: 'sun' },
+];
+
+const cardIcons: Record<CardType, keyof typeof Feather.glyphMap> = {
+  create: 'map',
+  expand: 'maximize-2',
+  split: 'scissors',
+  drought: 'sun',
+  rain: 'cloud-rain',
+  faith: 'star',
+  culture: 'users',
+};
 
 function formatTime(seconds: number): string {
   return `00:${Math.max(0, seconds).toString().padStart(2, '0')}`;
@@ -75,6 +102,9 @@ function PrimaryButton({
 export default function HomeScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const webTop = Platform.OS === 'web' ? 67 : 0;
+  const webBottom = Platform.OS === 'web' ? 34 : 0;
   const [mapKind, setMapKind] = useState<MapKind>('world');
   const [role, setRole] = useState<PlayerRole>('country');
   const [game, setGame] = useState<GameState | null>(null);
@@ -184,24 +214,29 @@ export default function HomeScreen() {
     setGame((previous) => (previous ? toggleBrushMode(previous) : previous));
   };
 
-  const countryById = useMemo(
-    () => new Map((game?.countries ?? []).map((country) => [country.id, country])),
-    [game?.countries],
-  );
+  const switchMapMode = (mode: MapMode) => {
+    setGame((previous) => (previous ? setMapMode(previous, mode) : previous));
+  };
 
   if (screen === 'game' && game) {
     const landCount = game.cells.filter((cell) => cell.land).length;
     const ownedCount = game.cells.filter((cell) => cell.ownerId).length;
     const card = game.activeCard;
+    const brushOption = brushOptionFor(card);
+    const target = card?.targetCountryId ? game.countries.find((country) => country.id === card.targetCountryId) : undefined;
     const title = card?.title ?? (game.role === 'observer' ? 'Мир без игрока' : 'Ожидание события');
-    const strokeMessage =
-      card?.type === 'create'
-        ? `Новая ${game.draftCountry?.rank.toLocaleLowerCase() ?? 'страна'} · ${game.draftCountry?.name ?? ''}`
-        : game.draftCountry?.name ??
-          (card?.targetCountryId ? countryById.get(card.targetCountryId)?.name : null);
+    const subject = game.draftCountry
+      ? `${game.draftCountry.rank} ${game.draftCountry.name}`
+      : target
+        ? target.name
+        : card
+          ? 'Весь мир'
+          : null;
+    const legend = getLegend(game);
+    const eventsHeight = Math.round(windowHeight * 0.16);
 
     return (
-      <View style={[styles.root, { backgroundColor: colors.background, paddingTop: insets.top + 6, paddingBottom: insets.bottom + 4 }]}>
+      <View style={[styles.root, { backgroundColor: colors.background, paddingTop: insets.top + webTop + 6, paddingBottom: insets.bottom + webBottom + 6 }]}>
         <StatusBar style="dark" />
         <View style={styles.gameHeader}>
           <Pressable onPress={leaveGame} accessibilityRole="button" accessibilityLabel="Вернуться в меню" style={styles.iconButton}>
@@ -218,36 +253,40 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.statsRow}>
-          <View style={styles.statBox}>
-            <Text style={[styles.statValue, { color: colors.foreground }]}>{game.countries.length}</Text>
-            <Text style={[styles.statLabel, { color: colors.mutedForeground }]}>государств</Text>
-          </View>
-          <View style={[styles.statDivider, { backgroundColor: colors.border }]} />
-          <View style={styles.statBox}>
-            <Text style={[styles.statValue, { color: colors.foreground }]}>{ownedCount}</Text>
-            <Text style={[styles.statLabel, { color: colors.mutedForeground }]}>областей</Text>
-          </View>
-          <View style={[styles.statDivider, { backgroundColor: colors.border }]} />
-          <View style={styles.statBox}>
-            <Text style={[styles.statValue, { color: colors.foreground }]}>{landCount}</Text>
-            <Text style={[styles.statLabel, { color: colors.mutedForeground }]}>суши</Text>
-          </View>
-          <View style={styles.turnTag}>
-            <Text style={[styles.turnTagText, { color: colors.primary }]}>ХОД {game.turn}</Text>
-          </View>
+          {[
+            { value: game.countries.length, label: 'государств' },
+            { value: game.cultures.length, label: 'культур' },
+            { value: game.religions.length, label: 'вер' },
+            { value: `${ownedCount}/${landCount}`, label: 'областей' },
+          ].map((stat, index) => (
+            <React.Fragment key={stat.label}>
+              {index > 0 ? <View style={[styles.statDivider, { backgroundColor: colors.border }]} /> : null}
+              <View style={styles.statBox}>
+                <Text style={[styles.statValue, { color: colors.foreground }]}>{stat.value}</Text>
+                <Text style={[styles.statLabel, { color: colors.mutedForeground }]}>{stat.label}</Text>
+              </View>
+            </React.Fragment>
+          ))}
         </View>
 
-        <View style={[styles.mapCard, { backgroundColor: colors.ocean, borderColor: colors.border }]}>
-          <View style={styles.mapTopline}>
-            <View>
-              <Text style={[styles.mapTitle, { color: colors.foreground }]}>
-                {game.mapKind === 'world' ? 'Карта мира' : 'Случайный мир'}
-              </Text>
-              <Text style={[styles.mapSubtitle, { color: colors.mutedForeground }]}>Влажность · биомы · границы</Text>
-            </View>
-            <View style={[styles.compass, { borderColor: colors.border }]}>
-              <Feather name="navigation" size={15} color={colors.primary} />
-            </View>
+        <View style={[styles.mapCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <View style={styles.modeRow}>
+            {mapModes.map((mode) => {
+              const selected = game.mapMode === mode.id;
+              return (
+                <Pressable
+                  key={mode.id}
+                  onPress={() => switchMapMode(mode.id)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  testID={`map-mode-${mode.id}`}
+                  style={[styles.modeChip, { backgroundColor: selected ? colors.primary : colors.secondary }]}
+                >
+                  <Feather name={mode.icon} size={12} color={selected ? colors.primaryForeground : colors.secondaryForeground} />
+                  <Text style={[styles.modeText, { color: selected ? colors.primaryForeground : colors.secondaryForeground }]}>{mode.title}</Text>
+                </Pressable>
+              );
+            })}
           </View>
           <View
             style={[styles.mapGrid, { backgroundColor: colors.ocean }]}
@@ -255,66 +294,60 @@ export default function HomeScreen() {
               mapSize.current = event.nativeEvent.layout;
             }}
             {...mapResponder.panHandlers}
-            accessibilityLabel="Игровая карта. Проведите пальцем, чтобы рисовать территорию."
+            accessibilityLabel="Игровая карта. Проведите пальцем, чтобы рисовать."
           >
             {Array.from({ length: MAP_ROWS }, (_, row) => (
               <View key={`row-${row}`} style={styles.mapRow} pointerEvents="none">
-                {game.cells
-                  .filter((cell) => cell.row === row)
-                  .map((cell) => {
-                    const owner = cell.ownerId ? countryById.get(cell.ownerId) : undefined;
-                    const draftColor =
-                      game.draftCountry?.id === cell.ownerId ? game.draftCountry.color : null;
-                    const color = owner?.color ?? draftColor ?? getCellColor(cell);
-                    return (
-                      <View
-                        key={cell.id}
-                        style={[
-                          styles.mapCell,
-                          {
-                            backgroundColor: cell.land ? color : colors.ocean,
-                            opacity: cell.land && !cell.ownerId ? 0.94 : 1,
-                          },
-                        ]}
-                      />
-                    );
-                  })}
+                {game.cells.slice(row * MAP_COLS, (row + 1) * MAP_COLS).map((cell) => (
+                  <View key={cell.id} style={[styles.mapCell, { backgroundColor: getCellColor(game, cell) }]} />
+                ))}
               </View>
             ))}
           </View>
-          <View style={styles.mapLegend}>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: colors.biomePalette[1] }]} />
-              <Text style={[styles.legendText, { color: colors.mutedForeground }]}>ничейная земля</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: colors.countryPalette[0] }]} />
-              <Text style={[styles.legendText, { color: colors.mutedForeground }]}>государство</Text>
-            </View>
-            <Text style={[styles.zoomNote, { color: colors.mutedForeground }]}>Проведите по карте</Text>
-          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.legendScroll} contentContainerStyle={styles.legendContent}>
+            {legend.length === 0 ? (
+              <Text style={[styles.legendText, { color: colors.mutedForeground }]}>
+                {game.mapMode === 'religions' ? 'Пока нет верующих' : game.mapMode === 'cultures' ? 'Пока нет народов' : 'Пока нет государств'}
+              </Text>
+            ) : (
+              legend.map((entry) => (
+                <View key={entry.id} style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: entry.color }]} />
+                  <View>
+                    <Text numberOfLines={1} style={[styles.legendText, { color: entry.count > 0 ? colors.foreground : colors.mutedForeground }]}>
+                      {entry.label} · {entry.count}
+                    </Text>
+                    {entry.detail ? <Text style={[styles.legendDetail, { color: colors.mutedForeground }]}>{entry.detail}</Text> : null}
+                  </View>
+                </View>
+              ))
+            )}
+          </ScrollView>
+          {game.mapMode === 'biomes' ? (
+            <Text style={[styles.legendNote, { color: colors.mutedForeground }]}>{BIOME_NOTE}</Text>
+          ) : null}
         </View>
 
         <View style={[styles.cardPanel, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <View style={styles.cardHeader}>
             <View style={[styles.cardIcon, { backgroundColor: colors.accent }]}>
-              <Feather
-                name={card?.type === 'drought' ? 'sun' : card?.type === 'rain' ? 'cloud-rain' : 'map'}
-                size={18}
-                color={colors.primary}
-              />
+              <Feather name={card ? cardIcons[card.type] : 'eye'} size={18} color={colors.primary} />
             </View>
             <View style={styles.cardHeading}>
               <Text style={[styles.cardKicker, { color: colors.primary }]}>
-                {game.role === 'observer'
-                  ? 'РЕЖИМ НАБЛЮДАТЕЛЯ'
-                  : game.role === 'all'
-                    ? 'КАРТА МИРА И ГОСУДАРСТВ'
-                    : game.role === 'world'
-                      ? 'МИРОВАЯ КАРТА'
-                      : 'КАРТА СТРАНЫ'}
+                {!card
+                  ? game.role === 'observer'
+                    ? 'РЕЖИМ НАБЛЮДАТЕЛЯ'
+                    : 'НЕТ КАРТЫ'
+                  : card.targetCountryId
+                    ? 'КАРТА ГОСУДАРСТВА'
+                    : 'КАРТА МИРА'}
+                {game.queuedCards.length > 0 ? ` · ЕЩЁ ${game.queuedCards.length}` : ''}
               </Text>
-              <Text style={[styles.cardTitle, { color: colors.foreground }]}>{title}</Text>
+              <Text style={[styles.cardTitle, { color: colors.foreground }]} numberOfLines={1}>
+                {title}
+                {subject ? <Text style={{ color: colors.mutedForeground }}> · {subject}</Text> : null}
+              </Text>
             </View>
             {card ? (
               <View style={[styles.inkPill, { backgroundColor: colors.inkSurface }]}>
@@ -323,36 +356,38 @@ export default function HomeScreen() {
               </View>
             ) : null}
           </View>
-          <Text style={[styles.cardDetail, { color: colors.mutedForeground }]}>
-            {strokeMessage ?? game.message}
+          <Text style={[styles.cardDetail, { color: colors.mutedForeground }]} numberOfLines={2}>
+            {game.message}
           </Text>
           {game.draftCountry ? (
             <View style={styles.nationMeta}>
               <View style={[styles.nationSwatch, { backgroundColor: game.draftCountry.color }]} />
-              <Text style={[styles.nationMetaText, { color: colors.foreground }]}>
-                {game.draftCountry.culture} · {game.draftCountry.density} плотность
-              </Text>
-              <Text style={[styles.nationFaith, { color: colors.mutedForeground }]}>
-                {game.draftCountry.religion}
+              <Text style={[styles.nationMetaText, { color: colors.foreground }]} numberOfLines={1}>
+                {cultureName(game, game.draftCountry.cultureId)} · {religionName(game, game.draftCountry.religionId)}
+                {card?.type === 'create' ? ` · плотность ${game.draftCountry.density}` : ''}
               </Text>
             </View>
           ) : null}
-          {(game.role === 'country' || game.role === 'all') &&
-          card &&
-          !['drought', 'rain'].includes(card.type) ? (
+          {brushOption ? (
             <Pressable
               onPress={switchBrush}
               accessibilityRole="button"
+              testID="brush-mode"
               style={[styles.brushToggle, { borderColor: colors.border }]}
             >
               <Feather name={game.brushMode === 'density' ? 'plus-circle' : 'git-commit'} size={15} color={colors.primary} />
               <Text style={[styles.brushToggleText, { color: colors.foreground }]}>
-                {game.brushMode === 'density' ? 'Плотность: включена' : 'Повторный мазок: без эффекта'}
+                {brushOption === 'density'
+                  ? game.brushMode === 'density'
+                    ? 'Повторный мазок: +плотность'
+                    : 'Повторный мазок: без эффекта'
+                  : game.brushMode === 'density'
+                    ? 'Повторный мазок: усиливает эффект'
+                    : 'Повторный мазок: без эффекта'}
               </Text>
-              <Feather name="chevron-right" size={15} color={colors.mutedForeground} />
+              <Feather name="repeat" size={14} color={colors.mutedForeground} />
             </Pressable>
           ) : null}
-          <Text style={[styles.feedbackText, { color: colors.mutedForeground }]}>{game.message}</Text>
         </View>
 
         <View style={styles.controlsRow}>
@@ -367,6 +402,7 @@ export default function HomeScreen() {
           <Pressable
             onPress={endTurn}
             accessibilityRole="button"
+            testID="next-turn"
             style={({ pressed }) => [
               styles.nextTurnButton,
               { backgroundColor: colors.foreground, opacity: pressed ? 0.82 : 1 },
@@ -378,31 +414,17 @@ export default function HomeScreen() {
             <Feather name="arrow-right" size={17} color={colors.background} />
           </Pressable>
         </View>
-        {game.countries.length > 0 ? (
-          <View style={styles.countryStrip}>
-            {game.countries.slice(0, 4).map((country) => (
-              <View key={country.id} style={styles.countryPill}>
-                <View style={[styles.countryDot, { backgroundColor: country.color }]} />
-                <Text numberOfLines={1} style={[styles.countryText, { color: colors.mutedForeground }]}>
-                  {country.name}
-                </Text>
-              </View>
-            ))}
-          </View>
-        ) : null}
-        {game.eventLog[0] ? (
-          <View style={[styles.eventSummary, { backgroundColor: colors.card }]}>
-            <View style={[styles.eventMarker, { backgroundColor: colors.accent }]}>
-              <Feather name="activity" size={12} color={colors.primary} />
-            </View>
-            <View style={styles.eventCopy}>
-              <Text style={[styles.eventLabel, { color: colors.primary }]}>СОБЫТИЯ ПОСЛЕДНЕГО ГОДА</Text>
-              <Text numberOfLines={2} style={[styles.eventText, { color: colors.foreground }]}>
-                {game.eventLog[0]}
+
+        <View style={[styles.eventPanel, { backgroundColor: colors.card, borderColor: colors.border, height: eventsHeight }]}>
+          <Text style={[styles.eventLabel, { color: colors.primary }]}>ХРОНИКА СОБЫТИЙ</Text>
+          <ScrollView style={styles.eventScroll} showsVerticalScrollIndicator nestedScrollEnabled>
+            {game.eventLog.map((line, index) => (
+              <Text key={`${index}-${line}`} style={[styles.eventText, { color: index === 0 ? colors.foreground : colors.mutedForeground }]}>
+                {line}
               </Text>
-            </View>
-          </View>
-        ) : null}
+            ))}
+          </ScrollView>
+        </View>
       </View>
     );
   }
@@ -569,26 +591,25 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 17, fontWeight: '700', marginTop: 2 },
   timerPill: { borderWidth: 1, borderRadius: 12, minWidth: 78, paddingHorizontal: 10, height: 34, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6 },
   timerText: { fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  statsRow: { height: 57, flexDirection: 'row', alignItems: 'center', marginBottom: 9 },
-  statBox: { minWidth: 63, alignItems: 'center' },
+  statsRow: { height: 50, flexDirection: 'row', alignItems: 'center', marginBottom: 9 },
+  statBox: { flex: 1, alignItems: 'center' },
   statValue: { fontSize: 15, fontWeight: '700' },
   statLabel: { fontSize: 8, marginTop: 2 },
   statDivider: { width: StyleSheet.hairlineWidth, height: 26 },
-  turnTag: { marginLeft: 'auto', borderRadius: 7, paddingHorizontal: 9, paddingVertical: 6 },
-  turnTagText: { fontSize: 9, fontWeight: '700', letterSpacing: 1 },
-  mapCard: { borderWidth: 1, borderRadius: 19, padding: 13, overflow: 'hidden' },
-  mapTopline: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 2, marginBottom: 11 },
-  mapTitle: { fontSize: 14, fontWeight: '700' },
-  mapSubtitle: { fontSize: 9, marginTop: 3 },
-  compass: { width: 29, height: 29, borderRadius: 9, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  mapGrid: { width: '100%', aspectRatio: 20 / 11, overflow: 'hidden', borderRadius: 9 },
+  mapCard: { borderWidth: 1, borderRadius: 19, padding: 11, overflow: 'hidden' },
+  mapGrid: { width: '100%', aspectRatio: 20 / 12, overflow: 'hidden', borderRadius: 9 },
   mapRow: { flex: 1, flexDirection: 'row', gap: 1, marginBottom: 1 },
   mapCell: { flex: 1, borderRadius: 1 },
-  mapLegend: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10, paddingHorizontal: 2 },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  legendDot: { width: 7, height: 7, borderRadius: 2 },
-  legendText: { fontSize: 8 },
-  zoomNote: { fontSize: 8, marginLeft: 'auto' },
+  modeRow: { flexDirection: 'row', gap: 6, marginBottom: 9 },
+  modeChip: { flex: 1, minHeight: 30, borderRadius: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 },
+  modeText: { fontSize: 10, fontWeight: '700' },
+  legendScroll: { marginTop: 9, flexGrow: 0 },
+  legendContent: { gap: 12, alignItems: 'flex-start', paddingHorizontal: 2, minHeight: 26 },
+  legendItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 5 },
+  legendDot: { width: 9, height: 9, borderRadius: 3, marginTop: 2 },
+  legendText: { fontSize: 10, fontWeight: '600', maxWidth: 140 },
+  legendDetail: { fontSize: 8, marginTop: 1 },
+  legendNote: { fontSize: 8, lineHeight: 11, marginTop: 5 },
   cardPanel: { marginTop: 10, borderWidth: 1, borderRadius: 16, paddingHorizontal: 13, paddingTop: 12, paddingBottom: 9 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   cardIcon: { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
@@ -600,23 +621,16 @@ const styles = StyleSheet.create({
   cardDetail: { fontSize: 10, lineHeight: 14, marginTop: 8 },
   nationMeta: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 9 },
   nationSwatch: { width: 8, height: 8, borderRadius: 3 },
-  nationMetaText: { fontSize: 9, fontWeight: '600' },
-  nationFaith: { fontSize: 9, marginLeft: 'auto' },
+  nationMetaText: { flex: 1, fontSize: 10, fontWeight: '600' },
   brushToggle: { borderWidth: 1, borderRadius: 9, minHeight: 33, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 9, marginTop: 8 },
   brushToggleText: { flex: 1, fontSize: 9, fontWeight: '600' },
-  feedbackText: { fontSize: 9, lineHeight: 13, marginTop: 8 },
   controlsRow: { flexDirection: 'row', gap: 9, marginTop: 10 },
   secondaryButton: { flex: 0.85, minHeight: 45, borderWidth: 1, borderRadius: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   secondaryButtonText: { fontSize: 11, fontWeight: '600' },
   nextTurnButton: { flex: 1.25, minHeight: 45, borderRadius: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   nextTurnText: { fontSize: 11, fontWeight: '700' },
-  countryStrip: { flexDirection: 'row', alignItems: 'center', marginTop: 10, gap: 10, minHeight: 19 },
-  countryPill: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: 80 },
-  countryDot: { width: 6, height: 6, borderRadius: 2 },
-  countryText: { fontSize: 8, flexShrink: 1 },
-  eventSummary: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 11, paddingHorizontal: 9, paddingVertical: 7, marginTop: 8 },
-  eventMarker: { width: 25, height: 25, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  eventCopy: { flex: 1 },
-  eventLabel: { fontSize: 7, letterSpacing: 0.9, fontWeight: '700' },
-  eventText: { fontSize: 9, lineHeight: 12, marginTop: 2 },
+  eventPanel: { marginTop: 10, borderWidth: 1, borderRadius: 13, paddingHorizontal: 11, paddingTop: 8, paddingBottom: 4 },
+  eventScroll: { flex: 1, marginTop: 4 },
+  eventLabel: { fontSize: 8, letterSpacing: 1, fontWeight: '700' },
+  eventText: { fontSize: 10, lineHeight: 14, marginBottom: 3 },
 });
