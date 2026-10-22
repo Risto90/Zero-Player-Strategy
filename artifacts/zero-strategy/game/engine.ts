@@ -1,7 +1,7 @@
 import colors from '@/constants/colors';
 
 export type MapKind = 'world' | 'random';
-export type PlayerRole = 'world' | 'country' | 'observer';
+export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
 export type CardType = 'create' | 'expand' | 'split' | 'drought' | 'rain';
 export type BrushMode = 'respect' | 'density';
 
@@ -38,6 +38,11 @@ export interface GameCard {
   targetCountryId: string | null;
 }
 
+export interface QueuedCard {
+  card: GameCard;
+  draftCountry: Country | null;
+}
+
 export interface GameState {
   mapKind: MapKind;
   role: PlayerRole;
@@ -47,6 +52,7 @@ export interface GameState {
   countries: Country[];
   focusCountryId: string | null;
   activeCard: GameCard | null;
+  queuedCards: QueuedCard[];
   draftCountry: Country | null;
   draftCellIds: string[];
   brushMode: BrushMode;
@@ -285,6 +291,7 @@ export function createGame(mapKind: MapKind, role: PlayerRole): GameState {
     countries: [],
     focusCountryId: role === 'country' ? starter.id : null,
     activeCard,
+    queuedCards: [],
     draftCountry: starter,
     draftCellIds: [],
     brushMode: 'respect',
@@ -350,6 +357,7 @@ function updateBiome(cell: WorldCell): WorldCell {
 }
 
 function setMessage(state: GameState, message: string): GameState {
+  if (state.message === message) return state;
   return { ...state, message };
 }
 
@@ -530,63 +538,273 @@ function completeActiveCard(state: GameState): GameState {
   };
 }
 
-function aiExpand(cells: WorldCell[], country: Country): WorldCell[] {
+function aiExpand(cells: WorldCell[], country: Country): { cells: WorldCell[]; count: number } {
   const borders = cells.filter(
     (cell) =>
       cell.land &&
       !cell.ownerId &&
       cellNeighbors(cells, cell).some((neighbor) => neighbor.ownerId === country.id),
   );
-  if (borders.length === 0) return cells;
-  const next = randomItem(borders);
-  return cells.map((cell) =>
-    cell.id === next.id ? { ...cell, ownerId: country.id, density: country.density } : cell,
-  );
+  if (borders.length === 0) return { cells, count: 0 };
+  const seed = randomItem(borders);
+  const before = cells.filter((cell) => cell.ownerId === country.id).length;
+  const nextCells = growFromSeed(cells, seed, 2 + Math.floor(Math.random() * 3), country.id)
+    .map((cell) =>
+      cell.ownerId === country.id && cell.density === 0
+        ? { ...cell, density: country.density }
+        : cell,
+    );
+  const after = nextCells.filter((cell) => cell.ownerId === country.id).length;
+  return { cells: nextCells, count: after - before };
 }
 
-function nextPlayerCard(state: GameState): { card: GameCard | null; draft: Country | null } {
-  if (state.role === 'observer') return { card: null, draft: null };
-  if (state.role === 'world') {
-    const roll = Math.random();
-    if (roll < 0.19) {
-      const rank = randomItem(RANKS);
-      const country = makeCountry(rank);
-      return { card: { ...makeCard('create'), ink: rank.ink }, draft: country };
-    }
-    const type: CardType = Math.random() > 0.5 ? 'drought' : 'rain';
-    return { card: makeCard(type), draft: null };
+function countryCard(state: GameState, country: Country): QueuedCard {
+  const ownedCount = state.cells.filter((cell) => cell.ownerId === country.id).length;
+  const options: CardType[] = ['expand', 'expand', 'drought', 'rain'];
+  if (ownedCount >= 8) options.push('split', 'split');
+  const type = randomItem(options);
+  if (type !== 'split') {
+    return { card: makeCard(type, country.id), draftCountry: null };
   }
 
-  const focus = state.countries.find((country) => country.id === state.focusCountryId);
-  if (!focus) return { card: null, draft: null };
-  const cellsOwned = state.cells.filter((cell) => cell.ownerId === focus.id).length;
-  const options: CardType[] = cellsOwned >= 6 ? ['expand', 'expand', 'split', 'drought', 'rain'] : ['expand', 'expand', 'drought', 'rain'];
-  const type = randomItem(options);
-  if (type === 'split') {
-    const split = makeCountry(
-      { name: focus.rank, ink: Math.max(4, Math.min(12, Math.floor(cellsOwned / 2))) },
-      focus,
-    );
-    split.name = `${focus.name} — ${randomName()}`;
+  const split = makeCountry(
+    { name: country.rank, ink: Math.max(4, Math.min(12, Math.floor(ownedCount / 2))) },
+    country,
+  );
+  split.name = `${country.name} — ${randomName()}`;
+  return {
+    card: { ...makeCard('split', country.id), ink: split.ink },
+    draftCountry: split,
+  };
+}
+
+function worldCard(state: GameState): QueuedCard {
+  const openLand = state.cells.filter((cell) => cell.land && !cell.ownerId).length;
+  if (openLand >= 3 && state.countries.length < 12 && Math.random() < 0.28) {
+    const rank = randomItem(RANKS);
+    const country = makeCountry(rank);
     return {
-      card: { ...makeCard('split', focus.id), ink: split.ink },
-      draft: split,
+      card: { ...makeCard('create'), ink: rank.ink },
+      draftCountry: country,
     };
   }
-  return { card: makeCard(type, focus.id), draft: null };
+  const type: CardType = Math.random() < 0.5 ? 'drought' : 'rain';
+  return { card: makeCard(type), draftCountry: null };
+}
+
+function playerCardsForTurn(state: GameState): QueuedCard[] {
+  if (state.role === 'observer') return [];
+  if (state.role === 'country') {
+    const focus = state.countries.find((country) => country.id === state.focusCountryId);
+    return focus ? [countryCard(state, focus)] : [];
+  }
+  if (state.role === 'world') return [worldCard(state)];
+
+  const cards = [worldCard(state)];
+  for (const country of state.countries) {
+    cards.push(countryCard(state, country));
+  }
+  return cards;
+}
+
+function applyClimate(
+  cells: WorldCell[],
+  targets: WorldCell[],
+  type: 'drought' | 'rain',
+  count: number,
+): { cells: WorldCell[]; changed: number } {
+  const candidates = [...targets];
+  const cellsById = new Map(cells.map((cell) => [cell.id, cell]));
+  let changed = 0;
+  for (let i = 0; i < count && candidates.length > 0; i += 1) {
+    const pickIndex = Math.floor(Math.random() * candidates.length);
+    const target = candidates.splice(pickIndex, 1)[0];
+    if (!target) continue;
+    const current = cellsById.get(target.id);
+    if (!current) continue;
+    const humidity = Math.max(
+      0,
+      Math.min(100, current.humidity + (type === 'rain' ? 12 : -12)),
+    );
+    if (humidity === current.humidity) continue;
+    cellsById.set(current.id, updateBiome({ ...current, humidity }));
+    changed += 1;
+  }
+  return { cells: cells.map((cell) => cellsById.get(cell.id) ?? cell), changed };
+}
+
+function splitByAI(
+  cells: WorldCell[],
+  source: Country,
+  ownedCells: WorldCell[],
+): { cells: WorldCell[]; country: Country | null; count: number } {
+  if (ownedCells.length < 8) return { cells, country: null, count: 0 };
+  for (const seed of [...ownedCells].sort(() => Math.random() - 0.5)) {
+    const group = [seed];
+    const seen = new Set([seed.id]);
+    let frontier = [seed];
+    while (group.length < 3 && frontier.length > 0) {
+      const next: WorldCell[] = [];
+      for (const cell of frontier) {
+        for (const neighbor of cellNeighbors(cells, cell)) {
+          if (neighbor.ownerId === source.id && !seen.has(neighbor.id)) {
+            seen.add(neighbor.id);
+            group.push(neighbor);
+            next.push(neighbor);
+            if (group.length >= 3) break;
+          }
+        }
+        if (group.length >= 3) break;
+      }
+      frontier = next;
+    }
+    if (group.length < 2 || group.length >= ownedCells.length) continue;
+    const newCountry = makeCountry(
+      { name: source.rank, ink: 6 },
+      source,
+    );
+    newCountry.name = `${source.name} ${randomName()}`;
+    const groupIds = new Set(group.map((cell) => cell.id));
+    return {
+      cells: cells.map((cell) =>
+        groupIds.has(cell.id)
+          ? { ...cell, ownerId: newCountry.id }
+          : cell,
+      ),
+      country: newCountry,
+      count: group.length,
+    };
+  }
+  return { cells, country: null, count: 0 };
+}
+
+function resolveAICountryCard(
+  cells: WorldCell[],
+  countries: Country[],
+  country: Country,
+): { cells: WorldCell[]; countries: Country[]; log: string } {
+  const owned = cells.filter((cell) => cell.ownerId === country.id);
+  const roll = Math.random();
+  if (owned.length >= 8 && roll < 0.15) {
+    const split = splitByAI(cells, country, owned);
+    if (split.country) {
+      return {
+        cells: split.cells,
+        countries: [...countries, split.country],
+        log: `${country.name} сыграло карту раскола: возникло ${split.country.name}.`,
+      };
+    }
+  }
+  if (roll < 0.68) {
+    const expanded = aiExpand(cells, country);
+    if (expanded.count > 0) {
+      return {
+        cells: expanded.cells,
+        countries,
+        log: `${country.name} сыграло карту расширения: +${expanded.count} обл.`,
+      };
+    }
+  }
+  const type: 'drought' | 'rain' = roll < 0.84 ? 'drought' : 'rain';
+  const climate = applyClimate(cells, owned, type, Math.min(3, owned.length));
+  return {
+    cells: climate.cells,
+    countries,
+    log: `${country.name} сыграло карту «${type === 'drought' ? 'Засуха' : 'Ливни'}» (${climate.changed} обл.).`,
+  };
+}
+
+function resolveAutonomousWorldCard(
+  cells: WorldCell[],
+  countries: Country[],
+): { cells: WorldCell[]; countries: Country[]; log: string } {
+  const openLand = cells.filter((cell) => cell.land && !cell.ownerId);
+  if (openLand.length >= 3 && countries.length < 12 && Math.random() < 0.34) {
+    const rank = randomItem(RANKS);
+    const country = makeCountry(rank);
+    const seed = randomItem(openLand);
+    const expandedCells = growFromSeed(cells, seed, 2 + Math.floor(Math.random() * 3), country.id)
+      .map((cell) =>
+        cell.ownerId === country.id ? { ...cell, density: country.density } : cell,
+      );
+    return {
+      cells: expandedCells,
+      countries: [...countries, country],
+      log: `Мировая карта основания: ${country.name} возникло как ${country.rank.toLowerCase()}.`,
+    };
+  }
+
+  const type: 'drought' | 'rain' = Math.random() < 0.5 ? 'drought' : 'rain';
+  const land = cells.filter((cell) => cell.land);
+  const climate = applyClimate(cells, land, type, 5 + Math.floor(Math.random() * 6));
+  return {
+    cells: climate.cells,
+    countries,
+    log: `Мировая карта «${type === 'drought' ? 'Засуха' : 'Ливни'}»: затронуто областей — ${climate.changed}.`,
+  };
+}
+
+export function normalizeSavedGame(state: GameState): GameState {
+  const role: PlayerRole = ['all', 'country', 'world', 'observer'].includes(
+    state.role as string,
+  )
+    ? state.role
+    : 'country';
+  const queuedCards = Array.isArray(state.queuedCards) ? state.queuedCards : [];
+  let activeCard = state.activeCard;
+  if (
+    role === 'country' &&
+    activeCard &&
+    !activeCard.targetCountryId &&
+    (activeCard.type === 'drought' || activeCard.type === 'rain') &&
+    state.focusCountryId
+  ) {
+    activeCard = makeCard('expand', state.focusCountryId);
+  }
+  return { ...state, role, activeCard, queuedCards };
 }
 
 export function advanceTurn(current: GameState): GameState {
-  let state = completeActiveCard(current);
-  let cells = [...state.cells];
-  const countries = [...state.countries];
-  const actions: string[] = [];
-  for (const country of countries) {
-    const before = cells.filter((cell) => cell.ownerId === country.id).length;
-    cells = aiExpand(cells, country);
-    const after = cells.filter((cell) => cell.ownerId === country.id).length;
-    if (after > before) actions.push(`${country.name} расширилось`);
+  const state = completeActiveCard(current);
+  const queuedCards = state.queuedCards ?? [];
+  if (queuedCards.length > 0) {
+    const [nextCard, ...remaining] = queuedCards;
+    if (nextCard) {
+      return {
+        ...state,
+        activeCard: nextCard.card,
+        draftCountry: nextCard.draftCountry,
+        draftCellIds: [],
+        queuedCards: remaining,
+        secondsLeft: 60,
+        paused: false,
+        message: nextCard.card.detail,
+      };
+    }
   }
+
+  let cells = [...state.cells];
+  let countries = [...state.countries];
+  const actions: string[] = [];
+
+  if (state.role !== 'all' && state.role !== 'world') {
+    const worldResult = resolveAutonomousWorldCard(cells, countries);
+    cells = worldResult.cells;
+    countries = worldResult.countries;
+    actions.push(worldResult.log);
+  }
+
+  if (state.role !== 'all') {
+    const activeCountries = [...countries];
+    for (const country of activeCountries) {
+      if (state.role === 'country' && country.id === state.focusCountryId) continue;
+      const result = resolveAICountryCard(cells, countries, country);
+      cells = result.cells;
+      countries = result.countries;
+      actions.push(result.log);
+    }
+  }
+
   const newTurn = state.turn + 1;
   const interim: GameState = {
     ...state,
@@ -599,18 +817,21 @@ export function advanceTurn(current: GameState): GameState {
     draftCellIds: [],
     activeCard: null,
     draftCountry: null,
+    queuedCards: [],
   };
-  const next = nextPlayerCard(interim);
+  const cards = playerCardsForTurn(interim);
+  const [firstCard, ...remainingCards] = cards;
   const logLine = actions.length ? actions.join(' · ') : 'Год прошёл спокойно.';
   return {
     ...interim,
-    activeCard: next.card,
-    draftCountry: next.draft,
+    activeCard: firstCard?.card ?? null,
+    draftCountry: firstCard?.draftCountry ?? null,
+    queuedCards: remainingCards,
     eventLog: [`${interim.year}: ${logLine}`, ...state.eventLog].slice(0, 8),
     message:
-      next.card?.detail ??
+      firstCard?.card.detail ??
       (state.role === 'observer'
-        ? 'Наблюдайте за развитием мира или перейдите к следующему году.'
+        ? logLine
         : 'Для этой страны больше нет доступных карт.'),
   };
 }

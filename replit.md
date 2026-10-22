@@ -32,9 +32,9 @@ Offline mobile zero-player strategy: draw the first borders, then watch an auton
 
 ## Product
 
-- Choose a world-inspired or newly generated map, then play as a country, the world, or an observer.
-- Draw connected territory with limited ink, affect humidity through event cards, and watch countries expand with each yearly turn.
-- The current playable slice covers founding, expansion, splits, drought, rain, pausing, and automatic local saves. Population systems, faith, dynasties, government, and uprisings from the broader brief are not implemented yet.
+- Choose a world-inspired or newly generated map, then play across all states, focus on one country, control only world events, or observe.
+- Draw connected territory with limited ink, affect humidity through event cards, and watch autonomous countries play annual event cards.
+- The current playable slice covers founding, expansion, splits, drought, rain, autonomous world events, pausing, and automatic local saves. Population systems, faith, dynasties, government, and uprisings from the broader brief are not implemented yet.
 
 ## User preferences
 
@@ -43,6 +43,7 @@ _Populate as you build — explicit user instructions worth remembering across s
 ## Gotchas
 
 - The Expo app is the current product surface; the shared API server is not required for the local game loop.
+- The user wants an Android APK, not a browser-only deliverable. This Replit workspace has no Android SDK, and Replit's documented Expo workflow does not export APK files.
 
 ## Pointers
 

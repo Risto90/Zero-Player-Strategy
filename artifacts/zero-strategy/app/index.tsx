@@ -20,6 +20,7 @@ import {
   MAP_COLS,
   MAP_ROWS,
   MapKind,
+  normalizeSavedGame,
   paintCell,
   PlayerRole,
   tickTimer,
@@ -35,8 +36,9 @@ const mapOptions: { id: MapKind; title: string; detail: string; icon: 'globe' | 
 ];
 
 const roles: { id: PlayerRole; title: string; detail: string }[] = [
-  { id: 'country', title: 'Страна', detail: 'Вы ведёте первое государство' },
-  { id: 'world', title: 'Бог мира', detail: 'Вы управляете мировыми событиями' },
+  { id: 'all', title: 'Все страны', detail: 'Карта мира и карта каждой страны' },
+  { id: 'country', title: 'Фокус на стране', detail: 'Вы ведёте одно государство' },
+  { id: 'world', title: 'Бог мира', detail: 'Только мировые карты' },
   { id: 'observer', title: 'Наблюдатель', detail: 'Мир развивается сам' },
 ];
 
@@ -81,6 +83,7 @@ export default function HomeScreen() {
   const [hasSave, setHasSave] = useState(false);
   const mapSize = useRef({ width: 1, height: 1 });
   const gameRef = useRef<GameState | null>(null);
+  const lastPaintedCellId = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -88,7 +91,7 @@ export default function HomeScreen() {
       .then((saved) => {
         if (!active) return;
         if (saved) {
-          const parsed = JSON.parse(saved) as GameState;
+          const parsed = normalizeSavedGame(JSON.parse(saved) as GameState);
           setGame(parsed);
           setHasSave(true);
         }
@@ -126,10 +129,17 @@ export default function HomeScreen() {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: (event) => {
+        lastPaintedCellId.current = null;
         paintAt(event.nativeEvent.locationX, event.nativeEvent.locationY);
       },
       onPanResponderMove: (event) => {
         paintAt(event.nativeEvent.locationX, event.nativeEvent.locationY);
+      },
+      onPanResponderRelease: () => {
+        lastPaintedCellId.current = null;
+      },
+      onPanResponderTerminate: () => {
+        lastPaintedCellId.current = null;
       },
       onPanResponderTerminationRequest: () => false,
     }),
@@ -139,10 +149,12 @@ export default function HomeScreen() {
     const current = gameRef.current;
     const { width: mapWidth, height: mapHeight } = mapSize.current;
     if (!current || mapWidth <= 0 || mapHeight <= 0) return;
-    const col = Math.min(MAP_COLS - 1, Math.max(0, Math.floor((x / mapWidth) * MAP_COLS)));
-    const row = Math.min(MAP_ROWS - 1, Math.max(0, Math.floor((y / mapHeight) * MAP_ROWS)));
+    if (x < 0 || y < 0 || x >= mapWidth || y >= mapHeight) return;
+    const col = Math.floor((x / mapWidth) * MAP_COLS);
+    const row = Math.floor((y / mapHeight) * MAP_ROWS);
     const target = current.cells.find((cell) => cell.row === row && cell.col === col);
-    if (!target) return;
+    if (!target || target.id === lastPaintedCellId.current) return;
+    lastPaintedCellId.current = target.id;
     setGame((previous) => (previous ? paintCell(previous, target.id) : previous));
   }
 
@@ -185,7 +197,8 @@ export default function HomeScreen() {
     const strokeMessage =
       card?.type === 'create'
         ? `Новая ${game.draftCountry?.rank.toLocaleLowerCase() ?? 'страна'} · ${game.draftCountry?.name ?? ''}`
-        : game.draftCountry?.name ?? null;
+        : game.draftCountry?.name ??
+          (card?.targetCountryId ? countryById.get(card.targetCountryId)?.name : null);
 
     return (
       <View style={[styles.root, { backgroundColor: colors.background, paddingTop: insets.top + 6, paddingBottom: insets.bottom + 4 }]}>
@@ -293,7 +306,13 @@ export default function HomeScreen() {
             </View>
             <View style={styles.cardHeading}>
               <Text style={[styles.cardKicker, { color: colors.primary }]}>
-                {game.role === 'observer' ? 'РЕЖИМ НАБЛЮДАТЕЛЯ' : 'КАРТА СОБЫТИЯ'}
+                {game.role === 'observer'
+                  ? 'РЕЖИМ НАБЛЮДАТЕЛЯ'
+                  : game.role === 'all'
+                    ? 'КАРТА МИРА И ГОСУДАРСТВ'
+                    : game.role === 'world'
+                      ? 'МИРОВАЯ КАРТА'
+                      : 'КАРТА СТРАНЫ'}
               </Text>
               <Text style={[styles.cardTitle, { color: colors.foreground }]}>{title}</Text>
             </View>
@@ -318,7 +337,9 @@ export default function HomeScreen() {
               </Text>
             </View>
           ) : null}
-          {game.role === 'country' && card && !['drought', 'rain'].includes(card.type) ? (
+          {(game.role === 'country' || game.role === 'all') &&
+          card &&
+          !['drought', 'rain'].includes(card.type) ? (
             <Pressable
               onPress={switchBrush}
               accessibilityRole="button"
@@ -351,7 +372,9 @@ export default function HomeScreen() {
               { backgroundColor: colors.foreground, opacity: pressed ? 0.82 : 1 },
             ]}
           >
-            <Text style={[styles.nextTurnText, { color: colors.background }]}>Следующий ход</Text>
+            <Text style={[styles.nextTurnText, { color: colors.background }]}>
+              {game.queuedCards.length > 0 ? 'Следующая карта' : 'Следующий год'}
+            </Text>
             <Feather name="arrow-right" size={17} color={colors.background} />
           </Pressable>
         </View>
@@ -365,9 +388,19 @@ export default function HomeScreen() {
                 </Text>
               </View>
             ))}
-            <Text style={[styles.logHint, { color: colors.mutedForeground }]}>
-              {game.eventLog[0] ?? ''}
-            </Text>
+          </View>
+        ) : null}
+        {game.eventLog[0] ? (
+          <View style={[styles.eventSummary, { backgroundColor: colors.card }]}>
+            <View style={[styles.eventMarker, { backgroundColor: colors.accent }]}>
+              <Feather name="activity" size={12} color={colors.primary} />
+            </View>
+            <View style={styles.eventCopy}>
+              <Text style={[styles.eventLabel, { color: colors.primary }]}>СОБЫТИЯ ПОСЛЕДНЕГО ГОДА</Text>
+              <Text numberOfLines={2} style={[styles.eventText, { color: colors.foreground }]}>
+                {game.eventLog[0]}
+              </Text>
+            </View>
           </View>
         ) : null}
       </View>
@@ -581,5 +614,9 @@ const styles = StyleSheet.create({
   countryPill: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: 80 },
   countryDot: { width: 6, height: 6, borderRadius: 2 },
   countryText: { fontSize: 8, flexShrink: 1 },
-  logHint: { fontSize: 8, marginLeft: 'auto', maxWidth: 110, textAlign: 'right' },
+  eventSummary: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 11, paddingHorizontal: 9, paddingVertical: 7, marginTop: 8 },
+  eventMarker: { width: 25, height: 25, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  eventCopy: { flex: 1 },
+  eventLabel: { fontSize: 7, letterSpacing: 0.9, fontWeight: '700' },
+  eventText: { fontSize: 9, lineHeight: 12, marginTop: 2 },
 });
