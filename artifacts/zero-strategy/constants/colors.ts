@@ -56,8 +56,15 @@ const colors = {
     inkSurface: '#ece7d7',
     ink: '#91683f',
     success: '#65845b',
-    countryPalette: ['#c56f58', '#62836f', '#7279a2', '#c3974e', '#8d6f91', '#558d91', '#b26f84'],
+    countryPalette: [
+      '#c56f58', '#62836f', '#7279a2', '#c3974e', '#8d6f91', '#558d91', '#b26f84',
+      '#487f9c', '#8a8f52', '#bd6689', '#5775a4', '#ba805f', '#6c9b97', '#8d83af',
+      '#997242', '#62765c',
+    ],
     biomePalette: ['#78966b', '#9aae7a', '#c0aa70', '#799d8b', '#718b78', '#a7ad9b', '#c9b887'],
+    culturePalette: ['#a46150', '#4f7e79', '#6e70a0', '#ad803a', '#865d83', '#43818d', '#a75b77', '#667e48'],
+    religionPalette: ['#a77c36', '#527b91', '#7770a3', '#728457', '#aa6472', '#6c6b69'],
+    unclaimedLand: '#d7cdae',
   },
 
   // Border radius (in px). Sync from the sibling web artifact's --radius
