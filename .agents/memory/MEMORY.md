@@ -1,1 +1,2 @@
 - [Zero Strategy balance](zero-strategy-balance.md) — split/faith weights kept low until merge/conquest exists; simulate 150 years in Node to check.
+- [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
