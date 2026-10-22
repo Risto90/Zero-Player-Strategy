@@ -4,21 +4,22 @@ Offline zero-player grand-strategy sandbox: each year event cards are played by 
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/zero-strategy-web run dev` — run the main app (installable offline web app, path `/zero-strategy-web/`)
-- `pnpm --filter @workspace/zero-strategy-web run typecheck`
-- `node artifacts/zero-strategy-web/scripts/build-earth.mjs` — regenerate the real-Earth land mask (`src/game/data/earthLand.ts`) from Natural Earth 1:50m (`world-atlas`)
-- `pnpm --filter @workspace/zero-strategy run dev` — older Expo grid version (kept, not developed further)
+- `pnpm --filter @workspace/zero-strategy run dev` — Expo app (SDK 58), opened in Expo Go on the phone; web preview at `/`
+- `pnpm --filter @workspace/zero-strategy run typecheck`
+- `node artifacts/zero-strategy/scripts/build-earth.mjs` — regenerate the real-Earth land mask (`game/data/earthLand.ts`) from Natural Earth 1:50m (`world-atlas`)
 
 ## Where things live
 
-- `artifacts/zero-strategy-web/src/game/` — engine: geography and climate, zones (closed curves), composition tables, cards, brush, AI painter, renderer, persistence, game controller
-- `artifacts/zero-strategy-web/src/components/MapCanvas.tsx` — canvas with pan / pinch zoom / brush
-- `artifacts/zero-strategy-web/src/pages/` and `src/components/game/` — start screen and game screen UI
-- `artifacts/zero-strategy/` — older Expo grid-based version
+- `artifacts/zero-strategy/game/` — engine: geography and climate, zones (closed curves), composition tables, cards, brush, AI painter, renderer, persistence, binary save file, storage, game controller
+- `artifacts/zero-strategy/components/map/` — map view: `MapView.tsx` (Skia, phone) and `MapView.web.tsx` (2D canvas, web preview), shared gestures and view math
+- `artifacts/zero-strategy/app/` (`index.tsx` start screen, `play.tsx` game screen) and `components/game/` — UI
 
 ## Architecture decisions
 
-- Delivered as an installable PWA (vite-plugin-pwa, everything precached) because native APK builds are not possible in this workspace (no Android SDK).
+- Delivered as an Expo app for stock Expo Go 58 (no PWA, no custom native code; native APK builds aren't possible here). Expo Go loads the JS from the dev server.
+- Map is drawn with @shopify/react-native-skia as 16 full-width strips; only changed strips are re-uploaded. Touches use the RN responder system (not gesture-handler).
+- Long work never blocks the UI: AI cards run in ~12 ms slices with a progress bar, saves trace zones in slices from a frozen copy of the world, map repaints are spread over frames.
+- Save = one binary file in the document folder (expo-file-system; IndexedDB on web): JSON header + raw Int32 zone rings. Written at turn end, after strokes and when the app goes to background.
 - Map: 2048×832 equirectangular pixels, latitude 84°N to −62.25°. Real map = Natural Earth coastlines rasterized at build time, with a fixed climate seed, so it's identical on every launch.
 - Saved form of every layer is zones bounded by closed rectilinear rings on pixel edges (OSM-like): political (one zone set per country), density/humidity/temperature/drainage (one zone set per value — values in steps of 5), and one layer per culture and per religion (zones per share). Rasterizing zones back is exact.
 - Working form: per-pixel rasters; culture and religion are per-pixel ids into an interned composition table. Culture shares sum to 100; religion shares ≤ 100 (rest = no faith).
@@ -35,7 +36,7 @@ Offline zero-player grand-strategy sandbox: each year event cards are played by 
 ## User preferences
 
 - The user writes in Russian.
-- Wants a game that runs offline on their Android phone.
+- Wants the game on their Android phone via Expo Go (SDK 58). No PWA, no old grid version.
 
 ## Gotchas
 
