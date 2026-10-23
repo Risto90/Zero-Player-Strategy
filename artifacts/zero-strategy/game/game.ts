@@ -584,6 +584,11 @@ export class Game {
     this.finish(this.painter);
     this.painter = null;
     this.card = null;
+    if (this.mapMode === 'colonization') {
+      this.mapMode = 'political';
+      this.layer = null;
+      this.renderer.setView('political', null);
+    }
   }
 
   /** Writes the outcome to the log and drops entities the card created but never used. */
@@ -610,7 +615,7 @@ export class Game {
         if (used > 0 && target) this.addLog(`${target.name} расширяется на ${used} земель.`);
         break;
       case 'colonization':
-        if (used > 0 && target) this.addLog(`${target.name} колонизирует ${used} земель; переселено ${used} чел.`);
+        if (used > 0 && target) this.addLog(`${target.name} колонизирует ${used} земель; переселено ${used} колонистов, местные жители расселены в пределах прежних стран.`);
         break;
       case 'split': {
         const country = w.countries[card.newCountryId as number];

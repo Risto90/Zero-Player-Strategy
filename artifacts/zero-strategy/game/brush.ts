@@ -225,12 +225,15 @@ export class CardPainter {
     }
     if (pixels.length === 0) return 0;
     const before = card.ink;
+    const changedStart = this.changed.length;
     if (card.type === 'create' || card.type === 'expand' || card.type === 'colonization' || card.type === 'split') this.paintTerritory(pixels);
     else this.paintLayer(pixels);
     const spent = before - card.ink;
     if (spent > 0) {
       this.world.version += 1;
-      this.markDirty(x0 - 1, y0 - 1, x1 + 1, y1 + 1);
+      if (card.type === 'colonization') {
+        for (let i = changedStart; i < this.changed.length; i += 1) this.markDirtyPixel(this.changed[i]);
+      } else this.markDirty(x0 - 1, y0 - 1, x1 + 1, y1 + 1);
     }
     return spent;
   }
@@ -362,8 +365,8 @@ export class CardPainter {
     if (this.dirtyTileKeys.has(key)) return;
     this.dirtyTileKeys.add(key);
     this.extraDirty.push({
-      x0: col * tileWidth, y0: row * tileHeight,
-      x1: (col + 1) * tileWidth - 1, y1: (row + 1) * tileHeight - 1,
+      x0: Math.floor(col * tileWidth), y0: Math.floor(row * tileHeight),
+      x1: Math.floor((col + 1) * tileWidth) - 1, y1: Math.floor((row + 1) * tileHeight) - 1,
     });
   }
 

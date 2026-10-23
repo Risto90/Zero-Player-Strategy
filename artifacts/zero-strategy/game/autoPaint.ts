@@ -8,7 +8,7 @@ import { MAP_HEIGHT, MAP_WIDTH } from './config';
 export function autoPaint(painter: CardPainter): void {
   const card = painter.card;
   if (card.hint < 0) return;
-  const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split';
+  const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'colonization' || card.type === 'split';
   const radius = territorial ? 10 : 16;
   let misses = 0;
   let x = (card.hint % MAP_WIDTH) + 0.5;
