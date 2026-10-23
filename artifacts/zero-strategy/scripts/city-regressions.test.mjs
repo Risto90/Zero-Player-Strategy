@@ -174,13 +174,15 @@ for (const selectedIndex of [0, 1]) {
   }
 }
 
-// A 3,000-pixel country with a capital and another city can split around the
-// non-capital city, which is required to lead the new state.
+// A 3,000-pixel country with a capital and another city can split without
+// binding the player to a selected city.
 {
   const { world, country, cities } = makeCountry(3000, [1, 1]);
   const split = drawSplitCard(world, country, 1000);
   assert.equal(split?.type, 'split', 'a sufficiently large, multi-city country can split');
-  assert.equal(split?.requiredCityId, cities[1].id, 'the non-capital city is selected for the split');
+  assert.equal(split?.choices, null, 'the split card does not offer city choices');
+  assert.equal('requiredCityId' in split, false, 'the split card does not require a preselected city');
+  assert.equal(cities.filter((city) => city.capital).length, 1, 'the source capital is unchanged before painting');
   assert.equal(split?.newCountryId, world.countries.length - 1, 'the split card creates its destination country');
 }
 

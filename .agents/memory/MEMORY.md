@@ -7,3 +7,4 @@
 - [Expo build port](zero-strategy-expo-build-port.md) — choose a free Metro port if Replit's preview service occupies 8081.
 - [Published Expo launch URLs](zero-strategy-published-launch.md) — resolve static manifest and bundle asset URLs against the active request origin, not the build hostname.
 - [Expo Router route types](expo-router-types.md) — restart the managed Expo workflow when a new file route is missing from generated typed navigation.
+- [Inheritance partition painting](inheritance-partition-brush.md) — reserve each seed and count prior heir land outside its share quota.

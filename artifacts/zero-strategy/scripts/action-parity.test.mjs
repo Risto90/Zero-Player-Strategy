@@ -308,14 +308,9 @@ const cases = [
       targetCountryId: country.id,
       newCountryId: founded.id,
       hint: cities[1].pixel,
-      requiredCityId: cities[1].id,
       ink: 0,
       inkTotal: 0,
-      choices: cities.slice(1, 3).map((city, index) => ({
-        label: `Регион ${index}`,
-        detail: `Регион ${index}`,
-        cityId: city.id,
-      })),
+      choices: null,
     });
   }),
   ...['drought', 'rain', 'desertification', 'swamping', 'warmCurrent', 'coldCurrent', 'warmWind', 'coldWind']

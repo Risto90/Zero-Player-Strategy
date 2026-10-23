@@ -475,20 +475,12 @@ export function drawSplitCard(world: World, country: Country, year: number, upri
   split.dynastyClaims = [...split.dynastyClaims, ...country.dynastyClaims];
   split.termYears = country.termYears; split.maxTerms = country.maxTerms; split.consulCount = country.consulCount;
   const card = makeCard('split', ink, country, uprising
-    ? `Региональная группа добивается отделения от ${country.name}; проведите кистью по её землям.`
+    ? `Региональная группа добивается отделения от ${country.name}; проведите кистью по связной территории с городом. Столица останется в исходной стране.`
     : splitCultureId !== undefined || splitReligionId !== undefined
-      ? `В ${country.name} мирно отделяется регион, где заметно влияние другой культуры или веры.`
-    : `${split.name} отделяется от ${country.name}.`, hint);
+      ? `В ${country.name} мирно отделяется регион, где заметно влияние другой культуры или веры. Выделите связную территорию с городом; столица останется в исходной стране.`
+    : `${split.name} отделяется от ${country.name}. Выделите связную территорию с городом; столица останется в исходной стране.`, hint);
   if (uprising) card.title = 'Восстание региона';
   card.newCountryId = split.id;
-  card.requiredCityId = cityCandidates[0].id;
-  if (cityCandidates.length > 1) {
-    card.choices = cityChoices(world, cityCandidates).map((choice) => ({
-      label: choice.label,
-      detail: `${choice.detail} Этот город станет столицей новой страны.`,
-      cityId: choice.cityId,
-    }));
-  }
   if (splitCultureId !== undefined) card.splitCultureId = splitCultureId;
   if (splitReligionId !== undefined) card.splitReligionId = splitReligionId;
   if (splitCultureId !== undefined) card.sourceCultureId = splitCultureId;

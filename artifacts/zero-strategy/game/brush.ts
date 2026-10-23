@@ -48,7 +48,17 @@ export interface Card {
   choices: CardChoice[] | null;
   selectedChoice: number;
   characterEvent: CharacterEvent | null;
-  requiredCityId?: number;
+  /** Exact land quota for one part of a multi-country inheritance partition. */
+  splitRequiredPixels?: number;
+  /** Remaining manual inheritance parts; stored on the active card so saves can resume. */
+  splitBatch?: {
+    sourceCountryId: number;
+    destinationIds: number[];
+    quotas: number[];
+    baselinePixels: number[];
+    nextIndex: number;
+  };
+  splitBaselinePixels?: number;
   violentReform?: boolean;
   developmentOnly?: boolean;
   cityPlaced?: boolean;
@@ -80,6 +90,147 @@ const isCurrent = (type: CardType) => type === 'warmCurrent' || type === 'coldCu
 const isWind = (type: CardType) => type === 'warmWind' || type === 'coldWind';
 const isTemperatureCard = (type: CardType) => isCurrent(type) || isWind(type);
 
+export interface SplitTerritoryValidation {
+  valid: boolean;
+  reason: string;
+}
+
+/** Shared transfer guard for card, inheritance, manual, and automatic partition painting. */
+export function canAssignSplitPixel(
+  world: World,
+  sourceCountryId: number,
+  destinationCountryId: number,
+  pixel: number,
+  requiredPixels?: number,
+  baselinePixels = 0,
+): boolean {
+  const source = world.countries[sourceCountryId];
+  const destination = world.countries[destinationCountryId];
+  if (!source || !destination || !world.land[pixel] ||
+    world.owner[pixel] !== sourceCountryId + 1 || world.cityAt(pixel)?.capital) return false;
+  if (requiredPixels !== undefined && destination.pixels - baselinePixels >= requiredPixels) return false;
+  return true;
+}
+
+/** One partition instrument shared by player strokes and automatic inheritance painting. */
+export class PartitionBrush {
+  private readonly baselinePixels: number;
+
+  constructor(
+    private readonly world: World,
+    readonly sourceCountryId: number,
+    readonly destinationCountryId: number,
+    readonly requiredPixels?: number,
+    baselinePixels?: number,
+  ) {
+    this.baselinePixels = baselinePixels ?? world.countries[destinationCountryId]?.pixels ?? 0;
+  }
+
+  get paintedPixels(): number {
+    return (this.world.countries[this.destinationCountryId]?.pixels ?? 0) - this.baselinePixels;
+  }
+
+  canPaint(pixel: number): boolean {
+    if (!canAssignSplitPixel(this.world, this.sourceCountryId, this.destinationCountryId,
+      pixel, this.requiredPixels, this.baselinePixels)) return false;
+    const destinationTag = this.destinationCountryId + 1;
+    let linked = false;
+    forEachNeighbour(pixel, (next) => {
+      if (this.world.owner[next] === destinationTag) linked = true;
+    });
+    if (linked) return true;
+    if (this.paintedPixels > 0 || this.baselinePixels > 0) return false;
+    return !!this.world.cityAt(pixel);
+  }
+
+  paint(pixel: number): boolean {
+    if (!this.canPaint(pixel)) return false;
+    this.world.setOwner(pixel, this.destinationCountryId + 1);
+    return true;
+  }
+}
+
+/** Validates the completed territory, independently of how it was painted. */
+export function validateSplitTerritory(
+  world: World,
+  sourceCountryId: number,
+  destinationCountryId: number,
+  requiredPixels?: number,
+  baselinePixels = 0,
+): SplitTerritoryValidation {
+  const source = world.countries[sourceCountryId];
+  const destination = world.countries[destinationCountryId];
+  if (!source || !destination) return { valid: false, reason: 'Не найдена исходная или новая страна.' };
+  if (destination.pixels === 0) return { valid: false, reason: 'Выделите территорию новой страны кистью.' };
+  if (requiredPixels !== undefined && destination.pixels - baselinePixels !== requiredPixels) {
+    return { valid: false, reason: `Нужно выделить ровно ${requiredPixels} участков по наследственной квоте.` };
+  }
+  const capital = world.cities.find((city) => city.countryId === sourceCountryId && city.capital);
+  if (!capital) return { valid: false, reason: 'У исходной страны не найдена столица.' };
+  if (world.owner[capital.pixel] !== sourceCountryId + 1) {
+    return { valid: false, reason: 'Столица исходной страны должна остаться в ней.' };
+  }
+  const hasCity = world.cities.some((city) => world.owner[city.pixel] === destinationCountryId + 1);
+  if (!hasCity) return { valid: false, reason: 'В отделяемой территории должен находиться хотя бы один город.' };
+
+  let start = -1;
+  for (const pixel of world.landIndex) {
+    if (world.owner[pixel] === destinationCountryId + 1) { start = pixel; break; }
+  }
+  if (start < 0) return { valid: false, reason: 'Выделите территорию новой страны кистью.' };
+  const seen = new Uint8Array(MAP_PIXELS);
+  const queue = [start];
+  seen[start] = 1;
+  for (let head = 0; head < queue.length; head += 1) {
+    forEachNeighbour(queue[head], (next) => {
+      if (!seen[next] && world.owner[next] === destinationCountryId + 1) {
+        seen[next] = 1;
+        queue.push(next);
+      }
+    });
+  }
+  if (queue.length !== destination.pixels) {
+    return { valid: false, reason: 'Отделяемая территория должна быть связной.' };
+  }
+  return { valid: true, reason: '' };
+}
+
+export function validateSplitPartition(
+  world: World,
+  sourceCountryId: number,
+  destinationIds: number[],
+  quotas?: number[],
+  baselinePixels: number[] = [],
+): SplitTerritoryValidation {
+  const source = world.countries[sourceCountryId];
+  if (!source || source.pixels <= 0) return { valid: false, reason: 'Исходная страна должна сохранить территорию.' };
+  const capital = world.cities.find((city) => city.countryId === sourceCountryId && city.capital);
+  if (!capital) return { valid: false, reason: 'У исходной страны не найдена столица.' };
+  if (world.owner[capital.pixel] !== sourceCountryId + 1) {
+    return { valid: false, reason: 'Столица исходной страны должна остаться в ней.' };
+  }
+  if (!world.cities.some((city) => world.owner[city.pixel] === sourceCountryId + 1)) {
+    return { valid: false, reason: 'В исходной стране должен остаться город.' };
+  }
+  for (let index = 0; index < destinationIds.length; index += 1) {
+    const result = validateSplitTerritory(world, sourceCountryId, destinationIds[index], quotas?.[index],
+      baselinePixels[index] ?? 0);
+    if (!result.valid) return result;
+  }
+  return { valid: true, reason: '' };
+}
+
+/** Moves cities to their painted owners and assigns each new state its largest city as capital. */
+export function finalizeSplitCities(world: World, destinationCountryId: number): void {
+  const cities = world.cities.filter((city) => world.owner[city.pixel] === destinationCountryId + 1);
+  for (const city of cities) {
+    city.countryId = destinationCountryId;
+    city.capital = false;
+  }
+  const capital = [...cities].sort((a, b) => b.rank - a.rank || b.population - a.population || a.pixel - b.pixel)[0];
+  if (capital) capital.capital = true;
+}
+
 /** Applies one card to the world, brush dab by brush dab, spending its ink. */
 export class CardPainter {
   /** Pixels changed by this card (for automatic play and logs). */
@@ -97,6 +248,7 @@ export class CardPainter {
   private readonly colonizationConnected: Uint8Array | null;
   private readonly colonizationDonors: ColonizationDonorHeap | null;
   private readonly cityInfluence: CityInfluenceIndex | null;
+  private readonly splitBrush: PartitionBrush | null;
   private nomadMode: 'range' | 'density' | 'inactive' = 'range';
   private readonly nomadRange = new Set<number>();
   private readonly nomadCells = new Map<number, NomadCell>();
@@ -131,6 +283,9 @@ export class CardPainter {
         : null;
     this.cityInfluence = influenceCountryId !== null
       ? new CityInfluenceIndex(world, influenceCountryId, card.type === 'colonization', colonization?.anchors)
+      : null;
+    this.splitBrush = card.type === 'split' && card.targetCountryId !== null && card.newCountryId !== null
+      ? new PartitionBrush(world, card.targetCountryId, card.newCountryId, card.splitRequiredPixels, card.splitBaselinePixels)
       : null;
     if (working !== null && (card.type === 'expand' || card.type === 'split')) {
       const source = world.countries[card.type === 'split' ? (card.targetCountryId as number) : working];
@@ -338,10 +493,8 @@ export class CardPainter {
           !world.cityAt(p) && !(influence && influence.foreignRankSum > 0 && influence.ownRankSum === 0);
       }
       if (card.type === 'create' && (this.cityInfluence?.at(p).foreignRankSum ?? 0) > 0) return false;
-      if (world.owner[p] !== sourceTag) return false;
-      if (card.type === 'split' && world.cityAt(p)?.capital) return false;
-      if (card.type === 'split' && working.pixels === 0 && card.requiredCityId !== undefined &&
-        world.cities[card.requiredCityId]?.pixel !== p) return false;
+      if (card.type === 'split' && !this.splitBrush?.canPaint(p)) return false;
+      if (card.type !== 'split' && world.owner[p] !== sourceTag) return false;
       if (card.type !== 'split' || (card.splitCultureId === undefined && card.splitReligionId === undefined)) return true;
       const cultureMatch = card.splitCultureId !== undefined && world.cultureTable.shareOf(world.culture[p], card.splitCultureId) > 0;
       const faithShare = card.splitReligionId === -1 ? 100 - world.religionTable.entries[world.religion[p]].total :
@@ -435,7 +588,9 @@ export class CardPainter {
         });
         continue;
       }
-      world.setOwner(p, tag);
+      if (card.type === 'split') {
+        if (!this.splitBrush?.paint(p)) continue;
+      } else world.setOwner(p, tag);
       if (card.type !== 'split') {
         const { cost, strength } = this.brushScaling(p);
         world.density[p] = working.density * strength;

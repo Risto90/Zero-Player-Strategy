@@ -1,6 +1,7 @@
 import { autoPaint } from './autoPaint';
 import type { PaintActions } from './autoPaint';
-import { brushOptionFor, CardPainter, type BrushMode, type BrushOption, type Card, type CardChoice, type CharacterEvent } from './brush';
+import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
+  type BrushMode, type BrushOption, type Card, type CardChoice, type CharacterEvent } from './brush';
 import { drawCountryCard, drawNomadCard, drawWorldCard, firstCreateCard } from './cards';
 import { BIOMES, BRUSH_SIZES, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
 import { forEachNeighbour, type MapKind } from './geography';
@@ -157,6 +158,12 @@ export class Game {
   private selectedCountryId: number | null = null;
   private card: Card | null = null;
   private painter: CardPainter | null = null;
+  private pendingInheritanceSplit: {
+    sourceCountryId: number;
+    destinationIds: number[];
+    quotas: number[];
+    baselinePixels: number[];
+  } | null = null;
   private queue: Slot[] = [];
   private brushMode: BrushMode = 'respect';
   private brushSize: BrushSize = 'm';
@@ -376,11 +383,6 @@ export class Game {
   private applyChoice(index: number): void {
     if (!this.card?.choices || index < 0 || index >= this.card.choices.length) return;
     this.card.selectedChoice = index;
-    const selected = this.card.choices[index];
-    if (this.card.type === 'split' && selected.cityId !== undefined) {
-      this.card.requiredCityId = selected.cityId;
-      this.card.hint = this.world.cities[selected.cityId]?.pixel ?? this.card.hint;
-    }
     this.message = this.card.choices[index].detail;
     this.emit();
     this.scheduleSave();
@@ -653,15 +655,43 @@ export class Game {
       this.emit();
       return;
     }
-    if (this.card?.type === 'split' && this.card.requiredCityId !== undefined &&
-      this.world.cities[this.card.requiredCityId]?.countryId === this.card.targetCountryId) {
-      this.message = 'Нужно включить выбранный город в новую страну.';
-      this.emit();
-      return;
+    if (this.card?.type === 'split' && this.card.targetCountryId !== null && this.card.newCountryId !== null) {
+      const batch = this.card.splitBatch;
+      const result = batch && batch.nextIndex === batch.destinationIds.length - 1
+        ? validateSplitPartition(this.world, batch.sourceCountryId, batch.destinationIds, batch.quotas, batch.baselinePixels)
+        : validateSplitTerritory(this.world, this.card.targetCountryId, this.card.newCountryId,
+          this.card.splitRequiredPixels, this.card.splitBaselinePixels);
+      if (!result.valid) {
+        this.message = result.reason;
+        this.emit();
+        return;
+      }
+    }
+    const completedCard = this.card;
+    if (completedCard?.type === 'split' && completedCard.splitBatch &&
+      completedCard.splitBatch.nextIndex < completedCard.splitBatch.destinationIds.length - 1) {
+      const batch = completedCard.splitBatch;
+      this.busy = true;
+      try {
+        this.completeCard();
+        this.startInheritanceSplitCard(batch, batch.nextIndex + 1);
+        return;
+      } finally {
+        this.busy = false;
+        this.drawing = this.renderer.pending;
+        this.emit(true);
+        this.scheduleSave();
+      }
     }
     this.busy = true;
     try {
       this.completeCard();
+      if (this.pendingInheritanceSplit) {
+        const batch = this.pendingInheritanceSplit;
+        this.pendingInheritanceSplit = null;
+        this.startInheritanceSplitCard({ ...batch, nextIndex: 0 }, 0);
+        return;
+      }
       if (this.queue.length > 0 && this.startNextPlayerCard()) return;
       this.turn += 1;
       this.year += 1;
@@ -711,7 +741,6 @@ export class Game {
     } finally {
       this.busy = false;
       this.progress = null;
-      // Only areas the AI painted are repainted; the timer waits until the map is drawn.
       this.drawing = this.renderer.pending;
       this.emit(true);
       this.scheduleSave();
@@ -782,6 +811,63 @@ export class Game {
     if (card.type === 'nomadExpand') this.painter.setNomadMode(card.nomadDensityOnly ? 'density' : 'range');
   }
 
+  private isPlayerControlled(countryId: number): boolean {
+    return this.role === 'all' || (this.role === 'country' && this.focusCountryId === countryId);
+  }
+
+  private startInheritanceSplitCard(
+    batch: NonNullable<Card['splitBatch']>,
+    index: number,
+  ): void {
+    const source = this.world.countries[batch.sourceCountryId];
+    const destination = this.world.countries[batch.destinationIds[index]];
+    if (!source || !destination) {
+      this.message = 'Не удалось продолжить разделение наследства: страна больше не найдена.';
+      this.emit();
+      return;
+    }
+    let hint = -1, bestScore = -1;
+    this.world.forEachCountryPixel(source, (pixel) => {
+      if (this.world.owner[pixel] !== source.id + 1 || this.world.cityAt(pixel)?.capital) return;
+      const culture = this.world.cultureTable.shareOf(this.world.culture[pixel], destination.ruler.cultureId) > 0;
+      const faith = destination.ruler.religionId === null
+        ? this.world.religionTable.entries[this.world.religion[pixel]].total < 100
+        : this.world.religionTable.shareOf(this.world.religion[pixel], destination.ruler.religionId) > 0;
+      const score = (this.world.cityAt(pixel) ? 8 : 0) + (culture && faith ? 4 : culture || faith ? 2 : 0);
+      if (score > bestScore) { hint = pixel; bestScore = score; }
+    });
+    const quota = batch.quotas[index];
+    const card: Card = {
+      type: 'split',
+      title: 'Разделение наследства',
+      detail: `Наследник ${destination.ruler.name}: выделите кистью связную территорию с городом (${index + 1} из ${batch.destinationIds.length}), не включая столицу исходной страны. Квота: ${quota} участков.`,
+      ink: quota,
+      inkTotal: quota,
+      targetCountryId: source.id,
+      targetNomadId: null,
+      newCountryId: destination.id,
+      newCultureId: null,
+      newReligionId: null,
+      sourceCultureId: null,
+      newGovernmentId: null,
+      newRuler: null,
+      choices: null,
+      selectedChoice: 0,
+      characterEvent: null,
+      splitRequiredPixels: quota,
+      splitBatch: {
+        ...batch,
+        destinationIds: [...batch.destinationIds],
+        quotas: [...batch.quotas],
+        baselinePixels: [...batch.baselinePixels],
+        nextIndex: index,
+      },
+      splitBaselinePixels: batch.baselinePixels[index] ?? 0,
+      hint,
+    };
+    this.startCard(card);
+  }
+
   private resolveAutomatically(card: Card): void {
     this.card = card;
     if (card.choices && card.choices.length > 1) {
@@ -829,6 +915,18 @@ export class Game {
 
   private applyCardCompletion(): void {
     if (!this.painter) return;
+    if (this.card?.type === 'split' && this.card.targetCountryId !== null && this.card.newCountryId !== null) {
+      const batch = this.card.splitBatch;
+      const result = batch && batch.nextIndex === batch.destinationIds.length - 1
+        ? validateSplitPartition(this.world, batch.sourceCountryId, batch.destinationIds, batch.quotas, batch.baselinePixels)
+        : validateSplitTerritory(this.world, this.card.targetCountryId, this.card.newCountryId,
+          this.card.splitRequiredPixels, this.card.splitBaselinePixels);
+      if (!result.valid) {
+        this.message = result.reason;
+        this.emit();
+        return;
+      }
+    }
     this.afterPaint();
     this.finish(this.painter);
     this.painter = null;
@@ -904,13 +1002,7 @@ export class Game {
         const country = w.countries[card.newCountryId as number];
         if (country.pixels === 0) w.discardLast('countries', country.id);
         else if (target) {
-          const selectedCity = card.requiredCityId === undefined ? null : w.cities[card.requiredCityId];
-          for (const city of w.cities) {
-            if (w.owner[city.pixel] !== country.id + 1) continue;
-            city.countryId = country.id;
-            if (city.id === selectedCity?.id) city.capital = true;
-            else if (city.capital) city.capital = false;
-          }
+          finalizeSplitCities(w, country.id);
           this.addLog(`${country.name} откалывается от ${target.name}.`);
           if (card.splitCultureId !== undefined) this.extendPressure(target, 'ethnic');
           if (card.splitReligionId !== undefined) this.extendPressure(target, 'faith');
@@ -1174,6 +1266,14 @@ export class Game {
     if (heirs.length < 2) return;
     const originalId = source.id;
     const states: Country[] = [source];
+    const mergedHomes: {
+      destinationId: number;
+      homeId: number;
+      pixels: number[];
+      cityIds: number[];
+      personIds: number[];
+      rulerId: number;
+    }[] = [];
     for (const heir of heirs.slice(1)) {
       const state = w.newCountry({ rank: source.rank, cultureId: heir.cultureId, religionId: heir.religionId, density: source.density,
         foundedYear: this.year, parentId: originalId, government: source.government });
@@ -1190,7 +1290,19 @@ export class Game {
       const homes = w.countries.filter((other) => other.id !== state.id && other.id !== source.id &&
         other.pixels > 0 && (other.ruler.id === heir.id ||
           (other.modifiers.includes('consulate') && other.coRulerIds.includes(heir.id))));
-      for (const home of homes) this.mergeCountries(state, home, 'inheritance');
+      for (const home of homes) {
+        const pixels: number[] = [];
+        w.forEachCountryPixel(home, (pixel) => pixels.push(pixel));
+        mergedHomes.push({
+          destinationId: state.id,
+          homeId: home.id,
+          pixels,
+          cityIds: w.cities.filter((city) => city.countryId === home.id).map((city) => city.id),
+          personIds: w.people.filter((person) => person.countryId === home.id).map((person) => person.id),
+          rulerId: home.ruler.id,
+        });
+        this.mergeCountries(state, home, 'inheritance');
+      }
       states.push(state);
     }
     const partitionCount = states.length;
@@ -1206,10 +1318,31 @@ export class Game {
       for (let i = 0; i < pixels.length % partitionCount; i += 1) quotas[i] += 1;
     }
 
+    if (this.isPlayerControlled(source.id)) {
+      this.pendingInheritanceSplit = {
+        sourceCountryId: source.id,
+        destinationIds: states.slice(1).map((state) => state.id),
+        quotas: quotas.slice(1),
+        baselinePixels: states.slice(1).map((state) => state.pixels),
+      };
+      return;
+    }
+
     // Grow one contiguous region at a time. A shared culture and faith gets
     // the 4x priority from the design; a match on only one gets 2x.
     const available = new Uint8Array(MAP_PIXELS);
     for (const p of pixels) available[p] = 1;
+    const reservedCityState = new Int16Array(MAP_PIXELS).fill(-1);
+    const partitionBaselines = states.slice(1).map((state) => state.pixels);
+    for (let stateIndex = 0; stateIndex < heirCities.length; stateIndex += 1) {
+      const city = heirCities[stateIndex];
+      const hasExistingTerritory = stateIndex > 0 && partitionBaselines[stateIndex - 1] > 0;
+      if (city && !hasExistingTerritory) reservedCityState[city.pixel] = stateIndex;
+    }
+    const partitionBrushes = states.map((state, index) => index === 0
+      ? null
+      : new PartitionBrush(w, source.id, state.id, quotas[index], partitionBaselines[index - 1]));
+    const transferredPixels: number[] = [];
     const inFrontier = new Uint8Array(MAP_PIXELS);
     for (let stateIndex = 0; stateIndex < partitionCount; stateIndex += 1) {
       const heir = heirs[stateIndex];
@@ -1222,19 +1355,33 @@ export class Game {
         return cultureMatch && religionMatch ? 2 : cultureMatch || religionMatch ? 1 : 0;
       };
       const addNeighbours = (p: number) => forEachNeighbour(p, (next) => {
-        if (!available[next] || inFrontier[next]) return;
+        if (!available[next] || inFrontier[next] || reservedCityState[next] > stateIndex) return;
         inFrontier[next] = 1;
         buckets[category(next)].add(next);
       });
       const citySeed = heirCities[stateIndex];
       let left = quotas[stateIndex];
-      if (citySeed && available[citySeed.pixel]) {
-        available[citySeed.pixel] = 0;
-        w.owner[citySeed.pixel] = states[stateIndex].id + 1;
-        citySeed.countryId = states[stateIndex].id;
-        citySeed.capital = stateIndex === 0;
+      let seedPixel = citySeed?.pixel ?? -1;
+      if (stateIndex > 0 && partitionBaselines[stateIndex - 1] > 0) {
+        seedPixel = -1;
+        let bestPriority = -1;
+        for (const candidate of pixels) {
+          if (!available[candidate] || !partitionBrushes[stateIndex]?.canPaint(candidate)) continue;
+          const priority = category(candidate);
+          if (priority > bestPriority) {
+            seedPixel = candidate;
+            bestPriority = priority;
+          }
+        }
+      }
+      if (seedPixel >= 0 && available[seedPixel]) {
+        available[seedPixel] = 0;
+        if (stateIndex > 0) {
+          if (!partitionBrushes[stateIndex]?.paint(seedPixel)) continue;
+          transferredPixels.push(seedPixel);
+        }
         left = Math.max(0, left - 1);
-        addNeighbours(citySeed.pixel);
+        addNeighbours(seedPixel);
       }
       while (left > 0) {
         let bucketIndex = buckets[2].size ? 2 : buckets[1].size ? 1 : 0;
@@ -1246,26 +1393,50 @@ export class Game {
           buckets[bucketIndex].delete(next);
           inFrontier[next] = 0;
         } else {
-          const seed = pixels.find((p) => available[p]);
-          if (seed === undefined) break;
-          next = seed;
+          break;
         }
         available[next] = 0;
-        w.owner[next] = states[stateIndex].id + 1;
+        if (stateIndex > 0) {
+          if (!partitionBrushes[stateIndex]?.paint(next)) continue;
+          transferredPixels.push(next);
+        }
         left -= 1;
         addNeighbours(next);
       }
       for (const bucket of buckets) for (const p of bucket) inFrontier[p] = 0;
     }
-    for (let stateIndex = 0; stateIndex < states.length; stateIndex += 1) {
-      const state = states[stateIndex];
-      const capital = heirCities[stateIndex];
-      for (const city of w.cities) {
-        if (w.owner[city.pixel] !== state.id + 1) continue;
-        city.countryId = state.id;
-        city.capital = city.id === capital?.id;
+    const validation = validateSplitPartition(w, source.id,
+      states.slice(1).map((state) => state.id), quotas.slice(1), partitionBaselines);
+    if (!validation.valid) {
+      this.addLog(`${source.name}: наследственное разделение отменено — ${validation.reason}`);
+      for (const pixel of transferredPixels) w.setOwner(pixel, source.id + 1);
+      for (const saved of mergedHomes.reverse()) {
+        const home = w.countries[saved.homeId];
+        if (!home) continue;
+        for (const pixel of saved.pixels) w.setOwner(pixel, saved.homeId + 1);
+        for (const cityId of saved.cityIds) {
+          const city = w.cities.find((item) => item.id === cityId);
+          if (city) city.countryId = saved.homeId;
+        }
+        for (const personId of saved.personIds) {
+          const person = w.people.find((item) => item.id === personId);
+          if (person) person.countryId = saved.homeId;
+        }
+        const ruler = w.people.find((person) => person.id === saved.rulerId);
+        if (ruler) ruler.formerRulerOf = ruler.formerRulerOf.filter((id) => id !== saved.destinationId);
       }
+      for (const state of states.slice(1)) {
+        const heir = state.ruler;
+        heir.countryId = source.id;
+        heir.formerRulerOf = heir.formerRulerOf.filter((id) => id !== state.id);
+      }
+      for (const state of states.slice(1).reverse()) {
+        if (w.countries[w.countries.length - 1]?.id === state.id) w.discardLast('countries', state.id);
+      }
+      w.recountCountries();
+      return;
     }
+    for (const state of states.slice(1)) finalizeSplitCities(w, state.id);
     for (const state of states) ensureOffices(w, state, this.year);
     w.recountCountries(); w.version += 1; this.renderer.markAll();
     this.addLog(`${source.name}: страна разделена между ${heirs.length} наследниками.`);
