@@ -2,7 +2,7 @@ import { autoPaint } from './autoPaint';
 import { brushOptionFor, CardPainter, type BrushMode, type BrushOption, type Card, type CardChoice, type CharacterEvent } from './brush';
 import { drawCountryCard, drawWorldCard, firstCreateCard } from './cards';
 import { BIOMES, BRUSH_SIZES, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
-import type { MapKind } from './geography';
+import { forEachNeighbour, type MapKind } from './geography';
 import { copyWorld, deserializeWorld, serializeSteps, type SavedWorld } from './persistence';
 import { decodeSave, encodeSave } from './saveFile';
 import { clearSaveBytes, hasSaveBytes, readSaveBytes, writeSaveBytes } from './storage';
@@ -822,12 +822,39 @@ export class Game {
     }
   }
 
-  /** The ruling heir receives half; other eligible children divide the rest, favoring matching culture/faith. */
+  /** Applies the design-doc partition law by painting contiguous areas for each heir. */
   private partitionCountry(source: Country, deceased: Person, preferred: Person): void {
     const w = this.world;
     const ranked = successionOrder(w, source, deceased);
-    const children = ranked.filter((p) => p.parents.includes(deceased.id) && candidateAllowed(w, source, p, deceased));
-    const heirs = [preferred, ...children.filter((p) => p.id !== preferred.id)].slice(0, 7);
+    const eligibleChildren = w.people.filter((p) => p.parents.includes(deceased.id) &&
+      candidateAllowed(w, source, p, deceased));
+    if (eligibleChildren.length < 2) return;
+
+    const hasOtherSuccessionLaw = source.modifiers.some((id) =>
+      ['seniority', 'minority', 'primogeniture', 'oligarchy', 'pornocracy', 'meritocracy',
+        'patriarchal', 'matriarchal', 'theocracy', 'ethnic', 'communist'].includes(id));
+    let heirs = hasOtherSuccessionLaw
+      ? [...ranked, ...eligibleChildren].filter((p, index, all) =>
+          candidateAllowed(w, source, p, deceased) && all.findIndex((x) => x.id === p.id) === index)
+      : [...eligibleChildren];
+    if (!heirs.some((p) => p.id === preferred.id) && candidateAllowed(w, source, preferred, deceased)) {
+      heirs.unshift(preferred);
+    }
+    if (hasOtherSuccessionLaw) {
+      heirs = [preferred, ...heirs.filter((p) => p.id !== preferred.id)];
+    } else {
+      // Without another succession law, neither child has a prescribed priority.
+      for (let i = heirs.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [heirs[i], heirs[j]] = [heirs[j], heirs[i]];
+      }
+    }
+    heirs = heirs.filter((p) => p.alive && p.id !== deceased.id);
+    if (heirs.length < 2) return;
+
+    const pixels: number[] = [];
+    w.forEachCountryPixel(source, (p) => pixels.push(p));
+    heirs = heirs.slice(0, pixels.length);
     if (heirs.length < 2) return;
     const originalId = source.id;
     const states: Country[] = [source];
@@ -838,31 +865,67 @@ export class Game {
       state.ruler = heir; heir.countryId = state.id;
       if (!heir.formerRulerOf.includes(state.id)) heir.formerRulerOf.push(state.id);
       state.modifiers = [...source.modifiers]; state.previousRulerIds = [...source.previousRulerIds];
-      state.dynastyClaims = [...source.dynastyClaims]; state.coRulerIds = [...source.coRulerIds];
+      state.dynastyClaims = [...source.dynastyClaims];
+      // Seats belong to each new country; never duplicate the old country's consuls.
+      state.coRulerIds = [];
       state.termYears = source.termYears; state.maxTerms = source.maxTerms; state.consulCount = source.consulCount;
       state.seatSince = { ...source.seatSince }; state.termCounts = { ...source.termCounts };
       state.rulerSince = this.year; states.push(state);
     }
-    const pixels: number[] = [];
-    w.forEachCountryPixel(source, (p) => pixels.push(p));
-    const quotas = states.map((_, i) => Math.floor(pixels.length * (i === 0 ? 0.5 : 0.5 / (states.length - 1))));
-    quotas[0] += pixels.length - quotas.reduce((a, b) => a + b, 0);
-    // Allocate matching culture+faith first without changing the actual culture/religion composition.
-    pixels.sort((a, b) => Math.random() - 0.5);
-    const assigned = new Array<number>(pixels.length).fill(-1);
-    const used = states.map(() => 0);
-    for (let i = 0; i < pixels.length; i += 1) {
-      const p = pixels[i];
-      const choices = states.map((state, si) => {
-        if (used[si] >= quotas[si]) return { value: si, weight: 0 };
-        const cultureMatch = w.cultureTable.shareOf(w.culture[p], state.ruler.cultureId) > 0;
-        const faithMatch = state.ruler.religionId !== null && w.religionTable.shareOf(w.religion[p], state.ruler.religionId) > 0;
-        return { value: si, weight: (cultureMatch ? 2 : 1) * (faithMatch ? 2 : 1) };
-      });
-      const selected = weighted(choices) ?? 0;
-      assigned[i] = selected; used[selected] += 1;
-      w.owner[p] = selected === 0 ? originalId + 1 : states[selected].id + 1;
+    const partitionCount = states.length;
+    const quotas = new Array<number>(partitionCount).fill(0);
+    if (hasOtherSuccessionLaw) {
+      quotas[0] = Math.floor(pixels.length / 2);
+      const remainder = pixels.length - quotas[0];
+      for (let i = 1; i < partitionCount; i += 1) quotas[i] = Math.floor(remainder / (partitionCount - 1));
+      for (let i = 1; i <= remainder % (partitionCount - 1); i += 1) quotas[i] += 1;
+    } else {
+      const base = Math.floor(pixels.length / partitionCount);
+      quotas.fill(base);
+      for (let i = 0; i < pixels.length % partitionCount; i += 1) quotas[i] += 1;
     }
+
+    // Grow one contiguous region at a time. A shared culture and faith gets
+    // the 4x priority from the design; a match on only one gets 2x.
+    const available = new Uint8Array(MAP_PIXELS);
+    for (const p of pixels) available[p] = 1;
+    const inFrontier = new Uint8Array(MAP_PIXELS);
+    for (let stateIndex = 0; stateIndex < partitionCount; stateIndex += 1) {
+      const heir = heirs[stateIndex];
+      const buckets: Set<number>[] = [new Set(), new Set(), new Set()];
+      const category = (p: number) => {
+        const cultureMatch = w.cultureTable.shareOf(w.culture[p], heir.cultureId) > 0;
+        const religionMatch = heir.religionId === null
+          ? w.religionTable.entries[w.religion[p]].total < 100
+          : w.religionTable.shareOf(w.religion[p], heir.religionId) > 0;
+        return cultureMatch && religionMatch ? 2 : cultureMatch || religionMatch ? 1 : 0;
+      };
+      const addNeighbours = (p: number) => forEachNeighbour(p, (next) => {
+        if (!available[next] || inFrontier[next]) return;
+        inFrontier[next] = 1;
+        buckets[category(next)].add(next);
+      });
+      let left = quotas[stateIndex];
+      while (left > 0) {
+        let bucketIndex = buckets[2].size ? 2 : buckets[1].size ? 1 : 0;
+        let next = -1;
+        if (buckets[bucketIndex].size) {
+          const choices = [...buckets[bucketIndex]];
+          next = choices[Math.floor(Math.random() * choices.length)];
+          buckets[bucketIndex].delete(next);
+          inFrontier[next] = 0;
+        } else {
+          const seed = pixels.find((p) => available[p]);
+          if (seed === undefined) break;
+          next = seed;
+        }
+        available[next] = 0;
+        w.owner[next] = states[stateIndex].id + 1;
+        left -= 1;
+        addNeighbours(next);
+      }
+    }
+    for (const state of states) ensureOffices(w, state, this.year);
     w.recountCountries(); w.version += 1; this.renderer.markAll();
     this.addLog(`${source.name}: страна разделена между ${heirs.length} наследниками.`);
   }

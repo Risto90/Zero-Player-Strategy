@@ -7,6 +7,10 @@ import { demography, weighted } from './demography';
 export function rulers(world: World, c: Country): Person[] {
   return [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is Person => !!p)];
 }
+export function expectedHeirFor(world: World, c: Country, leader: Person): Person | null {
+  if (!hasFixedHeir(c)) return null;
+  return successionOrder(world, c, leader)[0] ?? null;
+}
 export function candidateAllowed(world: World, c: Country, p: Person, old = c.ruler, partnerExempt = false): boolean {
   const foreignDynast = c.government !== 'republic' && c.dynastyClaims.includes(p.familyId);
   if (!p.alive || c.pendingDeathIds.includes(p.id) || (p.countryId !== c.id && !partnerExempt && !foreignDynast)) return false;
@@ -87,6 +91,19 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
     const direct = children.filter((p) => candidateAllowed(world, c, p, old));
     pool = direct.length ? direct : family;
   } else pool = [...family].sort(ageOrder);
+  if (c.modifiers.includes('consulate') && c.modifiers.includes('partition')) {
+    const siblings = world.people.filter((p) => p.id !== old.id && p.alive &&
+      old.parents.some((parentId) => p.parents.includes(parentId)));
+    const siblingIds = new Set(siblings.map((p) => p.id));
+    const siblingPool = pool.filter((p) => siblingIds.has(p.id));
+    const sittingConsuls = rulers(world, c).filter((p) => p.alive && p.id !== old.id);
+    const consulChildren = world.people.filter((p) => p.alive &&
+      sittingConsuls.some((leader) => p.parents.includes(leader.id)));
+    const consulChildIds = new Set(consulChildren.map((p) => p.id));
+    const childPool = pool.filter((p) => consulChildIds.has(p.id) && !siblingIds.has(p.id));
+    const preferred = [...siblingPool, ...childPool];
+    pool = [...preferred, ...pool.filter((p) => !preferred.some((x) => x.id === p.id))];
+  }
   if (c.government === 'tyranny' && !pool.some((p) => candidateAllowed(world, c, p, old))) {
     pool.push(...old.spouseIds.map((id) => person(world, id)).filter((p): p is Person => !!p));
   }
@@ -148,6 +165,7 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
   };
   const drawFamily = () => {
     if (hasFixedHeir(c)) return distinctFamily[0] ?? null;
+    if (c.modifiers.includes('consulate') && c.modifiers.includes('partition')) return distinctFamily[0] ?? null;
     return weighted(distinctFamily.map((p) => ({ value: p, weight: candidateWeight(world, c, p, old) })));
   };
   if (c.government === 'tribal') {
