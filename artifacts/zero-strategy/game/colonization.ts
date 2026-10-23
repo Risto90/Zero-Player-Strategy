@@ -1,21 +1,220 @@
-import { MAP_PIXELS, MAX_DENSITY } from './config';
+import { MAP_PIXELS, SHARE_STEP } from './config';
+import { quantizeShares } from './composition';
 import { demography } from './demography';
 import { forEachNeighbour } from './geography';
 import type { Country, World } from './world';
 
 export const RIVER_COLONIZATION_RADIUS = 18;
+const EPSILON = 1e-9;
 
 export interface ColonizationPlan {
   targets: Uint8Array;
   donors: number[];
-  refugeeSinks: Map<number, { pixels: number[]; index: number }>;
   averageDensity: number;
   availablePopulation: number;
   targetCount: number;
   hint: number;
 }
 
+export interface PopulationGroup {
+  cultureId: number;
+  religionId: number | null;
+  population: number;
+}
+
+export interface ColonizationTransfer {
+  amount: number;
+  ink: number;
+}
+
 let cached: { world: World; version: number; countryId: number; plan: ColonizationPlan } | null = null;
+
+/** Keeps the currently densest colonizer pixels at the top as each settlement changes density. */
+export class ColonizationDonorHeap {
+  private readonly heap: number[] = [];
+
+  constructor(private readonly world: World, pixels: number[]) {
+    for (const p of pixels) this.push(p);
+  }
+
+  peek(): number {
+    while (this.heap.length > 0 && this.world.density[this.heap[0]] <= EPSILON) this.pop();
+    return this.heap[0] ?? -1;
+  }
+
+  /** The caller must have just read this pixel from peek(); its new density is reinserted. */
+  consume(donor: number, amount: number): void {
+    const root = this.pop();
+    if (root !== donor) throw new Error('Colonization donor heap changed before transfer.');
+    this.world.density[donor] = Math.max(0, this.world.density[donor] - amount);
+    if (this.world.density[donor] > EPSILON) this.push(donor);
+  }
+
+  add(pixel: number): void {
+    if (this.world.density[pixel] > EPSILON) this.push(pixel);
+  }
+
+  private higher(a: number, b: number): boolean {
+    const difference = this.world.density[a] - this.world.density[b];
+    return Math.abs(difference) > EPSILON ? difference > 0 : a < b;
+  }
+
+  private push(pixel: number): void {
+    this.heap.push(pixel);
+    let child = this.heap.length - 1;
+    while (child > 0) {
+      const parent = Math.floor((child - 1) / 2);
+      if (!this.higher(this.heap[child], this.heap[parent])) break;
+      [this.heap[child], this.heap[parent]] = [this.heap[parent], this.heap[child]];
+      child = parent;
+    }
+  }
+
+  private pop(): number {
+    const first = this.heap[0];
+    const last = this.heap.pop();
+    if (this.heap.length > 0 && last !== undefined) {
+      this.heap[0] = last;
+      let parent = 0;
+      for (;;) {
+        const left = parent * 2 + 1;
+        const right = left + 1;
+        let best = parent;
+        if (left < this.heap.length && this.higher(this.heap[left], this.heap[best])) best = left;
+        if (right < this.heap.length && this.higher(this.heap[right], this.heap[best])) best = right;
+        if (best === parent) break;
+        [this.heap[parent], this.heap[best]] = [this.heap[best], this.heap[parent]];
+        parent = best;
+      }
+    }
+    return first ?? -1;
+  }
+}
+
+/** Builds culture × religion cohorts using the same proportional mixing used by demography(). */
+export function populationGroupsAt(world: World, pixel: number): PopulationGroup[] {
+  const population = world.density[pixel];
+  if (population <= EPSILON) return [];
+  const culture = world.cultureTable.entries[world.culture[pixel]];
+  const religion = world.religionTable.entries[world.religion[pixel]];
+  const religionIds: (number | null)[] = [...religion.ids, null];
+  const religionShares = [...religion.shares, 100 - religion.total];
+  const groups: PopulationGroup[] = [];
+  culture.ids.forEach((cultureId, ci) => {
+    religionIds.forEach((religionId, ri) => {
+      const share = culture.shares[ci] * religionShares[ri] / 100;
+      if (share > 0) groups.push({ cultureId, religionId, population: population * share / 100 });
+    });
+  });
+  return groups;
+}
+
+function matchTier(group: PopulationGroup, reference: PopulationGroup[]): number {
+  const sameCulture = reference.some((other) => other.population > EPSILON && other.cultureId === group.cultureId);
+  const sameReligion = reference.some((other) => other.population > EPSILON && other.religionId === group.religionId);
+  if (sameCulture && sameReligion && reference.some((other) =>
+    other.population > EPSILON && other.cultureId === group.cultureId && other.religionId === group.religionId)) return 0;
+  return sameCulture || sameReligion ? 1 : 2;
+}
+
+function splitGroups(
+  groups: PopulationGroup[],
+  amount: number,
+  reference: PopulationGroup[],
+  priority: number[],
+): { selected: PopulationGroup[]; remaining: PopulationGroup[] } {
+  const total = groups.reduce((sum, group) => sum + group.population, 0);
+  let remainingToSelect = Math.min(amount, total);
+  const selected: PopulationGroup[] = [];
+  const remaining: PopulationGroup[] = [];
+  const tiers = groups.map((group) => ({ group, tier: matchTier(group, reference) }));
+  const handled = new Set<number>();
+  for (const tier of priority) {
+    const bucket = tiers.filter((item) => item.tier === tier);
+    const tierTotal = bucket.reduce((sum, group) => sum + group.population, 0);
+    const tierTaken = Math.min(remainingToSelect, tierTotal);
+    const share = tierTotal > EPSILON ? tierTaken / tierTotal : 0;
+    for (const { group } of bucket) {
+      handled.add(group.cultureId * 65536 + (group.religionId ?? 65535));
+      const taken = group.population * share;
+      if (taken > EPSILON) selected.push({ ...group, population: taken });
+      if (group.population - taken > EPSILON) remaining.push({ ...group, population: group.population - taken });
+    }
+    remainingToSelect -= tierTaken;
+    if (remainingToSelect <= EPSILON) break;
+  }
+  for (const { group, tier } of tiers) {
+    const key = group.cultureId * 65536 + (group.religionId ?? 65535);
+    if (!handled.has(key)) remaining.push({ ...group });
+  }
+  return { selected, remaining };
+}
+
+function combineGroups(...sets: PopulationGroup[][]): PopulationGroup[] {
+  const totals = new Map<string, PopulationGroup>();
+  for (const group of sets.flat()) {
+    const key = `${group.cultureId}/${group.religionId ?? 'a'}`;
+    const current = totals.get(key);
+    if (current) current.population += group.population;
+    else totals.set(key, { ...group });
+  }
+  return [...totals.values()].filter((group) => group.population > EPSILON);
+}
+
+function setPixelComposition(world: World, pixel: number, groups: PopulationGroup[]): void {
+  const total = groups.reduce((sum, group) => sum + group.population, 0);
+  if (total <= EPSILON) {
+    world.culture[pixel] = 0;
+    world.religion[pixel] = 0;
+    return;
+  }
+  const cultures = new Map<number, number>();
+  const religions = new Map<number, number>();
+  let faithful = 0;
+  for (const group of groups) {
+    cultures.set(group.cultureId, (cultures.get(group.cultureId) ?? 0) + group.population);
+    if (group.religionId !== null) {
+      faithful += group.population;
+      religions.set(group.religionId, (religions.get(group.religionId) ?? 0) + group.population);
+    }
+  }
+  const faithfulShare = Math.round((faithful / total * 100) / SHARE_STEP) * SHARE_STEP;
+  world.culture[pixel] = world.cultureTable.intern(quantizeShares(cultures, 100));
+  world.religion[pixel] = world.religionTable.intern(quantizeShares(religions, faithfulShare));
+}
+
+/** Moves up to 10% of a densest donor into one target, displacing the same number of locals. */
+export function transferColonizationPopulation(
+  world: World,
+  donor: number,
+  target: number,
+  inkRemaining: number,
+): ColonizationTransfer | null {
+  const sourceDensity = world.density[donor];
+  const targetDensity = world.owner[target] > 0 ? world.density[target] : 0;
+  const ideal = sourceDensity * 0.1;
+  if (ideal <= EPSILON || inkRemaining <= 0) return null;
+
+  let maximum = Math.min(ideal, sourceDensity - targetDensity);
+  if (world.owner[target] > 0) maximum = Math.min(maximum, targetDensity);
+  const amount = Math.min(maximum, inkRemaining * ideal);
+  if (amount <= EPSILON) return null;
+
+  const sourceGroups = populationGroupsAt(world, donor);
+  const targetGroups = world.owner[target] > 0 ? populationGroupsAt(world, target) : [];
+  const donorSplit = splitGroups(sourceGroups, amount, targetGroups, [0, 1, 2]);
+  const migrants = donorSplit.selected;
+  const nativeRemoval = world.owner[target] > 0
+    ? splitGroups(targetGroups, amount, sourceGroups, [2, 1, 0])
+    : { selected: [], remaining: [] };
+  const targetAfter = combineGroups(nativeRemoval.remaining, migrants);
+
+  world.density[donor] = Math.max(0, sourceDensity - amount);
+  world.density[target] = world.owner[target] > 0 ? targetDensity : amount;
+  setPixelComposition(world, donor, donorSplit.remaining);
+  setPixelComposition(world, target, targetAfter);
+  return { amount, ink: amount / ideal };
+}
 
 function rulingFamilies(world: World, country: Country): Set<number> {
   const families = new Set([country.ruler.familyId]);

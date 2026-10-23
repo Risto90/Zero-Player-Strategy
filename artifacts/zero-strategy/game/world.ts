@@ -57,7 +57,7 @@ export class World {
   readonly riverPixelCount: number;
   readonly majorRiverPixelCount: number;
   readonly owner = new Uint16Array(MAP_PIXELS);
-  readonly density = new Uint8Array(MAP_PIXELS);
+  readonly density = new Float64Array(MAP_PIXELS);
   humidity: Uint8Array;
   temperature: Uint8Array;
   drainage: Uint8Array;

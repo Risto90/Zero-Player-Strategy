@@ -8,7 +8,6 @@ export const MAP_PIXELS = MAP_WIDTH * MAP_HEIGHT;
 /** Climate and share values are kept in steps so equal-value areas form large zones. */
 export const VALUE_STEP = 5;
 export const SHARE_STEP = 5;
-export const MAX_DENSITY = 20;
 
 export const LOG_LIMIT = 120;
 export const TURN_SECONDS = 60;
