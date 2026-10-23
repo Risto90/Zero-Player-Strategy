@@ -7,3 +7,4 @@ description: How to validate the zero-strategy engine headlessly and what to loo
 - Count of religions/cultures after 100 years is the main balance signal; faith weights scale down with the number of existing faiths.
 - Render a PPM from renderer.pixels and convert with `magick` to eyeball country shapes (AI painter must grow compact blobs, not snakes).
 **Why:** the UI can't show long-run behaviour quickly; earlier balance issues only showed in long simulations.
+- Phone speed proxy: run the same bundle with `node --jitless` (no JIT, closer to Hermes than plain Node).

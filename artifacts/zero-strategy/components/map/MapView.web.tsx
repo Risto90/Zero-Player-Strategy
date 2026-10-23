@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
+import { STRIP_H } from '@/game/render';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { clampView, initialView, minScale, zoomAround } from './viewMath';
@@ -28,10 +29,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     const offscreen = offscreenRef.current;
     const image = imageRef.current;
     if (!canvas || !offscreen || !image) return;
-    const rect = game.renderer.flushSome(PAINT_BUDGET_MS);
-    if (rect) {
-      offscreen.getContext('2d')?.putImageData(image, 0, 0, rect.x0, rect.y0, rect.x1 - rect.x0 + 1, rect.y1 - rect.y0 + 1);
-    }
+    const octx = offscreen.getContext('2d');
+    for (const s of game.renderer.flushSome(PAINT_BUDGET_MS)) octx?.putImageData(image, 0, 0, 0, s * STRIP_H, MAP_WIDTH, STRIP_H);
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const { width, height, dpr } = sizeRef.current;
@@ -54,6 +53,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       ctx.stroke();
     }
     if (game.renderer.pending) frameRef.current = requestAnimationFrame(draw);
+    else game.mapDrawn();
   }, [game]);
 
   const requestDraw = useCallback(() => {
@@ -104,7 +104,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     offscreen.height = MAP_HEIGHT;
     offscreenRef.current = offscreen;
     imageRef.current = new ImageData(new Uint8ClampedArray(game.renderer.pixels.buffer), MAP_WIDTH, MAP_HEIGHT);
-    game.renderer.markAll();
+    game.redrawAll();
     requestDraw();
     const off = game.onMapChange(requestDraw);
     return () => {

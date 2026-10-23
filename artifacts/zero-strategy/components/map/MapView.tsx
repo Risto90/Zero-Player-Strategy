@@ -14,14 +14,11 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'rea
 import { StyleSheet, View, type GestureResponderEvent, type LayoutChangeEvent } from 'react-native';
 import { makeMutable, useDerivedValue, useSharedValue } from 'react-native-reanimated';
 import colors from '@/constants/colors';
-import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
+import { MAP_WIDTH } from '@/game/config';
+import { STRIP_H, STRIPS } from '@/game/render';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { clampView, initialView, minScale, zoomAround } from './viewMath';
-
-/** The map is uploaded to the GPU as full-width horizontal strips; only changed strips are re-uploaded. */
-const STRIPS = 16;
-const STRIP_H = MAP_HEIGHT / STRIPS;
 
 const NEAREST = { filter: FilterMode.Nearest, mipmap: MipmapMode.None };
 const LINEAR = { filter: FilterMode.Linear, mipmap: MipmapMode.None };
@@ -86,23 +83,20 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     const pump = () => {
       frame = null;
       if (!alive) return;
-      const done = game.renderer.flushSome(PAINT_BUDGET_MS);
-      if (done) {
-        const first = Math.floor(done.y0 / STRIP_H);
-        const last = Math.floor(done.y1 / STRIP_H);
-        for (let s = first; s <= last; s += 1) {
-          const old = strips[s].value;
-          strips[s].value = makeStrip(game.renderer.pixels, s);
-          // Free the GPU copy once the new strip has been on screen for a while.
-          if (old) setTimeout(() => old.dispose(), 1000);
-        }
+      // The map is uploaded as full-width strips, each only once all its changed tiles are painted.
+      for (const s of game.renderer.flushSome(PAINT_BUDGET_MS)) {
+        const old = strips[s].value;
+        strips[s].value = makeStrip(game.renderer.pixels, s);
+        // Free the GPU copy once the new strip has been on screen for a while.
+        if (old) setTimeout(() => old.dispose(), 1000);
       }
       if (game.renderer.pending) frame = requestAnimationFrame(pump);
+      else game.mapDrawn();
     };
     const request = () => {
       if (frame === null && alive) frame = requestAnimationFrame(pump);
     };
-    game.renderer.markAll();
+    game.redrawAll();
     request();
     const off = game.onMapChange(request);
     return () => {

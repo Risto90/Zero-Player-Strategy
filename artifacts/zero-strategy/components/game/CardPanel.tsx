@@ -18,7 +18,7 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
   const inkShare = card && card.inkTotal > 0 ? card.ink / card.inkTotal : 0;
   const nextLabel = card ? (snap.queuedCards > 0 ? 'Готово' : 'Следующий год') : 'Следующий год';
   const message = snap.message && snap.message !== card?.detail ? snap.message : '';
-  const hot = snap.paused || snap.secondsLeft <= 10;
+  const hot = !snap.drawing && (snap.paused || snap.secondsLeft <= 10);
   return (
     <View style={styles.panel} testID="panel-card">
       <View style={styles.top}>
@@ -27,7 +27,7 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
         <Text style={[styles.small, { flexShrink: 1 }]} numberOfLines={1}>{ROLE_LABEL[snap.role]}</Text>
         <View style={styles.actions}>
           <Text style={[styles.timer, hot && { color: c.primary, borderColor: c.primary }]} testID="text-timer">
-            {String(Math.max(0, snap.secondsLeft)).padStart(2, '0')}с
+            {snap.drawing ? 'карта…' : `${String(Math.max(0, snap.secondsLeft)).padStart(2, '0')}с`}
           </Text>
           <Pressable onPress={() => game.togglePause()} style={styles.iconButton} hitSlop={4} testID="button-pause" accessibilityLabel={snap.paused ? 'Продолжить' : 'Пауза'}>
             <Feather name={snap.paused ? 'play' : 'pause'} size={16} color={c.foreground} />

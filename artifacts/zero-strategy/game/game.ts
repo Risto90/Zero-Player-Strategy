@@ -68,6 +68,8 @@ export interface GameSnapshot {
   secondsLeft: number;
   paused: boolean;
   busy: boolean;
+  /** The year's changes are still being drawn; the timer waits for them. */
+  drawing: boolean;
   /** AI turn progress while the world moves, e.g. 3 of 12 countries done. */
   progress: { done: number; total: number } | null;
   log: string[];
@@ -95,6 +97,14 @@ const OBSERVER_SECONDS = 3;
 /** Work is cut into slices of about this many milliseconds, so the screen never freezes. */
 const SLICE_MS = 12;
 
+/** Save-file reads, writes and deletes run one at a time, in the order they were requested. */
+let fileQueue: Promise<unknown> = Promise.resolve();
+function onSaveFile<T>(op: () => Promise<T>): Promise<T> {
+  const run = fileQueue.then(op, op);
+  fileQueue = run.catch(() => undefined);
+  return run;
+}
+
 /** Lets the UI breathe between slices of work. */
 export const nextFrame = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -114,12 +124,15 @@ export class Game {
   private secondsLeft = TURN_SECONDS;
   private paused = false;
   private busy = false;
+  /** True from the end of a turn until the map view has shown the new map. */
+  private drawing = false;
   private progress: { done: number; total: number } | null = null;
   private saving: Promise<void> | null = null;
   private saveAgain = false;
   private disposed = false;
   /** Turned off by the test harness, which has no storage. */
   static persist = true;
+  private static saveOwner: Game | null = null;
   /** How to wait between slices; the harness can swap in an immediate one. */
   static pause: () => Promise<void> = nextFrame;
   private log: string[] = [];
@@ -138,7 +151,16 @@ export class Game {
   ) {
     this.role = role;
     this.renderer = new MapRenderer(world);
+    // The newest game owns the save file; older (discarded) games may no longer write it.
+    Game.saveOwner = this;
+    this.redrawAll();
+  }
+
+  /** Repaints the whole map (e.g. for a newly opened map view); the timer waits until it is shown. */
+  redrawAll(): void {
     this.renderer.markAll();
+    this.drawing = true;
+    this.emit(true);
   }
 
   static create(mapKind: MapKind, role: PlayerRole): Game {
@@ -162,7 +184,7 @@ export class Game {
   }
 
   static async load(): Promise<Game | null> {
-    const bytes = await readSaveBytes();
+    const bytes = await onSaveFile(readSaveBytes);
     const saved = bytes ? decodeSave<SavedGame>(bytes) : null;
     if (!saved || saved.version !== 2) return null;
     const game = new Game(deserializeWorld(saved.world), saved.role);
@@ -181,14 +203,14 @@ export class Game {
 
   static async hasSave(): Promise<boolean> {
     try {
-      return await hasSaveBytes();
+      return await onSaveFile(hasSaveBytes);
     } catch {
       return false;
     }
   }
 
   static async deleteSave(): Promise<void> {
-    await clearSaveBytes();
+    await onSaveFile(clearSaveBytes);
   }
 
   // ---------- subscriptions ----------
@@ -215,6 +237,13 @@ export class Game {
     if (mapChanged) this.mapListeners.forEach((listener) => listener());
   }
 
+  /** The map view calls this when every changed tile is on screen. */
+  mapDrawn(): void {
+    if (!this.drawing) return;
+    this.drawing = false;
+    this.emit();
+  }
+
   // ---------- timer ----------
 
   start(): void {
@@ -228,7 +257,7 @@ export class Game {
   }
 
   private tick(): void {
-    if (this.paused || this.busy) return;
+    if (this.paused || this.busy || this.drawing) return;
     this.secondsLeft -= 1;
     if (this.secondsLeft <= 0) void this.nextTurn();
     else this.emit();
@@ -382,7 +411,8 @@ export class Game {
     } finally {
       this.busy = false;
       this.progress = null;
-      this.renderer.markAll();
+      // Only areas the AI painted are repainted; the timer waits until the map is drawn.
+      this.drawing = this.renderer.pending;
       this.emit(true);
       this.scheduleSave();
     }
@@ -433,6 +463,7 @@ export class Game {
     const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split';
     const painter = new CardPainter(this.world, card, !territorial && Math.random() < 0.3 ? 'repeat' : 'respect');
     autoPaint(painter);
+    if (painter.dirty) this.renderer.mark(painter.dirty);
     this.finish(painter);
   }
 
@@ -519,6 +550,7 @@ export class Game {
       secondsLeft: this.secondsLeft,
       paused: this.paused,
       busy: this.busy,
+      drawing: this.drawing,
       progress: this.progress,
       log: this.log,
       message: this.message,
@@ -625,7 +657,9 @@ export class Game {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      void this.save();
+      // Let the map finish drawing first: both share the JS thread.
+      if (this.drawing) this.scheduleSave();
+      else void this.save();
     }, 1500);
   }
 
@@ -657,6 +691,7 @@ export class Game {
   }
 
   private async saveOnce(): Promise<void> {
+    if (!this.ownsSave) return;
     const head = {
       version: 2 as const,
       savedAt: Date.now(),
@@ -682,33 +717,32 @@ export class Game {
       }
       if (Date.now() - sliceStart >= SLICE_MS) {
         await Game.pause();
+        if (!this.ownsSave) return;
         sliceStart = Date.now();
       }
     }
-    const saved: SavedGame = { ...head, world };
+    const bytes = encodeSave({ ...head, world } satisfies SavedGame);
     try {
-      await writeSaveBytes(encodeSave(saved));
+      // Checked again inside the queue: a delete or a new game may have been requested meanwhile.
+      await onSaveFile(async () => {
+        if (this.ownsSave) await writeSaveBytes(bytes);
+      });
     } catch (error) {
       this.message = `Не удалось сохранить игру: ${(error as Error).message}`;
       this.emit();
     }
   }
 
-  /** Stops the game without saving. */
-  discard(): void {
-    this.disposed = true;
-    this.stop();
-    if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = null;
+  private get ownsSave(): boolean {
+    return !this.disposed && Game.saveOwner === this;
   }
 
-  /** Stops the game and writes any pending save. */
-  async dispose(): Promise<void> {
+  /** Stops the game without saving; a save already in progress is abandoned. */
+  discard(): void {
+    this.disposed = true;
+    if (Game.saveOwner === this) Game.saveOwner = null;
     this.stop();
-    const pending = !!this.saveTimer || !!this.saving;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
-    if (pending) await this.save();
-    this.disposed = true;
   }
 }
