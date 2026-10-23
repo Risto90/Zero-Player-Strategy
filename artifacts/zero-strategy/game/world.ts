@@ -4,6 +4,7 @@ import {
   decodeEarthLand,
   forEachNeighbour,
   generateClimate,
+  generateRivers,
   labelWater,
   makeRandomLand,
   type MapKind,
@@ -51,6 +52,10 @@ export class World {
   readonly water: WaterInfo;
   /** Land pixel indices, for random sampling. */
   readonly landIndex: Int32Array;
+  /** Deterministic hydrology layer; 0 = no river, 1 = tributary, 2–3 = large channel. */
+  readonly rivers: Uint8Array;
+  readonly riverPixelCount: number;
+  readonly majorRiverPixelCount: number;
   readonly owner = new Uint16Array(MAP_PIXELS);
   readonly density = new Uint8Array(MAP_PIXELS);
   humidity: Uint8Array;
@@ -75,6 +80,14 @@ export class World {
   ) {
     this.land = land;
     this.water = labelWater(land);
+    this.rivers = generateRivers(land, seed, mapKind);
+    let riverPixelCount = 0, majorRiverPixelCount = 0;
+    for (const strength of this.rivers) {
+      if (strength > 0) riverPixelCount += 1;
+      if (strength >= 2) majorRiverPixelCount += 1;
+    }
+    this.riverPixelCount = riverPixelCount;
+    this.majorRiverPixelCount = majorRiverPixelCount;
     const index: number[] = [];
     for (let p = 0; p < MAP_PIXELS; p += 1) if (land[p]) index.push(p);
     this.landIndex = Int32Array.from(index);

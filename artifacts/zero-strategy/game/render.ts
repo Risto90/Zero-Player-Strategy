@@ -3,7 +3,7 @@ import type { CompositionTable } from './composition';
 import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, MAX_DENSITY, PALETTE } from './config';
 import type { World } from './world';
 
-export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density';
+export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers';
 export interface EntityLayer {
   kind: 'culture' | 'religion';
   id: number;
@@ -65,7 +65,7 @@ function biomeOf(h: number, t: number, d: number): number {
   return b;
 }
 
-const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7 };
+const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7, rivers: 8 };
 
 // Neighbour bits of `nb`: which of the 4 neighbours are land, plus whether the pixel touches water.
 const LEFT = 1;
@@ -223,6 +223,7 @@ export class MapRenderer {
     const temperature = w.temperature;
     const drainage = w.drainage;
     const density = w.density;
+      const rivers = w.rivers;
     const culture = w.culture;
     const religion = w.religion;
     const mode = MODE_CODE[this.mode];
@@ -230,7 +231,7 @@ export class MapRenderer {
     const unclaimedByBiome = this.unclaimedByBiome;
     const biomePacked = this.biomePacked;
     const unclaimedPacked = this.unclaimedPacked;
-    const ramp = mode >= 4 ? this.ramps[this.mode as keyof typeof RAMPS] : this.ramps.density;
+      const ramp = mode >= 4 && mode <= 7 ? this.ramps[this.mode as keyof typeof RAMPS] : this.ramps.density;
     const values = mode === 5 ? humidity : mode === 6 ? temperature : drainage;
     const borderShade = mode === 0 ? 0.55 : 0.7;
     const x1 = x0 + TILE_W;
@@ -238,10 +239,14 @@ export class MapRenderer {
       const row = y * MAP_WIDTH;
       pixels.set(base.subarray(row + x0, row + x1), row + x0);
       for (let p = row + x0; p < row + x1; p += 1) {
-        if (!land[p]) continue;
+        if (!land[p]) {
+          if (mode === 6) pixels[p] = ramp[temperature[p]];
+          continue;
+        }
         const o = owner[p];
         let color: number;
-        if (mode === 0) color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+        if (mode === 8) color = unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+        else if (mode === 0) color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
         else if (mode === 1) color = biomePacked[biomeOf(humidity[p], temperature[p], drainage[p])];
         else if (o === 0) color = mode >= 5 ? ramp[values[p]] : unclaimedPacked;
         else if (mode === 2) color = this.compColor('culture', culture[p]);
@@ -258,6 +263,12 @@ export class MapRenderer {
         )
           color = shade(color, borderShade);
         else if (bits & COAST) color = shade(color, 0.82);
+        if (mode === 8 && rivers[p] > 0) {
+          color = rivers[p] >= 3 ? pack([34, 83, 125]) : rivers[p] === 2 ? pack([55, 116, 151]) : pack([102, 153, 174]);
+        } else if (mode !== 8 && rivers[p] > 0) {
+          const river: RGB = rivers[p] >= 3 ? [34, 83, 125] : rivers[p] === 2 ? [55, 116, 151] : [102, 153, 174];
+          color = pack(mix([color & 255, (color >> 8) & 255, (color >> 16) & 255], river, rivers[p] >= 2 ? 0.72 : 0.58));
+        }
         pixels[p] = color;
       }
     }

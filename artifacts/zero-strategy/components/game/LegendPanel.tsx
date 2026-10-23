@@ -90,6 +90,22 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
     title = 'Биомы';
     sub = 'доля суши';
     body = <Rows rows={legend.biomes} unit="земель" footer={<Text style={styles.note}>{BIOME_NOTE}</Text>} />;
+  } else if (mapMode === 'rivers') {
+    title = 'Реки';
+    sub = `${fmt(game.world.majorRiverPixelCount)} крупных · ${fmt(game.world.riverPixelCount)} русловых участков`;
+    body = (
+      <ScrollView contentContainerStyle={{ padding: 12 }} nestedScrollEnabled>
+        <Text style={styles.valueNote}>Синим отмечены русла рек. На случайной карте речные сети генерируются по рельефу; на карте мира показаны основные реки.</Text>
+        <View style={styles.riverLegendRow}>
+          <View style={[styles.riverSwatch, { backgroundColor: '#6699ae' }]} />
+          <Text style={styles.valueNote}>Притоки</Text>
+        </View>
+        <View style={styles.riverLegendRow}>
+          <View style={[styles.riverSwatch, { backgroundColor: '#22537d' }]} />
+          <Text style={styles.valueNote}>Крупные реки</Text>
+        </View>
+      </ScrollView>
+    );
   } else {
     const stops = RAMPS[mapMode];
     title = VALUE_TITLE[mapMode];
@@ -250,4 +266,6 @@ const styles = StyleSheet.create({
   rampLabels: { marginTop: 4, flexDirection: 'row', justifyContent: 'space-between' },
   rampLabel: { fontFamily: fonts.mono, fontSize: 10, color: c.mutedForeground },
   valueNote: { marginTop: 8, fontFamily: fonts.sans, fontSize: 12, color: c.foreground, opacity: 0.78 },
+  riverLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  riverSwatch: { width: 20, height: 4, borderRadius: 2 },
 });

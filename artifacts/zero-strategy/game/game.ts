@@ -312,6 +312,16 @@ export class Game {
 
   beginStroke(x: number, y: number): void {
     if (!this.painter) return;
+    if (this.card?.type === 'warmWind' || this.card?.type === 'coldWind') {
+      const px = Math.floor(x), py = Math.floor(y);
+      const countryId = this.card.targetCountryId;
+      if (px < 0 || py < 0 || px >= MAP_WIDTH || py >= MAP_HEIGHT ||
+        countryId === null || this.world.owner[py * MAP_WIDTH + px] !== countryId + 1) {
+        this.message = 'Начните мазок на суше своей страны.';
+        this.emit();
+        return;
+      }
+    }
     this.painter.message = '';
     this.lastPoint = { x, y };
     this.painter.dab(x, y, this.brushRadius);
@@ -327,6 +337,18 @@ export class Game {
 
   endStroke(): void {
     if (!this.painter) return;
+    if ((this.card?.type === 'warmWind' || this.card?.type === 'coldWind') && this.lastPoint) {
+      const px = Math.floor(this.lastPoint.x), py = Math.floor(this.lastPoint.y);
+      const countryId = this.card.targetCountryId;
+      if (px < 0 || py < 0 || px >= MAP_WIDTH || py >= MAP_HEIGHT ||
+        countryId === null || this.world.owner[py * MAP_WIDTH + px] !== countryId + 1) {
+        this.painter.cancelStroke();
+        this.lastPoint = null;
+        this.afterPaint();
+        this.scheduleSave();
+        return;
+      }
+    }
     this.painter.endStroke();
     this.lastPoint = null;
     this.message = this.painter.message || this.message;
@@ -494,7 +516,10 @@ export class Game {
     this.paused = false;
     this.message = card.detail;
     const mode: MapMode =
-      card.type === 'drought' || card.type === 'rain' ? 'humidity' : card.type === 'faith' ? 'religions' : card.type === 'culture' ? 'cultures' : 'political';
+      card.type === 'drought' || card.type === 'rain' ? 'humidity'
+        : card.type === 'desertification' || card.type === 'swamping' ? 'drainage'
+          : ['warmCurrent', 'coldCurrent', 'warmWind', 'coldWind'].includes(card.type) ? 'temperature'
+            : card.type === 'faith' ? 'religions' : card.type === 'culture' ? 'cultures' : 'political';
     this.mapMode = mode;
     this.layer = null;
     this.renderer.setView(mode, null);
@@ -552,6 +577,14 @@ export class Game {
       case 'drought':
       case 'rain':
         if (used > 0) this.addLog(`${card.type === 'rain' ? 'Ливни' : 'Засуха'}${target ? ` в ${target.name}` : ''}: ${used} земель.`);
+        break;
+      case 'desertification':
+      case 'swamping':
+      case 'warmCurrent':
+      case 'coldCurrent':
+      case 'warmWind':
+      case 'coldWind':
+        if (used > 0) this.addLog(`${card.title}${target ? ` в ${target.name}` : ''}: изменено ${Math.ceil(used)} участков климата.`);
         break;
       case 'faith': {
         const religion = w.religions[card.newReligionId as number];

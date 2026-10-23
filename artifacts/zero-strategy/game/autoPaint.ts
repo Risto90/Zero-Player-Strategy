@@ -25,5 +25,8 @@ export function autoPaint(painter: CardPainter): void {
     x = Math.min(MAP_WIDTH - 1, Math.max(0, (from % MAP_WIDTH) + 0.5 + Math.cos(angle) * distance));
     y = Math.min(MAP_HEIGHT - 1, Math.max(0, Math.floor(from / MAP_WIDTH) + 0.5 + Math.sin(angle) * distance));
   }
+  if (card.type === 'warmWind' || card.type === 'coldWind') {
+    painter.line(x, y, (card.hint % MAP_WIDTH) + 0.5, Math.floor(card.hint / MAP_WIDTH) + 0.5, radius);
+  }
   painter.endStroke();
 }

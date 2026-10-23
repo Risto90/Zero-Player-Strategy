@@ -4,7 +4,7 @@ import type { World } from './world';
 import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
 
-export type CardType = 'create' | 'expand' | 'split' | 'drought' | 'rain' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
+export type CardType = 'create' | 'expand' | 'split' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
 export interface CardChoice {
   label: string;
   detail: string;
@@ -53,7 +53,7 @@ export interface Card {
 export function brushOptionFor(card: Card | null): BrushOption {
   if (!card) return null;
   if (card.type === 'create' || card.type === 'expand') return 'density';
-  if (card.type === 'drought' || card.type === 'rain' || card.type === 'faith' || card.type === 'culture') return 'repeat';
+  if (['drought', 'rain', 'desertification', 'swamping', 'warmCurrent', 'coldCurrent', 'warmWind', 'coldWind', 'faith', 'culture'].includes(card.type)) return 'repeat';
   return null;
 }
 
@@ -69,6 +69,10 @@ const cardMask = new Uint8Array(MAP_PIXELS);
 const strokeMask = new Uint8Array(MAP_PIXELS);
 const dabMask = new Uint8Array(MAP_PIXELS);
 
+const isCurrent = (type: CardType) => type === 'warmCurrent' || type === 'coldCurrent';
+const isWind = (type: CardType) => type === 'warmWind' || type === 'coldWind';
+const isTemperatureCard = (type: CardType) => isCurrent(type) || isWind(type);
+
 /** Applies one card to the world, brush dab by brush dab, spending its ink. */
 export class CardPainter {
   /** Pixels changed by this card (for automatic play and logs). */
@@ -76,6 +80,8 @@ export class CardPainter {
   private readonly cardTouched: number[] = [];
   private strokeTouched: number[] = [];
   private readonly seas = new Set<number>();
+  private strokeClimateChanges: { p: number; value: number; cost: number; wasInCard: boolean }[] = [];
+  private strokeChangedStart = 0;
   private readonly religionForNewLand: number;
   dirty: Rect | null = null;
   message = '';
@@ -92,7 +98,12 @@ export class CardPainter {
         world.forEachCountryPixel(source, (p) => world.seasOfPixel(p, this.seas));
       }
     }
-    const country = working !== null ? world.countries[working] : null;
+    const country = working !== null
+      ? world.countries[working]
+      : isWind(card.type) && card.targetCountryId !== null
+        ? world.countries[card.targetCountryId]
+        : null;
+    if (country && isWind(card.type)) world.forEachCountryPixel(country, (p) => world.seasOfPixel(p, this.seas));
     this.religionForNewLand =
       country && country.religionId !== null ? world.religionTable.single(country.religionId, 60) : 0;
   }
@@ -108,6 +119,24 @@ export class CardPainter {
   endStroke(): void {
     for (const p of this.strokeTouched) strokeMask[p] = 0;
     this.strokeTouched = [];
+    this.strokeClimateChanges = [];
+    this.strokeChangedStart = this.changed.length;
+  }
+
+  /** Roll back a wind stroke whose finger was released over water instead of home territory. */
+  cancelStroke(): void {
+    for (const change of this.strokeClimateChanges) {
+      this.world.temperature[change.p] = change.value;
+      this.card.ink += change.cost;
+      cardMask[change.p] = change.wasInCard ? 1 : 0;
+      const x = change.p % MAP_WIDTH, y = Math.floor(change.p / MAP_WIDTH);
+      this.markDirty(x - 1, y - 1, x + 1, y + 1);
+    }
+    this.changed.length = this.strokeChangedStart;
+    for (const p of this.strokeTouched) strokeMask[p] = 0;
+    this.strokeTouched = [];
+    this.strokeClimateChanges = [];
+    this.message = 'Ветер можно закончить только на суше своей страны. Проведите мазок от своего берега к своему берегу.';
   }
 
   /** Clears scratch buffers; call once the card is finished. */
@@ -171,7 +200,8 @@ export class CardPainter {
         const dy = y + 0.5 - cy;
         if (dx * dx + dy * dy > r2) continue;
         const p = y * MAP_WIDTH + x;
-        if (this.world.land[p]) pixels.push(p);
+        if (this.world.land[p] || (isCurrent(card.type) && this.world.water.bodyOf[p] >= 0) ||
+          (isWind(card.type) && this.seas.has(this.world.water.bodyOf[p]))) pixels.push(p);
       }
     }
     if (pixels.length === 0) return 0;
@@ -280,7 +310,11 @@ export class CardPainter {
     for (const p of pixels) {
       if (card.ink <= 0) break;
       if (strokeMask[p] || (this.mode === 'respect' && cardMask[p])) continue;
-      if (targetTag > 0 && world.owner[p] !== targetTag) {
+      const onLand = world.land[p] === 1;
+      if (isWind(card.type)) {
+        if (onLand && world.owner[p] !== targetTag) { outside += 1; continue; }
+        if (!onLand && !this.seas.has(world.water.bodyOf[p])) continue;
+      } else if (targetTag > 0 && world.owner[p] !== targetTag) {
         outside += 1;
         continue;
       }
@@ -289,6 +323,24 @@ export class CardPainter {
         const next = card.type === 'rain' ? Math.min(100, value + CLIMATE_DELTA) : Math.max(0, value - CLIMATE_DELTA);
         if (next === value) continue;
         world.humidity[p] = next;
+      } else if (card.type === 'desertification' || card.type === 'swamping') {
+        const value = world.drainage[p];
+        const next = card.type === 'desertification' ? Math.min(100, value + CLIMATE_DELTA) : Math.max(0, value - CLIMATE_DELTA);
+        if (next === value) continue;
+        world.drainage[p] = next;
+      } else if (isTemperatureCard(card.type)) {
+        const value = world.temperature[p];
+        const next = card.type === 'warmCurrent' || card.type === 'warmWind'
+          ? Math.min(100, value + CLIMATE_DELTA)
+          : Math.max(0, value - CLIMATE_DELTA);
+        if (next === value) continue;
+        const cost = isWind(card.type) && !onLand ? 0.5 : 1;
+        if (isWind(card.type)) this.strokeClimateChanges.push({ p, value, cost, wasInCard: cardMask[p] === 1 });
+        world.temperature[p] = next;
+        card.ink -= cost;
+        this.touch(p);
+        this.changed.push(p);
+        continue;
       } else if (card.type === 'faith') {
         if (world.owner[p] === 0) continue;
         const next = world.religionTable.convert(world.religion[p], card.newReligionId as number, FAITH_CONVERSION, null);

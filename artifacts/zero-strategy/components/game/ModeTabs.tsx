@@ -8,6 +8,7 @@ const c = colors.light;
 export const MODES: { id: MapMode; label: string }[] = [
   { id: 'political', label: 'Страны' },
   { id: 'biomes', label: 'Биомы' },
+  { id: 'rivers', label: 'Реки' },
   { id: 'cultures', label: 'Культуры' },
   { id: 'religions', label: 'Религии' },
   { id: 'humidity', label: 'Влажность' },

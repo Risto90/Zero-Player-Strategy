@@ -1,6 +1,6 @@
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, VALUE_STEP } from './config';
 import { EARTH_DEG_PER_PX, EARTH_LAND_RLE, EARTH_TOP_LAT } from './data/earthLand';
-import { fractalField, mulberry32 } from './random';
+import { fractalField, mulberry32, valueNoise } from './random';
 
 export type MapKind = 'world' | 'random';
 
@@ -200,10 +200,153 @@ export function quantize(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value / VALUE_STEP) * VALUE_STEP));
 }
 
+/** Fills sea temperatures when opening a save made before sea climate was persisted. */
+export function fillOceanTemperature(land: Uint8Array, seed: number, temperature: Uint8Array): void {
+  const noise = fractalField(MAP_WIDTH, MAP_HEIGHT, seed + 11, 9, 4);
+  for (let y = 0; y < MAP_HEIGHT; y += 1) {
+    const baseTemp = 96 - Math.abs(latitudeOfRow(y)) * 1.22;
+    const row = y * MAP_WIDTH;
+    for (let x = 0; x < MAP_WIDTH; x += 1) {
+      const p = row + x;
+      if (!land[p]) temperature[p] = quantize(baseTemp + (noise[p] - 0.5) * 16 - 8);
+    }
+  }
+}
+
 export interface Climate {
   humidity: Uint8Array;
   temperature: Uint8Array;
   drainage: Uint8Array;
+}
+
+/** River strength is deterministic map data: 1 = tributary, 2+ = major channel. */
+export function generateRivers(land: Uint8Array, seed: number, mapKind: MapKind): Uint8Array {
+  const rivers = new Uint8Array(MAP_PIXELS);
+  if (mapKind === 'world') {
+    const major: [string, [number, number][]][] = [
+      ['Amazon', [[-74, -4], [-70, -4], [-66, -3], [-62, -3], [-58, -2], [-54, -1], [-50, -1], [-48, 0]]],
+      ['Nile', [[30, 2], [32, 8], [31, 15], [32, 22], [32, 27], [31, 30]]],
+      ['Congo', [[27, -10], [24, -7], [20, -5], [17, -4], [13, -5], [12, -6]]],
+      ['Mississippi', [[46, 48], [43, 45], [40, 42], [37, 38], [35, 34], [31, 30], [29, 29]]],
+      ['Paraná', [[-54, -20], [-56, -24], [-57, -28], [-56, -32], [-58, -35], [-58, -39]]],
+      ['Danube', [[10, 48], [15, 48], [20, 46], [24, 45], [28, 45]]],
+      ['Volga', [[38, 57], [43, 56], [47, 54], [49, 51], [48, 47]]],
+      ['Yangtze', [[91, 33], [97, 31], [103, 30], [109, 30], [115, 30], [121, 31]]],
+      ['Yellow River', [[96, 35], [101, 36], [106, 36], [111, 37], [116, 38], [119, 37]]],
+      ['Ganges', [[79, 31], [83, 29], [87, 27], [91, 26], [95, 23], [90, 22]]],
+      ['Indus', [[78, 32], [74, 30], [72, 27], [70, 24], [68, 23], [67, 24]]],
+      ['Mekong', [[95, 33], [100, 28], [103, 23], [105, 18], [106, 13], [105, 10]]],
+      ['Lena', [[127, 62], [124, 60], [123, 58], [126, 55], [128, 52], [130, 71]]],
+      ['Yenisei', [[92, 52], [91, 55], [90, 59], [89, 63], [91, 69]]],
+      ['Ob', [[85, 50], [82, 53], [77, 56], [73, 60], [72, 67]]],
+      ['Amur', [[106, 50], [113, 50], [120, 49], [127, 48], [134, 48]]],
+      ['Murray', [[146, -35], [143, -35], [140, -35], [138, -35]]],
+    ];
+    const toPixel = ([lon, lat]: [number, number]) => ({
+      x: Math.max(0, Math.min(MAP_WIDTH - 1, Math.round(((lon + 180) / 360) * (MAP_WIDTH - 1)))),
+      y: Math.max(0, Math.min(MAP_HEIGHT - 1, Math.round((EARTH_TOP_LAT - lat) / EARTH_DEG_PER_PX))),
+    });
+    const landNear = (x: number, y: number): number => {
+      let best = -1, bestD = Infinity;
+      for (let r = 0; r <= 8; r += 1) {
+        for (let dy = -r; dy <= r; dy += 1) {
+          for (let dx = -r; dx <= r; dx += 1) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const xx = Math.max(0, Math.min(MAP_WIDTH - 1, x + dx));
+            const yy = Math.max(0, Math.min(MAP_HEIGHT - 1, y + dy));
+            const p = yy * MAP_WIDTH + xx;
+            const d = dx * dx + dy * dy;
+            if (land[p] && d < bestD) { best = p; bestD = d; }
+          }
+        }
+        if (best >= 0) break;
+      }
+      return best;
+    };
+    const markMajor = (p: number) => {
+      if (p < 0) return;
+      const cx = p % MAP_WIDTH, cy = Math.floor(p / MAP_WIDTH);
+      for (let dy = -2; dy <= 2; dy += 1) for (let dx = -2; dx <= 2; dx += 1) {
+        if (dx * dx + dy * dy > 5) continue;
+        const x = cx + dx, y = cy + dy;
+        if (x < 0 || x >= MAP_WIDTH || y < 0 || y >= MAP_HEIGHT) continue;
+        const q = y * MAP_WIDTH + x;
+        if (land[q]) rivers[q] = 3;
+      }
+    };
+    for (const [, path] of major) {
+      for (let segment = 1; segment < path.length; segment += 1) {
+        const a = toPixel(path[segment - 1]), b = toPixel(path[segment]);
+        const steps = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+        for (let i = 0; i <= steps; i += 1) {
+          const x = Math.round(a.x + ((b.x - a.x) * i) / Math.max(steps, 1));
+          const y = Math.round(a.y + ((b.y - a.y) * i) / Math.max(steps, 1));
+          const p = landNear(x, y);
+          markMajor(p);
+        }
+      }
+    }
+    return rivers;
+  }
+
+  // On invented maps, carve plausible branching channels from uplands towards the nearest coast.
+  const rng = mulberry32(seed ^ 0x6d2b79f5);
+  const wideWrap = Math.max(1, Math.ceil(MAP_WIDTH / 150));
+  const detailWrap = Math.max(1, Math.ceil(MAP_WIDTH / 48));
+  const elevationAt = (x: number, y: number) =>
+    valueNoise(x / 150, y / 150, seed + 701, wideWrap) * 0.7 +
+    valueNoise(x / 48, y / 48, seed + 702, detailWrap) * 0.3;
+  const sources: { p: number; height: number }[] = [];
+  for (let i = 0; i < 7000; i += 1) {
+    const p = Math.floor(rng() * MAP_PIXELS);
+    if (!land[p]) continue;
+    const height = elevationAt(p % MAP_WIDTH, Math.floor(p / MAP_WIDTH));
+    if (height < 0.58) continue;
+    if (sources.some((source) => source.p === p)) continue;
+    if (sources.length < 28) sources.push({ p, height });
+    else {
+      let lowest = 0;
+      for (let j = 1; j < sources.length; j += 1) if (sources[j].height < sources[lowest].height) lowest = j;
+      if (height > sources[lowest].height) sources[lowest] = { p, height };
+    }
+  }
+  sources.sort((a, b) => b.height - a.height);
+  const seen = new Uint8Array(MAP_PIXELS);
+  for (const [sourceIndex, source] of sources.entries()) {
+    let p = source.p;
+    const path: number[] = [];
+    for (let step = 0; step < 360 && land[p] && !seen[p]; step += 1) {
+      seen[p] = 1;
+      path.push(p);
+      const x = p % MAP_WIDTH, y = Math.floor(p / MAP_WIDTH);
+      let next = -1, best = Infinity, touchesOcean = false;
+      for (let dy = -1; dy <= 1; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
+        if (!dx && !dy) continue;
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || xx >= MAP_WIDTH || yy < 0 || yy >= MAP_HEIGHT) continue;
+        const n = yy * MAP_WIDTH + xx;
+        if (!land[n]) { touchesOcean = true; continue; }
+        if (seen[n]) continue;
+        const score = elevationAt(xx, yy) + rng() * 0.018;
+        if (score < best) { best = score; next = n; }
+      }
+      if (touchesOcean || next < 0) break;
+      p = next;
+    }
+    const level = sourceIndex < 4 ? 3 : sourceIndex < 12 ? 2 : 1;
+    for (const riverPixel of path) {
+      const x = riverPixel % MAP_WIDTH, y = Math.floor(riverPixel / MAP_WIDTH);
+      const width = level >= 3 ? 1 : 0;
+      for (let dy = -width; dy <= width; dy += 1) for (let dx = -width; dx <= width; dx += 1) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || xx >= MAP_WIDTH || yy < 0 || yy >= MAP_HEIGHT) continue;
+        const q = yy * MAP_WIDTH + xx;
+        if (land[q]) rivers[q] = Math.max(rivers[q], level);
+      }
+    }
+    for (const riverPixel of path) seen[riverPixel] = 0;
+  }
+  return rivers;
 }
 
 /** Deterministic climate for a seed: temperature by latitude, humidity by latitude and distance to sea. */
@@ -222,7 +365,10 @@ export function generateClimate(land: Uint8Array, seed: number): Climate {
     const tropical = lat < 14 ? 0.3 : 1;
     for (let x = 0; x < MAP_WIDTH; x += 1) {
       const p = y * MAP_WIDTH + x;
-      if (!land[p]) continue;
+      if (!land[p]) {
+        temperature[p] = quantize(baseTemp + (tempNoise[p] - 0.5) * 16 - 8);
+        continue;
+      }
       const inland = Math.min(1, distance[p] / 160);
       temperature[p] = quantize(baseTemp + (tempNoise[p] - 0.5) * 22 - inland * 4);
       humidity[p] = quantize(baseWet * (1 - inland * 0.55 * tropical) + (wetNoise[p] - 0.5) * 40);

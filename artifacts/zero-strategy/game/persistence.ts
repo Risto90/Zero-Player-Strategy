@@ -1,6 +1,6 @@
 import { MAP_PIXELS } from './config';
 import type { MapKind } from './geography';
-import { decodeEarthLand } from './geography';
+import { decodeEarthLand, fillOceanTemperature } from './geography';
 import { fillRings, rasterizeScalar, runSteps, traceCompositionSteps, traceScalarSteps, type EntityZones, type Steps, type TableView, type Zone } from './zones';
 import { World, type Country, type Culture, type Religion } from './world';
 
@@ -28,6 +28,8 @@ export interface SavedWorld {
   cultures: Culture[];
   religions: Religion[];
   people: World['people'];
+  /** Added when sea temperatures became part of climate layers. */
+  climateWater?: boolean;
   layers: SavedLayers;
 }
 
@@ -98,7 +100,7 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
   const political = yield* traceScalarSteps(copy.owner, null, 0);
   const density = yield* traceScalarSteps(copy.density, populated, null);
   const humidity = yield* traceScalarSteps(copy.humidity, copy.land, null);
-  const temperature = yield* traceScalarSteps(copy.temperature, copy.land, null);
+  const temperature = yield* traceScalarSteps(copy.temperature, null, null);
   const drainage = yield* traceScalarSteps(copy.drainage, copy.land, null);
   const cultures = yield* traceCompositionSteps(copy.culture, copy.cultureTable);
   const religions = yield* traceCompositionSteps(copy.religion, copy.religionTable);
@@ -109,6 +111,7 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     cultures: copy.cultures,
     religions: copy.religions,
     people: copy.people,
+    climateWater: true,
     layers: { land, political, density, humidity, temperature, drainage, cultures, religions },
   };
 }
@@ -126,9 +129,11 @@ function rasterize<T extends Uint8Array | Uint16Array>(zones: Zone[], target: T)
 export function deserializeWorld(saved: SavedWorld): World {
   const layers = saved.layers;
   const land = saved.mapKind === 'world' ? decodeEarthLand() : rasterize(layers.land ?? [], new Uint8Array(MAP_PIXELS));
+  const temperature = rasterize(layers.temperature, new Uint8Array(MAP_PIXELS));
+  if (!saved.climateWater) fillOceanTemperature(land, saved.seed, temperature);
   const world = new World(saved.mapKind, saved.seed, land, {
     humidity: rasterize(layers.humidity, new Uint8Array(MAP_PIXELS)),
-    temperature: rasterize(layers.temperature, new Uint8Array(MAP_PIXELS)),
+    temperature,
     drainage: rasterize(layers.drainage, new Uint8Array(MAP_PIXELS)),
   });
   world.countries = saved.countries.map((c) => ({ ...c }));

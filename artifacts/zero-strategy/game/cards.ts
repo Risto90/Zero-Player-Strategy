@@ -15,6 +15,12 @@ export const CARD_TITLES: Record<CardType, string> = {
   split: 'Раскол страны',
   drought: 'Засуха',
   rain: 'Ливни',
+  desertification: 'Опустынивание',
+  swamping: 'Заболачивание',
+  warmCurrent: 'Тёплое течение',
+  coldCurrent: 'Холодное течение',
+  warmWind: 'Тёплый ветер',
+  coldWind: 'Холодный ветер',
   faith: 'Возникновение веры',
   culture: 'Выделение культуры',
   government: 'Политическая реформа',
@@ -390,17 +396,46 @@ function countScope(world: World, country: Country | null, cap: number, accept: 
   return { count, hint };
 }
 
-function drawClimate(world: World, type: 'drought' | 'rain', country: Country | null): Card | null {
-  const { count, hint } = countScope(world, country, INK.climate, (p) =>
-    type === 'rain' ? world.humidity[p] < 100 : world.humidity[p] > 0,
-  );
+type ClimateCard = 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind';
+
+function climateCanChange(world: World, type: ClimateCard, p: number): boolean {
+  if (type === 'drought') return world.humidity[p] > 0;
+  if (type === 'rain') return world.humidity[p] < 100;
+  if (type === 'desertification') return world.drainage[p] < 100;
+  if (type === 'swamping') return world.drainage[p] > 0;
+  if (type === 'warmCurrent' || type === 'warmWind') return world.temperature[p] < 100;
+  return world.temperature[p] > 0;
+}
+
+function drawClimate(world: World, type: ClimateCard, country: Country | null): Card | null {
+  const winds = type === 'warmWind' || type === 'coldWind';
+  const seas = new Set<number>();
+  if (country && winds) world.forEachCountryPixel(country, (p) => world.seasOfPixel(p, seas));
+  let count = 0, hint = -1;
+  const cap = INK.climate;
+  for (let p = 0; p < MAP_PIXELS && count < cap; p += 1) {
+    const land = world.land[p] === 1;
+    const inScope = country
+      ? (land && world.owner[p] === country.id + 1) || (winds && !land && seas.has(world.water.bodyOf[p]))
+      : (type === 'warmCurrent' || type === 'coldCurrent' || land);
+    if (!inScope || !climateCanChange(world, type, p)) continue;
+    count += 1;
+    // Winds must start on the country's land; other climate brushes may start anywhere eligible.
+    if ((!country || land) && (hint < 0 || Math.random() < 1 / Math.max(1, count))) hint = p;
+  }
   if (count < 1) return null;
-  const where = country ? `на территории ${country.name}` : 'на любой суше';
-  const detail =
-    type === 'drought'
-      ? `Снижайте влажность ${where}. Сухие земли (0%) чернил не тратят.`
-      : `Повышайте влажность ${where}. Земли со 100% влажностью чернил не тратят.`;
-  return makeCard(type, count, country, detail, hint);
+  const where = country ? `в ${country.name}` : 'по всему миру';
+  const detail: Record<ClimateCard, string> = {
+    drought: `Снижайте влажность на суше ${where}. Сухие земли (0%) чернил не тратят.`,
+    rain: `Повышайте влажность на суше ${where}. Земли со 100% влажностью чернил не тратят.`,
+    desertification: `Повышайте дренаж на суше ${where}: почва будет быстрее терять влагу.`,
+    swamping: `Снижайте дренаж на суше ${where}: местность будет заболачиваться.`,
+    warmCurrent: 'Проведите тёплое течение по суше и морю: температура меняется по всему миру.',
+    coldCurrent: 'Проведите холодное течение по суше и морю: температура меняется по всему миру.',
+    warmWind: `Проведите тёплый ветер по земле ${where} и соседним морям. Начните и завершите мазок на своей суше; вода расходует чернила вдвое медленнее.`,
+    coldWind: `Проведите холодный ветер по земле ${where} и соседним морям. Начните и завершите мазок на своей суше; вода расходует чернила вдвое медленнее.`,
+  };
+  return makeCard(type, count, country, detail[type], hint);
 }
 
 function drawFaith(world: World, country: Country | null, year: number): Card | null {
@@ -489,6 +524,10 @@ export function drawWorldCard(world: World, year: number): Card | null {
     { value: () => drawCreate(world, year), weight: 3 },
     { value: () => drawClimate(world, 'drought', null), weight: 1 },
     { value: () => drawClimate(world, 'rain', null), weight: 1 },
+    { value: () => drawClimate(world, 'desertification', null), weight: 0.6 },
+    { value: () => drawClimate(world, 'swamping', null), weight: 0.6 },
+    { value: () => drawClimate(world, 'warmCurrent', null), weight: 0.3 },
+    { value: () => drawClimate(world, 'coldCurrent', null), weight: 0.3 },
     { value: () => drawFaith(world, null, year), weight: living > 0 ? 0.25 * faithRoom(world) : 0 },
     { value: () => drawCultureSplit(world, null, year), weight: living > 0 ? 0.3 : 0 },
   ]);
@@ -512,6 +551,10 @@ export function drawCountryCard(world: World, country: Country, year: number): C
     { value: () => drawUnion(world, country, year), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0 },
     { value: () => drawClimate(world, 'drought', country), weight: 0.8 },
     { value: () => drawClimate(world, 'rain', country), weight: 0.8 },
+    { value: () => drawClimate(world, 'desertification', country), weight: 0.45 },
+    { value: () => drawClimate(world, 'swamping', country), weight: 0.45 },
+    { value: () => drawClimate(world, 'warmWind', country), weight: 0.25 },
+    { value: () => drawClimate(world, 'coldWind', country), weight: 0.25 },
     { value: () => drawFaith(world, country, year), weight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) * (country.modifiers.includes('theocracy') ? 2 : 1) },
     { value: () => drawCultureSplit(world, country, year), weight: country.pixels >= 6000 ? 0.06 : 0 },
   ]);
