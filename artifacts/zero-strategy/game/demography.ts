@@ -1,5 +1,5 @@
 import type { Country, World } from './world';
-import { populationAtPixel } from './settlements';
+import { ensureCityPopulationGroups } from './settlements';
 
 export interface DemographicPair { cultureId: number; religionId: number | null; weight: number }
 export interface Demography {
@@ -26,41 +26,41 @@ export function demography(world: World, country: Country): Demography {
   if (!entries) { entries = new Map(); cache.set(world, entries); }
   const cached = entries.get(country.id);
   if (cached?.version === world.version) return cached.data;
-  const combinations = new Map<string, { culture: number; religion: number; population: number }>();
-  let ruralPopulation = 0;
-  world.forEachCountryPixel(country, (p) => {
-    const culture = world.culture[p], religion = world.religion[p];
-    const pixelPopulation = populationAtPixel(world, p);
-    ruralPopulation += world.density[p];
-    const key = `${culture}/${religion}`;
-    const entry = combinations.get(key);
-    if (entry) entry.population += pixelPopulation;
-    else combinations.set(key, { culture, religion, population: pixelPopulation });
-  });
   const pairs = new Map<string, DemographicPair>();
   const cultures = new Map<number, number>();
   const religions = new Map<number | null, number>();
   let population = 0;
-  for (const item of combinations.values()) {
-    population += item.population;
-    const culture = world.cultureTable.entries[item.culture];
-    const religion = world.religionTable.entries[item.religion];
+  let ruralPopulation = 0;
+  const addPopulationGroup = (cultureId: number, religionId: number | null, amount: number) => {
+    if (amount <= 0) return;
+    population += amount;
+    cultures.set(cultureId, (cultures.get(cultureId) ?? 0) + amount);
+    religions.set(religionId, (religions.get(religionId) ?? 0) + amount);
+    const key = `${cultureId}/${religionId}`;
+    const entry = pairs.get(key);
+    if (entry) entry.weight += amount;
+    else pairs.set(key, { cultureId, religionId, weight: amount });
+  };
+  world.forEachCountryPixel(country, (p) => {
+    ruralPopulation += world.density[p];
+    const city = world.cityAt(p);
+    if (city) {
+      for (const group of ensureCityPopulationGroups(world, city)) {
+        addPopulationGroup(group.cultureId, group.religionId, group.population);
+      }
+      return;
+    }
+    const pixelPopulation = world.density[p];
+    const culture = world.cultureTable.entries[world.culture[p]];
+    const religion = world.religionTable.entries[world.religion[p]];
     const religionIds: (number | null)[] = [...religion.ids, null];
     const religionShares = [...religion.shares, 100 - religion.total];
-    culture.ids.forEach((c, ci) => {
-      const pop = item.population * culture.shares[ci] / 100;
-      cultures.set(c, (cultures.get(c) ?? 0) + pop);
-      religionIds.forEach((r, ri) => {
-        const weight = pop * religionShares[ri] / 100;
-        if (weight <= 0) return;
-        const key = `${c}/${r}`;
-        const entry = pairs.get(key);
-        if (entry) entry.weight += weight;
-        else pairs.set(key, { cultureId: c, religionId: r, weight });
+    culture.ids.forEach((cultureId, ci) => {
+      religionIds.forEach((religionId, ri) => {
+        addPopulationGroup(cultureId, religionId, pixelPopulation * culture.shares[ci] / 100 * religionShares[ri] / 100);
       });
     });
-    religionIds.forEach((r, i) => religions.set(r, (religions.get(r) ?? 0) + item.population * religionShares[i] / 100));
-  }
+  });
   const leading = <T,>(map: Map<T, number>, fallback: T): T => [...map].sort((a, b) => b[1] - a[1])[0]?.[0] ?? fallback;
   const culture = leading(cultures, country.cultureId);
   const religion = leading(religions, country.religionId);

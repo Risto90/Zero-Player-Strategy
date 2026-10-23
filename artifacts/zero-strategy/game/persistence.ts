@@ -4,6 +4,7 @@ import { decodeEarthLand, fillOceanTemperature } from './geography';
 import { fillRings, rasterizeScalar, runSteps, traceCompositionSteps, traceScalarSteps, type EntityZones, type Steps, type TableView, type Zone } from './zones';
 import { World, type City, type Country, type Culture, type NomadGroup, type Religion } from './world';
 import { generateCityIdentity } from './cityNames';
+import { ensureCityPopulationGroups } from './settlements';
 
 /**
  * Saved map: every layer is stored as closed-curve zones, never as per-pixel values.
@@ -90,7 +91,10 @@ export function copyWorld(world: World): WorldCopy {
       ruler: { ...c.ruler, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], friendIds: [...c.ruler.friendIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
       heir: c.heir ? { ...c.heir, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], friendIds: [...c.heir.friendIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
     })),
-    cities: world.cities.map((city) => ({ ...city })),
+    cities: world.cities.map((city) => ({
+      ...city,
+      populationGroups: city.populationGroups?.map((group) => ({ ...group })),
+    })),
     nomads: world.nomads.map((nomad) => ({
       ...nomad,
       range: [...nomad.range],
@@ -177,6 +181,7 @@ export function deserializeWorld(saved: SavedWorld): World {
     // Before city population was stored separately, density at the city pixel held
     // the whole city. Preserve that count when opening an older save.
     if (!Number.isFinite(city.population)) city.population = world.density[city.pixel];
+    ensureCityPopulationGroups(world, city);
     if (!city.name) Object.assign(city, generateCityIdentity(world, city.pixel));
   }
   world.recountCountries();

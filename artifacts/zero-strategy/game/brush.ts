@@ -1,10 +1,10 @@
 import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, RANKS } from './config';
 import { forEachNeighbour } from './geography';
-import type { NomadCell, NomadGroup, World } from './world';
+import { cityPopulationGroupsAtPixel, type NomadCell, type NomadGroup, type World } from './world';
 import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
 import { ColonizationDonorHeap, colonizationPlan, transferColonizationPopulation } from './colonization';
-import { CityInfluenceIndex } from './settlements';
+import { changeCityPopulation, CityInfluenceIndex } from './settlements';
 
 export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'moveCapital' | 'nomadExpand' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
 export interface CardChoice {
@@ -358,7 +358,7 @@ export class CardPainter {
         const { cost, strength } = this.brushScaling(p);
         world.density[p] += strength;
         const city = world.cityAt(p);
-        if (city) city.population += strength;
+        if (city) changeCityPopulation(world, city, cityPopulationGroupsAtPixel(world, p, strength));
         card.ink = Math.max(0, card.ink - cost);
         this.touch(p);
       }

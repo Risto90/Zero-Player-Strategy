@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { World } from '../game/world.ts';
 import { deserializeWorld, serializeWorld } from '../game/persistence.ts';
 import { ColonizationDonorHeap, transferColonizationPopulation } from '../game/colonization.ts';
-import { movePopulationToCity, populationAtPixel } from '../game/settlements.ts';
+import { cityComposition, movePopulationToCity, populationAtPixel, resizeCityPopulation } from '../game/settlements.ts';
 import { demography } from '../game/demography.ts';
 import { MAP_PIXELS } from '../game/config.ts';
 
@@ -29,7 +29,7 @@ function setUp() {
     world.density[p] = density;
     world.culture[p] = world.cultureTable.single(culture.id, 100);
     const city = cityPopulation === null ? null : world.addCity(country.id, p, 1, false);
-    if (city) city.population = cityPopulation;
+    if (city) resizeCityPopulation(world, city, cityPopulation);
     return { p, city };
   };
   return { world, country, ownPixel, pixel };
@@ -96,6 +96,34 @@ assertEqual(
   'city concentration conserves the population total',
 );
 
+// City cohorts change independently from the rural mix at the city pixel.
+const newCulture = world.newCulture(world.cultures[country.cultureId], 0);
+const newReligion = world.newReligion(0);
+const incomingRural = ownPixel(10, null);
+const receivingCity = ownPixel(5, 500);
+world.culture[incomingRural.p] = world.cultureTable.single(newCulture.id, 100);
+world.religion[incomingRural.p] = world.religionTable.single(newReligion.id, 100);
+const ruralCultureBefore = world.culture[receivingCity.p];
+const ruralReligionBefore = world.religion[receivingCity.p];
+assertEqual(movePopulationToCity(world, incomingRural.p, receivingCity.p, 2), 2, 'two rural residents concentrated into the city');
+const urbanMix = cityComposition(world, receivingCity.city);
+assert.ok(urbanMix.cultures.some((group) => group.id === newCulture.id && group.percent > 0), 'incoming culture is recorded in city cohorts');
+assert.ok(urbanMix.religions.some((group) => group.id === newReligion.id && group.percent > 0), 'incoming religion is recorded in city cohorts');
+assertEqual(world.culture[receivingCity.p], ruralCultureBefore, 'urban culture change does not overwrite rural pixel culture');
+assertEqual(world.religion[receivingCity.p], ruralReligionBefore, 'urban religion change does not overwrite rural pixel religion');
+world.version += 1;
+assert.ok(demography(world, country).cultures.get(newCulture.id) > 0, 'country demography includes the separate city culture cohorts');
+
+// Colonization scales the donor city's own cohort counts without deriving them from its rural raster.
+const colonizingCity = ownPixel(14, 1400);
+world.culture[colonizingCity.p] = world.cultureTable.single(newCulture.id, 100);
+world.religion[colonizingCity.p] = world.religionTable.single(newReligion.id, 100);
+assert.ok(transfer(world, colonizingCity.p, pixel(), 1));
+assertEqual(colonizingCity.city.population, 1300, 'colonization reduces the donor city population');
+assert.deepEqual(cityComposition(world, colonizingCity.city).cultures, [{ id: country.cultureId, percent: 100 }], "colonization preserves the city's separate culture composition");
+assert.deepEqual(cityComposition(world, colonizingCity.city).religions, [{ id: null, percent: 100 }], "colonization preserves the city's separate religion composition");
+assertEqual(world.cultureTable.shareOf(world.culture[colonizingCity.p], newCulture.id), 100, 'rural donor culture remains independently updated');
+
 let expectedCountryPopulation = 0;
 let expectedRuralDensity = 0;
 world.forEachCountryPixel(country, (p) => {
@@ -125,6 +153,7 @@ assert.ok(saved.layers.density.every((zone, i, zones) =>
 assertEqual(loaded.cities.length, world.cities.length, 'city count after save/load');
 for (let i = 0; i < world.cities.length; i += 1) {
   assertEqual(loaded.cities[i].population, world.cities[i].population, `city ${i} population after save/load`);
+  assert.deepEqual(loaded.cities[i].populationGroups, world.cities[i].populationGroups, `city ${i} cohorts after save/load`);
 }
 for (let p = 0; p < MAP_PIXELS; p += 1) {
   assertEqual(loaded.density[p], beforeDensity[p], `density raster round-trip at ${p}`);
@@ -134,7 +163,13 @@ for (let p = 0; p < MAP_PIXELS; p += 1) {
 const legacy = serializeWorld(world);
 const legacyCity = legacy.cities[0];
 delete legacyCity.population;
+delete legacyCity.populationGroups;
 const migrated = deserializeWorld(legacy);
 assertEqual(migrated.cities[0].population, migrated.density[legacyCity.pixel], 'legacy city count is migrated from saved density');
+assert.equal(
+  migrated.cities[0].populationGroups.reduce((sum, group) => sum + group.population, 0),
+  migrated.cities[0].population,
+  'legacy city cohorts are reconstructed from saved pixel composition',
+);
 
 console.log(`City population checks passed for ${country.name}.`);

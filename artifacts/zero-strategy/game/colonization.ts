@@ -2,6 +2,7 @@ import { MAP_PIXELS, SHARE_STEP } from './config';
 import { quantizeShares } from './composition';
 import { demography } from './demography';
 import { forEachNeighbour } from './geography';
+import { resizeCityPopulation } from './settlements';
 import type { Country, World } from './world';
 
 export const RIVER_COLONIZATION_RADIUS = 18;
@@ -224,7 +225,11 @@ export function transferColonizationPopulation(
   const remainingDensity = Math.max(0, sourceDensity - amount);
   const donorCity = world.cityAt(donor);
   if (donorCity) {
-    donorCity.population *= sourceDensity > EPSILON ? remainingDensity / sourceDensity : 0;
+    resizeCityPopulation(
+      world,
+      donorCity,
+      donorCity.population * (sourceDensity > EPSILON ? remainingDensity / sourceDensity : 0),
+    );
   }
   world.density[donor] = remainingDensity;
   world.density[target] = world.owner[target] > 0 ? targetDensity : amount;

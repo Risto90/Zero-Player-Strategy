@@ -41,11 +41,19 @@ export interface City {
   rank: CityRank;
   /** Total population in the city; rural density at the pixel remains in the density layer. */
   population: number;
+  /** Urban culture × religion groups, independent of the rural mix at this pixel. */
+  populationGroups?: CityPopulationGroup[];
   capital: boolean;
   /** Fixed at founding from the leading culture at the city's pixel. */
   name?: string;
   namingCultureId?: number;
   namingStyleId?: NameStyleId;
+}
+
+export interface CityPopulationGroup {
+  cultureId: number;
+  religionId: number | null;
+  population: number;
 }
 
 export interface NomadCell {
@@ -199,6 +207,7 @@ export class World {
       pixel,
       rank,
       population: this.density[pixel],
+      populationGroups: cityPopulationGroupsAtPixel(this, pixel, this.density[pixel]),
       capital,
       ...generateCityIdentity(this, pixel),
     };
@@ -329,6 +338,22 @@ export class World {
       if (list === 'countries') this.people = this.people.filter((p) => p.countryId !== id);
     }
   }
+}
+
+export function cityPopulationGroupsAtPixel(world: World, pixel: number, population: number): CityPopulationGroup[] {
+  if (population <= 0) return [];
+  const culture = world.cultureTable.entries[world.culture[pixel]];
+  const religion = world.religionTable.entries[world.religion[pixel]];
+  const religionIds: (number | null)[] = [...religion.ids, null];
+  const religionShares = [...religion.shares, 100 - religion.total];
+  const groups: CityPopulationGroup[] = [];
+  culture.ids.forEach((cultureId, ci) => {
+    religionIds.forEach((religionId, ri) => {
+      const amount = population * culture.shares[ci] / 100 * religionShares[ri] / 100;
+      if (amount > 0) groups.push({ cultureId, religionId, population: amount });
+    });
+  });
+  return groups;
 }
 
 export function uniqueName(make: () => string, used: Set<string>): string {

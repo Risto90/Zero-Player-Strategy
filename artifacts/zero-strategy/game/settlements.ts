@@ -1,6 +1,6 @@
 import { MAP_HEIGHT, MAP_WIDTH, RANKS } from './config';
 import { quantizeShares } from './composition';
-import type { City, CityRank, NomadCell, NomadGroup, World } from './world';
+import { cityPopulationGroupsAtPixel, type City, type CityPopulationGroup, type CityRank, type NomadCell, type NomadGroup, type World } from './world';
 
 const CITY_CANONICAL_MODIFIERS = [1, 1, 1, 2, 3, 6];
 const RANK_AREA = RANKS.map((rank) => rank.ink);
@@ -225,6 +225,79 @@ export class CityInfluenceIndex {
 
 type Pair = { culture: number; religion: number | null; population: number };
 
+/** Initializes old/incomplete city records from their founding pixel and keeps group totals aligned. */
+export function ensureCityPopulationGroups(world: World, city: City): CityPopulationGroup[] {
+  let groups = city.populationGroups;
+  if (!groups?.length && city.population > 0) {
+    groups = cityPopulationGroupsAtPixel(world, city.pixel, city.population);
+  }
+  groups ??= [];
+  const total = groups.reduce((sum, group) => sum + group.population, 0);
+  if (city.population <= 0) groups = [];
+  else if (total <= 0) groups = cityPopulationGroupsAtPixel(world, city.pixel, city.population);
+  else if (Math.abs(total - city.population) > 1e-8) {
+    const scale = city.population / total;
+    groups = groups.map((group) => ({ ...group, population: group.population * scale }));
+  }
+  city.populationGroups = groups;
+  return groups;
+}
+
+/** Resizes a city's resident groups proportionally, preserving its urban composition. */
+export function resizeCityPopulation(world: World, city: City, population: number): void {
+  const groups = ensureCityPopulationGroups(world, city);
+  const total = groups.reduce((sum, group) => sum + group.population, 0);
+  const target = Math.max(0, population);
+  city.populationGroups = total > 0
+    ? groups.map((group) => ({ ...group, population: group.population * target / total }))
+    : cityPopulationGroupsAtPixel(world, city.pixel, target);
+  city.population = target;
+}
+
+/** Removes residents proportionally, then adds the incoming cohort groups. */
+export function changeCityPopulation(
+  world: World,
+  city: City,
+  additions: CityPopulationGroup[] = [],
+  remove = 0,
+): void {
+  const groups = ensureCityPopulationGroups(world, city);
+  const total = groups.reduce((sum, group) => sum + group.population, 0);
+  const remaining = Math.max(0, total - Math.max(0, remove));
+  const scale = total > 0 ? remaining / total : 0;
+  const combined = new Map<string, CityPopulationGroup>();
+  for (const group of groups) {
+    const population = group.population * scale;
+    if (population > 1e-9) combined.set(`${group.cultureId}/${group.religionId ?? -1}`, { ...group, population });
+  }
+  for (const group of additions) {
+    const key = `${group.cultureId}/${group.religionId ?? -1}`;
+    const current = combined.get(key);
+    if (current) current.population += group.population;
+    else if (group.population > 1e-9) combined.set(key, { ...group });
+  }
+  city.populationGroups = [...combined.values()];
+  city.population = city.populationGroups.reduce((sum, group) => sum + group.population, 0);
+}
+
+export function cityComposition(world: World, city: City): {
+  cultures: { id: number; percent: number }[];
+  religions: { id: number | null; percent: number }[];
+} {
+  const groups = ensureCityPopulationGroups(world, city);
+  const cultures = new Map<number, number>();
+  const religions = new Map<number | null, number>();
+  const total = groups.reduce((sum, group) => sum + group.population, 0);
+  for (const group of groups) {
+    cultures.set(group.cultureId, (cultures.get(group.cultureId) ?? 0) + group.population);
+    religions.set(group.religionId, (religions.get(group.religionId) ?? 0) + group.population);
+  }
+  const shares = <T,>(values: Map<T, number>) => [...values.entries()]
+    .map(([id, population]) => ({ id, percent: total > 0 ? Math.round(population / total * 1000) / 10 : 0 }))
+    .sort((a, b) => b.percent - a.percent);
+  return { cultures: shares(cultures), religions: shares(religions) };
+}
+
 /** Moves 10% from each source pixel into a city, preferring matches to the city's population. */
 export function movePopulationToCity(world: World, source: number, target: number, amount: number, fromCityRural = true): number {
   if (source === target || amount <= 0 || world.density[source] <= 0) return 0;
@@ -289,27 +362,34 @@ export function movePopulationToCity(world: World, source: number, target: numbe
   const sourceTotal = world.density[source] - actual;
   const sourceRemain = sourcePairs.filter((group) => group.population > 1e-9);
   const sourceCity = fromCityRural ? world.cityAt(source) : null;
-  if (sourceCity) sourceCity.population = Math.max(0, sourceCity.population - actual);
+  if (sourceCity) changeCityPopulation(world, sourceCity, [], actual);
   world.density[source] = Math.max(0, sourceTotal);
   updateMix(source, sourceRemain, sourceTotal);
 
   const targetCity = world.cityAt(target);
-  const targetTotal = targetCity?.population ?? world.density[target];
-  const targetPairs: Pair[] = [];
-  const targetCultureEntry = world.cultureTable.entries[world.culture[target]];
-  const targetReligionEntry = world.religionTable.entries[world.religion[target]];
-  const targetReligions: (number | null)[] = [...targetReligionEntry.ids, null];
-  const targetRelShares = [...targetReligionEntry.shares, 100 - targetReligionEntry.total];
-  for (const [ci, cultureId] of targetCultureEntry.ids.entries()) {
-    targetReligions.forEach((religionId, ri) => {
-      const population = targetTotal * targetCultureEntry.shares[ci] / 100 * targetRelShares[ri] / 100;
-      if (population > 0) targetPairs.push({ culture: cultureId, religion: religionId, population });
-    });
+  if (targetCity) {
+    changeCityPopulation(
+      world,
+      targetCity,
+      [...moved.values()].map((group) => ({ cultureId: group.culture, religionId: group.religion, population: group.population })),
+    );
+  } else {
+    const targetTotal = world.density[target];
+    const targetPairs: Pair[] = [];
+    const targetCultureEntry = world.cultureTable.entries[world.culture[target]];
+    const targetReligionEntry = world.religionTable.entries[world.religion[target]];
+    const targetReligions: (number | null)[] = [...targetReligionEntry.ids, null];
+    const targetRelShares = [...targetReligionEntry.shares, 100 - targetReligionEntry.total];
+    for (const [ci, cultureId] of targetCultureEntry.ids.entries()) {
+      targetReligions.forEach((religionId, ri) => {
+        const population = targetTotal * targetCultureEntry.shares[ci] / 100 * targetRelShares[ri] / 100;
+        if (population > 0) targetPairs.push({ culture: cultureId, religion: religionId, population });
+      });
+    }
+    targetPairs.push(...moved.values());
+    world.density[target] += actual;
+    updateMix(target, targetPairs, targetTotal + actual);
   }
-  targetPairs.push(...moved.values());
-  if (targetCity) targetCity.population += actual;
-  else world.density[target] += actual;
-  updateMix(target, targetPairs, targetTotal + actual);
   return actual;
 }
 

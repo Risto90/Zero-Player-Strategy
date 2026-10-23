@@ -11,7 +11,7 @@ import type { Game, GameSnapshot, LegendRow } from '@/game/game';
 import { ageStage, GOVERNMENTS, MODIFIERS, governmentOf } from '@/game/government';
 import { RAMPS } from '@/game/render';
 import { expectedHeirFor, rulers } from '@/game/succession';
-import { cityRankName } from '@/game/settlements';
+import { cityComposition, cityRankName } from '@/game/settlements';
 import { cityIconIndex, cityIconSource } from '@/components/map/cityIcons';
 
 const c = colors.light;
@@ -142,6 +142,7 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
               </View>
               <Text style={styles.rowValue}>{cityRankName(city.rank)}</Text>
             </View>
+            <CityCompositionRows world={game.world} city={city} />
           </View>
         )) : <Empty text="Пока нет городов." />}
       </ScrollView>
@@ -380,6 +381,22 @@ function CountryCompositionBlock({ game, countryId }: { game: Game; countryId: n
   );
 }
 
+function CityCompositionRows({ world, city }: { world: Game['world']; city: Game['world']['cities'][number] }) {
+  const composition = cityComposition(world, city);
+  return (
+    <View style={styles.cityComposition}>
+      <Text style={styles.cityCompositionText}>
+        Культура: {composition.cultures.map(({ id, percent }) =>
+          `${world.cultures[id]?.name ?? 'Неизвестная культура'} ${pct(percent)}`).join(' · ') || 'нет данных'}
+      </Text>
+      <Text style={styles.cityCompositionText}>
+        Вера: {composition.religions.map(({ id, percent }) =>
+          `${id === null ? 'Атеисты' : world.religions[id]?.name ?? 'Неизвестная вера'} ${pct(percent)}`).join(' · ') || 'нет данных'}
+      </Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   panel: { flex: 1, backgroundColor: c.card },
   header: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingHorizontal: 8, paddingTop: 6, paddingBottom: 4 },
@@ -393,6 +410,8 @@ const styles = StyleSheet.create({
   cityIcon: { width: 34, height: 34, marginRight: 6 },
   countryCityRow: { flexDirection: 'row', alignItems: 'center', minHeight: 28, gap: 5 },
   countryCityIcon: { width: 22, height: 22 },
+  cityComposition: { gap: 2, paddingHorizontal: 12, paddingBottom: 8 },
+  cityCompositionText: { fontFamily: fonts.sans, fontSize: 10, color: c.mutedForeground },
   countryModifier: { fontFamily: fonts.sans, fontSize: 10, lineHeight: 14, color: c.mutedForeground },
   composition: { gap: 2, marginTop: 4, marginBottom: 3 },
   compositionRow: { fontFamily: fonts.sans, fontSize: 10, color: c.foreground },
