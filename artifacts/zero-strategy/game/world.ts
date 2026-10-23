@@ -11,17 +11,13 @@ import {
   WORLD_SEED,
 } from './geography';
 import { randomItem } from './random';
-import { ensureCountryLeaders, initialGovernment, type GovernmentId, type Person } from './government';
+import { initialGovernment, type GovernmentId, type Person, type PoliticalState } from './government';
 
-export interface Country {
+export interface Country extends PoliticalState {
   id: number;
   name: string;
   color: string;
   rank: string;
-  government: GovernmentId;
-  ruler: Person;
-  heir: Person | null;
-  rulerSince: number;
   /** Population per pixel given to newly settled land. */
   density: number;
   cultureId: number;
@@ -62,6 +58,7 @@ export class World {
   countries: Country[] = [];
   cultures: Culture[] = [];
   religions: Religion[] = [];
+  people: Person[] = [];
   /** Bumped on every map change; caches compare against it. */
   version = 0;
 
@@ -171,7 +168,7 @@ export class World {
 
   newCountry(fields: Pick<Country, 'rank' | 'cultureId' | 'religionId' | 'density' | 'foundedYear' | 'parentId'> & { government?: GovernmentId }): Country {
     const used = new Set(this.countries.map((c) => c.name));
-    const leaders = initialGovernment(fields.foundedYear);
+    const leaders = initialGovernment(fields.foundedYear, fields.cultureId, fields.religionId);
     const country: Country = {
       id: this.countries.length,
       name: uniqueName(() => `${randomItem(NAMES.countryStart)}${randomItem(NAMES.countryEnd)}`, used),
@@ -183,7 +180,11 @@ export class World {
       ...fields,
     };
     this.countries.push(country);
-    ensureCountryLeaders(country, fields.foundedYear);
+    country.ruler.countryId = country.id;
+    country.ruler.formerRulerOf = [country.id];
+    country.seatSince[country.ruler.id] = fields.foundedYear;
+    country.termCounts[country.ruler.id] = 1;
+    this.people.push(country.ruler);
     return country;
   }
 

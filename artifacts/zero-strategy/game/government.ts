@@ -21,12 +21,42 @@ export interface Person {
   familyId: number;
   cultureId: number;
   religionId: number | null;
+  countryId: number;
+  bornAt: number;
+  deathYear: number | null;
+  deathReason: string | null;
+  betrothedId: number | null;
+  loverIds: number[];
+  friendIds: number[];
+  traits: string[];
+  formerRulerOf: number[];
+  lastBirthYear: number | null;
+}
+
+export interface PoliticalState {
+  government: GovernmentId;
+  modifiers: GovernmentModifierId[];
+  ruler: Person;
+  heir: Person | null;
+  rulerSince: number;
+  previousRulerIds: number[];
+  dynastyClaims: number[];
+  coRulerIds: number[];
+  termYears: number;
+  maxTerms: number;
+  consulCount: number;
+  seatSince: Record<number, number>;
+  termCounts: Record<number, number>;
+  barredRulerIds: number[];
+  pendingDeathIds: number[];
+  /** Timed political pressure: repeat events extend and double strength. */
+  pressures: Record<string, { until: number; strength: number }>;
 }
 
 export interface Government {
   id: GovernmentId;
   name: string;
-  modifiers: string[];
+  modifiers: GovernmentModifierId[];
   development: number;
 }
 
@@ -39,30 +69,30 @@ export interface Modifier {
 }
 
 export const GOVERNMENTS: Record<GovernmentId, Government> = {
-  tribal: { id: 'tribal', name: 'Племенная', modifiers: ['Олигархия'], development: 0 },
-  hereditary: { id: 'hereditary', name: 'Наследственная', modifiers: ['Первородство'], development: 1 },
+  tribal: { id: 'tribal', name: 'Племенная', modifiers: ['oligarchy'], development: 0 },
+  hereditary: { id: 'hereditary', name: 'Наследственная', modifiers: ['primogeniture'], development: 0 },
   tyranny: { id: 'tyranny', name: 'Тирания', modifiers: [], development: 0 },
-  republic: { id: 'republic', name: 'Республика', modifiers: ['Срок правления'], development: 2 },
+  republic: { id: 'republic', name: 'Республика', modifiers: [], development: 0 },
 };
 
 export const MODIFIERS: Record<GovernmentModifierId, Modifier> = {
-  theocracy: { id: 'theocracy', name: 'Теократия', effect: 'При выборе правителя предпочитается ведущая вера; наследники должны разделять веру правителя.' },
-  ethnic: { id: 'ethnic', name: 'Этническая', effect: 'При выборе вождя или правителя предпочитается ведущая культура.' },
-  liberal: { id: 'liberal', name: 'Либеральная', effect: 'Культура и вера кандидата не влияют на шансы выбора.' },
-  communist: { id: 'communist', name: 'Коммунистическая', effect: 'При выборе правителя предпочтение космополитам; несовместима с наследственной формой.' },
+  theocracy: { id: 'theocracy', name: 'Теократия', effect: 'Республика: ведущая вера. Наследование: вера правителя. Племя: вес веры прежнего вождя и ведущей веры его культуры ×2. Религиозные карты чаще.' },
+  ethnic: { id: 'ethnic', name: 'Этническая', effect: 'Республика: ведущая культура. Наследование: культура правителя. Племя: ведущая культура ×4, культура прошлого вождя ×2.' },
+  liberal: { id: 'liberal', name: 'Либеральная', effect: 'Равный вес существующих сочетаний культуры и веры, кроме ограничений этничности и теократии.', forms: ['tribal', 'hereditary', 'republic'] },
+  communist: { id: 'communist', name: 'Коммунистическая', effect: 'Только через силовую реформу. Приоритет атеистам и космополитам; культуры равновероятны, вес атеистов ×2; космополит у нового лидера с шансом 50%.', forms: ['tribal', 'republic', 'tyranny'] },
   patriarchal: { id: 'patriarchal', name: 'Патриархальная', effect: 'Правителем может стать только мужчина.', excludes: ['matriarchal'] },
   matriarchal: { id: 'matriarchal', name: 'Матриархальная', effect: 'Правителем может стать только женщина.', excludes: ['patriarchal'] },
   meritocracy: { id: 'meritocracy', name: 'Меритократия', effect: 'Дети и подростки не могут стать правителями.', forms: ['tribal', 'hereditary', 'tyranny'] },
-  seniority: { id: 'seniority', name: 'Сеньорат', effect: 'Наследует старший подходящий член династии.', excludes: ['minority', 'oligarchy'], forms: ['tribal', 'hereditary', 'tyranny'] },
+  seniority: { id: 'seniority', name: 'Сеньорат', effect: 'Наследует старший подходящий член династии.', excludes: ['minority', 'oligarchy', 'primogeniture'], forms: ['tribal', 'hereditary', 'tyranny'] },
   minority: { id: 'minority', name: 'Минорат', effect: 'Наследует младший подходящий член династии.', excludes: ['seniority'], forms: ['tribal', 'hereditary', 'tyranny'] },
-  primogeniture: { id: 'primogeniture', name: 'Первородство', effect: 'Приоритет у старшего подходящего ребёнка правителя.', forms: ['tribal', 'hereditary', 'tyranny'] },
+  primogeniture: { id: 'primogeniture', name: 'Первородство', effect: 'Старший ребёнок, затем потомки покойных детей по ветвям. С миноратом — младшая ветвь.', excludes: ['seniority'], forms: ['tribal', 'hereditary', 'tyranny'] },
   oligarchy: { id: 'oligarchy', name: 'Олигархия', effect: 'Кандидат выбирается случайно из правящей семьи; в республике дети прежних правителей получают приоритет.', excludes: ['seniority', 'minority'], forms: ['tribal', 'hereditary', 'republic'] },
   partition: { id: 'partition', name: 'Разделение', effect: 'При наследовании нескольких детей территория делится между наследниками.', excludes: ['coRule'], forms: ['tribal', 'hereditary'] },
-  pornocracy: { id: 'pornocracy', name: 'Порнократия', effect: 'Супруги и возлюбленные правителя включаются в линию наследования.' },
+  pornocracy: { id: 'pornocracy', name: 'Порнократия', effect: 'Партнёры прежнего лидера — первые; партнёр наследника стоит перед ним и освобождён от ограничения пола.', forms: ['tribal', 'hereditary', 'tyranny'] },
   term: { id: 'term', name: 'Срок правления', effect: 'Республиканский лидер переизбирается по окончании срока.', forms: ['republic'] },
   termLimit: { id: 'termLimit', name: 'Ограничение сроков', effect: 'Один лидер может занимать пост ограниченное число раз.', forms: ['republic'] },
   continuous: { id: 'continuous', name: 'Непрерывное правление', effect: 'Действующий лидер может быть переизбран; доступно при нескольких сроках.', forms: ['republic'] },
-  consulate: { id: 'consulate', name: 'Консулат', effect: 'Несколько соправителей делят управление; ослабляет экспансию.', excludes: ['coRule'] },
+  consulate: { id: 'consulate', name: 'Консулат', effect: '2–7 правителей с отдельными сроками. Реформы, экспансия и восстания представленных групп ослаблены в X раз.', excludes: ['coRule'] },
   federation: { id: 'federation', name: 'Федерация', effect: 'Удваивает вероятность раскола и мирного объединения.' , excludes: ['confederation'], forms: ['tribal', 'hereditary', 'republic'] },
   confederation: { id: 'confederation', name: 'Конфедерация', effect: 'Утраивает вероятность раскола и мирного объединения.', excludes: ['federation'], forms: ['tribal', 'hereditary'] },
   coRule: { id: 'coRule', name: 'Соправительство', effect: 'Правитель делит полномочия с членом семьи.', excludes: ['partition'], forms: ['tribal', 'hereditary', 'tyranny'] },
@@ -86,44 +116,25 @@ export function ageStage(age: number): string {
 export function createPerson(year: number, age = 20 + Math.floor(Math.random() * 26), familyId = nextPersonId, parents: number[] = [], cultureId = 0, religionId: number | null = null): Person {
   const id = nextPersonId++;
   const gender: Gender = Math.random() < 0.5 ? 'female' : 'male';
-  return { id, name: pick(GIVEN), age, gender, trait: pick(TRAITS), since: year, alive: true, parents, spouseIds: [], familyId, cultureId, religionId };
+  const trait = age >= 3 ? pick(TRAITS) : '';
+  return { id, name: pick(GIVEN), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, cultureId, religionId,
+    countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
+    loverIds: [], friendIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
 }
 export function createFamilyId(): number { return nextPersonId++; }
+export function reservePersonId(id: number): void { if (Number.isFinite(id)) nextPersonId = Math.max(nextPersonId, id + 1); }
 export function governmentOf(value: string | undefined | null): Government {
   if (value && value in GOVERNMENTS) return GOVERNMENTS[value as GovernmentId];
-  if (value === 'Монархия' || value === 'Империя') return GOVERNMENTS.hereditary;
+  if (value === 'Монархия' || value === 'Империя' || value === 'monarchy' || value === 'empire') return GOVERNMENTS.hereditary;
   if (value === 'Республика') return GOVERNMENTS.republic;
   if (value === 'Тирания') return GOVERNMENTS.tyranny;
   return GOVERNMENTS.tribal;
 }
 export function initialGovernment(year: number, cultureId = 0, religionId: number | null = null) {
   const familyId = createFamilyId();
-  return { government: 'tribal' as GovernmentId, ruler: createPerson(year, 20 + Math.floor(Math.random() * 26), familyId, [], cultureId, religionId), heir: null as Person | null, rulerSince: year, characters: [] as Person[], modifiers: ['oligarchy'] as GovernmentModifierId[] };
-}
-export function normalizeCountry(country: {
-  government: string; ruler?: Person | null; heir?: Person | null; rulerSince?: number;
-  characters?: Person[]; modifiers?: GovernmentModifierId[]; cultureId?: number; religionId?: number | null;
-}, year: number): void {
-  country.government = governmentOf(country.government).id;
-  country.modifiers ??= GOVERNMENTS[governmentOf(country.government).id].modifiers as GovernmentModifierId[];
-  country.characters ??= [];
-  for (const p of country.characters) nextPersonId = Math.max(nextPersonId, p.id + 1);
-  if (!country.ruler) country.ruler = createPerson(year, 25, createFamilyId(), [], country.cultureId ?? 0, country.religionId ?? null);
-  nextPersonId = Math.max(nextPersonId, country.ruler.id + 1);
-  const existing = country.characters.find((p) => p.id === country.ruler!.id);
-  if (existing) country.ruler = existing;
-  else country.characters.push(country.ruler);
-  country.rulerSince ??= country.ruler.since ?? year;
-  if (country.heir) {
-    const heir = country.characters.find((p) => p.id === country.heir!.id);
-    if (heir) country.heir = heir;
-    else country.characters.push(country.heir);
-  }
-  if (governmentOf(country.government).id !== 'hereditary' && country.government !== 'tyranny' && !country.modifiers.includes('oligarchy')) country.heir = null;
-}
-export function changeGovernment(country: { government: string; modifiers?: GovernmentModifierId[] }, next: GovernmentId): void {
-  country.government = next;
-  country.modifiers = [...GOVERNMENTS[next].modifiers] as GovernmentModifierId[];
+  return { government: 'tribal' as GovernmentId, ruler: createPerson(year, 29 + Math.floor(Math.random() * 17), familyId, [], cultureId, religionId), heir: null as Person | null, rulerSince: year, modifiers: ['oligarchy'] as GovernmentModifierId[],
+    previousRulerIds: [], dynastyClaims: [familyId], coRulerIds: [], termYears: 4, maxTerms: 1, consulCount: 2,
+    seatSince: {}, termCounts: {}, barredRulerIds: [], pendingDeathIds: [], pressures: {} };
 }
 export function availableModifiers(form: GovernmentId, current: GovernmentModifierId[]): GovernmentModifierId[] {
   return (Object.keys(MODIFIERS) as GovernmentModifierId[]).filter((id) => {
@@ -140,12 +151,12 @@ export function applyModifier(current: GovernmentModifierId[], id: GovernmentMod
 export function deathChance(age: number): number {
   if (age < 3) return 1 - Math.pow(1 - 0.33, 1 / 3);
   if (age <= 7) return 1 - Math.pow(1 - 0.20, 1 / 5);
-  if (age <= 11) return 0.01;
+  if (age <= 11) return 1 - Math.pow(1 - 0.01, 1 / 4);
   if (age <= 19) return 1 - Math.pow(1 - 0.10, 1 / 8);
-  if (age <= 28) return 0.01;
-  if (age <= 45) return 0.01;
-  if (age <= 65) return 0.01;
-  return Math.min(0.99, (age - 56) / 100);
+  if (age <= 28) return 1 - Math.pow(0.99 * 0.99, 1 / 9);
+  if (age <= 45) return 1 - Math.pow(0.99 * 0.95, 1 / 17);
+  if (age <= 65) return 1 - Math.pow(0.99 * 0.85, 1 / 20);
+  return Math.min(1, (age - 56) / 100);
 }
 export function uniqueLeader(countryId: number, year: number): Person {
   const person = createPerson(year, 29 + Math.floor(Math.random() * 17), createFamilyId());
