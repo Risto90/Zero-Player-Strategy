@@ -99,6 +99,35 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   game.discard();
 }
 
+// A fully occupied country must not offer a build card or report a usable
+// placement tool. The game-side gate must also reject a card made before the
+// country's last open site was occupied.
+{
+  const { world, country } = makeCountry(4, [1, 1, 1, 1]);
+  assert.equal(drawBuildCityCard(world, country), null, 'a fully occupied country has no build-city card');
+  const game = new Game(world, 'country');
+  assert.equal(game.getSnapshot().cityPlacementAvailable, false, 'the player sees no available placement');
+  game.discard();
+}
+
+{
+  const { world, country, pixels } = makeCountry(3, [1]);
+  const staleCard = drawBuildCityCard(world, country);
+  assert.equal(staleCard?.type, 'buildCity', 'the card is available while a country site is open');
+  for (const pixel of pixels.slice(1)) {
+    assert.ok(world.addCity(country.id, pixel, 1, false), 'the remaining country site can be occupied');
+  }
+  const game = new Game(world, 'country');
+  game.card = staleCard;
+  assert.equal(game.getSnapshot().cityPlacementAvailable, false, 'a stale card does not enable placement');
+  assert.equal(
+    game.selectCityAt(pixels[0] % MAP_WIDTH, Math.floor(pixels[0] / MAP_WIDTH)),
+    false,
+    'the game rejects placement when every country site is occupied',
+  );
+  game.discard();
+}
+
 // Invalid targets must not add a city, transfer population, or change capitals.
 assertInvalidCityPlacementIsNoop(
   ({ world }) => world.land.findIndex((isLand) => !isLand),
