@@ -36,6 +36,7 @@ export interface Culture {
   color: string;
   parentId: number | null;
   foundedYear: number;
+  traits?: string[];
 }
 
 export type Religion = Culture;

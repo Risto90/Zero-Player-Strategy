@@ -1,10 +1,24 @@
 import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, MAX_DENSITY } from './config';
 import { forEachNeighbour } from './geography';
 import type { World } from './world';
-import type { GovernmentId, Person } from './government';
-import { GOVERNMENTS, governmentOf } from './government';
+import type { GovernmentId, GovernmentModifierId, Person } from './government';
+import { GOVERNMENTS } from './government';
 
-export type CardType = 'create' | 'expand' | 'split' | 'drought' | 'rain' | 'faith' | 'culture' | 'government' | 'succession' | 'election';
+export type CardType = 'create' | 'expand' | 'split' | 'drought' | 'rain' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
+export interface CardChoice {
+  label: string;
+  detail: string;
+  government?: GovernmentId;
+  modifier?: GovernmentModifierId;
+  removeModifier?: GovernmentModifierId;
+  ruler?: Person;
+  seatId?: number;
+  termYears?: number;
+  maxTerms?: number;
+  consulCount?: number;
+  violent?: boolean;
+}
+export interface CharacterEvent { kind: 'marriage' | 'birth' | 'death' | 'friendship' | 'trait' | 'engagement'; personIds: number[]; trait?: string }
 /** 'respect': a pixel changes at most once per card. 'repeat': every new stroke applies again. */
 export type BrushMode = 'respect' | 'repeat';
 export type BrushOption = 'density' | 'repeat' | null;
@@ -24,6 +38,10 @@ export interface Card {
   sourceCultureId: number | null;
   newGovernmentId: GovernmentId | null;
   newRuler: Person | null;
+  choices: CardChoice[] | null;
+  selectedChoice: number;
+  characterEvent: CharacterEvent | null;
+  violentReform?: boolean;
   developmentOnly?: boolean;
   /** A pixel where the card certainly applies (used by automatic play). */
   hint: number;
