@@ -385,7 +385,16 @@ export class Game {
     if (!card || !['create', 'buildCity'].includes(card.type)) return false;
     const countryId = card.type === 'buildCity' ? card.targetCountryId : card.newCountryId;
     const country = countryId === null ? null : this.world.countries[countryId];
-    return !!country && country.pixels > 0 && !this.world.cities.some((city) => city.countryId === country.id);
+    if (!country || country.pixels <= 0 || card.cityPlaced || !this.hasOpenCitySite(country)) return false;
+    return card.type === 'buildCity' || !this.world.cities.some((city) => city.countryId === country.id);
+  }
+
+  private hasOpenCitySite(country: Country): boolean {
+    let available = false;
+    this.world.forEachCountryPixel(country, (pixel) => {
+      if (!this.world.cityAt(pixel)) available = true;
+    });
+    return available;
   }
 
   private markCityArea(city: City): void {
@@ -644,7 +653,9 @@ export class Game {
     if (!this.card || !['create', 'buildCity'].includes(this.card.type)) return false;
     const countryId = this.card.type === 'buildCity' ? this.card.targetCountryId : this.card.newCountryId;
     const country = countryId === null ? null : this.world.countries[countryId];
-    return !!country && country.pixels > 0 && !this.world.cities.some((city) => city.countryId === country.id);
+    if (!country || country.pixels <= 0 || this.card.cityPlaced) return false;
+    if (this.card.type === 'create') return !this.world.cities.some((city) => city.countryId === country.id);
+    return this.hasOpenCitySite(country);
   }
 
   private playerSlots(): Slot[] {
@@ -716,7 +727,9 @@ export class Game {
     if (card.type === 'create' || card.type === 'buildCity') {
       const countryId = card.type === 'create' ? card.newCountryId : card.targetCountryId;
       const country = countryId === null ? null : this.world.countries[countryId];
-      if (country && country.pixels > 0 && !this.world.cities.some((city) => city.countryId === country.id)) {
+      const hasCity = country ? this.world.cities.some((city) => city.countryId === country.id) : false;
+      const shouldPlace = card.type === 'create' ? !hasCity : !card.cityPlaced;
+      if (country && country.pixels > 0 && shouldPlace) {
         let best = -1;
         let bestDensity = -1;
         this.world.forEachCountryPixel(country, (p) => {
@@ -725,7 +738,10 @@ export class Game {
         });
         if (best >= 0) {
           const city = addCityAndConcentrate(this.world, country.id, best, card.type === 'create');
-          if (city) this.markCityArea(city);
+          if (city) {
+            if (card.type === 'buildCity') card.cityPlaced = true;
+            this.markCityArea(city);
+          }
         }
       }
     }

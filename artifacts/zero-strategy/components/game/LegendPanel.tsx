@@ -3,7 +3,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import type { ReactElement } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { BIOME_NOTE } from '@/game/config';
 import { fmt, pct } from '@/game/format';
@@ -12,6 +12,7 @@ import { ageStage, GOVERNMENTS, MODIFIERS, governmentOf } from '@/game/governmen
 import { RAMPS } from '@/game/render';
 import { expectedHeirFor, rulers } from '@/game/succession';
 import { cityRankName } from '@/game/settlements';
+import { cityIconIndex, cityIconSource } from '@/components/map/cityIcons';
 
 const c = colors.light;
 
@@ -127,7 +128,12 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
         {game.world.cities.length ? game.world.cities.map((city) => (
           <View key={city.id} style={styles.countryCard}>
             <View style={styles.row}>
-              <View style={[styles.swatch, { backgroundColor: ['#a66f3d', '#bf6741', '#b2493e', '#8f3036', '#672433', '#431c2e'][city.rank - 1] }]} />
+              <Image
+                source={cityIconSource(cityIconIndex(city, game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0))}
+                style={styles.cityIcon}
+                resizeMode="contain"
+                accessibilityLabel={`${city.capital ? 'Столица' : game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0 ? 'Порт' : 'Город'}, ${cityRankName(city.rank)}`}
+              />
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowName}>{city.name ?? cityRankName(city.rank)}</Text>
                 <Text style={styles.rowDetail}>{game.world.countries[city.countryId]?.name ?? 'Страна распущена'} · {fmt(Math.round(game.world.density[city.pixel]))} чел.</Text>
@@ -233,11 +239,17 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
                   </Text>
                 ))}
                 <Text style={styles.countrySection}>ГОРОДА · {countryCities.length}</Text>
-                {countryCities.map((city) => (
-                  <Text key={city.id} style={styles.countryInfo}>
-                    · {city.capital ? 'Столица · ' : ''}{city.name ?? cityRankName(city.rank)} · {cityRankName(city.rank)} · {fmt(Math.round(game.world.density[city.pixel]))} чел.
-                  </Text>
-                ))}
+                {countryCities.map((city) => {
+                  const hasPort = game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0;
+                  return (
+                    <View key={city.id} style={styles.countryCityRow}>
+                      <Image source={cityIconSource(cityIconIndex(city, hasPort))} style={styles.countryCityIcon} resizeMode="contain" />
+                      <Text style={styles.countryInfo}>
+                        {city.capital ? 'Столица · ' : ''}{city.name ?? cityRankName(city.rank)} · {cityRankName(city.rank)} · {fmt(Math.round(game.world.density[city.pixel]))} чел.
+                      </Text>
+                    </View>
+                  );
+                })}
                 <CountryCompositionBlock game={game} countryId={country.id} />
                 <Text style={styles.countrySection}>Кочевья на территории</Text>
                 {nomadsPresent.map(({ nomad, overlap }) => (
@@ -376,6 +388,9 @@ const styles = StyleSheet.create({
   countrySelected: { borderWidth: 1, borderColor: c.primary },
   countryDetails: { gap: 4, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: c.background },
   countryInfo: { fontFamily: fonts.sans, fontSize: 11, color: c.foreground },
+  cityIcon: { width: 34, height: 34, marginRight: 6 },
+  countryCityRow: { flexDirection: 'row', alignItems: 'center', minHeight: 28, gap: 5 },
+  countryCityIcon: { width: 22, height: 22 },
   countryModifier: { fontFamily: fonts.sans, fontSize: 10, lineHeight: 14, color: c.mutedForeground },
   composition: { gap: 2, marginTop: 4, marginBottom: 3 },
   compositionRow: { fontFamily: fonts.sans, fontSize: 10, color: c.foreground },

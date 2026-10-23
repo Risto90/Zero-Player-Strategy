@@ -9,3 +9,6 @@ description: How to validate the zero-strategy engine headlessly and what to loo
 - When painting sequential inheritance partitions, clear unconsumed frontier marks between heirs; stale marks can make later allocations disconnected even if each brush pass grows contiguously.
 **Why:** the UI can't show long-run behaviour quickly; earlier balance issues only showed in long simulations.
 - Phone speed proxy: run the same bundle with `node --jitless` (no JIT, closer to Hermes than plain Node).
+- For any city-placement change, test both observer auto-placement and the player placement gate after a country already has its mandatory capital.
+**Why:** the create-city and build-city flows can share a card but require different eligibility checks; testing only new countries misses a silent block on every later city.
+**How to apply:** in the headless harness, confirm a build-city card is offered, the observer adds a non-capital city, and a player can place one in an existing country.

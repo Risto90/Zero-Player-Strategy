@@ -8,6 +8,7 @@ import {
   Image as SkiaImage,
   MipmapMode,
   Skia,
+  useImage,
   type SkImage,
 } from '@shopify/react-native-skia';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
@@ -17,52 +18,72 @@ import colors from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { STRIP_H, STRIPS } from '@/game/render';
 import type { City, World } from '@/game/world';
+import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { clampView, initialView, minScale, zoomAround } from './viewMath';
 
 const NEAREST = { filter: FilterMode.Nearest, mipmap: MipmapMode.None };
 const LINEAR = { filter: FilterMode.Linear, mipmap: MipmapMode.None };
-const CITY_COLORS = ['#a66f3d', '#bf6741', '#b2493e', '#8f3036', '#672433', '#431c2e'];
-type CityMarkerData = { city: City; hasPort: boolean };
+type CityMarkerData = { city: City; iconIndex: number };
 
-function CityMarker({ city, hasPort, counterScale }: CityMarkerData & { counterScale: ReturnType<typeof useDerivedValue<{ scale: number }[]>> }) {
+function CityMarker({ city, iconIndex, image, counterScale }: CityMarkerData & {
+  image: SkImage | null;
+  counterScale: ReturnType<typeof useDerivedValue<{ scale: number }[]>>;
+}) {
   const x = city.pixel % MAP_WIDTH;
   const y = Math.floor(city.pixel / MAP_WIDTH);
-  const radius = 2.15 + city.rank * 0.34;
-  const strokeWidth = 0.75;
+  const size = iconIndex === 12 ? 26 : 8 + city.rank * 2;
   return (
     <Group origin={{ x, y }} transform={counterScale}>
-      {hasPort && <Circle cx={x} cy={y} r={radius + 1.15} style="stroke" strokeWidth={strokeWidth} color="#3f91a7" />}
-      {city.capital && <Circle cx={x} cy={y} r={radius + 2.25} style="stroke" strokeWidth={strokeWidth} color="#e8bd56" />}
-      <Circle cx={x} cy={y} r={radius} color={CITY_COLORS[city.rank - 1]} />
-      <Circle cx={x} cy={y} r={strokeWidth} color="#fff3d8" />
+      {image && <SkiaImage image={image} x={x - size / 2} y={y - size / 2} width={size} height={size} fit="contain" sampling={LINEAR} />}
     </Group>
   );
 }
 
-function CityMarkerLayer({ zoomRank, cities, scale }: { zoomRank: number; cities: CityMarkerData[]; scale: SharedValue<number> }) {
+function CityMarkerLayer({ zoomRank, cities, scale, images }: {
+  zoomRank: number;
+  cities: CityMarkerData[];
+  scale: SharedValue<number>;
+  images: (SkImage | null)[];
+}) {
   const showAt = 0.7 + (6 - zoomRank) * 0.56;
   const visible = useDerivedValue(() => scale.value >= showAt ? 1 : 0);
   const counterScale = useDerivedValue(() => [{ scale: 1 / Math.max(scale.value, 0.08) }]);
   return (
     <Group opacity={visible}>
-      {cities.map(({ city, hasPort }) => <CityMarker key={city.id} city={city} hasPort={hasPort} counterScale={counterScale} />)}
+      {cities.map(({ city, iconIndex }) => (
+        <CityMarker key={city.id} city={city} iconIndex={iconIndex} image={images[iconIndex]} counterScale={counterScale} />
+      ))}
     </Group>
   );
 }
 
 function CityMarkers({ world, scale }: { world: World; scale: SharedValue<number> }) {
+  const image0 = useImage(CITY_ICON_SOURCES[0]);
+  const image1 = useImage(CITY_ICON_SOURCES[1]);
+  const image2 = useImage(CITY_ICON_SOURCES[2]);
+  const image3 = useImage(CITY_ICON_SOURCES[3]);
+  const image4 = useImage(CITY_ICON_SOURCES[4]);
+  const image5 = useImage(CITY_ICON_SOURCES[5]);
+  const image6 = useImage(CITY_ICON_SOURCES[6]);
+  const image7 = useImage(CITY_ICON_SOURCES[7]);
+  const image8 = useImage(CITY_ICON_SOURCES[8]);
+  const image9 = useImage(CITY_ICON_SOURCES[9]);
+  const image10 = useImage(CITY_ICON_SOURCES[10]);
+  const image11 = useImage(CITY_ICON_SOURCES[11]);
+  const image12 = useImage(CITY_ICON_SOURCES[12]);
+  const images = [image0, image1, image2, image3, image4, image5, image6, image7, image8, image9, image10, image11, image12];
   const byZoomRank = new Map<number, CityMarkerData[]>();
   for (const city of world.cities) {
     const hasPort = world.isCoastal(city.pixel) || world.rivers[city.pixel] > 0;
-    const zoomRank = Math.min(6, city.rank + (city.capital ? 2 : 0) + (hasPort ? 1 : 0));
+    const zoomRank = cityVisibilityRank(city, hasPort);
     const list = byZoomRank.get(zoomRank) ?? [];
-    list.push({ city, hasPort });
+    list.push({ city, iconIndex: cityIconIndex(city, hasPort) });
     byZoomRank.set(zoomRank, list);
   }
   return [...byZoomRank].map(([zoomRank, cities]) => (
-    <CityMarkerLayer key={zoomRank} zoomRank={zoomRank} cities={cities} scale={scale} />
+    <CityMarkerLayer key={zoomRank} zoomRank={zoomRank} cities={cities} scale={scale} images={images} />
   ));
 }
 
