@@ -5,6 +5,7 @@ import type { PixelInfo } from '@/game/game';
 import type { World } from '@/game/world';
 import { MODIFIERS, GOVERNMENTS, ageStage, governmentOf } from '@/game/government';
 import { fmt } from '@/game/format';
+import { expectedHeirFor } from '@/game/succession';
 
 const c = colors.light;
 
@@ -104,27 +105,53 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
                   <Text style={styles.countryLine}>Население · {fmt(info.countryPopulation)} чел.</Text>
                   <Text style={styles.countryLine}>Форма · {GOVERNMENTS[governmentOf(info.country.government).id].name}</Text>
                   {info.country.modifiers.map((modifier) => (
-                    <Text key={modifier} style={styles.modifier}>· {MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
+                    <Text key={modifier} style={styles.modifier}>
+                      · {modifier === 'consulate' ? `Консулат ${info.country!.consulCount}` : MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}
+                    </Text>
                   ))}
-                  <Text style={styles.countryHeading}>ПРАВИТЕЛЬ</Text>
-                  {personLink(info.country.ruler,
-                    `${info.country.ruler.age} лет · ${ageStage(info.country.ruler.age)} · ${worldCultureName(world, info.country.ruler.cultureId)} · ${worldReligionName(world, info.country.ruler.religionId)}`)}
-                  {info.country.heir && (
+                  {info.country.modifiers.includes('consulate') ? (
+                    [info.country.ruler, ...info.country.coRulerIds
+                      .map((id) => world.people.find((p) => p.id === id))
+                      .filter((p): p is NonNullable<typeof p> => !!p)].map((leader, index) => {
+                      const heir = expectedHeirFor(world, info.country!, leader);
+                      return (
+                        <View key={leader.id}>
+                          <Text style={styles.countryHeading}>КОНСУЛ {index + 1}</Text>
+                          {personLink(leader,
+                            `${leader.age} лет · ${ageStage(leader.age)} · ${worldCultureName(world, leader.cultureId)} · ${worldReligionName(world, leader.religionId)}`)}
+                          {heir && (
+                            <>
+                              <Text style={styles.countryHeading}>ОЖИДАЕМЫЙ НАСЛЕДНИК КОНСУЛА {index + 1}</Text>
+                              {personLink(heir,
+                                `${heir.age} лет · ${ageStage(heir.age)} · ${worldCultureName(world, heir.cultureId)} · ${worldReligionName(world, heir.religionId)}`)}
+                            </>
+                          )}
+                        </View>
+                      );
+                    })
+                  ) : (
                     <>
-                      <Text style={styles.countryHeading}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
-                      {personLink(info.country.heir,
-                        `${info.country.heir.age} лет · ${ageStage(info.country.heir.age)} · ${worldCultureName(world, info.country.heir.cultureId)} · ${worldReligionName(world, info.country.heir.religionId)}`)}
+                      <Text style={styles.countryHeading}>ПРАВИТЕЛЬ</Text>
+                      {personLink(info.country.ruler,
+                        `${info.country.ruler.age} лет · ${ageStage(info.country.ruler.age)} · ${worldCultureName(world, info.country.ruler.cultureId)} · ${worldReligionName(world, info.country.ruler.religionId)}`)}
+                      {info.country.heir && (
+                        <>
+                          <Text style={styles.countryHeading}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
+                          {personLink(info.country.heir,
+                            `${info.country.heir.age} лет · ${ageStage(info.country.heir.age)} · ${worldCultureName(world, info.country.heir.cultureId)} · ${worldReligionName(world, info.country.heir.religionId)}`)}
+                        </>
+                      )}
+                      {info.country.coRulerIds.map((id) => {
+                        const coRuler = world.people.find((p) => p.id === id);
+                        return coRuler ? (
+                          <View key={id}>
+                            <Text style={styles.countryHeading}>СОПРАВИТЕЛЬ</Text>
+                            {personLink(coRuler, `${coRuler.age} лет (${ageStage(coRuler.age)}) · ${worldCultureName(world, coRuler.cultureId)} · ${worldReligionName(world, coRuler.religionId)}`)}
+                          </View>
+                        ) : null;
+                      })}
                     </>
                   )}
-                  {info.country.coRulerIds.map((id) => {
-                    const coRuler = info.family.find((p) => p.id === id);
-                    return coRuler ? (
-                      <View key={id}>
-                        <Text style={styles.countryHeading}>СОПРАВИТЕЛЬ</Text>
-                        {personLink(coRuler, `${coRuler.age} лет (${ageStage(coRuler.age)}) · ${worldCultureName(world, coRuler.cultureId)} · ${worldReligionName(world, coRuler.religionId)}`)}
-                      </View>
-                    ) : null;
-                  })}
                   {info.family.length > 0 && (
                     <>
                       <Text style={styles.countryHeading}>ДИНАСТИЯ ПРАВИТЕЛЯ</Text>

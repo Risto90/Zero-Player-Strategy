@@ -6,5 +6,6 @@ description: How to validate the zero-strategy engine headlessly and what to loo
 - Check: culture totals == 100 on owned pixels, religion totals ≤ 100, serialize→deserialize gives 0 raster diffs, turn time (~200 ms on server with ~80 countries).
 - Count of religions/cultures after 100 years is the main balance signal; faith weights scale down with the number of existing faiths.
 - Render a PPM from renderer.pixels and convert with `magick` to eyeball country shapes (AI painter must grow compact blobs, not snakes).
+- When painting sequential inheritance partitions, clear unconsumed frontier marks between heirs; stale marks can make later allocations disconnected even if each brush pass grows contiguously.
 **Why:** the UI can't show long-run behaviour quickly; earlier balance issues only showed in long simulations.
 - Phone speed proxy: run the same bundle with `node --jitless` (no JIT, closer to Hermes than plain Node).

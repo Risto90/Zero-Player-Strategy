@@ -14,7 +14,7 @@ import { advancePeople, arePartners, birth, countryCharacters, ensureUniqueDynas
 import { applyReform } from './politics';
 import { appoint, candidateAllowed, ensureOffices, refreshHeirs, successionOrder } from './succession';
 import { randomItem } from './random';
-import { demography, weighted } from './demography';
+import { demography } from './demography';
 
 export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
 type Slot = { scope: 'world' } | { scope: 'country'; countryId: number };
@@ -688,11 +688,13 @@ export class Game {
           const choice = card.choices?.[card.selectedChoice];
           const ruler = choice?.ruler ?? card.newRuler;
           if (ruler) {
-            const oldName = target.ruler.name;
-            this.appointAndAnnex(target, ruler, this.year, choice?.seatId ?? target.ruler.id);
+            const seatId = choice?.seatId ?? target.ruler.id;
+            const previousLeader = person(w, seatId) ?? target.ruler;
+            this.appointAndAnnex(target, ruler, this.year, seatId);
             ensureOffices(w, target, this.year);
             refreshHeirs(w, this.year);
-            this.addLog(`${target.name}: ${card.type === 'election' ? 'выбран' : 'власть передана'} ${ruler.name} вместо ${oldName}.`);
+            const seatLabel = target.modifiers.includes('consulate') ? 'консулом' : 'правителем';
+            this.addLog(`${target.name}: ${card.type === 'election' ? 'выбран' : 'власть передана'} ${ruler.name} вместо ${previousLeader.name}; теперь он ${seatLabel}.`);
           }
         }
         break;
@@ -732,9 +734,13 @@ export class Game {
 
   /** If another country's sitting ruler inherits this throne, their former state joins it. */
   private appointAndAnnex(country: Country, ruler: Person, year: number, seatId = country.ruler.id): void {
-    const homes = this.world.countries.filter((other) => other.id !== country.id && other.pixels > 0 && other.ruler.id === ruler.id);
+    const homes = this.world.countries.filter((other) => other.id !== country.id && other.pixels > 0 &&
+      (other.ruler.id === ruler.id ||
+        (other.modifiers.includes('consulate') && other.coRulerIds.includes(ruler.id))));
     appoint(this.world, country, ruler, year, seatId);
-    if (country.ruler.id !== ruler.id) return;
+    const isLeader = country.ruler.id === ruler.id ||
+      (country.modifiers.includes('consulate') && country.coRulerIds.includes(ruler.id));
+    if (!isLeader) return;
     for (const home of homes) this.mergeCountries(country, home, 'inheritance');
   }
 
@@ -837,11 +843,13 @@ export class Game {
       ? [...ranked, ...eligibleChildren].filter((p, index, all) =>
           candidateAllowed(w, source, p, deceased) && all.findIndex((x) => x.id === p.id) === index)
       : [...eligibleChildren];
-    if (!heirs.some((p) => p.id === preferred.id) && candidateAllowed(w, source, preferred, deceased)) {
+    if (hasOtherSuccessionLaw && !heirs.some((p) => p.id === preferred.id) &&
+        candidateAllowed(w, source, preferred, deceased)) {
       heirs.unshift(preferred);
     }
     if (hasOtherSuccessionLaw) {
-      heirs = [preferred, ...heirs.filter((p) => p.id !== preferred.id)];
+      const primary = heirs.find((p) => p.id === preferred.id) ?? heirs[0];
+      heirs = [primary, ...heirs.filter((p) => p.id !== primary.id)];
     } else {
       // Without another succession law, neither child has a prescribed priority.
       for (let i = heirs.length - 1; i > 0; i -= 1) {
@@ -870,7 +878,12 @@ export class Game {
       state.coRulerIds = [];
       state.termYears = source.termYears; state.maxTerms = source.maxTerms; state.consulCount = source.consulCount;
       state.seatSince = { ...source.seatSince }; state.termCounts = { ...source.termCounts };
-      state.rulerSince = this.year; states.push(state);
+      state.rulerSince = this.year;
+      const homes = w.countries.filter((other) => other.id !== state.id && other.id !== source.id &&
+        other.pixels > 0 && (other.ruler.id === heir.id ||
+          (other.modifiers.includes('consulate') && other.coRulerIds.includes(heir.id))));
+      for (const home of homes) this.mergeCountries(state, home, 'inheritance');
+      states.push(state);
     }
     const partitionCount = states.length;
     const quotas = new Array<number>(partitionCount).fill(0);
@@ -910,8 +923,9 @@ export class Game {
         let bucketIndex = buckets[2].size ? 2 : buckets[1].size ? 1 : 0;
         let next = -1;
         if (buckets[bucketIndex].size) {
-          const choices = [...buckets[bucketIndex]];
-          next = choices[Math.floor(Math.random() * choices.length)];
+          const first = buckets[bucketIndex].values().next().value;
+          if (first === undefined) continue;
+          next = first;
           buckets[bucketIndex].delete(next);
           inFrontier[next] = 0;
         } else {
@@ -924,6 +938,7 @@ export class Game {
         left -= 1;
         addNeighbours(next);
       }
+      for (const bucket of buckets) for (const p of bucket) inFrontier[p] = 0;
     }
     for (const state of states) ensureOffices(w, state, this.year);
     w.recountCountries(); w.version += 1; this.renderer.markAll();

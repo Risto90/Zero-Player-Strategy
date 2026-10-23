@@ -14,6 +14,7 @@ export function expectedHeirFor(world: World, c: Country, leader: Person): Perso
 export function candidateAllowed(world: World, c: Country, p: Person, old = c.ruler, partnerExempt = false): boolean {
   const foreignDynast = c.government !== 'republic' && c.dynastyClaims.includes(p.familyId);
   if (!p.alive || c.pendingDeathIds.includes(p.id) || (p.countryId !== c.id && !partnerExempt && !foreignDynast)) return false;
+  if (rulers(world, c).some((leader) => leader.id === p.id && leader.id !== old.id)) return false;
   const coRule = c.coRulerIds.includes(p.id);
   const adult = c.government === 'republic' || c.modifiers.includes('meritocracy') ||
     (c.government === 'tyranny' && c.modifiers.includes('communist'));
@@ -96,7 +97,7 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
       old.parents.some((parentId) => p.parents.includes(parentId)));
     const siblingIds = new Set(siblings.map((p) => p.id));
     const siblingPool = pool.filter((p) => siblingIds.has(p.id));
-    const sittingConsuls = rulers(world, c).filter((p) => p.alive && p.id !== old.id);
+    const sittingConsuls = rulers(world, c).filter((p) => p.alive);
     const consulChildren = world.people.filter((p) => p.alive &&
       sittingConsuls.some((leader) => p.parents.includes(leader.id)));
     const consulChildIds = new Set(consulChildren.map((p) => p.id));
@@ -163,6 +164,10 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
     }
     return pair.slice(0, 2);
   };
+  if (c.modifiers.includes('consulate') && c.modifiers.includes('partition')) {
+    const candidates = eligibleFamily;
+    return ensurePair(candidates[0] ?? null, candidates[1] ?? null, fresh);
+  }
   const drawFamily = () => {
     if (hasFixedHeir(c)) return distinctFamily[0] ?? null;
     if (c.modifiers.includes('consulate') && c.modifiers.includes('partition')) return distinctFamily[0] ?? null;
@@ -214,6 +219,11 @@ export function appoint(world: World, c: Country, p: Person, year: number, seatI
 export function ensureOffices(world: World, c: Country, year: number): void {
   const desired = c.modifiers.includes('consulate') ? c.consulCount : c.modifiers.includes('coRule') ? 2 : 1;
   c.coRulerIds = c.coRulerIds.filter((id) => !!person(world, id)?.alive).slice(0, desired - 1);
+  if (c.modifiers.includes('consulate')) {
+    for (const leader of rulers(world, c)) {
+      if (!c.dynastyClaims.includes(leader.familyId)) c.dynastyClaims.push(leader.familyId);
+    }
+  }
   while (c.coRulerIds.length < desired - 1) {
     const occupied = new Set([c.ruler.id, ...c.coRulerIds]);
     let next: Person | null = null;
@@ -224,5 +234,8 @@ export function ensureOffices(world: World, c: Country, year: number): void {
     registerPerson(world, c, next);
     c.coRulerIds.push(next.id); c.seatSince[next.id] = year; c.termCounts[next.id] = (c.termCounts[next.id] ?? 0) + 1;
     if (!next.formerRulerOf.includes(c.id)) next.formerRulerOf.push(c.id);
+    if (c.modifiers.includes('consulate') && !c.dynastyClaims.includes(next.familyId)) {
+      c.dynastyClaims.push(next.familyId);
+    }
   }
 }

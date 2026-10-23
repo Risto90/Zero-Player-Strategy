@@ -292,7 +292,8 @@ function drawLifeCard(world: World, country: Country, year: number): Card | null
     return card;
   }
   if (opportunity.kind === 'election') {
-    const card = makeCard('election', 0, country, `Срок полномочий истёк. Выберите главу ${country.name} на ${country.termYears} лет.`, -1);
+    const seat = country.modifiers.includes('consulate') ? 'консула' : 'правителя';
+    const card = makeCard('election', 0, country, `Срок полномочий истёк. Выберите ${seat} ${country.name} на ${country.termYears} лет.`, -1);
     card.choices = leadershipOptions(world, country, year, p).slice(0, 2).map((ruler) => ({
       label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: p.id,
     }));

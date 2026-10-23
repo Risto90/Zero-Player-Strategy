@@ -10,6 +10,7 @@ import { fmt, pct } from '@/game/format';
 import type { Game, GameSnapshot, LegendRow } from '@/game/game';
 import { ageStage, GOVERNMENTS, MODIFIERS, governmentOf } from '@/game/government';
 import { RAMPS } from '@/game/render';
+import { expectedHeirFor, rulers } from '@/game/succession';
 
 const c = colors.light;
 
@@ -182,31 +183,70 @@ function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
                 <Text style={styles.countryInfo}>Население · {fmt(row.value)} чел.</Text>
                 <Text style={styles.countryInfo}>Форма правления · {GOVERNMENTS[governmentOf(country.government).id].name}</Text>
                 {country.modifiers.map((modifier) => (
-                  <Text style={styles.countryModifier} key={modifier}>· {MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
+                  <Text style={styles.countryModifier} key={modifier}>
+                    · {modifier === 'consulate' ? `Консулат ${country.consulCount}` : MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}
+                  </Text>
                 ))}
                 <CountryCompositionBlock game={game} countryId={country.id} />
-                <Text style={styles.countrySection}>ПРАВИТЕЛЬ</Text>
-                <View>
-                  <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.ruler.id) } })}>
-                    <Text style={styles.personLink}>{country.ruler.name} · {country.ruler.age} лет ({ageStage(country.ruler.age)})</Text>
-                  </Pressable>
-                  <Pressable onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(country.ruler.familyId) } })}
-                    accessibilityRole="link">
-                    <Text style={styles.familyLink}>{country.ruler.familyName} · родословная</Text>
-                  </Pressable>
-                </View>
-                {country.heir && (
-                  <>
-                    <Text style={styles.countrySection}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
-                    <View>
-                      <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.heir!.id) } })}>
-                        <Text style={styles.personLink}>{country.heir.name} · {country.heir.age} лет ({ageStage(country.heir.age)})</Text>
+                {country.modifiers.includes('consulate') ? rulers(game.world, country).map((leader, index) => {
+                  const heir = expectedHeirFor(game.world, country, leader);
+                  return (
+                    <View key={leader.id}>
+                      <Text style={styles.countrySection}>КОНСУЛ {index + 1}</Text>
+                      <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(leader.id) } })}>
+                        <Text style={styles.personLink}>{leader.name} · {leader.age} лет ({ageStage(leader.age)})</Text>
                       </Pressable>
-                      <Pressable onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(country.heir!.familyId) } })}
+                      <Pressable onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(leader.familyId) } })}
                         accessibilityRole="link">
-                        <Text style={styles.familyLink}>{country.heir.familyName} · родословная</Text>
+                        <Text style={styles.familyLink}>{leader.familyName} · родословная</Text>
+                      </Pressable>
+                      {heir && (
+                        <>
+                          <Text style={styles.countrySection}>ОЖИДАЕМЫЙ НАСЛЕДНИК КОНСУЛА {index + 1}</Text>
+                          <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(heir.id) } })}>
+                            <Text style={styles.personLink}>{heir.name} · {heir.age} лет ({ageStage(heir.age)})</Text>
+                          </Pressable>
+                        </>
+                      )}
+                    </View>
+                  );
+                }) : (
+                  <>
+                    <Text style={styles.countrySection}>ПРАВИТЕЛЬ</Text>
+                    <View>
+                      <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.ruler.id) } })}>
+                        <Text style={styles.personLink}>{country.ruler.name} · {country.ruler.age} лет ({ageStage(country.ruler.age)})</Text>
+                      </Pressable>
+                      <Pressable onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(country.ruler.familyId) } })}
+                        accessibilityRole="link">
+                        <Text style={styles.familyLink}>{country.ruler.familyName} · родословная</Text>
                       </Pressable>
                     </View>
+                    {country.heir && (
+                      <>
+                        <Text style={styles.countrySection}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
+                        <View>
+                          <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.heir!.id) } })}>
+                            <Text style={styles.personLink}>{country.heir.name} · {country.heir.age} лет ({ageStage(country.heir.age)})</Text>
+                          </Pressable>
+                          <Pressable onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(country.heir!.familyId) } })}
+                            accessibilityRole="link">
+                            <Text style={styles.familyLink}>{country.heir.familyName} · родословная</Text>
+                          </Pressable>
+                        </View>
+                      </>
+                    )}
+                    {country.coRulerIds.map((id) => {
+                      const coRuler = game.world.people.find((person) => person.id === id);
+                      return coRuler ? (
+                        <View key={id}>
+                          <Text style={styles.countrySection}>СОПРАВИТЕЛЬ</Text>
+                          <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(coRuler.id) } })}>
+                            <Text style={styles.personLink}>{coRuler.name} · {coRuler.age} лет ({ageStage(coRuler.age)})</Text>
+                          </Pressable>
+                        </View>
+                      ) : null;
+                    })}
                   </>
                 )}
                 <Pressable onPress={() => setShowPeople((current) => !current)} style={styles.peopleButton}>
