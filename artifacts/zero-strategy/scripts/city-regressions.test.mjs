@@ -113,18 +113,36 @@ assertInvalidCityPlacementIsNoop(
   'an occupied point',
 );
 
-// The rank distribution is checked after the proposed promotion, not before it.
-{
-  const { world, country } = makeCountry(6, [1, 1, 1, 1]);
-  assert.equal(canUpgradeCityRank(world, country.id, 1), true, 'four towns allow one rank-1 promotion');
+// Automatic play may choose either option. The actual selected city must be the
+// one promoted, with a capital and multiple ordinary cities in the country.
+for (const selectedIndex of [0, 1]) {
+  const { world, country, cities } = makeCountry(6, [1, 1, 1, 1]);
+  assert.equal(cities.filter((city) => city.capital).length, 1, 'the country has one capital');
+  assert.equal(cities.filter((city) => !city.capital).length, 3, 'the country has several ordinary cities');
+  assert.equal(canUpgradeCityRank(world, country.id, 1), true, 'four rank-1 cities allow one promotion');
   const card = drawUpgradeCityCard(world, country);
   assert.equal(card?.type, 'upgradeCity', 'promotion is offered when the resulting rank balance is valid');
   assert.equal(card?.choices?.length, 2, 'the card offers the two largest eligible cities');
-  const promotedCity = world.cities[card.choices[0].cityId];
+
+  const ranksBefore = world.cities.map((city) => city.rank);
   const game = new Game(world, 'observer');
-  game.resolveAutomatically(card);
-  assert.equal(promotedCity.rank, 2, 'resolving the card increases the selected city rank');
-  game.discard();
+  const previousRandom = Math.random;
+  try {
+    Math.random = () => selectedIndex === 0 ? 0 : 0.999999;
+    game.resolveAutomatically(card);
+    assert.equal(card.selectedChoice, selectedIndex, 'automatic play selects the expected option');
+    const selectedCityId = card.choices[card.selectedChoice].cityId;
+    assert.equal(world.cities[selectedCityId].rank, ranksBefore[selectedCityId] + 1,
+      'resolving the card increases the rank of the selected city');
+    for (const city of world.cities) {
+      if (city.id !== selectedCityId) {
+        assert.equal(city.rank, ranksBefore[city.id], 'non-selected cities keep their ranks');
+      }
+    }
+  } finally {
+    Math.random = previousRandom;
+    game.discard();
+  }
 }
 
 // A 3,000-pixel country with a capital and another city can split around the
