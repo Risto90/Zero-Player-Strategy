@@ -7,7 +7,7 @@ import {
 } from '../game/cards.ts';
 import { MAP_WIDTH } from '../game/config.ts';
 import { mulberry32 } from '../game/random.ts';
-import { canUpgradeCityRank } from '../game/settlements.ts';
+import { canUpgradeCityRank, populationAtPixel } from '../game/settlements.ts';
 import { World } from '../game/world.ts';
 
 function makeCountry(pixelCount, cityRanks = []) {
@@ -35,6 +35,54 @@ function makeCountry(pixelCount, cityRanks = []) {
   return { world, country, pixels, cities };
 }
 
+function totalOwnedPopulation(world) {
+  let total = 0;
+  for (const pixel of world.landIndex) {
+    if (world.owner[pixel] > 0) total += populationAtPixel(world, pixel);
+  }
+  return total;
+}
+
+function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
+  const { world, country, pixels, cities } = makeCountry(4, [1]);
+  const foreignCountry = world.newCountry({
+    rank: 'тест',
+    cultureId: country.cultureId,
+    religionId: country.religionId,
+    density: 10,
+    foundedYear: 0,
+    parentId: null,
+  });
+  const foreignPixel = world.landIndex.find((pixel) => !pixels.includes(pixel));
+  assert.notEqual(foreignPixel, undefined, 'the fixture has a foreign land pixel');
+  world.setOwner(foreignPixel, foreignCountry.id + 1);
+  world.density[foreignPixel] = 10;
+  const card = drawBuildCityCard(world, country);
+  assert.equal(card?.type, 'buildCity', 'the country can start a manual city placement');
+  const game = new Game(world, 'country');
+  game.card = card;
+
+  const citiesBefore = structuredClone(world.cities);
+  const capitalsBefore = world.cities.map((city) => ({ id: city.id, capital: city.capital }));
+  const populationBefore = totalOwnedPopulation(world);
+  const targetPixel = getTargetPixel({ world, pixels, cities, foreignPixel });
+  const accepted = game.selectCityAt(
+    targetPixel % MAP_WIDTH,
+    Math.floor(targetPixel / MAP_WIDTH),
+  );
+
+  assert.equal(accepted, false, `${description}: placement is rejected`);
+  assert.deepEqual(world.cities, citiesBefore, `${description}: the city list is unchanged`);
+  assert.deepEqual(
+    world.cities.map((city) => ({ id: city.id, capital: city.capital })),
+    capitalsBefore,
+    `${description}: capitals are unchanged`,
+  );
+  assert.equal(totalOwnedPopulation(world), populationBefore, `${description}: population is unchanged`);
+  assert.equal(game.getSnapshot().cityPlacementAvailable, true, `${description}: placement remains available`);
+  game.discard();
+}
+
 // A country with its mandatory capital still offers another city, and the actual
 // player placement path accepts that city on an unoccupied home pixel.
 {
@@ -50,6 +98,20 @@ function makeCountry(pixelCount, cityRanks = []) {
   assert.equal(world.cityAt(pixels[1])?.capital, false, 'the manually placed city is not a capital');
   game.discard();
 }
+
+// Invalid targets must not add a city, transfer population, or change capitals.
+assertInvalidCityPlacementIsNoop(
+  ({ world }) => world.land.findIndex((isLand) => !isLand),
+  'water',
+);
+assertInvalidCityPlacementIsNoop(
+  ({ foreignPixel }) => foreignPixel,
+  'foreign territory',
+);
+assertInvalidCityPlacementIsNoop(
+  ({ cities }) => cities[0].pixel,
+  'an occupied point',
+);
 
 // The rank distribution is checked after the proposed promotion, not before it.
 {
