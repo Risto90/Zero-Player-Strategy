@@ -43,7 +43,11 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
   const culture = world.cultures[person.cultureId]?.name ?? 'неизвестна';
   const religion = person.religionId === null ? 'без веры' : world.religions[person.religionId]?.name ?? 'неизвестна';
   const parents = person.parents.map((parentId) => world.people.find((item) => item.id === parentId)).filter((item) => !!item);
-  const spouses = person.spouseIds.map((spouseId) => world.people.find((item) => item.id === spouseId)).filter((item) => !!item);
+  const partners = [
+    ...person.spouseIds.map((partnerId) => ({ person: world.people.find((item) => item.id === partnerId), kind: 'Брак' })),
+    ...person.loverIds.filter((loverId) => !person.spouseIds.includes(loverId))
+      .map((partnerId) => ({ person: world.people.find((item) => item.id === partnerId), kind: 'Любовная связь' })),
+  ].filter((entry): entry is { person: Person; kind: string } => !!entry.person);
   const children = world.people.filter((item) => item.parents.includes(person.id))
     .sort((a, b) => a.bornAt - b.bornAt);
   const siblings = person.parents.length
@@ -71,7 +75,7 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
           <Text style={styles.fact}>Пол · {person.gender === 'female' ? 'женский' : 'мужской'}</Text>
           <Text style={styles.fact}>Культура · {culture}</Text>
           <Text style={styles.fact}>Вероисповедание · {religion}</Text>
-          <Text style={styles.fact}>Династия · № {person.familyId}</Text>
+          <Text style={styles.fact}>Династия · {person.familyName}</Text>
           {!!person.trait && <Text style={styles.fact}>Черты · {person.traits.join(', ') || person.trait}</Text>}
           <Text style={styles.fact}>Годы жизни · {Math.floor(person.bornAt)}—{person.deathYear ?? 'настоящее время'}</Text>
         </View>
@@ -83,10 +87,10 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
           )) : <Text style={styles.note}>Сведения о родителях неизвестны.</Text>}
         </View>
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>БРАКИ</Text>
-          {spouses.length ? spouses.map((relative) => (
+          <Text style={styles.sectionTitle}>СУПРУГИ И ЛЮБОВНЫЕ ПАРТНЁРЫ</Text>
+          {partners.length ? partners.map(({ person: relative, kind }) => (
             <RelativeLink key={relative.id} id={relative.id} title={relative.name}
-              note={`${relative.alive ? 'жив(а)' : `умер${relative.gender === 'female' ? 'ла' : ''} в ${relative.deathYear ?? '?'}`} · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'без веры' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
+              note={`${kind} · ${relative.alive ? 'жив(а)' : `умер${relative.gender === 'female' ? 'ла' : ''} в ${relative.deathYear ?? '?'}`} · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'без веры' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
           )) : <Text style={styles.note}>Браки не зарегистрированы.</Text>}
         </View>
         <View style={styles.section}>

@@ -1,5 +1,5 @@
 import { GOVERNMENTS, MODIFIERS, availableModifiers, applyModifier, type GovernmentId, type GovernmentModifierId, type Person } from './government';
-import { canMarry, newCitizen, related, trackedForBirth } from './characters';
+import { arePartners, canMarry, livingPartners, newCitizen, related, trackedForBirth } from './characters';
 import { demography } from './demography';
 import { person } from './characters';
 import { candidateAllowed, successionOrder } from './succession';
@@ -302,7 +302,8 @@ function personWorldAlive(world: World, id: number): boolean {
 
 export function lifeOpportunity(world: World, c: Country, year: number): { kind: string; ids: number[]; weight: number; newPerson?: import('./government').Person } | null {
   const locals = world.people.filter((p) => p.alive && p.countryId === c.id);
-  const birthParents = locals.filter((p) => trackedForBirth(world, c, p) && canMarry(c, p));
+  const trackedLocals = locals.filter((p) => trackedForBirth(world, c, p));
+  const birthParents = world.people.filter((p) => trackedForBirth(world, c, p) && p.alive);
   const death = c.pendingDeathIds.length ? { kind: 'death', ids: [c.pendingDeathIds[0]], weight: 10000 } : null;
   if (death) return death;
   const activeSeats = [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is NonNullable<typeof p> => !!p)];
@@ -314,14 +315,15 @@ export function lifeOpportunity(world: World, c: Country, year: number): { kind:
   const events: { kind: string; ids: number[]; weight: number; newPerson?: Person }[] = [];
   for (const mother of birthParents.filter((p) => p.gender === 'female' && p.age >= 12 && p.age <= 45)) {
     if (mother.lastBirthYear === year) continue;
-    const spouse = birthParents.find((p) => p.gender === 'male' && p.age >= 12 && mother.spouseIds.includes(p.id) && p.alive && !related(world, mother, p));
-    if (!spouse) continue;
+    const father = livingPartners(world, mother).find((p) => p.gender === 'male' && p.age >= 12 &&
+      arePartners(mother, p) && !related(world, mother, p));
+    if (!father) continue;
     const fertility = mother.age < 20 ? 0.12 : mother.age <= 45 ? 0.65 : 0;
-    const maleFertility = spouse.age <= 45 ? 1 : spouse.age <= 65 ? 0.5 : 0.15;
-    const fecundity = mother.traits.includes('Плодовитый') || spouse.traits.includes('Плодовитый') ? 2 : 1;
-    events.push({ kind: 'birth', ids: [mother.id, spouse.id], weight: fertility * maleFertility * fecundity * 0.6 });
+    const maleFertility = father.age <= 45 ? 1 : father.age <= 65 ? 0.5 : 0.15;
+    const fecundity = mother.traits.includes('Плодовитый') || father.traits.includes('Плодовитый') ? 2 : 1;
+    events.push({ kind: 'birth', ids: [mother.id, father.id], weight: fertility * maleFertility * fecundity * 0.6 });
   }
-  for (const p of locals.filter((x) => trackedForBirth(world, c, x) && (canMarry(c, x) || (x.age >= 8 && x.age < 12)))) {
+  for (const p of trackedLocals.filter((x) => canMarry(c, x) || (x.age >= 8 && x.age < 12))) {
     const betrothed = person(world, p.betrothedId);
     if (betrothed?.alive && p.age >= 12 && betrothed.age >= 12 && canMarry(c, p) && canMarry(c, betrothed)) {
       events.push({ kind: 'marriage', ids: [p.id, betrothed.id], weight: 0.15 });

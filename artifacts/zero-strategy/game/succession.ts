@@ -1,4 +1,5 @@
 import type { Person } from './government';
+import { familyNameForId } from './government';
 import type { Country, World } from './world';
 import { person, newCitizen, registerPerson } from './characters';
 import { demography, weighted } from './demography';
@@ -7,7 +8,7 @@ export function rulers(world: World, c: Country): Person[] {
   return [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is Person => !!p)];
 }
 export function candidateAllowed(world: World, c: Country, p: Person, old = c.ruler, partnerExempt = false): boolean {
-  if (!p.alive || c.pendingDeathIds.includes(p.id) || p.countryId !== c.id) return false;
+  if (!p.alive || c.pendingDeathIds.includes(p.id) || (p.countryId !== c.id && !partnerExempt)) return false;
   const coRule = c.coRulerIds.includes(p.id);
   const adult = c.government === 'republic' || c.modifiers.includes('meritocracy') ||
     (c.government === 'tyranny' && c.modifiers.includes('communist'));
@@ -107,22 +108,6 @@ export function refreshHeirs(world: World, year?: number): void {
   for (const c of world.countries) {
     if (!hasFixedHeir(c)) { c.heir = null; continue; }
     c.heir = successionOrder(world, c)[0] ?? null;
-    if (!c.heir) {
-      const bornThisYear = year ?? c.rulerSince ?? c.foundedYear;
-      const p = newCitizen(world, c, bornThisYear);
-      p.familyId = c.ruler.familyId;
-      p.parents = [c.ruler.id];
-      p.age = c.modifiers.includes('meritocracy') ? 20 : c.government === 'tyranny' ? 12 : c.modifiers.includes('coRule') ? 12 : Math.floor(Math.random() * 16);
-      p.bornAt = bornThisYear - p.age - Math.random();
-      p.cultureId = c.ruler.cultureId;
-      p.religionId = c.ruler.religionId;
-      if (c.modifiers.includes('patriarchal')) p.gender = 'male';
-      if (c.modifiers.includes('matriarchal')) p.gender = 'female';
-      if (c.modifiers.includes('communist') && !p.traits.includes('Космополит')) p.traits.push('Космополит');
-      registerPerson(world, c, p);
-      if (!c.dynastyClaims.includes(p.familyId)) c.dynastyClaims.push(p.familyId);
-      c.heir = p;
-    }
   }
 }
 
@@ -135,7 +120,9 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
   const dynastic = (): Person => {
     const p = fresh();
     p.familyId = old.familyId;
-    p.parents = [old.id];
+    p.familyName = familyNameForId(old.familyId);
+    p.name = `${p.name.split(/\s+/)[0]} ${p.familyName}`;
+    p.parents = [];
     p.age = c.modifiers.includes('meritocracy') || (c.government === 'republic') ? 24 :
       c.government === 'tyranny' || c.modifiers.includes('coRule') ? 12 : 16;
     p.bornAt = year - p.age - Math.random();
@@ -144,6 +131,8 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
     return p;
   };
   const distinctFamily = unique(family);
+  const eligibleFamily = distinctFamily.filter((p) => candidateAllowed(world, c, p, old) ||
+    (c.modifiers.includes('pornocracy') && p.countryId !== c.id));
   const ensurePair = (first: Person | null, second: Person | null, fallback: () => Person): Person[] => {
     const pair = unique([first, second]);
     while (pair.length < 2) {
@@ -162,7 +151,7 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
     return child ? ensurePair(fresh(), child, fresh) : ensurePair(fresh(), null, fresh);
   }
   if (c.government === 'hereditary') {
-    const eligible = distinctFamily.filter((p) => candidateAllowed(world, c, p, old));
+    const eligible = eligibleFamily;
     const first = hasFixedHeir(c) ? eligible[0] ?? null :
       weighted(eligible.map((p) => ({ value: p, weight: candidateWeight(world, c, p, old) })));
     const second = eligible.find((p) => p.id !== first?.id) ?? null;
@@ -170,7 +159,7 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
   }
   if (c.government === 'tyranny') {
     const first = drawFamily();
-    const second = distinctFamily.find((p) => p.id !== first?.id && candidateAllowed(world, c, p, old)) ?? null;
+    const second = eligibleFamily.find((p) => p.id !== first?.id) ?? null;
     return ensurePair(first, second, fresh);
   }
   const make = () => {

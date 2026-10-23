@@ -1,11 +1,14 @@
 import { Feather } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { router } from 'expo-router';
+import { useState } from 'react';
 import type { ReactElement } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { BIOME_NOTE } from '@/game/config';
 import { fmt, pct } from '@/game/format';
 import type { Game, GameSnapshot, LegendRow } from '@/game/game';
+import { ageStage, GOVERNMENTS, MODIFIERS, governmentOf } from '@/game/government';
 import { RAMPS } from '@/game/render';
 
 const c = colors.light;
@@ -62,7 +65,7 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
   if (mapMode === 'political') {
     title = 'Страны';
     sub = `${legend.countries.length} · население ${fmt(legend.totalPopulation)}`;
-    body = legend.countries.length ? <Rows rows={legend.countries} unit="чел." /> : <Empty text="Ни одного государства. Пока." />;
+    body = legend.countries.length ? <CountryRows game={game} rows={legend.countries} /> : <Empty text="Ни одного государства. Пока." />;
   } else if (mapMode === 'cultures' || mapMode === 'religions') {
     const kind = mapMode === 'cultures' ? 'culture' : 'religion';
     const rows = mapMode === 'cultures' ? legend.cultures : legend.religions;
@@ -115,12 +118,104 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
   );
 }
 
+function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [showPeople, setShowPeople] = useState(false);
+  return (
+    <FlatList
+      data={rows}
+      keyExtractor={(row) => String(row.id)}
+      nestedScrollEnabled
+      renderItem={({ item: row }) => {
+        const country = game.world.countries[row.id];
+        if (!country) return null;
+        const selected = selectedId === country.id;
+        const importantPeople = selected && showPeople ? game.importantPeople(country.id) : [];
+        return (
+          <View style={[styles.countryCard, selected && styles.countrySelected]}>
+            <Pressable onPress={() => {
+              setSelectedId((current) => current === country.id ? null : country.id);
+              setShowPeople(false);
+            }} style={styles.row} accessibilityRole="button" accessibilityState={{ expanded: selected }}
+              testID={`button-country-${country.id}`}>
+              <View style={[styles.swatch, { backgroundColor: row.color }]} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.rowName} numberOfLines={1}>{country.rank} {country.name}</Text>
+                <Text style={styles.rowDetail} numberOfLines={1}>{row.detail}</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={styles.rowPct}>{pct(row.percent)}</Text>
+                <Text style={styles.rowValue}>{fmt(row.value)} чел.</Text>
+              </View>
+              <Feather name={selected ? 'chevron-up' : 'chevron-down'} size={16} color={c.mutedForeground} />
+            </Pressable>
+            {selected && (
+              <View style={styles.countryDetails}>
+                <Text style={styles.countryInfo}>Площадь · {fmt(country.pixels)} земель</Text>
+                <Text style={styles.countryInfo}>Население · {fmt(row.value)} чел.</Text>
+                <Text style={styles.countryInfo}>Форма правления · {GOVERNMENTS[governmentOf(country.government).id].name}</Text>
+                {country.modifiers.map((modifier) => (
+                  <Text style={styles.countryModifier} key={modifier}>· {MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
+                ))}
+                <Text style={styles.countrySection}>ПРАВИТЕЛЬ</Text>
+                <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.ruler.id) } })}>
+                  <Text style={styles.personLink}>{country.ruler.name} · {country.ruler.age} лет ({ageStage(country.ruler.age)})</Text>
+                </Pressable>
+                {country.heir && (
+                  <>
+                    <Text style={styles.countrySection}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
+                    <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.heir!.id) } })}>
+                      <Text style={styles.personLink}>{country.heir.name} · {country.heir.age} лет ({ageStage(country.heir.age)})</Text>
+                    </Pressable>
+                  </>
+                )}
+                <Pressable onPress={() => setShowPeople((current) => !current)} style={styles.peopleButton}>
+                  <Feather name="users" size={13} color={c.primaryForeground} />
+                  <Text style={styles.peopleButtonText}>{showPeople ? 'Скрыть важных персонажей' : 'Важные живые персонажи'}</Text>
+                </Pressable>
+                {showPeople && (
+                  <View style={styles.peopleList}>
+                    {importantPeople.map((person) => (
+                      <Pressable key={person.id} onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(person.id) } })}
+                        style={styles.personRow}>
+                        <Text style={styles.personLink}>{person.name}</Text>
+                        <Text style={styles.personMeta}>
+                          {person.age} лет · {game.world.cultures[person.cultureId]?.name ?? 'культура неизвестна'} ·
+                          {' '}{person.religionId === null ? 'без веры' : game.world.religions[person.religionId]?.name ?? 'вера неизвестна'}
+                          {' · '}{person.familyName}
+                        </Text>
+                      </Pressable>
+                    ))}
+                    {!importantPeople.length && <Text style={styles.rowDetail}>Нет живых персонажей.</Text>}
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+        );
+      }}
+    />
+  );
+}
+
 const styles = StyleSheet.create({
   panel: { flex: 1, backgroundColor: c.card },
   header: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingHorizontal: 8, paddingTop: 6, paddingBottom: 4 },
   title: { fontFamily: fonts.display, fontSize: 16, color: c.foreground },
   sub: { flexShrink: 1, fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: 'rgba(201,185,166,0.7)', backgroundColor: c.card },
+  countryCard: { backgroundColor: c.card, borderBottomWidth: 1, borderBottomColor: 'rgba(201,185,166,0.7)' },
+  countrySelected: { borderWidth: 1, borderColor: c.primary },
+  countryDetails: { gap: 4, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: c.background },
+  countryInfo: { fontFamily: fonts.sans, fontSize: 11, color: c.foreground },
+  countryModifier: { fontFamily: fonts.sans, fontSize: 10, lineHeight: 14, color: c.mutedForeground },
+  countrySection: { marginTop: 4, fontFamily: fonts.sansSemiBold, fontSize: 9, letterSpacing: 1, color: c.primary },
+  personLink: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.accent, textDecorationLine: 'underline' },
+  peopleButton: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 8, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 4, backgroundColor: c.primary },
+  peopleButtonText: { fontFamily: fonts.sansSemiBold, fontSize: 10, color: c.primaryForeground },
+  peopleList: { maxHeight: 180, marginTop: 4 },
+  personRow: { paddingVertical: 5, borderBottomWidth: 1, borderColor: c.border },
+  personMeta: { fontFamily: fonts.sans, fontSize: 9, color: c.mutedForeground },
   rowBar: { position: 'absolute', left: 0, top: 0, bottom: 0, opacity: 0.15 },
   swatch: { width: 12, height: 12, borderRadius: 2, borderWidth: 1, borderColor: 'rgba(44,30,23,0.4)' },
   rowName: { fontFamily: fonts.sansMedium, fontSize: 13, color: c.foreground },

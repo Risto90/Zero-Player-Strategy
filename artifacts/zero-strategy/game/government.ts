@@ -19,6 +19,7 @@ export interface Person {
   parents: number[];
   spouseIds: number[];
   familyId: number;
+  familyName: string;
   cultureId: number;
   religionId: number | null;
   countryId: number;
@@ -116,11 +117,26 @@ export function ageStage(age: number): string {
   if (age <= 65) return 'пожилой';
   return 'старик';
 }
+/** A stable, readable surname for each dynasty ID; it never leaks numeric IDs into the UI. */
+export function familyNameForId(familyId: number): string {
+  const parts: string[] = [];
+  let remaining = Math.max(0, Math.floor(familyId));
+  do {
+    parts.push(FAMILY[remaining % FAMILY.length]);
+    remaining = Math.floor(remaining / FAMILY.length);
+  } while (remaining > 0);
+  return parts.reverse().join('-');
+}
+function inFamily(name: string, familyName: string): string {
+  const givenName = name.trim().split(/\s+/)[0] || 'Персонаж';
+  return `${givenName} ${familyName}`;
+}
 export function createPerson(year: number, age = 20 + Math.floor(Math.random() * 26), familyId = nextPersonId, parents: number[] = [], cultureId = 0, religionId: number | null = null): Person {
   const id = nextPersonId++;
   const gender: Gender = Math.random() < 0.5 ? 'female' : 'male';
   const trait = age >= 3 ? pick(TRAITS) : '';
-  return { id, name: pick(GIVEN[gender]), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, cultureId, religionId,
+  const familyName = familyNameForId(familyId);
+  return { id, name: inFamily(pick(GIVEN[gender]), familyName), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName, cultureId, religionId,
     countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
     loverIds: [], friendIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
 }
@@ -184,8 +200,6 @@ export function deathChance(age: number): number {
   if (age <= 65) return 1 - Math.pow(0.99 * 0.85, 1 / 20);
   return Math.min(1, (age - 56) / 100);
 }
-export function uniqueLeader(countryId: number, year: number): Person {
-  const person = createPerson(year, 29 + Math.floor(Math.random() * 17), createFamilyId());
-  person.name = `${person.name} ${pick(FAMILY)}${countryId + 1}`;
-  return person;
+export function uniqueLeader(_countryId: number, year: number): Person {
+  return createPerson(year, 29 + Math.floor(Math.random() * 17), createFamilyId());
 }

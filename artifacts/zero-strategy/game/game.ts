@@ -10,7 +10,7 @@ import { fmt } from './format';
 import { MapRenderer, type EntityLayer, type MapMode } from './render';
 import { World, type Country } from './world';
 import { GOVERNMENTS, reservePersonId, type Person } from './government';
-import { advancePeople, birth, killPerson, marry, newCitizen, normalizePolitics, person, registerPerson } from './characters';
+import { advancePeople, arePartners, birth, killPerson, marry, newCitizen, normalizePolitics, person, registerPerson } from './characters';
 import { applyReform } from './politics';
 import { appoint, candidateAllowed, ensureOffices, refreshHeirs, successionOrder } from './succession';
 import { randomItem } from './random';
@@ -403,6 +403,7 @@ export class Game {
     const dynasties = new Set(country.dynastyClaims);
     const included = new Set<number>(rulers);
     const children = new Map<number, number[]>();
+    const peopleById = new Map(this.world.people.map((p) => [p.id, p]));
     for (const p of this.world.people) {
       for (const parentId of p.parents) {
         const list = children.get(parentId) ?? [];
@@ -413,11 +414,19 @@ export class Game {
     for (const p of this.world.people) {
       if (dynasties.has(p.familyId) || rulers.has(p.id) || p.formerRulerOf.includes(countryId)) included.add(p.id);
     }
-    for (const p of this.world.people) {
-      if (!included.has(p.id)) continue;
-      for (const id of [...p.parents, ...p.spouseIds, ...(children.get(p.id) ?? [])]) {
-        included.add(id);
+    let frontier = [...included];
+    for (let depth = 0; depth < 2 && frontier.length; depth += 1) {
+      const next: number[] = [];
+      for (const id of frontier) {
+        const p = peopleById.get(id);
+        if (!p) continue;
+        for (const relativeId of [...p.parents, ...p.spouseIds, ...p.loverIds, ...(children.get(p.id) ?? [])]) {
+          if (included.has(relativeId)) continue;
+          included.add(relativeId);
+          next.push(relativeId);
+        }
       }
+      frontier = next;
     }
     return this.world.people
       .filter((p) => included.has(p.id) && p.alive)
@@ -611,7 +620,7 @@ export class Game {
               pressure.strength = Math.max(1, pressure.strength * 2);
               target.pressures.coup = pressure;
               const ruler = choice.ruler ?? newCitizen(w, target, this.year);
-              appoint(w, target, registerPerson(w, target, ruler), this.year);
+              this.appointAndAnnex(target, registerPerson(w, target, ruler), this.year);
               this.addLog(`${target.name}: переворот. ${GOVERNMENTS[target.government].name}, правитель ${target.ruler.name}.`);
             } else this.addLog(`${target.name}: введено изменение «${choice.label}»; форма ${previous}.`);
             ensureOffices(w, target, this.year);
@@ -627,7 +636,7 @@ export class Game {
           const ruler = choice?.ruler ?? card.newRuler;
           if (ruler) {
             const oldName = target.ruler.name;
-            appoint(w, target, ruler, this.year, choice?.seatId ?? target.ruler.id);
+            this.appointAndAnnex(target, ruler, this.year, choice?.seatId ?? target.ruler.id);
             ensureOffices(w, target, this.year);
             refreshHeirs(w, this.year);
             this.addLog(`${target.name}: ${card.type === 'election' ? 'выбран' : 'власть передана'} ${ruler.name} вместо ${oldName}.`);
@@ -648,19 +657,31 @@ export class Game {
     w.version += 1;
   }
 
-  private mergeCountries(main: Country, incoming?: Country): void {
+  private mergeCountries(main: Country, incoming?: Country, cause: 'union' | 'inheritance' = 'union'): void {
     if (!incoming || incoming.id === main.id || incoming.pixels <= 0) return;
     const w = this.world;
     const incomingTag = incoming.id + 1, mainTag = main.id + 1;
     for (let p = 0; p < w.owner.length; p += 1) if (w.owner[p] === incomingTag) w.owner[p] = mainTag;
-    if (!main.previousRulerIds.includes(incoming.ruler.id)) main.previousRulerIds.push(incoming.ruler.id);
-    if (!incoming.ruler.formerRulerOf.includes(main.id)) incoming.ruler.formerRulerOf.push(main.id);
+    if (incoming.ruler.id !== main.ruler.id) {
+      if (!main.previousRulerIds.includes(incoming.ruler.id)) main.previousRulerIds.push(incoming.ruler.id);
+      if (!incoming.ruler.formerRulerOf.includes(main.id)) incoming.ruler.formerRulerOf.push(main.id);
+    }
     main.dynastyClaims = [...new Set([...main.dynastyClaims, ...incoming.dynastyClaims])];
     main.previousRulerIds = [...new Set([...main.previousRulerIds, ...incoming.previousRulerIds])];
     for (const p of w.people) if (p.countryId === incoming.id) p.countryId = main.id;
     refreshHeirs(w, this.year); ensureOffices(w, main, this.year);
     w.recountCountries(); w.version += 1; this.renderer.markAll();
-    this.addLog(`${incoming.name} мирно объединилась с ${main.name}.`);
+    this.addLog(cause === 'inheritance'
+      ? `${incoming.name} поглощена ${main.name} после перехода власти к её правителю.`
+      : `${incoming.name} мирно объединилась с ${main.name}.`);
+  }
+
+  /** If another country's sitting ruler inherits this throne, their former state joins it. */
+  private appointAndAnnex(country: Country, ruler: Person, year: number, seatId = country.ruler.id): void {
+    const homes = this.world.countries.filter((other) => other.id !== country.id && other.pixels > 0 && other.ruler.id === ruler.id);
+    appoint(this.world, country, ruler, year, seatId);
+    if (country.ruler.id !== ruler.id) return;
+    for (const home of homes) this.mergeCountries(country, home, 'inheritance');
   }
 
   private extendPressure(country: Country, kind: 'faith' | 'ethnic' | 'coup'): void {
@@ -682,14 +703,15 @@ export class Game {
       if (wasLeader) {
         const seatId = deceased.id;
         let next = choice?.ruler ?? null;
-        if (!next || !next.alive || !candidateAllowed(w, country, next, deceased)) {
+        const inSuccessionOrder = next && successionOrder(w, country, deceased).some((candidate) => candidate.id === next!.id);
+        if (!next || !next.alive || (!inSuccessionOrder && !candidateAllowed(w, country, next, deceased))) {
           next = successionOrder(w, country, deceased)[0] ?? null;
         }
         if (!next) {
           next = registerPerson(w, country, newCitizen(w, country, this.year));
           this.addLog(`${country.name}: линия наследования прервалась; выбран новый правитель.`);
         }
-        appoint(w, country, next, this.year, seatId);
+        this.appointAndAnnex(country, next, this.year, seatId);
         ensureOffices(w, country, this.year);
         if (country.government === 'tyranny' && Math.random() < 0.5) {
           const form = randomItem(['tribal', 'hereditary', 'republic'] as const);
@@ -712,8 +734,9 @@ export class Game {
     if (event.kind === 'birth') {
       const parents = ids.map((id) => person(w, id)).filter((p): p is Person => !!p && p.alive);
       const mother = parents.find((p) => p.gender === 'female'), father = parents.find((p) => p.gender === 'male');
-      if (mother && father) {
+      if (mother && father && arePartners(mother, father)) {
         const child = birth(w, country, mother, father, this.year);
+        if (!child) return;
         this.addLog(`${country.name}: у ${mother.name} и ${father.name} родился ребёнок ${child.name}.`);
         refreshHeirs(w, this.year);
       }

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CardPanel } from '@/components/game/CardPanel';
-import { CountryDirectory } from '@/components/game/CountryDirectory';
 import { InspectCard } from '@/components/game/InspectCard';
 import { LegendPanel } from '@/components/game/LegendPanel';
 import { LogPanel } from '@/components/game/LogPanel';
@@ -69,7 +68,6 @@ function GameScreen({ game }: { game: Game }) {
   const mapRef = useRef<MapViewHandle>(null);
   const [tool, setTool] = useState<MapTool>('brush');
   const [inspect, setInspect] = useState<{ info: PixelInfo | null } | null>(null);
-  const [showCountries, setShowCountries] = useState(false);
   const changeTool = (t: MapTool) => {
     setTool(t);
     if (t === 'brush') setInspect(null);
@@ -86,10 +84,6 @@ function GameScreen({ game }: { game: Game }) {
       <Pressable onPress={goHome} style={styles.menu} hitSlop={8} testID="link-home">
         <Feather name="chevron-left" size={16} color={c.secondaryForeground} />
         <Text style={styles.menuText}>Меню</Text>
-      </Pressable>
-      <Pressable onPress={() => setShowCountries(true)} style={styles.directoryButton} testID="button-country-directory">
-        <Feather name="globe" size={14} color={c.secondaryForeground} />
-        <Text style={styles.menuText}>Страны</Text>
       </Pressable>
       <Text style={styles.brand}>Zero Strategy</Text>
     </View>
@@ -121,8 +115,6 @@ function GameScreen({ game }: { game: Game }) {
           <View style={{ flex: 1 }}>{legend}</View>
           <View style={[styles.logBox, { height: height * 0.24 }]}>{log}</View>
         </View>
-        <CountryDirectory game={game} snap={snap} visible={showCountries} onClose={() => setShowCountries(false)}
-          onPersonPress={(id) => { setShowCountries(false); router.push({ pathname: '/person/[id]', params: { id: String(id) } }); }} />
       </View>
     );
   }
@@ -135,8 +127,6 @@ function GameScreen({ game }: { game: Game }) {
       <ModeTabs game={game} snap={snap} />
       <View style={{ height: height * 0.2 }}>{legend}</View>
       <View style={[styles.logBox, { height: height * 0.15 + insets.bottom, paddingBottom: insets.bottom }]}>{log}</View>
-      <CountryDirectory game={game} snap={snap} visible={showCountries} onClose={() => setShowCountries(false)}
-        onPersonPress={(id) => { setShowCountries(false); router.push({ pathname: '/person/[id]', params: { id: String(id) } }); }} />
     </View>
   );
 }
@@ -146,7 +136,6 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row' },
   topBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.secondary, paddingHorizontal: 8, paddingVertical: 6 },
   menu: { flexDirection: 'row', alignItems: 'center', gap: 2, opacity: 0.85 },
-  directoryButton: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, marginLeft: 6, borderWidth: 1, borderColor: c.secondaryForeground, borderRadius: 4 },
   menuText: { fontFamily: fonts.sans, fontSize: 12, color: c.secondaryForeground },
   brand: { marginLeft: 'auto', fontFamily: fonts.displayItalic, fontSize: 14, color: c.secondaryForeground },
   mapArea: { flex: 1, minHeight: 120 },
