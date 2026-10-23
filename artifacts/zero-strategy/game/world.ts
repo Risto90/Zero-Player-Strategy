@@ -39,6 +39,8 @@ export interface City {
   countryId: number;
   pixel: number;
   rank: CityRank;
+  /** Total population in the city; rural density at the pixel remains in the density layer. */
+  population: number;
   capital: boolean;
   /** Fixed at founding from the leading culture at the city's pixel. */
   name?: string;
@@ -191,7 +193,15 @@ export class World {
   addCity(countryId: number, pixel: number, rank: CityRank = 1, capital = false): City | null {
     const country = this.countries[countryId];
     if (!country || pixel < 0 || pixel >= MAP_PIXELS || !this.land[pixel] || this.cityAt(pixel)) return null;
-    const city: City = { id: this.cities.length, countryId, pixel, rank, capital, ...generateCityIdentity(this, pixel) };
+    const city: City = {
+      id: this.cities.length,
+      countryId,
+      pixel,
+      rank,
+      population: this.density[pixel],
+      capital,
+      ...generateCityIdentity(this, pixel),
+    };
     if (capital) for (const existing of this.cities) if (existing.countryId === countryId) existing.capital = false;
     this.cities.push(city);
     this.cityIdAt[pixel] = city.id;

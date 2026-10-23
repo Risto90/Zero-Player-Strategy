@@ -221,7 +221,12 @@ export function transferColonizationPopulation(
     : { selected: [], remaining: [] };
   const targetAfter = combineGroups(nativeRemoval.remaining, migrants);
 
-  world.density[donor] = Math.max(0, sourceDensity - amount);
+  const remainingDensity = Math.max(0, sourceDensity - amount);
+  const donorCity = world.cityAt(donor);
+  if (donorCity) {
+    donorCity.population *= sourceDensity > EPSILON ? remainingDensity / sourceDensity : 0;
+  }
+  world.density[donor] = remainingDensity;
   world.density[target] = world.owner[target] > 0 ? targetDensity : amount;
   setPixelComposition(world, donor, donorSplit.remaining);
   setPixelComposition(world, target, targetAfter);

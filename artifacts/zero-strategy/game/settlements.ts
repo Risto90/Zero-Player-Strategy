@@ -25,6 +25,11 @@ export function cityRankName(rank: CityRank): string {
   return ['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][rank - 1];
 }
 
+/** The city replaces its pixel's rural population in totals; its urban part is the excess. */
+export function populationAtPixel(world: World, pixel: number): number {
+  return world.cityAt(pixel)?.population ?? world.density[pixel];
+}
+
 /**
  * A promotion is offered only if the resulting rank distribution still has at least
  * two cities of the previous rank for each city of the next rank.
@@ -221,7 +226,7 @@ export class CityInfluenceIndex {
 type Pair = { culture: number; religion: number | null; population: number };
 
 /** Moves 10% from each source pixel into a city, preferring matches to the city's population. */
-export function movePopulationToCity(world: World, source: number, target: number, amount: number): number {
+export function movePopulationToCity(world: World, source: number, target: number, amount: number, fromCityRural = true): number {
   if (source === target || amount <= 0 || world.density[source] <= 0) return 0;
   const sourceCulture = world.cultureTable.entries[world.culture[source]];
   const sourceReligion = world.religionTable.entries[world.religion[source]];
@@ -283,10 +288,13 @@ export function movePopulationToCity(world: World, source: number, target: numbe
   };
   const sourceTotal = world.density[source] - actual;
   const sourceRemain = sourcePairs.filter((group) => group.population > 1e-9);
+  const sourceCity = fromCityRural ? world.cityAt(source) : null;
+  if (sourceCity) sourceCity.population = Math.max(0, sourceCity.population - actual);
   world.density[source] = Math.max(0, sourceTotal);
   updateMix(source, sourceRemain, sourceTotal);
 
-  const targetTotal = world.density[target];
+  const targetCity = world.cityAt(target);
+  const targetTotal = targetCity?.population ?? world.density[target];
   const targetPairs: Pair[] = [];
   const targetCultureEntry = world.cultureTable.entries[world.culture[target]];
   const targetReligionEntry = world.religionTable.entries[world.religion[target]];
@@ -299,7 +307,8 @@ export function movePopulationToCity(world: World, source: number, target: numbe
     });
   }
   targetPairs.push(...moved.values());
-  world.density[target] += actual;
+  if (targetCity) targetCity.population += actual;
+  else world.density[target] += actual;
   updateMix(target, targetPairs, targetTotal + actual);
   return actual;
 }
@@ -368,7 +377,7 @@ export function concentrateCityPopulation(world: World, city: City): void {
         world.density[source] = pool.cell.population;
         world.culture[source] = pool.cell.cultureMix;
         world.religion[source] = pool.cell.religionMix;
-        movePopulationToCity(world, source, pixel, amount);
+        movePopulationToCity(world, source, pixel, amount, false);
         pool.cell.population = world.density[source];
         pool.cell.cultureMix = world.culture[source];
         pool.cell.religionMix = world.religion[source];

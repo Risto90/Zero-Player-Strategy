@@ -1,4 +1,5 @@
 import type { Country, World } from './world';
+import { populationAtPixel } from './settlements';
 
 export interface DemographicPair { cultureId: number; religionId: number | null; weight: number }
 export interface Demography {
@@ -26,12 +27,15 @@ export function demography(world: World, country: Country): Demography {
   const cached = entries.get(country.id);
   if (cached?.version === world.version) return cached.data;
   const combinations = new Map<string, { culture: number; religion: number; population: number }>();
+  let ruralPopulation = 0;
   world.forEachCountryPixel(country, (p) => {
     const culture = world.culture[p], religion = world.religion[p];
+    const pixelPopulation = populationAtPixel(world, p);
+    ruralPopulation += world.density[p];
     const key = `${culture}/${religion}`;
     const entry = combinations.get(key);
-    if (entry) entry.population += world.density[p];
-    else combinations.set(key, { culture, religion, population: world.density[p] });
+    if (entry) entry.population += pixelPopulation;
+    else combinations.set(key, { culture, religion, population: pixelPopulation });
   });
   const pairs = new Map<string, DemographicPair>();
   const cultures = new Map<number, number>();
@@ -61,7 +65,7 @@ export function demography(world: World, country: Country): Demography {
   const culture = leading(cultures, country.cultureId);
   const religion = leading(religions, country.religionId);
   const data: Demography = {
-    pairs: [...pairs.values()], cultures, religions, population, density: population / Math.max(1, country.pixels),
+    pairs: [...pairs.values()], cultures, religions, population, density: ruralPopulation / Math.max(1, country.pixels),
     culture, religion,
     cultureFragmentation: cultures.size * (1 - (cultures.get(culture) ?? 0) / Math.max(1, population)),
     religionFragmentation: religions.size * (1 - (religions.get(religion) ?? 0) / Math.max(1, population)),

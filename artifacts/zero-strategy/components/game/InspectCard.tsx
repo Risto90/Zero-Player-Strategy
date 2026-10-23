@@ -100,7 +100,7 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
               </Text>
               {info.city && (
                 <Text style={styles.cityLine}>
-                  {info.city.capital ? 'Столица · ' : ''}{info.city.name ?? 'Город'} · {['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][info.city.rank - 1]}
+                  {info.city.capital ? 'Столица · ' : ''}{info.city.name ?? 'Город'} · {['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][info.city.rank - 1]} · {fmt(info.city.population)} чел.
                 </Text>
               )}
               {info.country && (
@@ -175,7 +175,7 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
               <Bar label="Влажность" value={info.humidity} />
               <Bar label="Температура" value={info.temperature} />
               <Bar label="Дренаж" value={info.drainage} />
-              <Text style={styles.densityNote}>Плотность · {fmtDensity(info.density)} чел. на участок</Text>
+              <Text style={styles.densityNote}>Сельская плотность · {fmtDensity(info.density)} чел. на участок</Text>
             </View>
             {info.country ? (
               <>

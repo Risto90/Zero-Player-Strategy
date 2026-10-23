@@ -357,6 +357,8 @@ export class CardPainter {
         if (world.owner[p] !== tag || strokeMask[p]) continue;
         const { cost, strength } = this.brushScaling(p);
         world.density[p] += strength;
+        const city = world.cityAt(p);
+        if (city) city.population += strength;
         card.ink = Math.max(0, card.ink - cost);
         this.touch(p);
       }

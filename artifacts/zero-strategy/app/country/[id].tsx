@@ -100,7 +100,7 @@ function CountryProfile({ game, countryId }: { game: Game; countryId: number }) 
           <Text style={styles.sectionTitle}>ГОРОДА · {cities.length}</Text>
           {cities.map((city) => (
             <Text key={city.id} style={styles.fact}>
-              {city.capital ? 'Столица · ' : ''}{city.name ?? 'Город'} · {['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][city.rank - 1]} · {fmt(Math.round(game.world.density[city.pixel]))} чел.
+              {city.capital ? 'Столица · ' : ''}{city.name ?? 'Город'} · {['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][city.rank - 1]} · город {fmt(Math.round(city.population))} чел. · сельская плотность {fmt(Math.round(game.world.density[city.pixel]))}
             </Text>
           ))}
         </View>

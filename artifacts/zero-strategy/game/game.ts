@@ -15,7 +15,7 @@ import { applyReform } from './politics';
 import { appoint, candidateAllowed, ensureOffices, refreshHeirs, successionOrder } from './succession';
 import { randomItem } from './random';
 import { demography } from './demography';
-import { addCityAndConcentrate, canUpgradeCityRank, cityInfluenceRadius, cityRankName, concentrateCityPopulation } from './settlements';
+import { addCityAndConcentrate, canUpgradeCityRank, cityInfluenceRadius, cityRankName, concentrateCityPopulation, populationAtPixel } from './settlements';
 import { dissolveCountryIntoNomads } from './nomads';
 
 export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
@@ -229,7 +229,7 @@ export class Game {
         });
         if (capitalPixel >= 0) loadedWorld.addCity(country.id, capitalPixel, 1, true);
       } else if (!cities.some((city) => city.capital)) {
-        cities.sort((a, b) => b.rank - a.rank || loadedWorld.density[b.pixel] - loadedWorld.density[a.pixel]);
+        cities.sort((a, b) => b.rank - a.rank || b.population - a.population);
         cities[0].capital = true;
       }
     }
@@ -1089,7 +1089,7 @@ export class Game {
     const heirCities = [
       sourceCapital,
       ...sourceCities.filter((city) => city.id !== sourceCapital.id)
-        .sort((a, b) => b.rank - a.rank || w.density[b.pixel] - w.density[a.pixel])
+        .sort((a, b) => b.rank - a.rank || b.population - a.population)
         .slice(0, heirs.length - 1),
     ];
     heirs = heirs.slice(0, heirCities.length);
@@ -1251,7 +1251,7 @@ export class Game {
       biomeCount[w.biomeAt(p)] += 1;
       const owner = w.owner[p];
       if (owner === 0) continue;
-      const d = w.density[p];
+      const d = populationAtPixel(w, p);
       countryPop[owner - 1] += d;
       total += d;
       cultureAcc[w.culture[p]] += d;

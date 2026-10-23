@@ -9,7 +9,7 @@ import { leadershipOptions } from './succession';
 import { newCitizen, person } from './characters';
 import { demography } from './demography';
 import { colonizationPlan } from './colonization';
-import { canUpgradeCityRank, CityInfluenceIndex, cityInfluenceMultiplier, cityRankName } from './settlements';
+import { canUpgradeCityRank, CityInfluenceIndex, cityInfluenceMultiplier, cityRankName, populationAtPixel } from './settlements';
 import type { City, NomadGroup } from './world';
 
 export const CARD_TITLES: Record<CardType, string> = {
@@ -256,7 +256,7 @@ function drawColonization(world: World, country: Country): Card | null {
 function cityChoices(world: World, cities: City[]): { label: string; detail: string; cityId: number }[] {
   return cities.map((city) => ({
     label: `${cityRankName(city.rank)} · ${city.capital ? 'столица' : 'город'}`,
-    detail: `Население точки: ${Math.round(world.density[city.pixel])} чел.`,
+    detail: `Город: ${Math.round(city.population)} чел. · сельская плотность: ${Math.round(world.density[city.pixel])} чел./участок`,
     cityId: city.id,
   }));
 }
@@ -264,7 +264,7 @@ function cityChoices(world: World, cities: City[]): { label: string; detail: str
 function largestCities(world: World, cities: City[], limit = 2): City[] {
   return [...cities].sort((a, b) =>
     b.rank - a.rank ||
-    world.density[b.pixel] - world.density[a.pixel] ||
+    b.population - a.population ||
     a.pixel - b.pixel,
   ).slice(0, limit);
 }
@@ -698,7 +698,7 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const capital = countryCities.find((city) => city.capital);
   const largerThanCapital = capital ? countryCities.filter((city) =>
     city.id !== capital.id &&
-    (city.rank > capital.rank || (city.rank === capital.rank && world.density[city.pixel] > world.density[capital.pixel])),
+    (city.rank > capital.rank || (city.rank === capital.rank && city.population > capital.population)),
   ).length : 0;
   const life = drawLifeCard(world, country, year);
   if (life?.type === 'death' || life?.type === 'election' || life?.type === 'birth' || life?.type === 'marriage') return life;

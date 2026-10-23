@@ -174,6 +174,9 @@ export function deserializeWorld(saved: SavedWorld): World {
     }
   }
   for (const city of world.cities) {
+    // Before city population was stored separately, density at the city pixel held
+    // the whole city. Preserve that count when opening an older save.
+    if (!Number.isFinite(city.population)) city.population = world.density[city.pixel];
     if (!city.name) Object.assign(city, generateCityIdentity(world, city.pixel));
   }
   world.recountCountries();

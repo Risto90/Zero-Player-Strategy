@@ -136,7 +136,9 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
               />
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowName}>{city.name ?? cityRankName(city.rank)}</Text>
-                <Text style={styles.rowDetail}>{game.world.countries[city.countryId]?.name ?? 'Страна распущена'} · {fmt(Math.round(game.world.density[city.pixel]))} чел.</Text>
+                <Text style={styles.rowDetail}>
+                  {game.world.countries[city.countryId]?.name ?? 'Страна распущена'} · город {fmt(Math.round(city.population))} чел. · сельская плотность {fmt(Math.round(game.world.density[city.pixel]))}
+                </Text>
               </View>
               <Text style={styles.rowValue}>{cityRankName(city.rank)}</Text>
             </View>
@@ -245,7 +247,7 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
                     <View key={city.id} style={styles.countryCityRow}>
                       <Image source={cityIconSource(cityIconIndex(city, hasPort))} style={styles.countryCityIcon} resizeMode="contain" />
                       <Text style={styles.countryInfo}>
-                        {city.capital ? 'Столица · ' : ''}{city.name ?? cityRankName(city.rank)} · {cityRankName(city.rank)} · {fmt(Math.round(game.world.density[city.pixel]))} чел.
+                        {city.capital ? 'Столица · ' : ''}{city.name ?? cityRankName(city.rank)} · {cityRankName(city.rank)} · город {fmt(Math.round(city.population))} чел. · сельская плотность {fmt(Math.round(game.world.density[city.pixel]))} чел./участок
                       </Text>
                     </View>
                   );
