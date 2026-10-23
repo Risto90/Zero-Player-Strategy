@@ -25,8 +25,11 @@ const MIME_TYPES = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
   '.gif': 'image/gif',
   '.svg': 'image/svg+xml',
+  '.xml': 'application/xml',
   '.ico': 'image/x-icon',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
@@ -63,7 +66,67 @@ function toScriptString(value) {
     .replaceAll('&', '\\u0026');
 }
 
-function serveManifest(platform, res) {
+function getRequestOrigin(req) {
+  const firstHeaderValue = (value) =>
+    typeof value === 'string' ? value.split(',')[0].trim() : '';
+  const forwardedProto = firstHeaderValue(req.headers['x-forwarded-proto']);
+  const forwardedHost = firstHeaderValue(req.headers['x-forwarded-host']);
+  const protocol =
+    forwardedProto || (req.socket.encrypted ? 'https' : 'http');
+  const host = forwardedHost || req.headers.host;
+
+  if (!host || !['http', 'https'].includes(protocol)) {
+    throw new Error('Missing or invalid request origin');
+  }
+
+  return new URL(`${protocol}://${host}`).origin;
+}
+
+function rebaseResourceUrl(value, origin) {
+  const parsed = new URL(value, 'https://build.invalid');
+  let pathname = parsed.pathname;
+  if (
+    basePath &&
+    pathname !== basePath &&
+    !pathname.startsWith(`${basePath}/`)
+  ) {
+    pathname = `${basePath}${pathname.startsWith('/') ? '' : '/'}${pathname}`;
+  }
+
+  return `${origin}${pathname}${parsed.search}${parsed.hash}`;
+}
+
+function rebaseManifest(manifest, origin, platform) {
+  if (manifest.launchAsset?.url) {
+    manifest.launchAsset.url = rebaseResourceUrl(
+      manifest.launchAsset.url,
+      origin,
+    );
+  }
+
+  if (Array.isArray(manifest.assets)) {
+    for (const asset of manifest.assets) {
+      if (asset.url) asset.url = rebaseResourceUrl(asset.url, origin);
+    }
+  }
+
+  const expoClient = manifest.extra?.expoClient;
+  if (expoClient) {
+    if (expoClient.iconUrl) {
+      expoClient.iconUrl = rebaseResourceUrl(expoClient.iconUrl, origin);
+    }
+    expoClient.hostUri = `${new URL(origin).host}${basePath}/${platform}`;
+  }
+
+  if (manifest.extra?.expoGo) {
+    manifest.extra.expoGo.debuggerHost =
+      `${new URL(origin).host}${basePath}/${platform}`;
+  }
+
+  return manifest;
+}
+
+function serveManifest(req, platform, res) {
   const manifestPath = path.join(STATIC_ROOT, platform, 'manifest.json');
 
   if (!fs.existsSync(manifestPath)) {
@@ -74,13 +137,25 @@ function serveManifest(platform, res) {
     return;
   }
 
-  const manifest = fs.readFileSync(manifestPath, 'utf-8');
+  let manifest;
+  try {
+    manifest = rebaseManifest(
+      JSON.parse(fs.readFileSync(manifestPath, 'utf-8')),
+      getRequestOrigin(req),
+      platform,
+    );
+  } catch (error) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: `Could not prepare manifest: ${error.message}` }));
+    return;
+  }
+
   res.writeHead(200, {
-    'content-type': 'application/json',
+    'content-type': 'application/json; charset=utf-8',
     'expo-protocol-version': '1',
     'expo-sfv-version': '0',
   });
-  res.end(manifest);
+  res.end(JSON.stringify(manifest));
 }
 
 function serveLandingPage(req, res, landingPageTemplate, appName) {
@@ -100,7 +175,7 @@ function serveLandingPage(req, res, landingPageTemplate, appName) {
   res.end(html);
 }
 
-function serveStaticFile(urlPath, res) {
+function serveStaticFile(urlPath, req, res) {
   const safePath = path.normalize(urlPath).replace(/^(\.\.(\/|\\|$))+/, '');
   const filePath = path.join(STATIC_ROOT, safePath);
 
@@ -118,7 +193,21 @@ function serveStaticFile(urlPath, res) {
 
   const ext = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-  const content = fs.readFileSync(filePath);
+  let content = fs.readFileSync(filePath);
+  if (
+    ext === '.js' &&
+    filePath.endsWith(`${path.sep}bundle.js`) &&
+    content.includes('__ZERO_STRATEGY_ORIGIN__')
+  ) {
+    content = Buffer.from(
+      content
+        .toString('utf-8')
+        .replaceAll(
+          '__ZERO_STRATEGY_ORIGIN__',
+          `${getRequestOrigin(req)}${basePath}`,
+        ),
+    );
+  }
   res.writeHead(200, { 'content-type': contentType });
   res.end(content);
 }
@@ -130,6 +219,16 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
   let pathname = url.pathname;
 
+  if (
+    basePath &&
+    pathname !== basePath &&
+    !pathname.startsWith(`${basePath}/`)
+  ) {
+    res.writeHead(404);
+    res.end('Not Found');
+    return;
+  }
+
   if (basePath && pathname.startsWith(basePath)) {
     pathname = pathname.slice(basePath.length) || '/';
   }
@@ -137,7 +236,7 @@ const server = http.createServer((req, res) => {
   if (pathname === '/' || pathname === '/manifest') {
     const platform = req.headers['expo-platform'];
     if (platform === 'ios' || platform === 'android') {
-      return serveManifest(platform, res);
+      return serveManifest(req, platform, res);
     }
 
     if (pathname === '/') {
@@ -145,7 +244,7 @@ const server = http.createServer((req, res) => {
     }
   }
 
-  serveStaticFile(pathname, res);
+  serveStaticFile(pathname, req, res);
 });
 
 const port = parseInt(process.env.PORT || '3000', 10);

@@ -88,6 +88,7 @@ function prepareDirectories(timestamp) {
   const dirs = [
     path.join(staticBuild, timestamp, '_expo', 'static', 'js', 'ios'),
     path.join(staticBuild, timestamp, '_expo', 'static', 'js', 'android'),
+    path.join(staticBuild, 'assets', 'assets', 'images'),
     path.join(staticBuild, 'ios'),
     path.join(staticBuild, 'android'),
   ];
@@ -95,6 +96,11 @@ function prepareDirectories(timestamp) {
   for (const dir of dirs) {
     fs.mkdirSync(dir, { recursive: true });
   }
+
+  fs.copyFileSync(
+    path.join(projectRoot, 'assets', 'images', 'icon.png'),
+    path.join(staticBuild, 'assets', 'assets', 'images', 'icon.png'),
+  );
 
   console.log('Build:', timestamp);
 }
@@ -442,7 +448,7 @@ async function downloadAssets(assets, timestamp) {
   return successCount;
 }
 
-function updateBundleUrls(timestamp, baseUrl) {
+function updateBundleUrls(timestamp) {
   const updateForPlatform = (platform) => {
     const bundlePath = path.join(
       projectRoot,
@@ -469,8 +475,12 @@ function updateBundleUrls(timestamp, baseUrl) {
         }
 
         const decodedPath = decodeURIComponent(unstablePath);
-        return `httpServerLocation:"${baseUrl}${basePath}/${timestamp}/_expo/static/js/${decodedPath}"`;
+        return `httpServerLocation:"__ZERO_STRATEGY_ORIGIN__/${timestamp}/_expo/static/js/${decodedPath}"`;
       },
+    );
+    bundle = bundle.replace(
+      /\/\/[#@]\s*sourceMappingURL=.*(?:\r?\n|$)/g,
+      '',
     );
 
     fs.writeFileSync(bundlePath, bundle);
@@ -481,21 +491,20 @@ function updateBundleUrls(timestamp, baseUrl) {
   console.log('Updated bundle URLs');
 }
 
-function updateManifests(manifests, timestamp, baseUrl, assetsByHash) {
+function updateManifests(manifests, timestamp, assetsByHash) {
   const updateForPlatform = (platform, manifest) => {
     if (!manifest.launchAsset || !manifest.extra) {
       exitWithError(`Malformed manifest for ${platform}`);
     }
 
-    manifest.launchAsset.url = `${baseUrl}${basePath}/${timestamp}/_expo/static/js/${platform}/bundle.js`;
+    manifest.launchAsset.url = `${basePath}/${timestamp}/_expo/static/js/${platform}/bundle.js`;
     manifest.launchAsset.key = `bundle-${timestamp}`;
     manifest.createdAt = new Date(
       Number(timestamp.split('-')[0]),
     ).toISOString();
-    manifest.extra.expoClient.hostUri =
-      baseUrl.replace('https://', '') + '/' + platform;
-    manifest.extra.expoGo.debuggerHost =
-      baseUrl.replace('https://', '') + '/' + platform;
+    manifest.extra.expoClient.hostUri = `${basePath}/${platform}`;
+    manifest.extra.expoClient.iconUrl = `${basePath}/assets/assets/images/icon.png`;
+    manifest.extra.expoGo.debuggerHost = `${basePath}/${platform}`;
     manifest.extra.expoGo.packagerOpts.dev = false;
 
     if (manifest.assets && manifest.assets.length > 0) {
@@ -503,12 +512,20 @@ function updateManifests(manifests, timestamp, baseUrl, assetsByHash) {
         if (!asset.url) return;
 
         const hash = asset.hash;
-        if (!hash) return;
+        if (!hash) {
+          throw new Error(
+            `Manifest asset for ${platform} is missing its content hash`,
+          );
+        }
 
         const assetInfo = assetsByHash.get(hash);
-        if (!assetInfo) return;
+        if (!assetInfo) {
+          throw new Error(
+            `Manifest asset hash ${hash} for ${platform} was not copied into the static build`,
+          );
+        }
 
-        asset.url = `${baseUrl}${basePath}/${timestamp}/_expo/static/js/${assetInfo.relativePath}/${assetInfo.filename}`;
+        asset.url = `${basePath}/${timestamp}/_expo/static/js/${assetInfo.relativePath}/${assetInfo.filename}`;
       });
     }
 
@@ -565,14 +582,12 @@ async function main() {
     });
   }
 
-  const assetCount = await downloadAssets(assets, timestamp);
+  await downloadAssets(assets, timestamp);
 
-  if (assetCount > 0) {
-    updateBundleUrls(timestamp, baseUrl);
-  }
+  updateBundleUrls(timestamp);
 
   console.log('Updating manifests and creating landing page...');
-  updateManifests(manifests, timestamp, baseUrl, assetsByHash);
+  updateManifests(manifests, timestamp, assetsByHash);
 
   console.log('Build complete! Deploy to:', baseUrl);
 

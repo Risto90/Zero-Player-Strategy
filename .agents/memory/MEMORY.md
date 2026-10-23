@@ -5,4 +5,5 @@
 - [Dynasty and lineage rules](zero-strategy-dynasty-rules.md) — separate the current ruler's house from all living named country residents; surnames link to genealogy.
 - [Design-doc fidelity](design-doc-fidelity.md) — implement only mechanics specified for this game; clarify missing numerical rules instead of inventing them.
 - [Expo build port](zero-strategy-expo-build-port.md) — choose a free Metro port if Replit's preview service occupies 8081.
+- [Published Expo launch URLs](zero-strategy-published-launch.md) — resolve static manifest and bundle asset URLs against the active request origin, not the build hostname.
 - [Expo Router route types](expo-router-types.md) — restart the managed Expo workflow when a new file route is missing from generated typed navigation.
