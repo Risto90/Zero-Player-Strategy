@@ -1,11 +1,18 @@
 import type { CardPainter } from './brush';
 import { MAP_HEIGHT, MAP_WIDTH } from './config';
 
+export interface PaintActions {
+  beginStroke(x: number, y: number): void;
+  dab(x: number, y: number, radius: number): number;
+  line(ax: number, ay: number, bx: number, by: number, radius: number): number;
+  endStroke(): void;
+}
+
 /**
  * Plays a card automatically: brush dabs grow a blob outward from the card's hint pixel,
  * each dab placed near a random point already painted, until the ink runs out.
  */
-export function autoPaint(painter: CardPainter): void {
+export function autoPaint(painter: CardPainter, actions: PaintActions): void {
   const card = painter.card;
   if (card.hint < 0) return;
   const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'colonization' || card.type === 'split';
@@ -13,8 +20,11 @@ export function autoPaint(painter: CardPainter): void {
   let misses = 0;
   let x = (card.hint % MAP_WIDTH) + 0.5;
   let y = Math.floor(card.hint / MAP_WIDTH) + 0.5;
+  if (card.type === 'warmWind' || card.type === 'coldWind') {
+    actions.beginStroke(x, y);
+  }
   for (let step = 0; step < 4000 && card.ink > 0; step += 1) {
-    const spent = painter.dab(x, y, radius);
+    const spent = actions.dab(x, y, radius);
     misses = spent > 0 ? 0 : misses + 1;
     if (misses > 80) break;
     // Recently painted pixels lie near the edge of the blob, so growing from them keeps it compact.
@@ -26,7 +36,7 @@ export function autoPaint(painter: CardPainter): void {
     y = Math.min(MAP_HEIGHT - 1, Math.max(0, Math.floor(from / MAP_WIDTH) + 0.5 + Math.sin(angle) * distance));
   }
   if (card.type === 'warmWind' || card.type === 'coldWind') {
-    painter.line(x, y, (card.hint % MAP_WIDTH) + 0.5, Math.floor(card.hint / MAP_WIDTH) + 0.5, radius);
+    actions.line(x, y, (card.hint % MAP_WIDTH) + 0.5, Math.floor(card.hint / MAP_WIDTH) + 0.5, radius);
   }
-  painter.endStroke();
+  actions.endStroke();
 }

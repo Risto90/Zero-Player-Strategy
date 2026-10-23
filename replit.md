@@ -6,6 +6,8 @@ Offline zero-player grand-strategy sandbox: each year event cards are played by 
 
 - `pnpm --filter @workspace/zero-strategy run dev` — Expo app (SDK 58), opened in Expo Go on the phone; web preview at `/`
 - `pnpm --filter @workspace/zero-strategy run typecheck`
+- `pnpm --filter @workspace/zero-strategy test` — engine regressions, including player/AI action parity and the shared-action architecture guard
+- `pnpm --filter @workspace/zero-strategy run test:published-launch` — separate check of the checked-in Expo launch bundle
 - `node artifacts/zero-strategy/scripts/build-earth.mjs` — regenerate the real-Earth land mask (`game/data/earthLand.ts`) from Natural Earth 1:50m (`world-atlas`)
 
 ## Where things live
@@ -16,6 +18,7 @@ Offline zero-player grand-strategy sandbox: each year event cards are played by 
 
 ## Architecture decisions
 
+- Player input and AI strategy may choose different options or paint locations, but every mechanical action must use the same `Game.dispatchAction` command boundary, shared validation, `CardPainter`, and card-completion path. Never add or change a game mechanic for only the player or only the AI; connect it to the shared executor and add parity coverage before merging.
 - Delivered as an Expo app for stock Expo Go 58 (no PWA, no custom native code; native APK builds aren't possible here). Expo Go loads the JS from the dev server.
 - Map is drawn with @shopify/react-native-skia as 16 full-width strips of 8 tiles; after a turn only tiles the AI painted are repainted, and the year timer waits until the map is fully drawn. Touches use the RN responder system (not gesture-handler).
 - Long work never blocks the UI: AI cards run in ~12 ms slices with a progress bar, saves trace zones in slices from a frozen copy of the world, map repaints are spread over frames.

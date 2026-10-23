@@ -1,4 +1,5 @@
 import { autoPaint } from './autoPaint';
+import type { PaintActions } from './autoPaint';
 import { brushOptionFor, CardPainter, type BrushMode, type BrushOption, type Card, type CardChoice, type CharacterEvent } from './brush';
 import { drawCountryCard, drawNomadCard, drawWorldCard, firstCreateCard } from './cards';
 import { BIOMES, BRUSH_SIZES, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
@@ -103,6 +104,18 @@ export interface GameSnapshot {
   message: string;
   legend: Legend;
 }
+
+export type GameAction =
+  | { type: 'selectChoice'; index: number }
+  | { type: 'setBrushMode'; mode: BrushMode }
+  | { type: 'setPainterMode'; mode: BrushMode }
+  | { type: 'beginStroke'; x: number; y: number }
+  | { type: 'strokeTo'; x: number; y: number }
+  | { type: 'endStroke' }
+  | { type: 'dab'; x: number; y: number; radius: number }
+  | { type: 'line'; ax: number; ay: number; bx: number; by: number; radius: number }
+  | { type: 'placeCity'; x: number; y: number }
+  | { type: 'completeCard' };
 
 interface SavedGame {
   version: 2;
@@ -325,6 +338,28 @@ export class Game {
 
   // ---------- brush ----------
 
+  /** The single command boundary used by both UI input and automatic strategy. */
+  dispatchAction(action: GameAction): boolean | number | void {
+    switch (action.type) {
+      case 'selectChoice': return this.applyChoice(action.index);
+      case 'setBrushMode':
+        this.brushMode = action.mode;
+        if (this.painter) this.painter.mode = action.mode;
+        this.emit();
+        return;
+      case 'setPainterMode':
+        if (this.painter) this.painter.mode = action.mode;
+        return;
+      case 'beginStroke': return this.applyBeginStroke(action.x, action.y);
+      case 'strokeTo': return this.applyStrokeTo(action.x, action.y);
+      case 'endStroke': return this.applyEndStroke();
+      case 'dab': return this.applyDab(action.x, action.y, action.radius);
+      case 'line': return this.applyLine(action.ax, action.ay, action.bx, action.by, action.radius);
+      case 'placeCity': return this.applyCityPlacement(action.x, action.y);
+      case 'completeCard': return this.applyCardCompletion();
+    }
+  }
+
   get brushRadius(): number {
     return BRUSH_SIZES.find((size) => size.id === this.brushSize)?.radius ?? 11;
   }
@@ -335,6 +370,10 @@ export class Game {
   }
 
   selectChoice(index: number): void {
+    this.dispatchAction({ type: 'selectChoice', index });
+  }
+
+  private applyChoice(index: number): void {
     if (!this.card?.choices || index < 0 || index >= this.card.choices.length) return;
     this.card.selectedChoice = index;
     const selected = this.card.choices[index];
@@ -348,6 +387,10 @@ export class Game {
   }
 
   selectCityAt(x: number, y: number): boolean {
+    return this.dispatchAction({ type: 'placeCity', x, y }) === true;
+  }
+
+  private applyCityPlacement(x: number, y: number): boolean {
     const card = this.card;
     if (!card || !this.canPlaceCity()) return false;
     const px = Math.floor(x), py = Math.floor(y);
@@ -373,7 +416,6 @@ export class Game {
     }
     card.cityPlaced = true;
     this.message = `${cityRankName(city.rank)} создан. Население собрано из зоны влияния.`;
-    this.addLog(`${country.name}: основан городок.`);
     this.markCityArea(city);
     this.emit();
     this.scheduleSave();
@@ -409,12 +451,14 @@ export class Game {
   }
 
   toggleBrushMode(): void {
-    this.brushMode = this.brushMode === 'respect' ? 'repeat' : 'respect';
-    if (this.painter) this.painter.mode = this.brushMode;
-    this.emit();
+    this.dispatchAction({ type: 'setBrushMode', mode: this.brushMode === 'respect' ? 'repeat' : 'respect' });
   }
 
   beginStroke(x: number, y: number): void {
+    this.dispatchAction({ type: 'beginStroke', x, y });
+  }
+
+  private applyBeginStroke(x: number, y: number): void {
     if (!this.painter) return;
     if (this.card?.type === 'warmWind' || this.card?.type === 'coldWind') {
       const px = Math.floor(x), py = Math.floor(y);
@@ -428,18 +472,33 @@ export class Game {
     }
     this.painter.message = '';
     this.lastPoint = { x, y };
-    this.painter.dab(x, y, this.brushRadius);
+    this.dispatchAction({ type: 'dab', x, y, radius: this.brushRadius });
     this.afterPaint();
   }
 
   strokeTo(x: number, y: number): void {
+    this.dispatchAction({ type: 'strokeTo', x, y });
+  }
+
+  private applyStrokeTo(x: number, y: number): void {
     if (!this.painter || !this.lastPoint) return;
-    this.painter.line(this.lastPoint.x, this.lastPoint.y, x, y, this.brushRadius);
+    this.dispatchAction({
+      type: 'line',
+      ax: this.lastPoint.x,
+      ay: this.lastPoint.y,
+      bx: x,
+      by: y,
+      radius: this.brushRadius,
+    });
     this.lastPoint = { x, y };
     this.afterPaint();
   }
 
   endStroke(): void {
+    this.dispatchAction({ type: 'endStroke' });
+  }
+
+  private applyEndStroke(): void {
     if (!this.painter) return;
     if ((this.card?.type === 'warmWind' || this.card?.type === 'coldWind') && this.lastPoint) {
       const px = Math.floor(this.lastPoint.x), py = Math.floor(this.lastPoint.y);
@@ -458,6 +517,16 @@ export class Game {
     this.message = this.painter.message || this.message;
     this.emit();
     this.scheduleSave();
+  }
+
+  private applyDab(x: number, y: number, radius: number): number {
+    if (!this.painter) return 0;
+    return this.painter.dab(x, y, radius);
+  }
+
+  private applyLine(ax: number, ay: number, bx: number, by: number, radius: number): number {
+    if (!this.painter) return 0;
+    return this.painter.line(ax, ay, bx, by, radius);
   }
 
   private afterPaint(): void {
@@ -714,16 +783,26 @@ export class Game {
   }
 
   private resolveAutomatically(card: Card): void {
-    if (card.choices && card.choices.length > 1) card.selectedChoice = Math.floor(Math.random() * card.choices.length);
-    const selectedChoice = card.choices?.[card.selectedChoice];
-    if (card.type === 'split' && selectedChoice?.cityId !== undefined) {
-      card.requiredCityId = selectedChoice.cityId;
-      card.hint = this.world.cities[selectedChoice.cityId]?.pixel ?? card.hint;
+    this.card = card;
+    if (card.choices && card.choices.length > 1) {
+      this.dispatchAction({ type: 'selectChoice', index: Math.floor(Math.random() * card.choices.length) });
     }
+    this.startCard(card);
     const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split' || card.type === 'colonization' || card.type === 'nomadExpand';
-    const painter = new CardPainter(this.world, card, card.developmentOnly || (!territorial && Math.random() < 0.3) ? 'repeat' : 'respect');
-    if (card.type === 'nomadExpand') painter.setNomadMode(card.nomadDensityOnly ? 'density' : 'range');
-    autoPaint(painter);
+    const painter = this.painter;
+    if (!painter) return;
+    this.dispatchAction({
+      type: 'setPainterMode',
+      mode: card.developmentOnly || (!territorial && Math.random() < 0.3) ? 'repeat' : 'respect',
+    });
+    const actions: PaintActions = {
+      beginStroke: (x, y) => this.dispatchAction({ type: 'beginStroke', x, y }),
+      dab: (x, y, radius) => this.dispatchAction({ type: 'dab', x, y, radius }) as number,
+      line: (ax, ay, bx, by, radius) => this.dispatchAction({ type: 'line', ax, ay, bx, by, radius }) as number,
+      endStroke: () => this.dispatchAction({ type: 'endStroke' }),
+    };
+    autoPaint(painter, actions);
+    this.afterPaint();
     if (card.type === 'create' || card.type === 'buildCity') {
       const countryId = card.type === 'create' ? card.newCountryId : card.targetCountryId;
       const country = countryId === null ? null : this.world.countries[countryId];
@@ -737,21 +816,20 @@ export class Game {
           best = p; bestDensity = this.world.density[p];
         });
         if (best >= 0) {
-          const city = addCityAndConcentrate(this.world, country.id, best, card.type === 'create');
-          if (city) {
-            if (card.type === 'buildCity') card.cityPlaced = true;
-            this.markCityArea(city);
-          }
+          this.dispatchAction({ type: 'placeCity', x: best % MAP_WIDTH, y: Math.floor(best / MAP_WIDTH) });
         }
       }
     }
-    if (painter.dirty) this.renderer.mark(painter.dirty);
-    for (const rect of painter.extraDirty) this.renderer.mark(rect);
-    this.finish(painter);
+    this.dispatchAction({ type: 'completeCard' });
   }
 
   private completeCard(): void {
+    this.dispatchAction({ type: 'completeCard' });
+  }
+
+  private applyCardCompletion(): void {
     if (!this.painter) return;
+    this.afterPaint();
     this.finish(this.painter);
     this.painter = null;
     this.card = null;
