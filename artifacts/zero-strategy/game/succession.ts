@@ -8,7 +8,8 @@ export function rulers(world: World, c: Country): Person[] {
   return [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is Person => !!p)];
 }
 export function candidateAllowed(world: World, c: Country, p: Person, old = c.ruler, partnerExempt = false): boolean {
-  if (!p.alive || c.pendingDeathIds.includes(p.id) || (p.countryId !== c.id && !partnerExempt)) return false;
+  const foreignDynast = c.government !== 'republic' && c.dynastyClaims.includes(p.familyId);
+  if (!p.alive || c.pendingDeathIds.includes(p.id) || (p.countryId !== c.id && !partnerExempt && !foreignDynast)) return false;
   const coRule = c.coRulerIds.includes(p.id);
   const adult = c.government === 'republic' || c.modifiers.includes('meritocracy') ||
     (c.government === 'tyranny' && c.modifiers.includes('communist'));
@@ -71,7 +72,7 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
   const children = world.people.filter((p) => p.parents.includes(old.id));
   let pool = family;
   const youngest = c.modifiers.includes('minority');
-  const ageOrder = (a: Person, b: Person) => (youngest ? a.age - b.age : b.age - a.age) || a.id - b.id;
+  const ageOrder = (a: Person, b: Person) => (youngest ? b.bornAt - a.bornAt : a.bornAt - b.bornAt) || a.id - b.id;
   if (c.modifiers.includes('primogeniture') && !c.modifiers.includes('oligarchy')) {
     const seen = new Set<number>();
     const branch = (parent: Person): Person[] => {
