@@ -269,7 +269,7 @@ function largestCities(world: World, cities: City[], limit = 2): City[] {
   ).slice(0, limit);
 }
 
-function drawBuildCity(world: World, country: Country): Card | null {
+export function drawBuildCityCard(world: World, country: Country): Card | null {
   if (!world.countries[country.id] || !country.pixels) return null;
   const occupied = new Set(world.cities.map((city) => city.pixel));
   let hasSite = false;
@@ -284,7 +284,7 @@ function drawBuildCity(world: World, country: Country): Card | null {
   );
 }
 
-function drawUpgradeCity(world: World, country: Country): Card | null {
+export function drawUpgradeCityCard(world: World, country: Country): Card | null {
   const eligibleRanks = new Set<number>();
   for (let rank = 1; rank < 6; rank += 1) {
     if (canUpgradeCityRank(world, country.id, rank as City['rank'])) eligibleRanks.add(rank);
@@ -431,7 +431,7 @@ function drawLifeCard(world: World, country: Country, year: number): Card | null
   return card;
 }
 
-function drawSplit(world: World, country: Country, year: number, uprising = false): Card | null {
+export function drawSplitCard(world: World, country: Country, year: number, uprising = false): Card | null {
   if (country.pixels < 3000) return null;
   const cities = world.cities.filter((city) => city.countryId === country.id && !city.capital);
   if (world.cities.filter((city) => city.countryId === country.id).length < 2 || cities.length < 1) return null;
@@ -708,14 +708,14 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   return drawFirstApplicable([
     { value: () => life, weight: 1.4 },
     { value: () => drawExpand(world, country), weight: 4 * consulateScale },
-    { value: () => drawBuildCity(world, country), weight: buildCityWeight },
-    { value: () => drawUpgradeCity(world, country), weight: upgradeCityWeight },
+    { value: () => drawBuildCityCard(world, country), weight: buildCityWeight },
+    { value: () => drawUpgradeCityCard(world, country), weight: upgradeCityWeight },
     { value: () => drawMoveCapital(world, country), weight: countryCities.length >= 3 ? 1 : 0 },
     { value: () => drawColonization(world, country), weight: Math.max(0, diversity.density * 0.12) * consulateScale },
     { value: () => drawGovernment(world, country, year), weight: 0.16 * consulateScale },
     { value: () => drawGovernment(world, country, year, true), weight: 0.01 * consulateScale },
-    { value: () => drawSplit(world, country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale },
-    { value: () => drawSplit(world, country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale },
+    { value: () => drawSplitCard(world, country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale },
+    { value: () => drawSplitCard(world, country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale },
     { value: () => drawUnion(world, country, year), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0 },
     { value: () => drawClimate(world, 'drought', country), weight: 0.8 },
     { value: () => drawClimate(world, 'rain', country), weight: 0.8 },
