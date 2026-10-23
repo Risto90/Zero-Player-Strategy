@@ -110,8 +110,8 @@ export function InspectCard({ info, world, onClose, onPersonPress }: { info: Pix
                   })}
                   {info.family.length > 0 && (
                     <>
-                      <Text style={styles.countryHeading}>ДИНАСТИЯ И СЕМЬЯ</Text>
-                      {info.family.map((member) => (
+                      <Text style={styles.countryHeading}>ДИНАСТИЯ ПРАВИТЕЛЯ</Text>
+                      {info.family.filter((member) => member.familyId === info.country!.ruler.familyId).map((member) => (
                         <View key={member.id}>
                           {personLink(member.id, member.name,
                             `${member.age} лет · ${ageStage(member.age)} · ${worldCultureName(world, member.cultureId)} · ${worldReligionName(world, member.religionId)}${member.alive ? '' : ` · умер${member.gender === 'female' ? 'ла' : ''} в ${member.deathYear ?? '?'}`}`)}

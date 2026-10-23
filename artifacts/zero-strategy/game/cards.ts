@@ -498,7 +498,7 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const big = country.pixels >= 12000;
   const diversity = demography(world, country);
   const life = drawLifeCard(world, country, year);
-  if (life?.type === 'death' || life?.type === 'election') return life;
+  if (life?.type === 'death' || life?.type === 'election' || life?.type === 'birth' || life?.type === 'marriage') return life;
   const consulateScale = country.modifiers.includes('consulate') ? 1 / Math.max(2, country.consulCount) : country.modifiers.includes('coRule') ? 0.5 : 1;
   const splitScale = country.modifiers.includes('confederation') ? 3 : country.modifiers.includes('federation') ? 2 : 1;
   const unrestScale = country.modifiers.includes('confederation') ? 1 / 3 : country.modifiers.includes('federation') ? 1 / 2 : 1;

@@ -1,4 +1,4 @@
-import { createFamilyId, createPerson, deathChance, familyNameForId, governmentOf, GOVERNMENTS, reservePersonId, type Person } from './government';
+import { createFamilyId, createPerson, deathChance, familyNameForId, governmentOf, GOVERNMENTS, mortalityStageForAge, reservePersonId, type Person } from './government';
 import type { Country, World } from './world';
 import { sampleDemographic } from './demography';
 
@@ -31,6 +31,9 @@ function normalizePerson(raw: Person, c: Country, year: number): Person {
   p.familyId = Number.isFinite(raw.familyId) ? raw.familyId : template.familyId;
   p.familyName = familyNameForId(p.familyId);
   p.name = `${(raw.name || template.name).trim().split(/\s+/)[0]} ${p.familyName}`;
+  p.mortalityStageTested = Number.isFinite(raw.mortalityStageTested)
+    ? raw.mortalityStageTested
+    : mortalityStageForAge(p.age);
   p.parents = Array.isArray(raw.parents) ? [...raw.parents] : [];
   p.spouseIds = Array.isArray(raw.spouseIds) ? [...raw.spouseIds] : [];
   p.loverIds = Array.isArray(raw.loverIds) ? [...raw.loverIds] : [];
@@ -160,6 +163,7 @@ export function birth(world: World, c: Country, mother: Person, father: Person, 
     Math.random() < 0.5 ? mother.cultureId : father.cultureId,
     Math.random() < 0.5 ? mother.religionId : father.religionId);
   p.bornAt = year - Math.random(); p.age = 0; p.trait = ''; p.traits = [];
+  p.mortalityStageTested = -1;
   mother.lastBirthYear = year;
   return registerPerson(world, c, p);
 }
@@ -170,8 +174,15 @@ export function advancePeople(world: World, year: number, rng = Math.random): vo
     if (!c || c.pixels <= 0) continue;
     const previousAge = p.age;
     p.age = Math.max(previousAge, Math.floor(year - p.bornAt));
-    // One mortality test per year; cumulative stage risks are spread over the whole stage.
-    if (!c.pendingDeathIds.includes(p.id) && rng() < deathChance(previousAge)) c.pendingDeathIds.push(p.id);
+    if (c.pendingDeathIds.includes(p.id)) continue;
+    const stage = mortalityStageForAge(p.age);
+    if (stage >= 7) {
+      if (rng() < deathChance(p.age)) c.pendingDeathIds.push(p.id);
+    } else if (p.mortalityStageTested < stage) {
+      // Risks through age 65 apply once for the entire age period, not every year.
+      p.mortalityStageTested = stage;
+      if (rng() < deathChance(p.age)) c.pendingDeathIds.push(p.id);
+    }
   }
 }
 export function killPerson(world: World, p: Person, year: number, reason: string): void {

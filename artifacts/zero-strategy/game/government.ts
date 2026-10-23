@@ -20,6 +20,8 @@ export interface Person {
   spouseIds: number[];
   familyId: number;
   familyName: string;
+  /** Last non-elderly age band whose period-wide mortality risk was checked. */
+  mortalityStageTested: number;
   cultureId: number;
   religionId: number | null;
   countryId: number;
@@ -117,6 +119,16 @@ export function ageStage(age: number): string {
   if (age <= 65) return 'пожилой';
   return 'старик';
 }
+export function mortalityStageForAge(age: number): number {
+  if (age < 3) return 0;
+  if (age < 8) return 1;
+  if (age < 12) return 2;
+  if (age < 20) return 3;
+  if (age < 29) return 4;
+  if (age < 46) return 5;
+  if (age < 66) return 6;
+  return 7;
+}
 /** A stable, readable surname for each dynasty ID; it never leaks numeric IDs into the UI. */
 export function familyNameForId(familyId: number): string {
   const parts: string[] = [];
@@ -136,7 +148,8 @@ export function createPerson(year: number, age = 20 + Math.floor(Math.random() *
   const gender: Gender = Math.random() < 0.5 ? 'female' : 'male';
   const trait = age >= 3 ? pick(TRAITS) : '';
   const familyName = familyNameForId(familyId);
-  return { id, name: inFamily(pick(GIVEN[gender]), familyName), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName, cultureId, religionId,
+  return { id, name: inFamily(pick(GIVEN[gender]), familyName), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName,
+    mortalityStageTested: age === 0 ? -1 : mortalityStageForAge(age), cultureId, religionId,
     countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
     loverIds: [], friendIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
 }
@@ -191,13 +204,14 @@ export function applyModifier(current: GovernmentModifierId[], id: GovernmentMod
   return [...result, id];
 }
 export function deathChance(age: number): number {
-  if (age < 3) return 1 - Math.pow(1 - 0.33, 1 / 3);
-  if (age <= 7) return 1 - Math.pow(1 - 0.20, 1 / 5);
-  if (age <= 11) return 1 - Math.pow(1 - 0.01, 1 / 4);
-  if (age <= 19) return 1 - Math.pow(1 - 0.10, 1 / 8);
-  if (age <= 28) return 1 - Math.pow(0.99 * 0.99, 1 / 9);
-  if (age <= 45) return 1 - Math.pow(0.99 * 0.95, 1 / 17);
-  if (age <= 65) return 1 - Math.pow(0.99 * 0.85, 1 / 20);
+  if (age < 3) return 0.33;
+  if (age <= 7) return 0.20;
+  if (age <= 11) return 0.01;
+  if (age <= 19) return 0.10;
+  if (age <= 28) return 1 - 0.99 * 0.99;
+  if (age <= 45) return 1 - 0.99 * 0.95;
+  if (age <= 65) return 1 - 0.99 * 0.85;
+  // The design specifies an annual, increasing death risk only for old age.
   return Math.min(1, (age - 56) / 100);
 }
 export function uniqueLeader(_countryId: number, year: number): Person {

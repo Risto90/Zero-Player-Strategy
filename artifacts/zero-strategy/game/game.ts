@@ -389,8 +389,7 @@ export class Game {
       religions: owner > 0 ? religionEntry.ids.map((id, i) => ({ id, name: w.religions[id].name, color: w.religions[id].color, share: religionEntry.shares[i] })) : [],
       nonBelievers: owner > 0 ? 100 - religionEntry.total : 0,
       family: country ? w.people.filter((p) => p.countryId === country.id &&
-        (country.dynastyClaims.includes(p.familyId) || p.id === country.ruler.id || country.coRulerIds.includes(p.id) ||
-          p.spouseIds.some((id) => country.dynastyClaims.includes(person(w, id)?.familyId ?? -1))))
+        (p.familyId === country.ruler.familyId || country.coRulerIds.includes(p.id)))
         .sort((a, b) => Number(b.alive) - Number(a.alive) || b.age - a.age).slice(0, 24) : [],
     };
   }
