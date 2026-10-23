@@ -18,7 +18,7 @@ export interface CardChoice {
   consulCount?: number;
   violent?: boolean;
 }
-export interface CharacterEvent { kind: 'marriage' | 'birth' | 'death' | 'friendship' | 'trait' | 'engagement'; personIds: number[]; trait?: string }
+export interface CharacterEvent { kind: 'marriage' | 'birth' | 'death' | 'friendship' | 'trait' | 'engagement' | 'romance'; personIds: number[]; trait?: string; newPerson?: Person }
 /** 'respect': a pixel changes at most once per card. 'repeat': every new stroke applies again. */
 export type BrushMode = 'respect' | 'repeat';
 export type BrushOption = 'density' | 'repeat' | null;
@@ -36,6 +36,8 @@ export interface Card {
   newCultureId: number | null;
   newReligionId: number | null;
   sourceCultureId: number | null;
+  splitCultureId?: number;
+  splitReligionId?: number;
   newGovernmentId: GovernmentId | null;
   newRuler: Person | null;
   choices: CardChoice[] | null;
@@ -191,7 +193,15 @@ export class CardPainter {
     const working = world.countries[workingId];
     const tag = workingId + 1;
     const sourceTag = card.type === 'split' ? (card.targetCountryId as number) + 1 : 0;
-    const canTake = (p: number) => world.owner[p] === sourceTag;
+    const canTake = (p: number) => {
+      if (world.owner[p] !== sourceTag) return false;
+      if (card.type !== 'split' || (card.splitCultureId === undefined && card.splitReligionId === undefined)) return true;
+      const cultureMatch = card.splitCultureId !== undefined && world.cultureTable.shareOf(world.culture[p], card.splitCultureId) > 0;
+      const faithShare = card.splitReligionId === -1 ? 100 - world.religionTable.entries[world.religion[p]].total :
+        card.splitReligionId !== undefined ? world.religionTable.shareOf(world.religion[p], card.splitReligionId) : 0;
+      const faithMatch = faithShare > 0;
+      return cultureMatch || faithMatch;
+    };
 
     // Extra population on already owned land ("density" brush).
     if (card.type !== 'split' && this.mode === 'repeat') {
@@ -199,7 +209,7 @@ export class CardPainter {
         if (card.ink <= 0) break;
         if (world.owner[p] !== tag || strokeMask[p] || world.density[p] >= MAX_DENSITY) continue;
         const country = world.countries[tag - 1];
-        world.density[p] = Math.min(MAX_DENSITY, world.density[p] + 1 + GOVERNMENTS[governmentOf(country.government).id].development);
+        world.density[p] = Math.min(MAX_DENSITY, world.density[p] + 1);
         card.ink -= 1;
         this.touch(p);
       }

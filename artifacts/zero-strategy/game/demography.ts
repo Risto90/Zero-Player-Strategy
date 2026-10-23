@@ -74,8 +74,12 @@ export function demography(world: World, country: Country): Demography {
 export function sampleDemographic(world: World, c: Country): DemographicPair | null {
   const d = demography(world, c), mods = c.modifiers;
   let pairs = d.pairs;
-  if (c.government === 'tribal' || mods.includes('ethnic')) pairs = pairs.filter((p) => p.cultureId === d.culture);
-  if (mods.includes('theocracy') && c.government === 'republic') pairs = pairs.filter((p) => p.religionId === d.religion);
+  const requiredCulture = c.government === 'tribal' || (mods.includes('ethnic') && c.government === 'republic')
+    ? d.culture
+    : mods.includes('ethnic') ? c.ruler.cultureId : null;
+  const requiredFaith = c.government === 'republic' ? d.religion : c.ruler.religionId;
+  if (c.government === 'tribal' || mods.includes('ethnic')) pairs = pairs.filter((p) => p.cultureId === requiredCulture);
+  if (mods.includes('theocracy') && c.government !== 'tribal') pairs = pairs.filter((p) => p.religionId === requiredFaith);
   if (!pairs.length) return null;
   const cultureWeight = new Map<number, number>();
   for (const p of pairs) cultureWeight.set(p.cultureId, (cultureWeight.get(p.cultureId) ?? 0) + p.weight);

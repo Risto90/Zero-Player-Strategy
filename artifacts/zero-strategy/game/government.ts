@@ -92,13 +92,16 @@ export const MODIFIERS: Record<GovernmentModifierId, Modifier> = {
   term: { id: 'term', name: 'Срок правления', effect: 'Республиканский лидер переизбирается по окончании срока.', forms: ['republic'] },
   termLimit: { id: 'termLimit', name: 'Ограничение сроков', effect: 'Один лидер может занимать пост ограниченное число раз.', forms: ['republic'] },
   continuous: { id: 'continuous', name: 'Непрерывное правление', effect: 'Действующий лидер может быть переизбран; доступно при нескольких сроках.', forms: ['republic'] },
-  consulate: { id: 'consulate', name: 'Консулат', effect: '2–7 правителей с отдельными сроками. Реформы, экспансия и восстания представленных групп ослаблены в X раз.', excludes: ['coRule'] },
-  federation: { id: 'federation', name: 'Федерация', effect: 'Удваивает вероятность раскола и мирного объединения.' , excludes: ['confederation'], forms: ['tribal', 'hereditary', 'republic'] },
+  consulate: { id: 'consulate', name: 'Консулат', effect: '2–7 правителей с отдельными сроками. Реформы, экспансия и восстания представленных групп ослаблены в X раз.', excludes: ['coRule'], forms: ['tribal', 'hereditary', 'republic'] },
+  federation: { id: 'federation', name: 'Федерация', effect: 'Вдвое снижает риск восстаний большинства в регионах, удваивает вероятность мирного раскола и объединения соседей.', excludes: ['confederation'], forms: ['tribal', 'hereditary', 'republic'] },
   confederation: { id: 'confederation', name: 'Конфедерация', effect: 'Утраивает вероятность раскола и мирного объединения.', excludes: ['federation'], forms: ['tribal', 'hereditary'] },
-  coRule: { id: 'coRule', name: 'Соправительство', effect: 'Правитель делит полномочия с членом семьи.', excludes: ['partition'], forms: ['tribal', 'hereditary', 'tyranny'] },
+  coRule: { id: 'coRule', name: 'Соправительство', effect: 'Правитель делит полномочия с членом семьи не младше 12 лет; тот же возрастной допуск действует при назначении преемника.', excludes: ['partition', 'consulate'], forms: ['tribal', 'hereditary', 'tyranny'] },
 };
 
-const GIVEN = ['Арен', 'Белан', 'Велимир', 'Гелия', 'Дарен', 'Елена', 'Зария', 'Илар', 'Кай', 'Лея', 'Мирон', 'Нарис', 'Орина', 'Радан', 'Севир', 'Тария', 'Фарен', 'Элина'];
+const GIVEN: Record<Person['gender'], string[]> = {
+  male: ['Арен', 'Белан', 'Велимир', 'Дарен', 'Илар', 'Кай', 'Мирон', 'Радан', 'Севир', 'Фарен'],
+  female: ['Гелия', 'Елена', 'Зария', 'Лея', 'Нарис', 'Орина', 'Тария', 'Элина'],
+};
 const FAMILY = ['Аст', 'Бор', 'Вел', 'Гед', 'Кир', 'Лир', 'Мор', 'Нор', 'Рав', 'Сол', 'Тар', 'Эр'];
 const TRAITS = ['Дальновидный', 'Решительный', 'Уступчивый', 'Амбициозный', 'Осторожный', 'Харизматичный', 'Фанатик', 'Циник', 'Космополит', 'Националист', 'Плодовитый'];
 let nextPersonId = 1;
@@ -117,7 +120,7 @@ export function createPerson(year: number, age = 20 + Math.floor(Math.random() *
   const id = nextPersonId++;
   const gender: Gender = Math.random() < 0.5 ? 'female' : 'male';
   const trait = age >= 3 ? pick(TRAITS) : '';
-  return { id, name: pick(GIVEN), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, cultureId, religionId,
+  return { id, name: pick(GIVEN[gender]), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, cultureId, religionId,
     countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
     loverIds: [], friendIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
 }
@@ -139,13 +142,36 @@ export function initialGovernment(year: number, cultureId = 0, religionId: numbe
 export function availableModifiers(form: GovernmentId, current: GovernmentModifierId[]): GovernmentModifierId[] {
   return (Object.keys(MODIFIERS) as GovernmentModifierId[]).filter((id) => {
     const m = MODIFIERS[id];
-    return (!m.forms || m.forms.includes(form)) && !current.includes(id) && !(m.excludes ?? []).some((x) => current.includes(x)) &&
-      !(id === 'continuous' && !current.includes('termLimit')) && !(id === 'termLimit' && !current.includes('term'));
+    if (current.includes(id) || (m.forms && !m.forms.includes(form) && !(id === 'federation' && form === 'tyranny' && current.includes('communist')))) return false;
+    if (id === 'communist' && form === 'hereditary') return false;
+    if (id === 'communist' && current.includes('theocracy') && current.includes('ethnic')) return true;
+    if (id === 'federation' && form === 'tyranny' && !current.includes('communist')) return false;
+    if (id === 'confederation' && form === 'tyranny') return false;
+    if (id === 'oligarchy' && form === 'tyranny') return false;
+    if (id === 'consulate' && (form === 'tyranny' || current.includes('coRule'))) return false;
+    if (id === 'coRule' && (form === 'republic' || current.includes('consulate'))) return false;
+    if ((id === 'partition' || id === 'pornocracy' || id === 'seniority' || id === 'minority' || id === 'primogeniture' || id === 'meritocracy') && form === 'republic') return false;
+    if (id === 'continuous' && (!current.includes('termLimit') || form !== 'republic')) return false;
+    if (id === 'termLimit' && (!current.includes('term') || form !== 'republic')) return false;
+    if (id === 'term' && form !== 'republic') return false;
+    return !(m.excludes ?? []).some((x) => current.includes(x) &&
+      !((id === 'federation' && x === 'confederation') || (id === 'confederation' && x === 'federation')));
   });
 }
 export function applyModifier(current: GovernmentModifierId[], id: GovernmentModifierId): GovernmentModifierId[] {
   const result = current.filter((m) => !(MODIFIERS[id].excludes ?? []).includes(m));
-  if (id === 'confederation') return [...result.filter((m) => m !== 'federation'), id];
+  if (id === 'confederation' || id === 'federation') return [...result.filter((m) => m !== 'federation' && m !== 'confederation'), id];
+  if (id === 'communist') return [...result.filter((m) => m !== 'theocracy' && m !== 'ethnic'), id];
+  if ((id === 'theocracy' || id === 'ethnic') && result.includes('communist')) {
+    return [...result.filter((m) => m !== 'communist'), id];
+  }
+  if (id === 'liberal' && result.includes('theocracy') && result.includes('ethnic')) {
+    return [...result.filter((m) => m !== 'theocracy' && m !== 'ethnic'), id];
+  }
+  const merged = [...result, id];
+  if ((id === 'theocracy' || id === 'ethnic') && merged.includes('liberal') && merged.includes('theocracy') && merged.includes('ethnic')) {
+    return merged.filter((m) => m !== 'liberal');
+  }
   return [...result, id];
 }
 export function deathChance(age: number): number {

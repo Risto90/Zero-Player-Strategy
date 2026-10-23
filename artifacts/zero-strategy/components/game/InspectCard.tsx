@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { MAX_DENSITY } from '@/game/config';
 import type { PixelInfo } from '@/game/game';
-import { GOVERNMENTS, governmentOf } from '@/game/government';
+import { MODIFIERS, GOVERNMENTS, ageStage, governmentOf } from '@/game/government';
 import { fmt } from '@/game/format';
 
 const c = colors.light;
@@ -80,15 +80,32 @@ export function InspectCard({ info, onClose }: { info: PixelInfo | null; onClose
                   <Text style={styles.countryLine}>Площадь · {fmt(info.country.pixels)} земель</Text>
                   <Text style={styles.countryLine}>Население · {fmt(info.countryPopulation)} чел.</Text>
                   <Text style={styles.countryLine}>Форма · {GOVERNMENTS[governmentOf(info.country.government).id].name}</Text>
-                  {GOVERNMENTS[governmentOf(info.country.government).id].modifiers.map((modifier) => (
-                    <Text key={modifier} style={styles.modifier}>· {modifier}</Text>
+                  {info.country.modifiers.map((modifier) => (
+                    <Text key={modifier} style={styles.modifier}>· {MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
                   ))}
                   <Text style={styles.countryHeading}>ПРАВИТЕЛЬ</Text>
-                  <Text style={styles.countryLine}>{info.country.ruler.name} · {info.country.ruler.age} лет · {info.country.ruler.trait}</Text>
-                  {GOVERNMENTS[governmentOf(info.country.government).id].successor && info.country.heir && (
+                  <Text style={styles.countryLine}>{info.country.ruler.name} · {info.country.ruler.age} лет · {ageStage(info.country.ruler.age)} · {info.country.ruler.trait}</Text>
+                  {info.country.heir && (
                     <>
                       <Text style={styles.countryHeading}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
-                      <Text style={styles.countryLine}>{info.country.heir.name} · {info.country.heir.age} лет · {info.country.heir.trait}</Text>
+                      <Text style={styles.countryLine}>{info.country.heir.name} · {info.country.heir.age} лет · {ageStage(info.country.heir.age)} · {info.country.heir.trait}</Text>
+                    </>
+                  )}
+                  {info.country.coRulerIds.map((id) => {
+                    const coRuler = info.family.find((p) => p.id === id);
+                    return coRuler ? <Text key={id} style={styles.countryLine}>Соправитель · {coRuler.name}, {coRuler.age} лет ({ageStage(coRuler.age)})</Text> : null;
+                  })}
+                  {info.family.length > 0 && (
+                    <>
+                      <Text style={styles.countryHeading}>ДИНАСТИЯ И СЕМЬЯ</Text>
+                      {info.family.map((member) => (
+                        <Text key={member.id} style={styles.countryLine}>
+                          {member.name} · {member.age} лет · {ageStage(member.age)}{member.alive ? '' : ` · умер${member.gender === 'female' ? 'ла' : ''} в ${member.deathYear ?? '?'}`}
+                          {member.spouseIds.map((id) => info.family.find((relative) => relative.id === id)?.name).filter(Boolean).length
+                            ? ` · супруг(а): ${member.spouseIds.map((id) => info.family.find((relative) => relative.id === id)?.name).filter(Boolean).join(', ')}`
+                            : ''}
+                        </Text>
+                      ))}
                     </>
                   )}
                 </View>

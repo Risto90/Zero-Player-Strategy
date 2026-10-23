@@ -204,6 +204,7 @@ export class World {
       color: pickUniqueColor(PALETTE.culture, this.usedColors(this.cultures)),
       parentId: parent?.id ?? null,
       foundedYear: year,
+      traits: Math.random() < 0.25 ? [randomItem(['warlike', 'peaceful', 'genderEqual'])] : [],
     };
     this.cultures.push(culture);
     return culture;
@@ -217,6 +218,7 @@ export class World {
       color: pickUniqueColor(PALETTE.religion, this.usedColors(this.religions)),
       parentId: null,
       foundedYear: year,
+      traits: Math.random() < 0.25 ? [randomItem(['maleClergy', 'femaleClergy', 'equalClergy'])] : [],
     };
     this.religions.push(religion);
     return religion;
@@ -225,7 +227,10 @@ export class World {
   /** Removes an unused entity created for a card that ended up painting nothing (always the last one). */
   discardLast(list: 'countries' | 'cultures' | 'religions', id: number): void {
     const items = this[list] as { id: number }[];
-    if (items.length > 0 && items[items.length - 1].id === id) items.pop();
+    if (items.length > 0 && items[items.length - 1].id === id) {
+      items.pop();
+      if (list === 'countries') this.people = this.people.filter((p) => p.countryId !== id);
+    }
   }
 }
 

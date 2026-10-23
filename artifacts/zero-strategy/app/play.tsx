@@ -78,6 +78,7 @@ function GameScreen({ game }: { game: Game }) {
   const log = useMemo(() => <LogPanel log={snap.log} />, [snap.log]);
 
   const wide = width >= WIDE;
+  const selectedInfo = inspect?.info ? game.inspect(inspect.info.x, inspect.info.y) : null;
   const topBar = (
     <View style={styles.topBar}>
       <Pressable onPress={goHome} style={styles.menu} hitSlop={8} testID="link-home">
@@ -92,7 +93,7 @@ function GameScreen({ game }: { game: Game }) {
     <View style={styles.mapArea}>
       <MapView ref={mapRef} game={game} tool={tool} canPaint={snap.canPaint && !snap.busy} onInspect={(info) => setInspect({ info })} />
       <MapControls game={game} snap={snap} tool={tool} setTool={changeTool} onZoom={(f) => mapRef.current?.zoomBy(f)} onFit={() => mapRef.current?.fit()} />
-      {tool === 'hand' && inspect && <InspectCard info={inspect.info} onClose={() => setInspect(null)} />}
+      {tool === 'hand' && inspect && <InspectCard info={selectedInfo} onClose={() => setInspect(null)} />}
       {tool === 'hand' && !inspect && (
         <View style={styles.tapHint} pointerEvents="none">
           <Text style={styles.tapHintText}>Коснитесь точки, чтобы её изучить</Text>

@@ -7,11 +7,11 @@ export function rulers(world: World, c: Country): Person[] {
   return [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is Person => !!p)];
 }
 export function candidateAllowed(world: World, c: Country, p: Person, old = c.ruler, partnerExempt = false): boolean {
-  if (!p.alive || c.pendingDeathIds.includes(p.id)) return false;
+  if (!p.alive || c.pendingDeathIds.includes(p.id) || p.countryId !== c.id) return false;
   const coRule = c.coRulerIds.includes(p.id);
   const adult = c.government === 'republic' || c.modifiers.includes('meritocracy') ||
     (c.government === 'tyranny' && c.modifiers.includes('communist'));
-  const minimum = coRule ? 12 : adult ? 20 : c.government === 'tribal' ? 12 : 0;
+  const minimum = coRule || c.modifiers.includes('coRule') ? 12 : adult ? 20 : c.government === 'tribal' || c.government === 'tyranny' ? 12 : 0;
   if (p.age < minimum) return false;
   if (!partnerExempt) {
     if (c.modifiers.includes('patriarchal') && p.gender !== 'male') return false;
@@ -60,8 +60,7 @@ function communistPool(c: Country, list: Person[]): Person[] {
   if (!c.modifiers.includes('communist')) return list;
   const both = list.filter((p) => p.religionId === null && p.traits.includes('Космополит'));
   if (both.length) return both;
-  const either = list.filter((p) => p.religionId === null || p.traits.includes('Космополит'));
-  return either.length ? either : list;
+  return list.filter((p) => p.religionId === null || p.traits.includes('Космополит'));
 }
 export function successionOrder(world: World, c: Country, old = c.ruler): Person[] {
   if (c.government === 'republic') return [];
@@ -102,10 +101,29 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
 }
 export function hasFixedHeir(c: Country): boolean {
   return c.government !== 'republic' && !c.modifiers.includes('oligarchy') &&
-    (c.government === 'hereditary' || c.modifiers.some((id) => ['seniority', 'minority', 'primogeniture', 'pornocracy'].includes(id)));
+    (c.government === 'hereditary' || c.modifiers.some((id) => ['seniority', 'minority', 'primogeniture'].includes(id)));
 }
-export function refreshHeirs(world: World): void {
-  for (const c of world.countries) c.heir = hasFixedHeir(c) ? successionOrder(world, c)[0] ?? null : null;
+export function refreshHeirs(world: World, year?: number): void {
+  for (const c of world.countries) {
+    if (!hasFixedHeir(c)) { c.heir = null; continue; }
+    c.heir = successionOrder(world, c)[0] ?? null;
+    if (!c.heir) {
+      const bornThisYear = year ?? c.rulerSince ?? c.foundedYear;
+      const p = newCitizen(world, c, bornThisYear);
+      p.familyId = c.ruler.familyId;
+      p.parents = [c.ruler.id];
+      p.age = c.modifiers.includes('meritocracy') ? 20 : c.government === 'tyranny' ? 12 : c.modifiers.includes('coRule') ? 12 : Math.floor(Math.random() * 16);
+      p.bornAt = bornThisYear - p.age - Math.random();
+      p.cultureId = c.ruler.cultureId;
+      p.religionId = c.ruler.religionId;
+      if (c.modifiers.includes('patriarchal')) p.gender = 'male';
+      if (c.modifiers.includes('matriarchal')) p.gender = 'female';
+      if (c.modifiers.includes('communist') && !p.traits.includes('Космополит')) p.traits.push('Космополит');
+      registerPerson(world, c, p);
+      if (!c.dynastyClaims.includes(p.familyId)) c.dynastyClaims.push(p.familyId);
+      c.heir = p;
+    }
+  }
 }
 
 /** Generated options are proposals only; only the chosen person is added to the world registry. */

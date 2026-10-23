@@ -27,6 +27,7 @@ export interface SavedWorld {
   countries: Country[];
   cultures: Culture[];
   religions: Religion[];
+  people: World['people'];
   layers: SavedLayers;
 }
 
@@ -47,6 +48,7 @@ export interface WorldCopy {
   countries: Country[];
   cultures: Culture[];
   religions: Religion[];
+  people: World['people'];
 }
 
 function freezeTable(table: World['cultureTable']): TableView {
@@ -78,11 +80,12 @@ export function copyWorld(world: World): WorldCopy {
     countries: world.countries.map((c) => ({
       ...c,
       box: [...c.box] as Country['box'],
-      ruler: c.ruler ? { ...c.ruler } : c.ruler,
-      heir: c.heir ? { ...c.heir } : c.heir,
+      ruler: { ...c.ruler, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], friendIds: [...c.ruler.friendIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
+      heir: c.heir ? { ...c.heir, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], friendIds: [...c.heir.friendIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
     })),
     cultures: world.cultures.map((c) => ({ ...c })),
     religions: world.religions.map((r) => ({ ...r })),
+    people: world.people.map((p) => ({ ...p, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], friendIds: [...p.friendIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
   };
 }
 
@@ -105,6 +108,7 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     countries: copy.countries,
     cultures: copy.cultures,
     religions: copy.religions,
+    people: copy.people,
     layers: { land, political, density, humidity, temperature, drainage, cultures, religions },
   };
 }
@@ -128,6 +132,7 @@ export function deserializeWorld(saved: SavedWorld): World {
     drainage: rasterize(layers.drainage, new Uint8Array(MAP_PIXELS)),
   });
   world.countries = saved.countries.map((c) => ({ ...c }));
+  world.people = saved.people ?? [];
   world.cultures = saved.cultures.map((c) => ({ ...c }));
   world.religions = saved.religions.map((r) => ({ ...r }));
   rasterizeScalar(layers.political, world.owner);
@@ -143,5 +148,7 @@ export function deserializeWorld(saved: SavedWorld): World {
     }
   }
   world.recountCountries();
+  // A version-2 save from before the family system has rulers/heirs but no person registry.
+  // Game.load supplies its saved year for migration after the map has been reconstructed.
   return world;
 }

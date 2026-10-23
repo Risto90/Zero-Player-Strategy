@@ -3,7 +3,11 @@ import { INK, MAP_PIXELS, MAP_WIDTH, MAX_COUNTRIES, RANKS } from './config';
 import { forEachNeighbour } from './geography';
 import { randomItem, weightedPick } from './random';
 import type { Country, World } from './world';
-import { GOVERNMENTS, type GovernmentId, uniqueLeader } from './government';
+import { GOVERNMENTS, MODIFIERS, type GovernmentId, type GovernmentModifierId } from './government';
+import { lifeOpportunity, reformCandidates, type ReformProposal } from './politics';
+import { leadershipOptions } from './succession';
+import { person } from './characters';
+import { demography } from './demography';
 
 export const CARD_TITLES: Record<CardType, string> = {
   create: 'Создание государства',
@@ -16,6 +20,12 @@ export const CARD_TITLES: Record<CardType, string> = {
   government: 'Политическая реформа',
   succession: 'Передача престола',
   election: 'Новые выборы',
+  marriage: 'Брак',
+  birth: 'Рождение ребёнка',
+  death: 'Смерть',
+  character: 'Событие персонажей',
+  revolt: 'Переворот',
+  union: 'Объединение',
 };
 
 function makeCard(type: CardType, ink: number, target: Country | null, detail: string, hint: number): Card {
@@ -32,6 +42,9 @@ function makeCard(type: CardType, ink: number, target: Country | null, detail: s
     sourceCultureId: null,
     newGovernmentId: null,
     newRuler: null,
+    choices: null,
+    selectedChoice: 0,
+    characterEvent: null,
     hint,
   };
 }
@@ -177,47 +190,163 @@ function drawExpand(world: World, country: Country): Card | null {
   return makeCard('expand', capacity, country, `Закрашивайте свободные земли у границ ${country.name} или на любом берегу того же моря.`, hint);
 }
 
-function drawGovernment(country: Country): Card | null {
-  const options = (Object.keys(GOVERNMENTS) as GovernmentId[]).filter((id) => id !== country.government);
-  if (!options.length) return null;
-  const next = randomItem(options);
-  const gov = GOVERNMENTS[next];
-  const card = makeCard('government', 0, country, `Совет страны предлагает реформу: перейти к форме «${gov.name}». Модификаторы: ${gov.modifiers.join(' · ')}.`, -1);
-  card.newGovernmentId = next;
+function proposalChoice(proposal: ReformProposal): {
+  label: string; detail: string; government?: GovernmentId; modifier?: GovernmentModifierId;
+  removeModifier?: GovernmentModifierId; termYears?: number; maxTerms?: number; consulCount?: number; violent?: boolean;
+} {
+  let label: string, detail: string;
+  if (proposal.government) {
+    label = `Перейти: ${GOVERNMENTS[proposal.government].name}`;
+    detail = `Сменить форму правления на «${GOVERNMENTS[proposal.government].name}».`;
+  } else if (proposal.add) {
+    label = `Ввести: ${MODIFIERS[proposal.add].name}`; detail = MODIFIERS[proposal.add].effect;
+  } else if (proposal.remove) {
+    label = `Отменить: ${MODIFIERS[proposal.remove].name}`; detail = `Отменить закон «${MODIFIERS[proposal.remove].name}».`;
+  } else if (proposal.termYears !== undefined) {
+    label = `Срок: ${proposal.termYears} лет`; detail = `Сменить срок полномочий на ${proposal.termYears} лет.`;
+  } else if (proposal.maxTerms !== undefined) {
+    label = `Лимит: ${proposal.maxTerms}`; detail = `Установить лимит в ${proposal.maxTerms} срока для одного лидера.`;
+  } else {
+    label = `Консулов: ${proposal.consulCount}`; detail = `Установить ${proposal.consulCount} мест в консулате.`;
+  }
+  return { label, detail, government: proposal.government, modifier: proposal.add, removeModifier: proposal.remove,
+    termYears: proposal.termYears, maxTerms: proposal.maxTerms, consulCount: proposal.consulCount, violent: proposal.forced };
+}
+
+function drawGovernment(world: World, country: Country, year: number, violent = false): Card | null {
+  const proposals = reformCandidates(world, country, year, violent);
+  if (!proposals.length) return null;
+  const take = () => {
+    const index = weightedPick(proposals.map((p, i) => ({ value: i, weight: p.weight })));
+    return index === null ? null : proposals.splice(index, 1)[0];
+  };
+  const first = take(), second = take();
+  if (!first) return null;
+  const card = makeCard(violent ? 'revolt' : 'government', 0, country,
+    violent ? `Переворот в ${country.name}: выберите новую форму правления или реформу.` : `Реформа в ${country.name}: выберите одно из предложенных изменений.`, -1);
+  card.choices = [proposalChoice(first), ...(second ? [proposalChoice(second)] : [])];
+  card.violentReform = violent;
+  card.newGovernmentId = first.government ?? null;
   return card;
 }
 
-function drawLeadership(world: World, country: Country, year: number): Card | null {
-  if (country.heir && country.ruler.age >= 60) {
-    const card = makeCard('succession', 0, country, `Правитель ${country.ruler.name} стареет. Ожидаемый наследник ${country.heir.name}, ${country.heir.age} лет, готов принять власть.`, -1);
-    card.newRuler = { ...country.heir, since: year };
+function ageLabel(age: number): string {
+  return age < 3 ? 'младенец' : age <= 7 ? 'ребёнок' : age <= 11 ? 'отрок' : age <= 19 ? 'подросток' : 'взрослый';
+}
+function drawLifeCard(world: World, country: Country, year: number): Card | null {
+  if (country.government === 'tribal' && country.ruler.age >= 60 && Math.random() < 0.08) {
+    const card = makeCard('succession', 0, country, `Пожилой вождь ${country.ruler.name} может передать власть при жизни.`, -1);
+    card.choices = leadershipOptions(world, country, year).slice(0, 2).map((ruler) => ({
+      label: ruler.name, detail: `${ruler.age} лет · ${ruler.trait || ageLabel(ruler.age)}`, ruler, seatId: country.ruler.id,
+    }));
     return card;
   }
-  if (country.government === 'republic' && year - country.rulerSince >= 8) {
-    const ruler = uniqueLeader(country.id, year);
-    const card = makeCard('election', 0, country, `Выборы в ${country.name}: новым главой становится ${ruler.name}, ${ruler.age} лет.`, -1);
-    card.newRuler = ruler;
+  const opportunity = lifeOpportunity(world, country, year);
+  if (!opportunity) return null;
+  const p = person(world, opportunity.ids[0]);
+  if (!p) return null;
+  if (opportunity.kind === 'death') {
+    const card = makeCard('death', 0, country, `${p.name}, ${p.age} лет, умер${p.gender === 'female' ? 'ла' : ''}.`, -1);
+    card.characterEvent = { kind: 'death', personIds: opportunity.ids };
+    if (p.id === country.ruler.id || country.coRulerIds.includes(p.id)) {
+      card.choices = leadershipOptions(world, country, year, p).slice(0, 2).map((ruler) => ({
+        label: ruler.name, detail: `${ruler.age} лет · ${ruler.trait || ageLabel(ruler.age)}`, ruler, seatId: p.id,
+      }));
+    }
     return card;
   }
-  return null;
+  if (opportunity.kind === 'election') {
+    const card = makeCard('election', 0, country, `Срок полномочий истёк. Выберите главу ${country.name} на ${country.termYears} лет.`, -1);
+    card.choices = leadershipOptions(world, country, year, p).slice(0, 2).map((ruler) => ({
+      label: ruler.name, detail: `${ruler.age} лет · ${ruler.trait || ageLabel(ruler.age)}`, ruler, seatId: p.id,
+    }));
+    return card;
+  }
+  const type = opportunity.kind === 'birth' ? 'birth' : opportunity.kind === 'marriage' || opportunity.kind === 'engagement' ? 'marriage' : 'character';
+  const other = person(world, opportunity.ids[1]);
+  const title = type === 'birth' ? 'Ожидается рождение ребёнка' :
+    type === 'marriage' ? `${opportunity.kind === 'engagement' ? 'Обручение' : 'Брак'}: ${p.name} и ${other?.name ?? 'новый спутник'}` :
+      opportunity.kind === 'friendship' ? `Дружба: ${p.name} и ${other?.name ?? 'персонаж'}` :
+        opportunity.kind === 'romance' ? `Романтическая связь: ${p.name} и ${other?.name ?? 'персонаж'}` : `${p.name} получает новую черту`;
+  const card = makeCard(type, 0, country, title, -1);
+  card.characterEvent = { kind: opportunity.kind as 'birth' | 'marriage' | 'friendship' | 'trait' | 'engagement',
+    personIds: opportunity.ids, newPerson: opportunity.newPerson };
+  return card;
 }
 
-function drawSplit(world: World, country: Country, year: number): Card | null {
+function drawSplit(world: World, country: Country, year: number, uprising = false): Card | null {
   if (country.pixels < 3000) return null;
-  const ink = Math.min(INK.split, Math.floor(country.pixels * 0.45));
-  const hint = randomCountryPixel(world, country);
+  let splitCultureId: number | undefined;
+  let splitReligionId: number | undefined;
+  let cultureId = country.cultureId, religionId = country.religionId;
+  if (uprising || country.modifiers.includes('federation') || country.modifiers.includes('confederation')) {
+    const d = demography(world, country);
+    const minority = d.pairs.filter((p) => p.cultureId !== d.culture || p.religionId !== d.religion)
+      .sort((a, b) => b.weight - a.weight)[0];
+    if (minority) {
+      if (minority.cultureId !== d.culture) { splitCultureId = minority.cultureId; cultureId = minority.cultureId; }
+      if (minority.religionId !== d.religion) {
+        splitReligionId = minority.religionId ?? -1;
+        religionId = minority.religionId;
+      }
+      if (!splitCultureId && !splitReligionId) splitCultureId = minority.cultureId;
+    } else if (uprising) return null;
+    if (uprising && !splitCultureId && !splitReligionId) return null;
+  }
+  const accept = (p: number) => {
+    const cultureMatch = splitCultureId !== undefined && world.cultureTable.shareOf(world.culture[p], splitCultureId) > 0;
+    const faithMatch = splitReligionId !== undefined && world.religionTable.shareOf(world.religion[p], splitReligionId) > 0;
+    return splitCultureId === undefined && splitReligionId === undefined || cultureMatch || faithMatch;
+  };
+  const hint = randomCountryPixel(world, country, accept);
   if (hint < 0) return null;
+  const ink = Math.min(INK.split, Math.floor(country.pixels * 0.45));
   const split = world.newCountry({
     rank: country.rank,
-    cultureId: country.cultureId,
-    religionId: country.religionId,
+    cultureId,
+    religionId,
     density: country.density,
     foundedYear: year,
     parentId: country.id,
     government: country.government,
   });
-  const card = makeCard('split', ink, country, `${split.name} отделяется от ${country.name}. Население, культура и вера земель не меняются.`, hint);
+  split.modifiers = [...country.modifiers];
+  split.previousRulerIds = [...country.previousRulerIds];
+  split.dynastyClaims = [...split.dynastyClaims, ...country.dynastyClaims];
+  split.termYears = country.termYears; split.maxTerms = country.maxTerms; split.consulCount = country.consulCount;
+  const card = makeCard('split', ink, country, uprising
+    ? `Региональная группа добивается отделения от ${country.name}; проведите кистью по её землям.`
+    : splitCultureId !== undefined || splitReligionId !== undefined
+      ? `В ${country.name} мирно отделяется регион, где заметно влияние другой культуры или веры.`
+    : `${split.name} отделяется от ${country.name}.`, hint);
+  if (uprising) card.title = 'Восстание региона';
   card.newCountryId = split.id;
+  if (splitCultureId !== undefined) card.splitCultureId = splitCultureId;
+  if (splitReligionId !== undefined) card.splitReligionId = splitReligionId;
+  if (splitCultureId !== undefined) card.sourceCultureId = splitCultureId;
+  if (splitReligionId !== undefined && splitReligionId >= 0) card.newReligionId = splitReligionId;
+  return card;
+}
+
+function drawUnion(world: World, country: Country, year: number): Card | null {
+  const neighbours = new Map<number, number>();
+  const tag = country.id + 1;
+  world.forEachCountryPixel(country, (p) => forEachNeighbour(p, (n) => {
+    const otherId = world.owner[n] - 1;
+    if (otherId < 0 || otherId === country.id) return;
+    const other = world.countries[otherId];
+    if (!other || other.pixels <= 0) return;
+    const dynastic = country.dynastyClaims.some((id) => other.dynastyClaims.includes(id));
+    const cultural = country.ruler.cultureId === other.ruler.cultureId;
+    const religious = country.ruler.religionId !== null && country.ruler.religionId === other.ruler.religionId;
+    if (dynastic || cultural || religious) neighbours.set(otherId, (neighbours.get(otherId) ?? 0) + 1);
+  }));
+  if (!neighbours.size) return null;
+  const candidates = [...neighbours].map(([id, border]) => ({ value: world.countries[id], weight: border }));
+  const other = weightedPick(candidates);
+  if (!other) return null;
+  const card = makeCard('union', 0, country, `Мирное объединение: ${country.name} может присоединить соседнее государство ${other.name}.`, -1);
+  card.newCountryId = other.id;
   return card;
 }
 
@@ -346,14 +475,23 @@ export function drawWorldCard(world: World, year: number): Card | null {
 
 export function drawCountryCard(world: World, country: Country, year: number): Card | null {
   const big = country.pixels >= 12000;
+  const diversity = demography(world, country);
+  const life = drawLifeCard(world, country, year);
+  if (life?.type === 'death' || life?.type === 'election') return life;
+  const consulateScale = country.modifiers.includes('consulate') ? 1 / Math.max(2, country.consulCount) : country.modifiers.includes('coRule') ? 0.5 : 1;
+  const splitScale = country.modifiers.includes('confederation') ? 3 : country.modifiers.includes('federation') ? 2 : 1;
+  const unrestScale = country.modifiers.includes('confederation') ? 1 / 3 : country.modifiers.includes('federation') ? 1 / 2 : 1;
   return drawFirstApplicable([
-    { value: () => drawExpand(world, country), weight: 4 },
-    { value: () => drawGovernment(country), weight: 0.12 },
-    { value: () => drawLeadership(world, country, year), weight: 0.2 },
-    { value: () => drawSplit(world, country, year), weight: big ? 0.3 : 0 },
+    { value: () => life, weight: 1.4 },
+    { value: () => drawExpand(world, country), weight: 4 * consulateScale },
+    { value: () => drawGovernment(world, country, year), weight: 0.16 * consulateScale },
+    { value: () => drawGovernment(world, country, year, true), weight: 0.01 * consulateScale },
+    { value: () => drawSplit(world, country, year), weight: (big ? 0.3 : 0) * splitScale * consulateScale },
+    { value: () => drawSplit(world, country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale },
+    { value: () => drawUnion(world, country, year), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0 },
     { value: () => drawClimate(world, 'drought', country), weight: 0.8 },
     { value: () => drawClimate(world, 'rain', country), weight: 0.8 },
-    { value: () => drawFaith(world, country, year), weight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) },
+    { value: () => drawFaith(world, country, year), weight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) * (country.modifiers.includes('theocracy') ? 2 : 1) },
     { value: () => drawCultureSplit(world, country, year), weight: country.pixels >= 6000 ? 0.06 : 0 },
   ]);
 }

@@ -25,6 +25,10 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
           ? 'Передать власть'
           : card.type === 'election'
             ? 'Провести выборы'
+            : card.type === 'death'
+              ? 'Продолжить'
+              : card.type === 'marriage' || card.type === 'birth' || card.type === 'character'
+                ? 'Далее'
             : 'Следующий год'
     : 'Следующий год';
   const message = snap.message && snap.message !== card?.detail ? snap.message : '';
@@ -79,12 +83,26 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
             <Text style={styles.country} testID="text-card-country">{snap.cardCountry.rank} {snap.cardCountry.name}</Text>
           )}
           <Text style={styles.detail} testID="text-card-detail">{card.detail}</Text>
-          <View style={styles.inkRow}>
-            <View style={styles.inkTrack}>
-              <View style={[styles.inkFill, { width: `${inkShare * 100}%` }]} />
+          {card.choices && (
+            <View style={styles.choices}>
+              {card.choices.map((choice, index) => (
+                <Pressable key={`${choice.label}-${index}`} onPress={() => game.selectChoice(index)}
+                  style={[styles.choice, card.selectedChoice === index && styles.choiceSelected]}
+                  testID={`button-choice-${index}`} accessibilityRole="button" accessibilityState={{ selected: card.selectedChoice === index }}>
+                  <Text style={styles.choiceTitle}>{choice.label}</Text>
+                  <Text style={styles.choiceDetail}>{choice.detail}</Text>
+                </Pressable>
+              ))}
             </View>
-            <Text style={styles.inkText} testID="text-ink">{fmt(card.ink)} / {fmt(card.inkTotal)}</Text>
-          </View>
+          )}
+          {card.inkTotal > 0 && (
+            <View style={styles.inkRow}>
+              <View style={styles.inkTrack}>
+                <View style={[styles.inkFill, { width: `${inkShare * 100}%` }]} />
+              </View>
+              <Text style={styles.inkText} testID="text-ink">{fmt(card.ink)} / {fmt(card.inkTotal)}</Text>
+            </View>
+          )}
         </View>
       ) : (
         <Text style={styles.empty}>Карт нет. Мир идёт своим чередом.</Text>
@@ -113,6 +131,11 @@ const styles = StyleSheet.create({
   queued: { marginLeft: 'auto', fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1, color: c.secondaryForeground, backgroundColor: c.secondary, borderRadius: 3, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden' },
   country: { fontFamily: fonts.sans, fontSize: 12, color: c.mutedForeground },
   detail: { marginTop: 4, fontFamily: fonts.sans, fontSize: 13, lineHeight: 17, color: c.foreground, opacity: 0.82 },
+  choices: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  choice: { flexGrow: 1, flexBasis: 140, borderWidth: 1, borderColor: c.border, borderRadius: 4, padding: 7, backgroundColor: c.background },
+  choiceSelected: { borderColor: c.primary, borderWidth: 2, backgroundColor: c.secondary },
+  choiceTitle: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.foreground },
+  choiceDetail: { marginTop: 2, fontFamily: fonts.sans, fontSize: 11, lineHeight: 14, color: c.mutedForeground },
   inkRow: { marginTop: 6, flexDirection: 'row', alignItems: 'center', gap: 8 },
   inkTrack: { flex: 1, height: 8, borderRadius: 2, borderWidth: 1, borderColor: 'rgba(44,30,23,0.4)', backgroundColor: c.muted, overflow: 'hidden' },
   inkFill: { height: '100%', backgroundColor: c.foreground },
