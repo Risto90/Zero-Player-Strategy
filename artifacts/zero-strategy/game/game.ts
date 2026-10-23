@@ -9,6 +9,7 @@ import { clearSaveBytes, hasSaveBytes, readSaveBytes, writeSaveBytes } from './s
 import { fmt } from './format';
 import { MapRenderer, type EntityLayer, type MapMode } from './render';
 import { World, type Country } from './world';
+import { advanceLeaders, changeGovernment, ensureCountryLeaders, GOVERNMENTS } from './government';
 
 export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
 type Slot = { scope: 'world' } | { scope: 'country'; countryId: number };
@@ -39,6 +40,7 @@ export interface PixelInfo {
   y: number;
   land: boolean;
   country: Country | null;
+  countryPopulation: number;
   biome: string | null;
   humidity: number;
   temperature: number;
@@ -188,6 +190,7 @@ export class Game {
     const saved = bytes ? decodeSave<SavedGame>(bytes) : null;
     if (!saved || saved.version !== 2) return null;
     const game = new Game(deserializeWorld(saved.world), saved.role);
+    for (const country of game.world.countries) ensureCountryLeaders(country, saved.year);
     game.year = saved.year;
     game.turn = saved.turn;
     game.focusCountryId = saved.focusCountryId;
@@ -347,11 +350,14 @@ export class Game {
     const owner = w.owner[p];
     const cultureEntry = w.cultureTable.entries[w.culture[p]];
     const religionEntry = w.religionTable.entries[w.religion[p]];
+    const country = owner > 0 ? w.countries[owner - 1] : null;
+    const countryPopulation = country ? this.legend().countries.find((row) => row.id === country.id)?.value ?? 0 : 0;
     return {
       x: px,
       y: py,
       land,
-      country: owner > 0 ? w.countries[owner - 1] : null,
+      country,
+      countryPopulation,
       biome: land ? BIOMES[w.biomeAt(p)].name : null,
       humidity: w.humidity[p],
       temperature: w.temperature[p],
@@ -374,6 +380,7 @@ export class Game {
       if (this.queue.length > 0 && this.startNextPlayerCard()) return;
       this.turn += 1;
       this.year += 1;
+      advanceLeaders(this.world.countries, this.year);
       const jobs: (() => void)[] = [];
       if (this.role === 'country' || this.role === 'observer') {
         jobs.push(() => {
@@ -448,6 +455,7 @@ export class Game {
 
   private startCard(card: Card): void {
     this.card = card;
+    if (card.developmentOnly) this.brushMode = 'repeat';
     this.painter = new CardPainter(this.world, card, this.brushMode);
     this.secondsLeft = TURN_SECONDS;
     this.paused = false;
@@ -461,7 +469,7 @@ export class Game {
 
   private resolveAutomatically(card: Card): void {
     const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split';
-    const painter = new CardPainter(this.world, card, !territorial && Math.random() < 0.3 ? 'repeat' : 'respect');
+    const painter = new CardPainter(this.world, card, card.developmentOnly || (!territorial && Math.random() < 0.3) ? 'repeat' : 'respect');
     autoPaint(painter);
     if (painter.dirty) this.renderer.mark(painter.dirty);
     this.finish(painter);
@@ -517,6 +525,27 @@ export class Game {
         const culture = w.cultures[card.newCultureId as number];
         if (used === 0) w.discardLast('cultures', culture.id);
         else this.addLog(`Выделяется народ «${culture.name}» из «${w.cultures[card.sourceCultureId as number].name}».`);
+        break;
+      }
+      case 'government': {
+        if (target && card.newGovernmentId) {
+          const previous = GOVERNMENTS[target.government].name;
+          changeGovernment(target, card.newGovernmentId, this.year);
+          this.addLog(`${target.name}: реформа — ${previous} сменена на «${GOVERNMENTS[target.government].name}».`);
+        }
+        break;
+      }
+      case 'succession':
+      case 'election': {
+        if (target && card.newRuler) {
+          const oldName = target.ruler.name;
+          target.ruler = { ...card.newRuler, since: this.year };
+          target.rulerSince = this.year;
+          if (GOVERNMENTS[target.government].successor) {
+            target.heir = { name: `${target.ruler.name} II`, age: 16 + Math.floor(Math.random() * 20), trait: 'Наследник', since: this.year };
+          } else target.heir = null;
+          this.addLog(`${target.name}: ${card.type === 'election' ? 'выбран' : 'наследует власть'} ${target.ruler.name} вместо ${oldName}.`);
+        }
         break;
       }
     }

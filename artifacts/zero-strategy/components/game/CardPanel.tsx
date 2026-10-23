@@ -16,7 +16,17 @@ const ROLE_LABEL: Record<string, string> = {
 export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
   const card = snap.card;
   const inkShare = card && card.inkTotal > 0 ? card.ink / card.inkTotal : 0;
-  const nextLabel = card ? (snap.queuedCards > 0 ? 'Готово' : 'Следующий год') : 'Следующий год';
+  const nextLabel = card
+    ? snap.queuedCards > 0
+      ? 'Готово'
+      : card.type === 'government'
+        ? 'Принять реформу'
+        : card.type === 'succession'
+          ? 'Передать власть'
+          : card.type === 'election'
+            ? 'Провести выборы'
+            : 'Следующий год'
+    : 'Следующий год';
   const message = snap.message && snap.message !== card?.detail ? snap.message : '';
   const hot = !snap.drawing && (snap.paused || snap.secondsLeft <= 10);
   return (

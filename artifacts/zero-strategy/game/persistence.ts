@@ -75,7 +75,12 @@ export function copyWorld(world: World): WorldCopy {
     religion: world.religion.slice(),
     cultureTable: freezeTable(world.cultureTable),
     religionTable: freezeTable(world.religionTable),
-    countries: world.countries.map((c) => ({ ...c, box: [...c.box] as Country['box'] })),
+    countries: world.countries.map((c) => ({
+      ...c,
+      box: [...c.box] as Country['box'],
+      ruler: c.ruler ? { ...c.ruler } : c.ruler,
+      heir: c.heir ? { ...c.heir } : c.heir,
+    })),
     cultures: world.cultures.map((c) => ({ ...c })),
     religions: world.religions.map((r) => ({ ...r })),
   };

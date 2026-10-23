@@ -30,7 +30,8 @@ Offline zero-player grand-strategy sandbox: each year event cards are played by 
 ## Product
 
 - Start: real Earth or a new random world; roles: all, one country, world events only, observer.
-- Cards: founding (always brings a new culture), expansion, split (keeps population, culture, faith), drought, rain, new faith (converts 40% per stroke), culture branch (moves 50% of the source culture).
+- Cards: founding (always brings a new culture and ruler), expansion/development (uses occupied land to raise density when no free land remains), split (keeps population, culture, faith and gives the new state a ruler), drought, rain, new faith (converts 40% per stroke), culture branch (moves 50% of the source culture), government reform, succession and republic elections.
+- Countries have a governing form (tribal union, monarchy, republic or empire), government modifiers, a ruler, and an expected heir where succession is hereditary. Tap an owned map cell with the hand tool to inspect area, population, government, modifiers, ruler and heir ages.
 - Map modes: countries, biomes, cultures, religions, humidity, temperature, drainage, population; single culture/religion share layers from the legend; tap-to-inspect shows per-point shares.
 
 ## User preferences

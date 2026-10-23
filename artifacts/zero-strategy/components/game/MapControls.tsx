@@ -52,7 +52,7 @@ export function MapControls({
             })}
           </View>
         )}
-        {brushOn && snap.brushOption !== null && (
+        {brushOn && snap.brushOption !== null && !snap.card?.developmentOnly && (
           <Pressable
             onPress={() => game.toggleBrushMode()}
             style={[styles.option, snap.brushMode === 'repeat' && { backgroundColor: c.accent }]}
@@ -63,7 +63,13 @@ export function MapControls({
           </Pressable>
         )}
         {brushOn && !snap.canPaint && (
-          <Text style={styles.hint}>Рисовать нечем — сдвигайте карту</Text>
+          <Text style={styles.hint}>
+            {snap.card && ['government', 'succession', 'election'].includes(snap.card.type)
+              ? 'Событие применится при нажатии на кнопку хода'
+              : snap.card?.developmentOnly
+                ? 'Мазок повысит плотность населения'
+                : 'Рисовать нечем — сдвигайте карту'}
+          </Text>
         )}
       </View>
       <View style={styles.right} pointerEvents="box-none">

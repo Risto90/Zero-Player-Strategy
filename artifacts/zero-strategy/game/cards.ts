@@ -3,6 +3,7 @@ import { INK, MAP_PIXELS, MAP_WIDTH, MAX_COUNTRIES, RANKS } from './config';
 import { forEachNeighbour } from './geography';
 import { randomItem, weightedPick } from './random';
 import type { Country, World } from './world';
+import { GOVERNMENTS, type GovernmentId, uniqueLeader } from './government';
 
 export const CARD_TITLES: Record<CardType, string> = {
   create: 'Создание государства',
@@ -12,6 +13,9 @@ export const CARD_TITLES: Record<CardType, string> = {
   rain: 'Ливни',
   faith: 'Возникновение веры',
   culture: 'Выделение культуры',
+  government: 'Политическая реформа',
+  succession: 'Передача престола',
+  election: 'Новые выборы',
 };
 
 function makeCard(type: CardType, ink: number, target: Country | null, detail: string, hint: number): Card {
@@ -26,6 +30,8 @@ function makeCard(type: CardType, ink: number, target: Country | null, detail: s
     newCultureId: null,
     newReligionId: null,
     sourceCultureId: null,
+    newGovernmentId: null,
+    newRuler: null,
     hint,
   };
 }
@@ -146,7 +152,18 @@ function drawExpand(world: World, country: Country): Card | null {
   });
   const seas = countrySeas(world, country);
   const capacity = reachableFree(world, frontier, INK.expand, seas);
-  if (capacity < 1) return null;
+  if (capacity < 1) {
+    // With no unclaimed land, expansion becomes internal development rather than disappearing.
+    const available: number[] = [];
+    world.forEachCountryPixel(country, (p) => {
+      if (world.density[p] < 20) available.push(p);
+    });
+    if (!available.length) return null;
+    const ink = Math.min(INK.expand, available.length);
+    const card = makeCard('expand', ink, country, `Свободной суши нет. Повышайте плотность населения в ${country.name}: один мазок развивает уже занятые земли.`, randomItem(available));
+    card.developmentOnly = true;
+    return card;
+  }
   let hint = frontier.length > 0 ? randomItem(frontier) : -1;
   if (hint < 0) {
     for (const body of seas) {
@@ -158,6 +175,31 @@ function drawExpand(world: World, country: Country): Card | null {
     }
   }
   return makeCard('expand', capacity, country, `Закрашивайте свободные земли у границ ${country.name} или на любом берегу того же моря.`, hint);
+}
+
+function drawGovernment(country: Country): Card | null {
+  const options = (Object.keys(GOVERNMENTS) as GovernmentId[]).filter((id) => id !== country.government);
+  if (!options.length) return null;
+  const next = randomItem(options);
+  const gov = GOVERNMENTS[next];
+  const card = makeCard('government', 0, country, `Совет страны предлагает реформу: перейти к форме «${gov.name}». Модификаторы: ${gov.modifiers.join(' · ')}.`, -1);
+  card.newGovernmentId = next;
+  return card;
+}
+
+function drawLeadership(world: World, country: Country, year: number): Card | null {
+  if (country.heir && country.ruler.age >= 60) {
+    const card = makeCard('succession', 0, country, `Правитель ${country.ruler.name} стареет. Ожидаемый наследник ${country.heir.name}, ${country.heir.age} лет, готов принять власть.`, -1);
+    card.newRuler = { ...country.heir, since: year };
+    return card;
+  }
+  if (country.government === 'republic' && year - country.rulerSince >= 8) {
+    const ruler = uniqueLeader(country.id, year);
+    const card = makeCard('election', 0, country, `Выборы в ${country.name}: новым главой становится ${ruler.name}, ${ruler.age} лет.`, -1);
+    card.newRuler = ruler;
+    return card;
+  }
+  return null;
 }
 
 function drawSplit(world: World, country: Country, year: number): Card | null {
@@ -306,6 +348,8 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const big = country.pixels >= 12000;
   return drawFirstApplicable([
     { value: () => drawExpand(world, country), weight: 4 },
+    { value: () => drawGovernment(country), weight: 0.12 },
+    { value: () => drawLeadership(world, country, year), weight: 0.2 },
     { value: () => drawSplit(world, country, year), weight: big ? 0.3 : 0 },
     { value: () => drawClimate(world, 'drought', country), weight: 0.8 },
     { value: () => drawClimate(world, 'rain', country), weight: 0.8 },

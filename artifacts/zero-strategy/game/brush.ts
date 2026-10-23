@@ -1,8 +1,10 @@
 import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, MAX_DENSITY } from './config';
 import { forEachNeighbour } from './geography';
 import type { World } from './world';
+import type { GovernmentId, Person } from './government';
+import { GOVERNMENTS, governmentOf } from './government';
 
-export type CardType = 'create' | 'expand' | 'split' | 'drought' | 'rain' | 'faith' | 'culture';
+export type CardType = 'create' | 'expand' | 'split' | 'drought' | 'rain' | 'faith' | 'culture' | 'government' | 'succession' | 'election';
 /** 'respect': a pixel changes at most once per card. 'repeat': every new stroke applies again. */
 export type BrushMode = 'respect' | 'repeat';
 export type BrushOption = 'density' | 'repeat' | null;
@@ -20,6 +22,9 @@ export interface Card {
   newCultureId: number | null;
   newReligionId: number | null;
   sourceCultureId: number | null;
+  newGovernmentId: GovernmentId | null;
+  newRuler: Person | null;
+  developmentOnly?: boolean;
   /** A pixel where the card certainly applies (used by automatic play). */
   hint: number;
 }
@@ -175,7 +180,8 @@ export class CardPainter {
       for (const p of pixels) {
         if (card.ink <= 0) break;
         if (world.owner[p] !== tag || strokeMask[p] || world.density[p] >= MAX_DENSITY) continue;
-        world.density[p] += 1;
+        const country = world.countries[tag - 1];
+        world.density[p] = Math.min(MAX_DENSITY, world.density[p] + 1 + GOVERNMENTS[governmentOf(country.government).id].development);
         card.ink -= 1;
         this.touch(p);
       }

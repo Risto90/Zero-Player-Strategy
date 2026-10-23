@@ -11,13 +11,17 @@ import {
   WORLD_SEED,
 } from './geography';
 import { randomItem } from './random';
+import { ensureCountryLeaders, initialGovernment, type GovernmentId, type Person } from './government';
 
 export interface Country {
   id: number;
   name: string;
   color: string;
   rank: string;
-  government: string;
+  government: GovernmentId;
+  ruler: Person;
+  heir: Person | null;
+  rulerSince: number;
   /** Population per pixel given to newly settled land. */
   density: number;
   cultureId: number;
@@ -165,18 +169,21 @@ export class World {
     return new Set(items.map((item) => item.color.toLowerCase()));
   }
 
-  newCountry(fields: Pick<Country, 'rank' | 'cultureId' | 'religionId' | 'density' | 'foundedYear' | 'parentId'> & { government?: string }): Country {
+  newCountry(fields: Pick<Country, 'rank' | 'cultureId' | 'religionId' | 'density' | 'foundedYear' | 'parentId'> & { government?: GovernmentId }): Country {
     const used = new Set(this.countries.map((c) => c.name));
+    const leaders = initialGovernment(fields.foundedYear);
     const country: Country = {
       id: this.countries.length,
       name: uniqueName(() => `${randomItem(NAMES.countryStart)}${randomItem(NAMES.countryEnd)}`, used),
       color: pickUniqueColor(PALETTE.country, this.usedColors(this.countries)),
-      government: fields.government ?? 'Племя',
+      ...leaders,
+      rulerSince: fields.foundedYear,
       pixels: 0,
       box: [MAP_WIDTH, MAP_HEIGHT, -1, -1],
       ...fields,
     };
     this.countries.push(country);
+    ensureCountryLeaders(country, fields.foundedYear);
     return country;
   }
 

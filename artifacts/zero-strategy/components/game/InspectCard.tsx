@@ -3,6 +3,8 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { MAX_DENSITY } from '@/game/config';
 import type { PixelInfo } from '@/game/game';
+import { GOVERNMENTS, governmentOf } from '@/game/government';
+import { fmt } from '@/game/format';
 
 const c = colors.light;
 
@@ -72,6 +74,25 @@ export function InspectCard({ info, onClose }: { info: PixelInfo | null; onClose
                 {info.country ? `${info.country.rank} · ` : ''}
                 {info.biome} · x {info.x}, y {info.y}
               </Text>
+              {info.country && (
+                <View style={styles.countryDetails}>
+                  <Text style={styles.countryHeading}>ГОСУДАРСТВО</Text>
+                  <Text style={styles.countryLine}>Площадь · {fmt(info.country.pixels)} земель</Text>
+                  <Text style={styles.countryLine}>Население · {fmt(info.countryPopulation)} чел.</Text>
+                  <Text style={styles.countryLine}>Форма · {GOVERNMENTS[governmentOf(info.country.government).id].name}</Text>
+                  {GOVERNMENTS[governmentOf(info.country.government).id].modifiers.map((modifier) => (
+                    <Text key={modifier} style={styles.modifier}>· {modifier}</Text>
+                  ))}
+                  <Text style={styles.countryHeading}>ПРАВИТЕЛЬ</Text>
+                  <Text style={styles.countryLine}>{info.country.ruler.name} · {info.country.ruler.age} лет · {info.country.ruler.trait}</Text>
+                  {GOVERNMENTS[governmentOf(info.country.government).id].successor && info.country.heir && (
+                    <>
+                      <Text style={styles.countryHeading}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
+                      <Text style={styles.countryLine}>{info.country.heir.name} · {info.country.heir.age} лет · {info.country.heir.trait}</Text>
+                    </>
+                  )}
+                </View>
+              )}
             </View>
             <View style={{ gap: 4 }}>
               <Bar label="Влажность" value={info.humidity} />
@@ -126,6 +147,10 @@ const styles = StyleSheet.create({
   barFill: { height: '100%', backgroundColor: c.foreground, opacity: 0.8 },
   barValue: { width: 28, textAlign: 'right', fontFamily: fonts.mono, fontSize: 11, color: c.foreground },
   densityNote: { textAlign: 'right', fontFamily: fonts.sans, fontSize: 10, color: c.mutedForeground },
+  countryDetails: { marginTop: 4, padding: 8, gap: 3, backgroundColor: c.muted, borderLeftWidth: 2, borderLeftColor: c.primary },
+  countryHeading: { marginTop: 3, fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1, color: c.primary },
+  countryLine: { fontFamily: fonts.sans, fontSize: 12, color: c.foreground },
+  modifier: { fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
   sharesTitle: { marginBottom: 4, fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.6, color: c.mutedForeground },
   stack: { flexDirection: 'row', height: 8, backgroundColor: c.muted, borderRadius: 1, overflow: 'hidden', marginBottom: 4 },
   shareRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 1 },
