@@ -1,5 +1,5 @@
 import type { Person } from './government';
-import { familyNameForId } from './government';
+import { familyNameForId, formatPersonName, legacyNameStyleForCulture } from './government';
 import type { Country, World } from './world';
 import { person, newCitizen, registerPerson } from './characters';
 import { demography, weighted } from './demography';
@@ -122,13 +122,15 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
     const p = fresh();
     p.familyId = old.familyId;
     p.familyName = familyNameForId(old.familyId);
-    p.name = `${p.name.split(/\s+/)[0]} ${p.familyName}`;
     p.parents = [];
     p.age = c.modifiers.includes('meritocracy') || (c.government === 'republic') ? 24 :
       c.government === 'tyranny' || c.modifiers.includes('coRule') ? 12 : 16;
     p.bornAt = year - p.age - Math.random();
     if (c.modifiers.includes('ethnic') && c.government !== 'republic') p.cultureId = old.cultureId;
     if (c.modifiers.includes('theocracy') && c.government !== 'republic') p.religionId = old.religionId;
+    p.name = formatPersonName(p.givenName, p.familyName, p.gender, {
+      style: world.cultures[p.cultureId]?.nameStyleId ?? legacyNameStyleForCulture(p.cultureId),
+    });
     return p;
   };
   const distinctFamily = unique(family);

@@ -42,7 +42,6 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
   const country = world.countries[person.countryId];
   const culture = world.cultures[person.cultureId]?.name ?? 'неизвестна';
   const religion = person.religionId === null ? 'без веры' : world.religions[person.religionId]?.name ?? 'неизвестна';
-  const givenName = person.name.slice(0, Math.max(0, person.name.length - person.familyName.length)).trim() || person.name;
   const parents = person.parents.map((parentId) => world.people.find((item) => item.id === parentId)).filter((item) => !!item);
   const partners = [
     ...person.spouseIds.map((partnerId) => ({ person: world.people.find((item) => item.id === partnerId), kind: 'Брак' })),
@@ -66,10 +65,7 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
         <Text style={styles.eyebrow}>ЛЕТОПИСЬ ПЕРСОНАЖА</Text>
       </View>
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-        <Text style={styles.title}>{givenName}{' '}
-          <Text onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(person.familyId) } })}
-            accessibilityRole="link" style={styles.titleFamily}>{person.familyName}</Text>
-        </Text>
+        <Text style={styles.title}>{person.name}</Text>
         <Text style={styles.subtitle}>
           {person.alive ? 'Жив(а)' : `Умер${person.gender === 'female' ? 'ла' : ''} в ${person.deathYear ?? 'неизвестном году'}`}
           {country ? ` · ${country.name}` : ''}
@@ -130,7 +126,6 @@ const styles = StyleSheet.create({
   eyebrow: { marginLeft: 'auto', fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.6, color: c.primary },
   content: { padding: 18, gap: 14 },
   title: { fontFamily: fonts.display, fontSize: 30, color: c.foreground },
-  titleFamily: { color: c.accent, textDecorationLine: 'underline' },
   subtitle: { marginTop: -12, fontFamily: fonts.sans, fontSize: 13, color: c.mutedForeground },
   facts: { padding: 12, gap: 6, borderLeftWidth: 3, borderColor: c.primary, backgroundColor: c.card },
   fact: { fontFamily: fonts.sans, fontSize: 13, color: c.foreground },

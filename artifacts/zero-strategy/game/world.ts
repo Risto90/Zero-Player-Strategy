@@ -11,7 +11,7 @@ import {
   WORLD_SEED,
 } from './geography';
 import { randomItem } from './random';
-import { initialGovernment, type GovernmentId, type Person, type PoliticalState } from './government';
+import { initialGovernment, randomNameStyle, type GovernmentId, type NameStyleId, type Person, type PoliticalState } from './government';
 
 export interface Country extends PoliticalState {
   id: number;
@@ -33,6 +33,8 @@ export interface Country extends PoliticalState {
 export interface Culture {
   id: number;
   name: string;
+  /** Persistent naming convention selected when this culture was founded. */
+  nameStyleId?: NameStyleId;
   color: string;
   parentId: number | null;
   foundedYear: number;
@@ -169,7 +171,7 @@ export class World {
 
   newCountry(fields: Pick<Country, 'rank' | 'cultureId' | 'religionId' | 'density' | 'foundedYear' | 'parentId'> & { government?: GovernmentId }): Country {
     const used = new Set(this.countries.map((c) => c.name));
-    const leaders = initialGovernment(fields.foundedYear, fields.cultureId, fields.religionId);
+    const leaders = initialGovernment(fields.foundedYear, fields.cultureId, fields.religionId, this.cultures[fields.cultureId]?.nameStyleId);
     const country: Country = {
       id: this.countries.length,
       name: uniqueName(() => `${randomItem(NAMES.countryStart)}${randomItem(NAMES.countryEnd)}`, used),
@@ -201,6 +203,7 @@ export class World {
     const culture: Culture = {
       id: this.cultures.length,
       name: name.charAt(0).toUpperCase() + name.slice(1),
+      nameStyleId: randomNameStyle(),
       color: pickUniqueColor(PALETTE.culture, this.usedColors(this.cultures)),
       parentId: parent?.id ?? null,
       foundedYear: year,

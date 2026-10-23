@@ -7,6 +7,40 @@ export type GovernmentModifierId =
   | 'pornocracy' | 'term' | 'termLimit' | 'continuous' | 'consulate' | 'federation'
   | 'confederation' | 'coRule';
 export type Gender = 'female' | 'male';
+export type NameStyleId =
+  | 'given-family'
+  | 'family-given'
+  | 'russian-patronymic'
+  | 'spanish-double-surname'
+  | 'icelandic-patronymic'
+  | 'arabic-nasab';
+
+export const NAME_STYLES: { id: NameStyleId; label: string }[] = [
+  { id: 'given-family', label: 'Личное имя — фамилия' },
+  { id: 'family-given', label: 'Фамилия — личное имя' },
+  { id: 'russian-patronymic', label: 'Имя — отчество — фамилия' },
+  { id: 'spanish-double-surname', label: 'Имя — фамилия отца — фамилия матери' },
+  { id: 'icelandic-patronymic', label: 'Имя — имя родителя с окончанием -сон/-доттир' },
+  { id: 'arabic-nasab', label: 'Имя — ибн/бинт — имя отца' },
+];
+const NAME_STYLE_IDS = NAME_STYLES.map((style) => style.id);
+
+export function randomNameStyle(rng: () => number = Math.random): NameStyleId {
+  return randomItem(NAME_STYLE_IDS, rng);
+}
+
+/** Deterministic style for old saves that predate per-culture name styles. */
+export function legacyNameStyleForCulture(cultureId: number): NameStyleId {
+  const index = Math.abs(Math.floor(Number.isFinite(cultureId) ? cultureId : 0)) % NAME_STYLE_IDS.length;
+  return NAME_STYLE_IDS[index];
+}
+
+export interface PersonNameContext {
+  style?: NameStyleId;
+  fatherGivenName?: string;
+  paternalSurname?: string;
+  maternalSurname?: string;
+}
 
 export interface Person {
   id: number;
@@ -14,6 +48,7 @@ export interface Person {
   age: number;
   gender: Gender;
   trait: string;
+  givenName: string;
   since: number;
   alive: boolean;
   parents: number[];
@@ -103,7 +138,7 @@ const GIVEN: Record<Person['gender'], string[]> = {
   male: ['Арен', 'Белан', 'Велимир', 'Дарен', 'Илар', 'Кай', 'Мирон', 'Радан', 'Севир', 'Фарен'],
   female: ['Гелия', 'Елена', 'Зария', 'Лея', 'Нарис', 'Орина', 'Тария', 'Элина'],
 };
-const FAMILY_NAMES = [
+export const FAMILY_SURNAME_POOL = [
   'Александров', 'Алексеев', 'Андреев', 'Антонов', 'Баранов', 'Белов', 'Богданов', 'Борисов',
   'Васильев', 'Виноградов', 'Власов', 'Волков', 'Воронов', 'Гаврилов', 'Герасимов', 'Голубев',
   'Гончаров', 'Горбачёв', 'Громов', 'Гусев', 'Давыдов', 'Денисов', 'Дмитриев', 'Егоров',
@@ -114,11 +149,35 @@ const FAMILY_NAMES = [
   'Осипов', 'Павлов', 'Петров', 'Платонов', 'Попов', 'Романов', 'Савельев', 'Семёнов',
   'Сергеев', 'Смирнов', 'Соколов', 'Соловьёв', 'Степанов', 'Тарасов', 'Тимофеев', 'Тихонов',
   'Фёдоров', 'Фомин', 'Харитонов', 'Чернов', 'Шестаков', 'Щербаков', 'Яковлев',
-];
-const DYNASTY_NAMES = [
-  ...FAMILY_NAMES,
-  ...FAMILY_NAMES.flatMap((first, i) => FAMILY_NAMES.slice(i + 1).map((second) => `${first}-${second}`)),
-];
+  'Абрамов', 'Авдеев', 'Агапов', 'Акимов', 'Аксенов', 'Алёшин', 'Амосов', 'Анисимов',
+  'Астафьев', 'Афанасьев', 'Баженов', 'Балашов', 'Барсуков', 'Басов', 'Бессонов', 'Блинов',
+  'Бобров', 'Болотов', 'Булатов', 'Быков', 'Вавилов', 'Валиев', 'Варламов', 'Веденеев',
+  'Венедиктов', 'Верещагин', 'Ветров', 'Вишняков', 'Войнов', 'Волошин', 'Высоцкий', 'Гладков',
+  'Глебов', 'Гордеев', 'Гришин', 'Губанов', 'Гурьев', 'Гусаров', 'Дорофеев', 'Дубровин',
+  'Дьяков', 'Евсеев', 'Елисеев', 'Жданов', 'Журавлёв', 'Завьялов', 'Зимин', 'Золотов',
+  'Иванченко', 'Калмыков', 'Каменев', 'Капустин', 'Карасёв', 'Кириллов', 'Князев', 'Коваленко',
+  'Кожевников', 'Коновалов', 'Королёв', 'Костин', 'Котов', 'Краснов', 'Кузьмин', 'Куприянов',
+  'Курочкин', 'Лапин', 'Ларионов', 'Логинов', 'Лукин', 'Мартынов', 'Маслов', 'Мельников',
+  'Молчанов', 'Мордвинов', 'Муравьёв', 'Мясников', 'Некрасов', 'Нестеров', 'Нефёдов', 'Носов',
+  'Овчинников', 'Одинцов', 'Олейников', 'Панин', 'Пахомов', 'Пестов', 'Пономарёв', 'Прохоров',
+  'Рябов', 'Савин', 'Сазонов', 'Сафонов', 'Селезнёв', 'Сидоров', 'Сысоев', 'Титов',
+  'Токарев', 'Третьяков', 'Уваров', 'Устинов', 'Филатов', 'Фролов', 'Хохлов', 'Цветков',
+  'Чистяков', 'Шаповалов', 'Шаров', 'Широков', 'Щукин', 'Юдин', 'Юрьев',
+  'Гарсия', 'Фернандес', 'Лопес', 'Родригес', 'Мартинес', 'Гонсалес', 'Перес', 'Санчес',
+  'Рамирес', 'Торрес', 'Ривера', 'Молина', 'Кастро', 'Ромеро', 'Дюпон', 'Мартен',
+  'Бернар', 'Дюбуа', 'Лоран', 'Лефевр', 'Моро', 'Леруа', 'Мюллер', 'Шмидт',
+  'Шнайдер', 'Фишер', 'Вебер', 'Вагнер', 'Беккер', 'Шульц', 'Гофман', 'Росси',
+  'Руссо', 'Феррари', 'Эспозито', 'Романо', 'Коломбо', 'Андерссон', 'Йоханссон',
+  'Ларссон', 'Нильссон', 'Сато', 'Ямамото', 'Кобаяси', 'Накамура', 'Такахаси',
+  'Ким', 'Пак', 'Ли', 'Нгуен', 'Тран', 'Чэнь', 'Ван', 'Чжан',
+  'Хан', 'Хаддад', 'Хусейни', 'Фарси', 'Надири', 'Йылмаз', 'Демир', 'Арслан',
+  'Карахан', 'Халил', 'Амин', 'Сингх', 'Чопра', 'Дас', 'Мукерджи', 'Бозе',
+  'Патель', 'Шарма', 'Капур', 'Гупта', 'Сен', 'Банерджи', 'Бхатт', 'Джоши',
+  'Мехта', 'Дубей', 'Синха', 'Ачарья', 'Ядав', 'Трипати', 'Гилл', 'Кауэр',
+  'Пападопулос', 'Иоаннидис', 'Георгиу', 'Аслан', 'Акбар', 'Бенали', 'Бенсалем',
+  'Ковач', 'Новак', 'Дворжак', 'Войцеховский', 'Каминский', 'Зелинский', 'Ковальский',
+  'Попеску', 'Ионеску', 'Думитреску', 'Маркович', 'Петрович', 'Йованович', 'Хорват',
+] as const;
 const TRAITS = ['Дальновидный', 'Решительный', 'Уступчивый', 'Амбициозный', 'Осторожный', 'Харизматичный', 'Фанатик', 'Циник', 'Космополит', 'Националист', 'Плодовитый'];
 let nextPersonId = 1;
 const pick = <T,>(items: T[]): T => randomItem(items);
@@ -132,30 +191,69 @@ export function ageStage(age: number): string {
   if (age <= 65) return 'пожилой';
   return 'старик';
 }
-/** A stable, human surname for each dynasty ID; it never leaks numeric IDs into the UI. */
+/** A stable, human-readable default surname; living dynasties are made unique by character normalization. */
 export function familyNameForId(familyId: number): string {
   const index = Math.max(0, Math.floor(Number.isFinite(familyId) ? familyId : 0));
-  if (index < DYNASTY_NAMES.length) return DYNASTY_NAMES[index];
-  // Keep even very large worlds unique without falling back to numeric labels.
-  let remaining = index - DYNASTY_NAMES.length;
-  const parts: string[] = [];
-  do {
-    parts.unshift(FAMILY_NAMES[remaining % FAMILY_NAMES.length]);
-    remaining = Math.floor(remaining / FAMILY_NAMES.length);
-  } while (remaining > 0);
-  while (parts.length < 3) parts.unshift(FAMILY_NAMES[0]);
-  return parts.join('-');
+  return FAMILY_SURNAME_POOL[index % FAMILY_SURNAME_POOL.length];
 }
-function inFamily(name: string, familyName: string): string {
-  const givenName = name.trim().split(/\s+/)[0] || 'Персонаж';
-  return `${givenName} ${familyName}`;
+
+function patronymic(parentName: string, gender: Gender): string {
+  if (/[я]$/u.test(parentName)) return `${parentName.slice(0, -1)}${gender === 'female' ? 'инична' : 'ич'}`;
+  if (/[йь]$/u.test(parentName)) return `${parentName.slice(0, -1)}${gender === 'female' ? 'евна' : 'евич'}`;
+  return `${parentName}${gender === 'female' ? 'овна' : 'ович'}`;
 }
-export function createPerson(year: number, age = 20 + Math.floor(Math.random() * 26), familyId = nextPersonId, parents: number[] = [], cultureId = 0, religionId: number | null = null): Person {
+
+function genderedRussianSurname(surname: string, gender: Gender): string {
+  if (gender === 'male') return surname;
+  if (/(ов|ев|ёв|ин|ын)$/u.test(surname)) return `${surname}а`;
+  if (/(ский|цкий)$/u.test(surname)) return surname.replace(/ий$/u, 'ая');
+  return surname;
+}
+
+export function formatPersonName(
+  givenName: string,
+  familyName: string,
+  gender: Gender,
+  context: PersonNameContext = {},
+): string {
+  const style = context.style ?? 'given-family';
+  const father = context.fatherGivenName?.trim();
+  switch (style) {
+    case 'family-given':
+      return `${familyName} ${givenName}`;
+    case 'russian-patronymic':
+      return father
+        ? `${givenName} ${patronymic(father, gender)} ${genderedRussianSurname(familyName, gender)}`
+        : `${givenName} ${genderedRussianSurname(familyName, gender)}`;
+    case 'spanish-double-surname': {
+      const paternal = context.paternalSurname ?? familyName;
+      const maternal = context.maternalSurname;
+      return `${givenName} ${paternal}${maternal && maternal !== paternal ? ` ${maternal}` : ''}`;
+    }
+    case 'icelandic-patronymic':
+      return father ? `${givenName} ${father}${gender === 'female' ? 'доттир' : 'сон'}` : givenName;
+    case 'arabic-nasab':
+      return father ? `${givenName} ${gender === 'female' ? 'бинт' : 'ибн'} ${father}` : givenName;
+    default:
+      return `${givenName} ${familyName}`;
+  }
+}
+
+export function createPerson(
+  year: number,
+  age = 20 + Math.floor(Math.random() * 26),
+  familyId = nextPersonId,
+  parents: number[] = [],
+  cultureId = 0,
+  religionId: number | null = null,
+  nameContext: PersonNameContext = {},
+): Person {
   const id = nextPersonId++;
   const gender: Gender = Math.random() < 0.5 ? 'female' : 'male';
   const trait = age >= 3 ? pick(TRAITS) : '';
   const familyName = familyNameForId(familyId);
-  return { id, name: inFamily(pick(GIVEN[gender]), familyName), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName, cultureId, religionId,
+  const givenName = pick(GIVEN[gender]);
+  return { id, givenName, name: formatPersonName(givenName, familyName, gender, nameContext), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName, cultureId, religionId,
     countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
     loverIds: [], friendIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
 }
@@ -168,9 +266,9 @@ export function governmentOf(value: string | undefined | null): Government {
   if (value === 'Тирания') return GOVERNMENTS.tyranny;
   return GOVERNMENTS.tribal;
 }
-export function initialGovernment(year: number, cultureId = 0, religionId: number | null = null) {
+export function initialGovernment(year: number, cultureId = 0, religionId: number | null = null, nameStyle?: NameStyleId) {
   const familyId = createFamilyId();
-  return { government: 'tribal' as GovernmentId, ruler: createPerson(year, 29 + Math.floor(Math.random() * 17), familyId, [], cultureId, religionId), heir: null as Person | null, rulerSince: year, modifiers: ['oligarchy'] as GovernmentModifierId[],
+  return { government: 'tribal' as GovernmentId, ruler: createPerson(year, 29 + Math.floor(Math.random() * 17), familyId, [], cultureId, religionId, { style: nameStyle }), heir: null as Person | null, rulerSince: year, modifiers: ['oligarchy'] as GovernmentModifierId[],
     previousRulerIds: [], dynastyClaims: [familyId], coRulerIds: [], termYears: 4, maxTerms: 1, consulCount: 2,
     seatSince: {}, termCounts: {}, barredRulerIds: [], pendingDeathIds: [], pressures: {} };
 }

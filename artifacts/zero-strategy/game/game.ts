@@ -10,7 +10,7 @@ import { fmt } from './format';
 import { MapRenderer, type EntityLayer, type MapMode } from './render';
 import { World, type Country } from './world';
 import { GOVERNMENTS, reservePersonId, type Person } from './government';
-import { advancePeople, arePartners, birth, countryCharacters, killPerson, marry, newCitizen, normalizePolitics, person, registerPerson } from './characters';
+import { advancePeople, arePartners, birth, countryCharacters, ensureUniqueDynastySurnames, killPerson, marry, newCitizen, normalizePolitics, person, registerPerson } from './characters';
 import { applyReform } from './politics';
 import { appoint, candidateAllowed, ensureOffices, refreshHeirs, successionOrder } from './succession';
 import { randomItem } from './random';
@@ -619,6 +619,7 @@ export class Game {
         if (target && card.newCountryId !== null) this.mergeCountries(target, w.countries[card.newCountryId]);
         break;
     }
+    ensureUniqueDynastySurnames(w);
     w.version += 1;
   }
 
