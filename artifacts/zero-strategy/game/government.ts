@@ -198,6 +198,13 @@ export function ageStage(age: number): string {
   if (age <= 65) return 'пожилой';
   return 'старик';
 }
+export function personDeathStatus(person: Pick<Person, 'alive' | 'gender' | 'deathYear'>): string | null {
+  if (person.alive) return null;
+  const verb = person.gender === 'female' ? 'умерла' : 'умер';
+  return person.deathYear === null || person.deathYear === undefined
+    ? `${verb}, год смерти неизвестен`
+    : `${verb} в ${person.deathYear} году`;
+}
 /** Repeatable syllable-built surname; the culture's fixed affix makes its sound pattern recognizable. */
 export function familyNameForId(
   familyId: number,

@@ -3,7 +3,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import colors, { fonts } from '@/constants/colors';
-import type { Person } from '@/game/government';
+import { personDeathStatus, type Person } from '@/game/government';
 import { useGameSnapshot } from '@/game/useGame';
 import type { Game } from '@/game/game';
 import { currentGame } from '@/game/session';
@@ -53,7 +53,7 @@ function DynastyTree({ game, familyId }: { game: Game; familyId: number }) {
   const openPerson = (id: number) => router.push({ pathname: '/person/[id]', params: { id: String(id) } });
   const personLink = (person: Person) => (
     <Pressable key={person.id} onPress={() => openPerson(person.id)}>
-      <Text style={styles.link}>{person.name}</Text>
+      <Text style={styles.link}>{person.name}{personDeathStatus(person) ? ` · ${personDeathStatus(person)}` : ''}</Text>
     </Pressable>
   );
 
@@ -83,7 +83,7 @@ function DynastyTree({ game, familyId }: { game: Game; familyId: number }) {
                 <View key={person.id} style={styles.personCard}>
                   <View style={styles.personHeading}>
                     <Pressable onPress={() => openPerson(person.id)}><Text style={styles.link}>{person.name}</Text></Pressable>
-                    <Text style={styles.life}>{person.alive ? `${person.age} лет · жив(а)` : `умер(ла) в ${person.deathYear ?? '?'}`}</Text>
+                    <Text style={styles.life}>{person.alive ? `${person.age} лет · жив(а)` : personDeathStatus(person)}</Text>
                   </View>
                   <View style={styles.relations}>
                     <Text style={styles.relationLabel}>Родители</Text>

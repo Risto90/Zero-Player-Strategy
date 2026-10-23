@@ -3,7 +3,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import colors, { fonts } from '@/constants/colors';
-import { ageStage, type Person } from '@/game/government';
+import { ageStage, personDeathStatus, type Person } from '@/game/government';
 import { useGameSnapshot } from '@/game/useGame';
 import type { Game } from '@/game/game';
 import { currentGame } from '@/game/session';
@@ -67,7 +67,7 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
         <Text style={styles.title}>{person.name}</Text>
         <Text style={styles.subtitle}>
-          {person.alive ? 'Жив(а)' : `Умер${person.gender === 'female' ? 'ла' : ''} в ${person.deathYear ?? 'неизвестном году'}`}
+          {person.alive ? 'Жив(а)' : `${personDeathStatus(person)?.replace(/^./u, (letter) => letter.toLocaleUpperCase('ru-RU'))}`}
         </Text>
         {country && (
           <Pressable onPress={() => router.push({ pathname: '/country/[id]', params: { id: String(country.id) } })}
@@ -92,28 +92,29 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>РОДИТЕЛИ</Text>
           {parents.length ? parents.map((relative) => (
-            <RelativeLink key={relative.id} id={relative.id} title={relative.name} note={`возраст ${relative.age} лет`} />
+            <RelativeLink key={relative.id} id={relative.id} title={relative.name}
+              note={`возраст ${relative.age} лет${personDeathStatus(relative) ? ` · ${personDeathStatus(relative)}` : ''}`} />
           )) : <Text style={styles.note}>Сведения о родителях неизвестны.</Text>}
         </View>
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>СУПРУГИ И ЛЮБОВНЫЕ ПАРТНЁРЫ</Text>
           {partners.length ? partners.map(({ person: relative, kind }) => (
             <RelativeLink key={relative.id} id={relative.id} title={relative.name}
-              note={`${kind} · ${relative.alive ? 'жив(а)' : `умер${relative.gender === 'female' ? 'ла' : ''} в ${relative.deathYear ?? '?'}`} · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'атеист' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
+              note={`${kind} · ${personDeathStatus(relative) ?? 'жив(а)'} · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'атеист' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
           )) : <Text style={styles.note}>Браки не зарегистрированы.</Text>}
         </View>
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>БРАТЬЯ И СЁСТРЫ</Text>
           {siblings.length ? siblings.map((relative) => (
             <RelativeLink key={relative.id} id={relative.id} title={relative.name}
-              note={`${relative.age} лет · ${relative.alive ? 'жив(а)' : `умер${relative.gender === 'female' ? 'ла' : ''} в ${relative.deathYear ?? '?'}`}`} />
+              note={`${relative.age} лет · ${personDeathStatus(relative) ?? 'жив(а)'}`} />
           )) : <Text style={styles.note}>Сведения не найдены.</Text>}
         </View>
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>ДЕТИ · {children.length}</Text>
           {children.length ? children.map((relative) => (
             <RelativeLink key={relative.id} id={relative.id} title={relative.name}
-              note={`${relative.age} лет · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'атеист' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
+              note={`${relative.age} лет${personDeathStatus(relative) ? ` · ${personDeathStatus(relative)}` : ''} · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'атеист' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
           )) : <Text style={styles.note}>Дети не зарегистрированы.</Text>}
         </View>
         {person.deathReason && <Text style={styles.note}>Причина смерти · {person.deathReason}</Text>}

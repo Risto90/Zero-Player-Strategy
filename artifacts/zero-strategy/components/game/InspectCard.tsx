@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import type { PixelInfo } from '@/game/game';
 import type { World } from '@/game/world';
-import { MODIFIERS, GOVERNMENTS, ageStage, governmentOf } from '@/game/government';
+import { MODIFIERS, GOVERNMENTS, ageStage, governmentOf, personDeathStatus, type Person } from '@/game/government';
 import { fmt } from '@/game/format';
 import { expectedHeirFor } from '@/game/succession';
 
@@ -61,13 +61,13 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
   onPersonPress?: (id: number) => void;
   onDynastyPress?: (familyId: number) => void;
 }) {
-  const personLink = (person: { id: number; name: string; familyId: number; familyName: string }, detail: string) => (
+  const personLink = (person: Person, detail: string) => (
     <View key={person.id} style={styles.personRow}>
       <Pressable onPress={() => onPersonPress?.(person.id)} disabled={!onPersonPress}>
         <Text style={[styles.countryLine, onPersonPress && styles.personLink]}>{person.name}</Text>
       </Pressable>
       <View style={styles.personDetails}>
-        <Text style={styles.countryLine}>{detail} · </Text>
+        <Text style={styles.countryLine}>{detail}{personDeathStatus(person) ? ` · ${personDeathStatus(person)}` : ''} · </Text>
         <Pressable onPress={() => onDynastyPress?.(person.familyId)} disabled={!onDynastyPress} accessibilityRole="link">
           <Text style={[styles.countryLine, onDynastyPress && styles.personLink]}>{person.familyName}</Text>
         </Pressable>
@@ -163,7 +163,7 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
                       {info.family.filter((member) => member.familyId === info.country!.ruler.familyId).map((member) => (
                         <View key={member.id}>
                           {personLink(member,
-                            `${member.age} лет · ${ageStage(member.age)} · ${worldCultureName(world, member.cultureId)} · ${worldReligionName(world, member.religionId)}${member.alive ? '' : ` · умер${member.gender === 'female' ? 'ла' : ''} в ${member.deathYear ?? '?'}`}`)}
+                            `${member.age} лет · ${ageStage(member.age)} · ${worldCultureName(world, member.cultureId)} · ${worldReligionName(world, member.religionId)}`)}
                         </View>
                       ))}
                     </>

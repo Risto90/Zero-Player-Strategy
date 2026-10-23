@@ -4,7 +4,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import colors, { fonts } from '@/constants/colors';
 import { fmt, pct } from '@/game/format';
-import { ageStage, GOVERNMENTS, MODIFIERS } from '@/game/government';
+import { ageStage, GOVERNMENTS, MODIFIERS, personDeathStatus } from '@/game/government';
 import { currentGame } from '@/game/session';
 import { useGameSnapshot } from '@/game/useGame';
 import { expectedHeirFor, rulers } from '@/game/succession';
@@ -74,12 +74,12 @@ function CountryProfile({ game, countryId }: { game: Game; countryId: number }) 
           <Text style={styles.sectionTitle}>{country.modifiers.includes('consulate') ? 'ПРАВИТЕЛИ' : 'ПРАВИТЕЛЬ'}</Text>
           {(country.modifiers.includes('consulate') ? rulers(game.world, country) : [country.ruler]).map((leader) => (
             <View key={leader.id}>
-              {personLink(leader.id, leader.name, `${leader.age} лет · ${ageStage(leader.age)}`)}
+              {personLink(leader.id, leader.name, `${leader.age} лет · ${ageStage(leader.age)}${personDeathStatus(leader) ? ` · ${personDeathStatus(leader)}` : ''}`)}
               {country.heir && !country.modifiers.includes('consulate') &&
-                personLink(country.heir.id, `Ожидаемый наследник · ${country.heir.name}`, `${country.heir.age} лет · ${ageStage(country.heir.age)}`)}
+                personLink(country.heir.id, `Ожидаемый наследник · ${country.heir.name}`, `${country.heir.age} лет · ${ageStage(country.heir.age)}${personDeathStatus(country.heir) ? ` · ${personDeathStatus(country.heir)}` : ''}`)}
               {country.modifiers.includes('consulate') && (() => {
                 const heir = expectedHeirFor(game.world, country, leader);
-                return heir ? personLink(heir.id, `Наследник консула · ${heir.name}`, `${heir.age} лет · ${ageStage(heir.age)}`) : null;
+                return heir ? personLink(heir.id, `Наследник консула · ${heir.name}`, `${heir.age} лет · ${ageStage(heir.age)}${personDeathStatus(heir) ? ` · ${personDeathStatus(heir)}` : ''}`) : null;
               })()}
             </View>
           ))}

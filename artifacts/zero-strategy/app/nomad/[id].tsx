@@ -3,7 +3,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import colors, { fonts } from '@/constants/colors';
-import { MODIFIERS } from '@/game/government';
+import { MODIFIERS, personDeathStatus } from '@/game/government';
 import { currentGame } from '@/game/session';
 import { useGameSnapshot } from '@/game/useGame';
 
@@ -75,12 +75,12 @@ function NomadDetails({ game, id, top }: { game: NonNullable<ReturnType<typeof c
           </>}
           <Text style={styles.label}>Правитель</Text>
           <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(nomad.ruler.id) } })}>
-            <Text style={styles.person}>{nomad.ruler.name} · {nomad.ruler.age} лет</Text>
+            <Text style={styles.person}>{nomad.ruler.name} · {nomad.ruler.age} лет{personDeathStatus(nomad.ruler) ? ` · ${personDeathStatus(nomad.ruler)}` : ''}</Text>
           </Pressable>
           {nomad.heir && <>
             <Text style={styles.label}>Ожидаемый наследник</Text>
             <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(nomad.heir!.id) } })}>
-              <Text style={styles.person}>{nomad.heir.name} · {nomad.heir.age} лет</Text>
+              <Text style={styles.person}>{nomad.heir.name} · {nomad.heir.age} лет{personDeathStatus(nomad.heir) ? ` · ${personDeathStatus(nomad.heir)}` : ''}</Text>
             </Pressable>
           </>}
           <Text style={styles.label}>Ареал</Text>
