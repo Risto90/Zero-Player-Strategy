@@ -4,6 +4,7 @@ import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
 import { STRIP_H } from '@/game/render';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
+import { isCityVisibleAtZoom } from './cityIconMath';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { clampView, initialView, minScale, zoomAround } from './viewMath';
@@ -47,7 +48,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     for (const city of game.world.cities) {
       const hasPort = game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0;
       const zoomRank = cityVisibilityRank(city, hasPort);
-      if (view.scale < baseScaleRef.current * (1 + (6 - zoomRank) * 0.2)) continue;
+      if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
       const icon = cityImagesRef.current[cityIconIndex(city, hasPort)];
       if (!icon?.complete || icon.naturalWidth === 0) continue;
       const size = city.capital ? 40 : hasPort ? 30 + city.rank : 24 + city.rank;

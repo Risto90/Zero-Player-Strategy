@@ -19,6 +19,7 @@ import { MAP_WIDTH } from '@/game/config';
 import { STRIP_H, STRIPS } from '@/game/render';
 import type { City, World } from '@/game/world';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
+import { isCityVisibleAtZoom } from './cityIconMath';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { clampView, initialView, minScale, zoomAround } from './viewMath';
@@ -49,7 +50,7 @@ function CityMarkerLayer({ zoomRank, cities, scale, baseScale, images }: {
   baseScale: SharedValue<number>;
   images: (SkImage | null)[];
 }) {
-  const visible = useDerivedValue(() => scale.value >= baseScale.value * (1 + (6 - zoomRank) * 0.2) ? 1 : 0);
+  const visible = useDerivedValue(() => isCityVisibleAtZoom(scale.value, baseScale.value, zoomRank) ? 1 : 0);
   const counterScale = useDerivedValue(() => [{ scale: 1 / Math.max(scale.value, 0.08) }]);
   return (
     <Group opacity={visible}>

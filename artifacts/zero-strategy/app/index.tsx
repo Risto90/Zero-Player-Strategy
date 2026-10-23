@@ -139,6 +139,11 @@ export default function HomeScreen() {
           <Feather name="arrow-right" size={22} color={c.primaryForeground} />
         </Pressable>
         {hasSave && <Text style={styles.replaceNote}>Новый мир заменит текущее сохранение.</Text>}
+        <Pressable onPress={() => router.push('/city-icons-review')} style={styles.iconReviewLink} testID="link-city-icons-review">
+          <Feather name="eye" size={14} color={c.mutedForeground} />
+          <Text style={styles.deleteText}>Проверить значки городов</Text>
+          <Feather name="chevron-right" size={14} color={c.mutedForeground} />
+        </Pressable>
       </View>
     </ScrollView>
   );
@@ -184,4 +189,5 @@ const styles = StyleSheet.create({
   start: { marginTop: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.primary, borderRadius: colors.radius, paddingVertical: 16 },
   startText: { fontFamily: fonts.display, fontSize: 20, color: c.primaryForeground },
   replaceNote: { marginTop: 8, textAlign: 'center', fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
+  iconReviewLink: { alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 18, paddingVertical: 8 },
 });
