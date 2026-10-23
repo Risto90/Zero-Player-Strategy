@@ -8,6 +8,9 @@ import {
 import { MAP_WIDTH } from '../game/config.ts';
 import { mulberry32 } from '../game/random.ts';
 import { canUpgradeCityRank, populationAtPixel } from '../game/settlements.ts';
+import { encodeSave } from '../game/saveFile.ts';
+import { serializeWorld } from '../game/persistence.ts';
+import { writeSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
 
 function makeCountry(pixelCount, cityRanks = []) {
@@ -141,6 +144,117 @@ assertInvalidCityPlacementIsNoop(
   ({ cities }) => cities[0].pixel,
   'an occupied point',
 );
+
+// Merging by union or inheritance retains the main country's capital and
+// demotes every capital from the incoming country to an ordinary city.
+for (const cause of ['union', 'inheritance']) {
+  const { world, country: main, pixels: mainPixels } = makeCountry(4, [1, 1]);
+  const incoming = world.newCountry({
+    rank: 'тест',
+    cultureId: main.cultureId,
+    religionId: main.religionId,
+    density: 10,
+    foundedYear: 0,
+    parentId: null,
+  });
+  const incomingPixels = world.landIndex.filter((pixel) => !mainPixels.includes(pixel)).slice(0, 2);
+  for (const pixel of incomingPixels) {
+    world.setOwner(pixel, incoming.id + 1);
+    world.density[pixel] = 10;
+  }
+  const incomingCapital = world.addCity(incoming.id, incomingPixels[0], 1, true);
+  assert.ok(incomingCapital, `${cause}: incoming capital should be created`);
+
+  const game = new Game(world, 'observer');
+  if (cause === 'union') {
+    game.startCard({
+      type: 'union',
+      title: 'Объединение',
+      detail: 'Тестовое объединение',
+      ink: 0,
+      inkTotal: 0,
+      targetCountryId: main.id,
+      targetNomadId: null,
+      newCountryId: incoming.id,
+      newCultureId: null,
+      newReligionId: null,
+      sourceCultureId: null,
+      newGovernmentId: null,
+      newRuler: null,
+      choices: null,
+      selectedChoice: 0,
+      characterEvent: null,
+      hint: -1,
+    });
+    game.dispatchAction({ type: 'completeCard' });
+  } else {
+    game.appointAndAnnex(main, incoming.ruler, 1000);
+  }
+
+  const capitalCities = world.cities.filter((city) => city.countryId === main.id && city.capital);
+  assert.equal(capitalCities.length, 1, `${cause}: merged country has exactly one capital`);
+  assert.equal(capitalCities[0].id, 0, `${cause}: main country's capital is retained`);
+  assert.equal(incomingCapital.countryId, main.id, `${cause}: incoming city belongs to the main country`);
+  assert.equal(incomingCapital.capital, false, `${cause}: former capital becomes an ordinary city`);
+  for (const pixel of incomingPixels) {
+    assert.equal(world.owner[pixel], main.id + 1, `${cause}: incoming land belongs to the main country`);
+  }
+  game.discard();
+}
+
+// Loading a saved world with duplicate capital flags keeps the first capital in
+// saved city order; countries with no capital still promote their best city.
+{
+  const { world, country: main, pixels } = makeCountry(6, [1, 1, 1]);
+  world.cities[1].capital = true;
+  const noCapitalCountry = world.newCountry({
+    rank: 'тест',
+    cultureId: main.cultureId,
+    religionId: main.religionId,
+    density: 10,
+    foundedYear: 0,
+    parentId: null,
+  });
+  const otherPixels = world.landIndex.filter((pixel) => !pixels.includes(pixel)).slice(0, 2);
+  for (const pixel of otherPixels) {
+    world.setOwner(pixel, noCapitalCountry.id + 1);
+    world.density[pixel] = 10;
+  }
+  const ordinaryCity = world.addCity(noCapitalCountry.id, otherPixels[0], 1, false);
+  const higherRankCity = world.addCity(noCapitalCountry.id, otherPixels[1], 2, false);
+  assert.ok(ordinaryCity && higherRankCity, 'the no-capital country should have two cities');
+
+  const savedWorld = serializeWorld(world);
+  await writeSaveBytes(encodeSave({
+    version: 2,
+    savedAt: 0,
+    role: 'observer',
+    year: 1000,
+    turn: 1,
+    focusCountryId: null,
+    card: null,
+    queue: [],
+    brushMode: 'respect',
+    brushSize: 'm',
+    mapMode: 'political',
+    log: [],
+    world: savedWorld,
+  }));
+  let loadedGame;
+  try {
+    loadedGame = await Game.load();
+    assert.ok(loadedGame, 'the saved world should load');
+    const loadedCities = loadedGame.world.cities;
+    const capitals = loadedCities.filter((city) => city.countryId === main.id && city.capital);
+    assert.deepEqual(capitals.map((city) => city.id), [0], 'first saved capital is retained deterministically');
+    const recoveredCapitals = loadedCities.filter((city) => city.countryId === noCapitalCountry.id && city.capital);
+    assert.deepEqual(recoveredCapitals.map((city) => city.id), [higherRankCity.id],
+      'a country without a capital still promotes its highest-rank city');
+  } finally {
+    loadedGame?.discard();
+    await Game.deleteSave();
+  }
+}
 
 // Automatic play may choose either option. The actual selected city must be the
 // one promoted, with a capital and multiple ordinary cities in the country.

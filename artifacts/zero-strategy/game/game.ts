@@ -238,7 +238,7 @@ export class Game {
     const loadedWorld = deserializeWorld(saved.world);
     for (const country of loadedWorld.countries) {
       if (!country.pixels) continue;
-      let cities = loadedWorld.cities.filter((city) => city.countryId === country.id);
+      const cities = loadedWorld.cities.filter((city) => city.countryId === country.id);
       if (!cities.length) {
         let capitalPixel = -1, population = -1;
         loadedWorld.forEachCountryPixel(country, (p) => {
@@ -248,9 +248,14 @@ export class Game {
           }
         });
         if (capitalPixel >= 0) loadedWorld.addCity(country.id, capitalPixel, 1, true);
-      } else if (!cities.some((city) => city.capital)) {
-        cities.sort((a, b) => b.rank - a.rank || b.population - a.population);
-        cities[0].capital = true;
+      } else {
+        const existingCapital = cities.find((city) => city.capital);
+        if (existingCapital) {
+          for (const city of cities) city.capital = city.id === existingCapital.id;
+        } else {
+          cities.sort((a, b) => b.rank - a.rank || b.population - a.population);
+          cities[0].capital = true;
+        }
       }
     }
     const game = new Game(loadedWorld, saved.role);
@@ -1105,8 +1110,12 @@ export class Game {
     if (!incoming || incoming.id === main.id || incoming.pixels <= 0) return;
     const w = this.world;
     const incomingTag = incoming.id + 1, mainTag = main.id + 1;
+    const mainCapital = w.cities.find((city) => city.countryId === main.id && city.capital);
     for (let p = 0; p < w.owner.length; p += 1) if (w.owner[p] === incomingTag) w.owner[p] = mainTag;
     for (const city of w.cities) if (city.countryId === incoming.id) city.countryId = main.id;
+    const mergedCities = w.cities.filter((city) => city.countryId === main.id);
+    const retainedCapital = mainCapital ?? mergedCities[0];
+    for (const city of mergedCities) city.capital = city.id === retainedCapital?.id;
     if (incoming.ruler.id !== main.ruler.id) {
       if (!main.previousRulerIds.includes(incoming.ruler.id)) main.previousRulerIds.push(incoming.ruler.id);
       if (!incoming.ruler.formerRulerOf.includes(main.id)) incoming.ruler.formerRulerOf.push(main.id);
