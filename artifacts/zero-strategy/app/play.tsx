@@ -94,7 +94,9 @@ function GameScreen({ game }: { game: Game }) {
       <MapView ref={mapRef} game={game} tool={tool} canPaint={snap.canPaint && !snap.busy} onInspect={(info) => setInspect({ info })} />
       <MapControls game={game} snap={snap} tool={tool} setTool={changeTool} onZoom={(f) => mapRef.current?.zoomBy(f)} onFit={() => mapRef.current?.fit()} />
       {tool === 'hand' && inspect && (
-        <InspectCard info={selectedInfo} world={game.world} onClose={() => setInspect(null)} onPersonPress={(id) => router.push({ pathname: '/person/[id]', params: { id: String(id) } })} />
+        <InspectCard info={selectedInfo} world={game.world} onClose={() => setInspect(null)}
+          onPersonPress={(id) => router.push({ pathname: '/person/[id]', params: { id: String(id) } })}
+          onDynastyPress={(familyId) => router.push({ pathname: '/dynasty/[id]', params: { id: String(familyId) } })} />
       )}
       {tool === 'hand' && !inspect && (
         <View style={styles.tapHint} pointerEvents="none">

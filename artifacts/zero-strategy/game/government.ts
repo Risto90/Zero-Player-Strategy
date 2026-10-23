@@ -103,7 +103,22 @@ const GIVEN: Record<Person['gender'], string[]> = {
   male: ['Арен', 'Белан', 'Велимир', 'Дарен', 'Илар', 'Кай', 'Мирон', 'Радан', 'Севир', 'Фарен'],
   female: ['Гелия', 'Елена', 'Зария', 'Лея', 'Нарис', 'Орина', 'Тария', 'Элина'],
 };
-const FAMILY = ['Аст', 'Бор', 'Вел', 'Гед', 'Кир', 'Лир', 'Мор', 'Нор', 'Рав', 'Сол', 'Тар', 'Эр'];
+const FAMILY_NAMES = [
+  'Александров', 'Алексеев', 'Андреев', 'Антонов', 'Баранов', 'Белов', 'Богданов', 'Борисов',
+  'Васильев', 'Виноградов', 'Власов', 'Волков', 'Воронов', 'Гаврилов', 'Герасимов', 'Голубев',
+  'Гончаров', 'Горбачёв', 'Громов', 'Гусев', 'Давыдов', 'Денисов', 'Дмитриев', 'Егоров',
+  'Ершов', 'Жуков', 'Зайцев', 'Захаров', 'Иванов', 'Игнатьев', 'Ильин', 'Калинин',
+  'Карпов', 'Киселёв', 'Ковалёв', 'Козлов', 'Колесников', 'Комаров', 'Кондратьев', 'Крылов',
+  'Кузнецов', 'Лазарев', 'Лебедев', 'Макаров', 'Максимов', 'Марков', 'Матвеев', 'Медведев',
+  'Миронов', 'Михайлов', 'Морозов', 'Назаров', 'Никитин', 'Николаев', 'Новиков', 'Орлов',
+  'Осипов', 'Павлов', 'Петров', 'Платонов', 'Попов', 'Романов', 'Савельев', 'Семёнов',
+  'Сергеев', 'Смирнов', 'Соколов', 'Соловьёв', 'Степанов', 'Тарасов', 'Тимофеев', 'Тихонов',
+  'Фёдоров', 'Фомин', 'Харитонов', 'Чернов', 'Шестаков', 'Щербаков', 'Яковлев',
+];
+const DYNASTY_NAMES = [
+  ...FAMILY_NAMES,
+  ...FAMILY_NAMES.flatMap((first, i) => FAMILY_NAMES.slice(i + 1).map((second) => `${first}-${second}`)),
+];
 const TRAITS = ['Дальновидный', 'Решительный', 'Уступчивый', 'Амбициозный', 'Осторожный', 'Харизматичный', 'Фанатик', 'Циник', 'Космополит', 'Националист', 'Плодовитый'];
 let nextPersonId = 1;
 const pick = <T,>(items: T[]): T => randomItem(items);
@@ -117,15 +132,19 @@ export function ageStage(age: number): string {
   if (age <= 65) return 'пожилой';
   return 'старик';
 }
-/** A stable, readable surname for each dynasty ID; it never leaks numeric IDs into the UI. */
+/** A stable, human surname for each dynasty ID; it never leaks numeric IDs into the UI. */
 export function familyNameForId(familyId: number): string {
+  const index = Math.max(0, Math.floor(Number.isFinite(familyId) ? familyId : 0));
+  if (index < DYNASTY_NAMES.length) return DYNASTY_NAMES[index];
+  // Keep even very large worlds unique without falling back to numeric labels.
+  let remaining = index - DYNASTY_NAMES.length;
   const parts: string[] = [];
-  let remaining = Math.max(0, Math.floor(familyId));
   do {
-    parts.push(FAMILY[remaining % FAMILY.length]);
-    remaining = Math.floor(remaining / FAMILY.length);
+    parts.unshift(FAMILY_NAMES[remaining % FAMILY_NAMES.length]);
+    remaining = Math.floor(remaining / FAMILY_NAMES.length);
   } while (remaining > 0);
-  return parts.reverse().join('-');
+  while (parts.length < 3) parts.unshift(FAMILY_NAMES[0]);
+  return parts.join('-');
 }
 function inFamily(name: string, familyName: string): string {
   const givenName = name.trim().split(/\s+/)[0] || 'Персонаж';

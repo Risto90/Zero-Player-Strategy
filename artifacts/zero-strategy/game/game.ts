@@ -10,7 +10,7 @@ import { fmt } from './format';
 import { MapRenderer, type EntityLayer, type MapMode } from './render';
 import { World, type Country } from './world';
 import { GOVERNMENTS, reservePersonId, type Person } from './government';
-import { advancePeople, arePartners, birth, killPerson, marry, newCitizen, normalizePolitics, person, registerPerson } from './characters';
+import { advancePeople, arePartners, birth, countryCharacters, killPerson, marry, newCitizen, normalizePolitics, person, registerPerson } from './characters';
 import { applyReform } from './politics';
 import { appoint, candidateAllowed, ensureOffices, refreshHeirs, successionOrder } from './succession';
 import { randomItem } from './random';
@@ -394,45 +394,11 @@ export class Game {
     };
   }
 
-  /** Living people who matter to the current or former ruling families of a country. */
+  /** All living named people in the country; ruling-dynasty membership is shown separately. */
   importantPeople(countryId: number): Person[] {
     const country = this.world.countries[countryId];
     if (!country) return [];
-    const rulers = new Set([country.ruler.id, ...country.coRulerIds, ...country.previousRulerIds]);
-    const dynasties = new Set(country.dynastyClaims);
-    const included = new Set<number>(rulers);
-    const children = new Map<number, number[]>();
-    const peopleById = new Map(this.world.people.map((p) => [p.id, p]));
-    for (const p of this.world.people) {
-      for (const parentId of p.parents) {
-        const list = children.get(parentId) ?? [];
-        list.push(p.id);
-        children.set(parentId, list);
-      }
-    }
-    for (const p of this.world.people) {
-      if (dynasties.has(p.familyId) || rulers.has(p.id) || p.formerRulerOf.includes(countryId)) included.add(p.id);
-    }
-    let frontier = [...included];
-    for (let depth = 0; depth < 2 && frontier.length; depth += 1) {
-      const next: number[] = [];
-      for (const id of frontier) {
-        const p = peopleById.get(id);
-        if (!p) continue;
-        for (const relativeId of [...p.parents, ...p.spouseIds, ...p.loverIds, ...(children.get(p.id) ?? [])]) {
-          if (included.has(relativeId)) continue;
-          included.add(relativeId);
-          next.push(relativeId);
-        }
-      }
-      frontier = next;
-    }
-    return this.world.people
-      .filter((p) => included.has(p.id) && p.alive)
-      .sort((a, b) => {
-        const rank = (p: Person) => p.id === country.ruler.id ? 4 : rulers.has(p.id) ? 3 : dynasties.has(p.familyId) ? 2 : 1;
-        return rank(b) - rank(a) || b.age - a.age || a.name.localeCompare(b.name);
-      });
+    return countryCharacters(this.world, country);
   }
 
   // ---------- turns ----------

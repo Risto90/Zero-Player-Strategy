@@ -50,11 +50,25 @@ function Shares({ title, rows, extra }: { title: string; rows: ShareRow[]; extra
   );
 }
 
-export function InspectCard({ info, world, onClose, onPersonPress }: { info: PixelInfo | null; world: World; onClose: () => void; onPersonPress?: (id: number) => void }) {
-  const personLink = (id: number, name: string, detail: string) => (
-    <Pressable key={id} onPress={() => onPersonPress?.(id)} disabled={!onPersonPress}>
-      <Text style={[styles.countryLine, onPersonPress && styles.personLink]}>{name} · {detail}</Text>
-    </Pressable>
+export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPress }: {
+  info: PixelInfo | null;
+  world: World;
+  onClose: () => void;
+  onPersonPress?: (id: number) => void;
+  onDynastyPress?: (familyId: number) => void;
+}) {
+  const personLink = (person: { id: number; name: string; familyId: number; familyName: string }, detail: string) => (
+    <View key={person.id} style={styles.personRow}>
+      <Pressable onPress={() => onPersonPress?.(person.id)} disabled={!onPersonPress}>
+        <Text style={[styles.countryLine, onPersonPress && styles.personLink]}>{person.name}</Text>
+      </Pressable>
+      <View style={styles.personDetails}>
+        <Text style={styles.countryLine}>{detail} · </Text>
+        <Pressable onPress={() => onDynastyPress?.(person.familyId)} disabled={!onDynastyPress} accessibilityRole="link">
+          <Text style={[styles.countryLine, onDynastyPress && styles.personLink]}>{person.familyName}</Text>
+        </Pressable>
+      </View>
+    </View>
   );
   return (
     <View style={styles.card} testID="panel-inspect">
@@ -90,12 +104,12 @@ export function InspectCard({ info, world, onClose, onPersonPress }: { info: Pix
                     <Text key={modifier} style={styles.modifier}>· {MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
                   ))}
                   <Text style={styles.countryHeading}>ПРАВИТЕЛЬ</Text>
-                  {personLink(info.country.ruler.id, info.country.ruler.name,
+                  {personLink(info.country.ruler,
                     `${info.country.ruler.age} лет · ${ageStage(info.country.ruler.age)} · ${worldCultureName(world, info.country.ruler.cultureId)} · ${worldReligionName(world, info.country.ruler.religionId)}`)}
                   {info.country.heir && (
                     <>
                       <Text style={styles.countryHeading}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
-                      {personLink(info.country.heir.id, info.country.heir.name,
+                      {personLink(info.country.heir,
                         `${info.country.heir.age} лет · ${ageStage(info.country.heir.age)} · ${worldCultureName(world, info.country.heir.cultureId)} · ${worldReligionName(world, info.country.heir.religionId)}`)}
                     </>
                   )}
@@ -104,7 +118,7 @@ export function InspectCard({ info, world, onClose, onPersonPress }: { info: Pix
                     return coRuler ? (
                       <View key={id}>
                         <Text style={styles.countryHeading}>СОПРАВИТЕЛЬ</Text>
-                        {personLink(coRuler.id, coRuler.name, `${coRuler.age} лет (${ageStage(coRuler.age)}) · ${worldCultureName(world, coRuler.cultureId)} · ${worldReligionName(world, coRuler.religionId)}`)}
+                        {personLink(coRuler, `${coRuler.age} лет (${ageStage(coRuler.age)}) · ${worldCultureName(world, coRuler.cultureId)} · ${worldReligionName(world, coRuler.religionId)}`)}
                       </View>
                     ) : null;
                   })}
@@ -113,7 +127,7 @@ export function InspectCard({ info, world, onClose, onPersonPress }: { info: Pix
                       <Text style={styles.countryHeading}>ДИНАСТИЯ ПРАВИТЕЛЯ</Text>
                       {info.family.filter((member) => member.familyId === info.country!.ruler.familyId).map((member) => (
                         <View key={member.id}>
-                          {personLink(member.id, member.name,
+                          {personLink(member,
                             `${member.age} лет · ${ageStage(member.age)} · ${worldCultureName(world, member.cultureId)} · ${worldReligionName(world, member.religionId)}${member.alive ? '' : ` · умер${member.gender === 'female' ? 'ла' : ''} в ${member.deathYear ?? '?'}`}`)}
                         </View>
                       ))}
@@ -185,6 +199,8 @@ const styles = StyleSheet.create({
   countryDetails: { marginTop: 4, padding: 8, gap: 3, backgroundColor: c.muted, borderLeftWidth: 2, borderLeftColor: c.primary },
   countryHeading: { marginTop: 3, fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1, color: c.primary },
   countryLine: { fontFamily: fonts.sans, fontSize: 12, color: c.foreground },
+  personRow: { paddingVertical: 2 },
+  personDetails: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   personLink: { color: c.accent, textDecorationLine: 'underline' },
   modifier: { fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
   sharesTitle: { marginBottom: 4, fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.6, color: c.mutedForeground },

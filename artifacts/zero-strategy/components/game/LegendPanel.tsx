@@ -158,33 +158,51 @@ function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
                   <Text style={styles.countryModifier} key={modifier}>· {MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
                 ))}
                 <Text style={styles.countrySection}>ПРАВИТЕЛЬ</Text>
-                <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.ruler.id) } })}>
-                  <Text style={styles.personLink}>{country.ruler.name} · {country.ruler.age} лет ({ageStage(country.ruler.age)})</Text>
-                </Pressable>
+                <View>
+                  <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.ruler.id) } })}>
+                    <Text style={styles.personLink}>{country.ruler.name} · {country.ruler.age} лет ({ageStage(country.ruler.age)})</Text>
+                  </Pressable>
+                  <Pressable onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(country.ruler.familyId) } })}
+                    accessibilityRole="link">
+                    <Text style={styles.familyLink}>{country.ruler.familyName} · родословная</Text>
+                  </Pressable>
+                </View>
                 {country.heir && (
                   <>
                     <Text style={styles.countrySection}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
-                    <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.heir!.id) } })}>
-                      <Text style={styles.personLink}>{country.heir.name} · {country.heir.age} лет ({ageStage(country.heir.age)})</Text>
-                    </Pressable>
+                    <View>
+                      <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.heir!.id) } })}>
+                        <Text style={styles.personLink}>{country.heir.name} · {country.heir.age} лет ({ageStage(country.heir.age)})</Text>
+                      </Pressable>
+                      <Pressable onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(country.heir!.familyId) } })}
+                        accessibilityRole="link">
+                        <Text style={styles.familyLink}>{country.heir.familyName} · родословная</Text>
+                      </Pressable>
+                    </View>
                   </>
                 )}
                 <Pressable onPress={() => setShowPeople((current) => !current)} style={styles.peopleButton}>
                   <Feather name="users" size={13} color={c.primaryForeground} />
-                  <Text style={styles.peopleButtonText}>{showPeople ? 'Скрыть важных персонажей' : 'Важные живые персонажи'}</Text>
+                  <Text style={styles.peopleButtonText}>{showPeople ? 'Скрыть персонажей страны' : 'Все живые персонажи страны'}</Text>
                 </Pressable>
                 {showPeople && (
                   <View style={styles.peopleList}>
                     {importantPeople.map((person) => (
-                      <Pressable key={person.id} onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(person.id) } })}
-                        style={styles.personRow}>
-                        <Text style={styles.personLink}>{person.name}</Text>
-                        <Text style={styles.personMeta}>
-                          {person.age} лет · {game.world.cultures[person.cultureId]?.name ?? 'культура неизвестна'} ·
-                          {' '}{person.religionId === null ? 'без веры' : game.world.religions[person.religionId]?.name ?? 'вера неизвестна'}
-                          {' · '}{person.familyName}
-                        </Text>
-                      </Pressable>
+                      <View key={person.id} style={styles.personRow}>
+                        <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(person.id) } })}>
+                          <Text style={styles.personLink}>{person.name}</Text>
+                        </Pressable>
+                        <View style={styles.personMetaRow}>
+                          <Text style={styles.personMeta}>
+                            {person.age} лет · {game.world.cultures[person.cultureId]?.name ?? 'культура неизвестна'} ·
+                            {' '}{person.religionId === null ? 'без веры' : game.world.religions[person.religionId]?.name ?? 'вера неизвестна'} ·
+                          </Text>
+                          <Pressable onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(person.familyId) } })}
+                            accessibilityRole="link" testID={`link-dynasty-${person.familyId}`}>
+                            <Text style={styles.familyLink}>{person.familyName}</Text>
+                          </Pressable>
+                        </View>
+                      </View>
                     ))}
                     {!importantPeople.length && <Text style={styles.rowDetail}>Нет живых персонажей.</Text>}
                   </View>
@@ -216,6 +234,8 @@ const styles = StyleSheet.create({
   peopleList: { maxHeight: 180, marginTop: 4 },
   personRow: { paddingVertical: 5, borderBottomWidth: 1, borderColor: c.border },
   personMeta: { fontFamily: fonts.sans, fontSize: 9, color: c.mutedForeground },
+  personMetaRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
+  familyLink: { fontFamily: fonts.sansSemiBold, fontSize: 9, color: c.accent, textDecorationLine: 'underline' },
   rowBar: { position: 'absolute', left: 0, top: 0, bottom: 0, opacity: 0.15 },
   swatch: { width: 12, height: 12, borderRadius: 2, borderWidth: 1, borderColor: 'rgba(44,30,23,0.4)' },
   rowName: { fontFamily: fonts.sansMedium, fontSize: 13, color: c.foreground },
