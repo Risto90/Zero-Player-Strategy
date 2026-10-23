@@ -14,6 +14,10 @@ export type NameStyleId =
   | 'spanish-double-surname'
   | 'icelandic-patronymic'
   | 'arabic-nasab';
+export interface SurnameAffix {
+  position: 'prefix' | 'suffix';
+  text: string;
+}
 
 export const NAME_STYLES: { id: NameStyleId; label: string }[] = [
   { id: 'given-family', label: 'Личное имя — фамилия' },
@@ -40,6 +44,9 @@ export interface PersonNameContext {
   fatherGivenName?: string;
   paternalSurname?: string;
   maternalSurname?: string;
+  familyName?: string;
+  familyCultureId?: number;
+  surnameAffix?: SurnameAffix;
 }
 
 export interface Person {
@@ -55,6 +62,8 @@ export interface Person {
   spouseIds: number[];
   familyId: number;
   familyName: string;
+  /** Cultural origin of the family name; descendants inherit this even if their culture differs. */
+  familyCultureId?: number;
   cultureId: number;
   religionId: number | null;
   countryId: number;
@@ -138,46 +147,44 @@ const GIVEN: Record<Person['gender'], string[]> = {
   male: ['Арен', 'Белан', 'Велимир', 'Дарен', 'Илар', 'Кай', 'Мирон', 'Радан', 'Севир', 'Фарен'],
   female: ['Гелия', 'Елена', 'Зария', 'Лея', 'Нарис', 'Орина', 'Тария', 'Элина'],
 };
-export const FAMILY_SURNAME_POOL = [
-  'Александров', 'Алексеев', 'Андреев', 'Антонов', 'Баранов', 'Белов', 'Богданов', 'Борисов',
-  'Васильев', 'Виноградов', 'Власов', 'Волков', 'Воронов', 'Гаврилов', 'Герасимов', 'Голубев',
-  'Гончаров', 'Горбачёв', 'Громов', 'Гусев', 'Давыдов', 'Денисов', 'Дмитриев', 'Егоров',
-  'Ершов', 'Жуков', 'Зайцев', 'Захаров', 'Иванов', 'Игнатьев', 'Ильин', 'Калинин',
-  'Карпов', 'Киселёв', 'Ковалёв', 'Козлов', 'Колесников', 'Комаров', 'Кондратьев', 'Крылов',
-  'Кузнецов', 'Лазарев', 'Лебедев', 'Макаров', 'Максимов', 'Марков', 'Матвеев', 'Медведев',
-  'Миронов', 'Михайлов', 'Морозов', 'Назаров', 'Никитин', 'Николаев', 'Новиков', 'Орлов',
-  'Осипов', 'Павлов', 'Петров', 'Платонов', 'Попов', 'Романов', 'Савельев', 'Семёнов',
-  'Сергеев', 'Смирнов', 'Соколов', 'Соловьёв', 'Степанов', 'Тарасов', 'Тимофеев', 'Тихонов',
-  'Фёдоров', 'Фомин', 'Харитонов', 'Чернов', 'Шестаков', 'Щербаков', 'Яковлев',
-  'Абрамов', 'Авдеев', 'Агапов', 'Акимов', 'Аксенов', 'Алёшин', 'Амосов', 'Анисимов',
-  'Астафьев', 'Афанасьев', 'Баженов', 'Балашов', 'Барсуков', 'Басов', 'Бессонов', 'Блинов',
-  'Бобров', 'Болотов', 'Булатов', 'Быков', 'Вавилов', 'Валиев', 'Варламов', 'Веденеев',
-  'Венедиктов', 'Верещагин', 'Ветров', 'Вишняков', 'Войнов', 'Волошин', 'Высоцкий', 'Гладков',
-  'Глебов', 'Гордеев', 'Гришин', 'Губанов', 'Гурьев', 'Гусаров', 'Дорофеев', 'Дубровин',
-  'Дьяков', 'Евсеев', 'Елисеев', 'Жданов', 'Журавлёв', 'Завьялов', 'Зимин', 'Золотов',
-  'Иванченко', 'Калмыков', 'Каменев', 'Капустин', 'Карасёв', 'Кириллов', 'Князев', 'Коваленко',
-  'Кожевников', 'Коновалов', 'Королёв', 'Костин', 'Котов', 'Краснов', 'Кузьмин', 'Куприянов',
-  'Курочкин', 'Лапин', 'Ларионов', 'Логинов', 'Лукин', 'Мартынов', 'Маслов', 'Мельников',
-  'Молчанов', 'Мордвинов', 'Муравьёв', 'Мясников', 'Некрасов', 'Нестеров', 'Нефёдов', 'Носов',
-  'Овчинников', 'Одинцов', 'Олейников', 'Панин', 'Пахомов', 'Пестов', 'Пономарёв', 'Прохоров',
-  'Рябов', 'Савин', 'Сазонов', 'Сафонов', 'Селезнёв', 'Сидоров', 'Сысоев', 'Титов',
-  'Токарев', 'Третьяков', 'Уваров', 'Устинов', 'Филатов', 'Фролов', 'Хохлов', 'Цветков',
-  'Чистяков', 'Шаповалов', 'Шаров', 'Широков', 'Щукин', 'Юдин', 'Юрьев',
-  'Гарсия', 'Фернандес', 'Лопес', 'Родригес', 'Мартинес', 'Гонсалес', 'Перес', 'Санчес',
-  'Рамирес', 'Торрес', 'Ривера', 'Молина', 'Кастро', 'Ромеро', 'Дюпон', 'Мартен',
-  'Бернар', 'Дюбуа', 'Лоран', 'Лефевр', 'Моро', 'Леруа', 'Мюллер', 'Шмидт',
-  'Шнайдер', 'Фишер', 'Вебер', 'Вагнер', 'Беккер', 'Шульц', 'Гофман', 'Росси',
-  'Руссо', 'Феррари', 'Эспозито', 'Романо', 'Коломбо', 'Андерссон', 'Йоханссон',
-  'Ларссон', 'Нильссон', 'Сато', 'Ямамото', 'Кобаяси', 'Накамура', 'Такахаси',
-  'Ким', 'Пак', 'Ли', 'Нгуен', 'Тран', 'Чэнь', 'Ван', 'Чжан',
-  'Хан', 'Хаддад', 'Хусейни', 'Фарси', 'Надири', 'Йылмаз', 'Демир', 'Арслан',
-  'Карахан', 'Халил', 'Амин', 'Сингх', 'Чопра', 'Дас', 'Мукерджи', 'Бозе',
-  'Патель', 'Шарма', 'Капур', 'Гупта', 'Сен', 'Банерджи', 'Бхатт', 'Джоши',
-  'Мехта', 'Дубей', 'Синха', 'Ачарья', 'Ядав', 'Трипати', 'Гилл', 'Кауэр',
-  'Пападопулос', 'Иоаннидис', 'Георгиу', 'Аслан', 'Акбар', 'Бенали', 'Бенсалем',
-  'Ковач', 'Новак', 'Дворжак', 'Войцеховский', 'Каминский', 'Зелинский', 'Ковальский',
-  'Попеску', 'Ионеску', 'Думитреску', 'Маркович', 'Петрович', 'Йованович', 'Хорват',
-] as const;
+const AFFIX_SYLLABLES = ['ба', 'ке', 'лу', 'ми', 'ра', 'се', 'та', 'ве', 'но', 'ша', 'жи', 'ду', 'эла', 'ха', 'иро', 'мо'];
+const SURNAME_AFFIXES: SurnameAffix[] = [
+  ...AFFIX_SYLLABLES.flatMap((text) => [
+    { position: 'prefix' as const, text },
+    { position: 'suffix' as const, text },
+  ]),
+  ...AFFIX_SYLLABLES.flatMap((first) => AFFIX_SYLLABLES.map((second) => `${first}${second}`)).flatMap((text) => [
+    { position: 'prefix' as const, text },
+    { position: 'suffix' as const, text },
+  ]),
+];
+const SURNAME_SYLLABLES = [
+  'ба', 'бе', 'би', 'бо', 'бу', 'да', 'де', 'ди', 'до', 'ду', 'га', 'ге', 'ги', 'го', 'гу',
+  'ка', 'ке', 'ки', 'ко', 'ку', 'ла', 'ле', 'ли', 'ло', 'лу', 'ма', 'ме', 'ми', 'мо', 'му',
+  'на', 'не', 'ни', 'но', 'ну', 'ра', 'ре', 'ри', 'ро', 'ру', 'са', 'се', 'си', 'со', 'су',
+  'та', 'те', 'ти', 'то', 'ту', 'ва', 'ве', 'ви', 'во', 'ву', 'жа', 'же', 'жи', 'жо', 'жу',
+];
+function seededSyllables(familyId: number, familyCultureId: number, variant: number): string {
+  let state = (Math.imul(familyId + 1, 0x45d9f3b) ^ Math.imul(familyCultureId + 7, 0x27d4eb2d) ^ Math.imul(variant + 11, 0x165667b1)) >>> 0;
+  const next = () => {
+    state = (Math.imul(state ^ (state >>> 16), 0x45d9f3b) + 0x27100001) >>> 0;
+    return state % SURNAME_SYLLABLES.length;
+  };
+  const count = 2 + (next() % 2);
+  let stem = '';
+  for (let i = 0; i < count; i += 1) stem += SURNAME_SYLLABLES[next()];
+  return stem;
+}
+export function randomSurnameAffix(rng: () => number = Math.random, used: SurnameAffix[] = []): SurnameAffix {
+  const key = (affix: SurnameAffix) => `${affix.position}:${affix.text}`;
+  const occupied = new Set(used.map(key));
+  const available = SURNAME_AFFIXES.filter((affix) => !occupied.has(key(affix)));
+  return { ...(available.length ? randomItem(available, rng) : randomItem(SURNAME_AFFIXES, rng)) };
+}
+export function legacySurnameAffixForCulture(cultureId: number): SurnameAffix {
+  const index = Math.abs(Math.floor(Number.isFinite(cultureId) ? cultureId : 0)) % SURNAME_AFFIXES.length;
+  return { ...SURNAME_AFFIXES[index] };
+}
 const TRAITS = ['Дальновидный', 'Решительный', 'Уступчивый', 'Амбициозный', 'Осторожный', 'Харизматичный', 'Фанатик', 'Циник', 'Космополит', 'Националист', 'Плодовитый'];
 let nextPersonId = 1;
 const pick = <T,>(items: T[]): T => randomItem(items);
@@ -191,10 +198,20 @@ export function ageStage(age: number): string {
   if (age <= 65) return 'пожилой';
   return 'старик';
 }
-/** A stable, human-readable default surname; living dynasties are made unique by character normalization. */
-export function familyNameForId(familyId: number): string {
-  const index = Math.max(0, Math.floor(Number.isFinite(familyId) ? familyId : 0));
-  return FAMILY_SURNAME_POOL[index % FAMILY_SURNAME_POOL.length];
+/** Repeatable syllable-built surname; the culture's fixed affix makes its sound pattern recognizable. */
+export function familyNameForId(
+  familyId: number,
+  familyCultureId = 0,
+  affix: SurnameAffix = legacySurnameAffixForCulture(familyCultureId),
+  variant = 0,
+): string {
+  const stem = seededSyllables(
+    Math.max(0, Math.floor(Number.isFinite(familyId) ? familyId : 0)),
+    Math.max(0, Math.floor(Number.isFinite(familyCultureId) ? familyCultureId : 0)),
+    Math.max(0, Math.floor(Number.isFinite(variant) ? variant : 0)),
+  );
+  const name = affix.position === 'prefix' ? `${affix.text}${stem}` : `${stem}${affix.text}`;
+  return name.charAt(0).toLocaleUpperCase('ru-RU') + name.slice(1);
 }
 
 function patronymic(parentName: string, gender: Gender): string {
@@ -251,9 +268,10 @@ export function createPerson(
   const id = nextPersonId++;
   const gender: Gender = Math.random() < 0.5 ? 'female' : 'male';
   const trait = age >= 3 ? pick(TRAITS) : '';
-  const familyName = familyNameForId(familyId);
+  const familyCultureId = nameContext.familyCultureId ?? cultureId;
+  const familyName = nameContext.familyName ?? familyNameForId(familyId, familyCultureId, nameContext.surnameAffix);
   const givenName = pick(GIVEN[gender]);
-  return { id, givenName, name: formatPersonName(givenName, familyName, gender, nameContext), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName, cultureId, religionId,
+  return { id, givenName, name: formatPersonName(givenName, familyName, gender, nameContext), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName, familyCultureId, cultureId, religionId,
     countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
     loverIds: [], friendIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
 }
@@ -266,9 +284,9 @@ export function governmentOf(value: string | undefined | null): Government {
   if (value === 'Тирания') return GOVERNMENTS.tyranny;
   return GOVERNMENTS.tribal;
 }
-export function initialGovernment(year: number, cultureId = 0, religionId: number | null = null, nameStyle?: NameStyleId) {
+export function initialGovernment(year: number, cultureId = 0, religionId: number | null = null, nameStyle?: NameStyleId, surnameAffix?: SurnameAffix) {
   const familyId = createFamilyId();
-  return { government: 'tribal' as GovernmentId, ruler: createPerson(year, 29 + Math.floor(Math.random() * 17), familyId, [], cultureId, religionId, { style: nameStyle }), heir: null as Person | null, rulerSince: year, modifiers: ['oligarchy'] as GovernmentModifierId[],
+  return { government: 'tribal' as GovernmentId, ruler: createPerson(year, 29 + Math.floor(Math.random() * 17), familyId, [], cultureId, religionId, { style: nameStyle, familyCultureId: cultureId, surnameAffix }), heir: null as Person | null, rulerSince: year, modifiers: ['oligarchy'] as GovernmentModifierId[],
     previousRulerIds: [], dynastyClaims: [familyId], coRulerIds: [], termYears: 4, maxTerms: 1, consulCount: 2,
     seatSince: {}, termCounts: {}, barredRulerIds: [], pendingDeathIds: [], pressures: {} };
 }

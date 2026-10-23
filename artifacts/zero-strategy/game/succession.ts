@@ -1,5 +1,5 @@
 import type { Person } from './government';
-import { familyNameForId, formatPersonName, legacyNameStyleForCulture } from './government';
+import { formatPersonName, legacyNameStyleForCulture } from './government';
 import type { Country, World } from './world';
 import { person, newCitizen, registerPerson } from './characters';
 import { demography, weighted } from './demography';
@@ -121,7 +121,8 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
   const dynastic = (): Person => {
     const p = fresh();
     p.familyId = old.familyId;
-    p.familyName = familyNameForId(old.familyId);
+    p.familyName = old.familyName;
+    p.familyCultureId = old.familyCultureId ?? old.cultureId;
     p.parents = [];
     p.age = c.modifiers.includes('meritocracy') || (c.government === 'republic') ? 24 :
       c.government === 'tyranny' || c.modifiers.includes('coRule') ? 12 : 16;

@@ -1,4 +1,4 @@
-import { createFamilyId, createPerson, deathChance, FAMILY_SURNAME_POOL, familyNameForId, formatPersonName, legacyNameStyleForCulture, governmentOf, GOVERNMENTS, reservePersonId, type Person, type PersonNameContext } from './government';
+import { createFamilyId, createPerson, deathChance, familyNameForId, formatPersonName, legacyNameStyleForCulture, legacySurnameAffixForCulture, governmentOf, GOVERNMENTS, reservePersonId, type Person, type PersonNameContext, type SurnameAffix } from './government';
 import type { Country, World } from './world';
 import { sampleDemographic } from './demography';
 
@@ -16,7 +16,9 @@ export function newCitizen(world: World, country: Country, year: number): Person
   const pair = sampleDemographic(world, country);
   const cultureId = pair?.cultureId ?? country.cultureId;
   const style = world.cultures[cultureId]?.nameStyleId ?? legacyNameStyleForCulture(cultureId);
-  const p = createPerson(year, 29 + Math.floor(Math.random() * 17), createFamilyId(), [], cultureId, pair?.religionId ?? null, { style });
+  const p = createPerson(year, 29 + Math.floor(Math.random() * 17), createFamilyId(), [], cultureId, pair?.religionId ?? null, {
+    style, familyCultureId: cultureId, surnameAffix: world.cultures[cultureId]?.surnameAffix ?? legacySurnameAffixForCulture(cultureId),
+  });
   if (country.modifiers.includes('communist') && Math.random() < 0.5) {
     if (!p.traits.includes('Космополит')) p.traits.push('Космополит');
     p.trait = p.traits.join(', ');
@@ -44,11 +46,18 @@ function parentNamingContext(world: World, child: Pick<Person, 'parents'>, style
 function normalizePerson(raw: Person, c: Country, year: number, world: World): Person {
   const rawCultureId = Number.isFinite(raw.cultureId) ? raw.cultureId : c.cultureId;
   const style = world.cultures[rawCultureId]?.nameStyleId ?? legacyNameStyleForCulture(rawCultureId);
-  const template = createPerson(year, raw.age ?? 30, raw.familyId ?? createFamilyId(), raw.parents ?? [], rawCultureId, raw.religionId ?? c.religionId, { style });
+  const rawFamilyCultureId = Number.isFinite(raw.familyCultureId) ? raw.familyCultureId : undefined;
+  const surnameCultureId = rawFamilyCultureId ?? rawCultureId;
+  const template = createPerson(year, raw.age ?? 30, raw.familyId ?? createFamilyId(), raw.parents ?? [], rawCultureId, raw.religionId ?? c.religionId, {
+    style, familyCultureId: surnameCultureId, surnameAffix: world.cultures[surnameCultureId]?.surnameAffix ?? legacySurnameAffixForCulture(surnameCultureId),
+  });
   const p: Person = { ...template, ...raw };
   p.id = Number.isFinite(raw.id) ? raw.id : template.id;
   p.familyId = Number.isFinite(raw.familyId) ? raw.familyId : template.familyId;
-  p.familyName = familyNameForId(p.familyId);
+  p.familyCultureId = rawFamilyCultureId;
+  p.familyName = rawFamilyCultureId !== undefined && typeof raw.familyName === 'string'
+    ? raw.familyName
+    : template.familyName;
   p.givenName = raw.givenName || (raw.name || template.name).trim().split(/\s+/)[0] || template.givenName;
   p.cultureId = rawCultureId;
   p.parents = Array.isArray(raw.parents) ? [...raw.parents] : [];
@@ -65,7 +74,10 @@ function normalizePerson(raw: Person, c: Country, year: number, world: World): P
 
 /** Additive migration: keep legacy rulers/heirs and map the old empire/monarchy identifiers. */
 export function normalizePolitics(world: World, year: number): void {
-  for (const culture of world.cultures) culture.nameStyleId ??= legacyNameStyleForCulture(culture.id);
+  for (const culture of world.cultures) {
+    culture.nameStyleId ??= legacyNameStyleForCulture(culture.id);
+    culture.surnameAffix ??= legacySurnameAffixForCulture(culture.id);
+  }
   for (const p of world.people) { reservePersonId(p.id); reservePersonId(p.familyId); }
   const normalized = new Map<number, Person>();
   for (const c of world.countries) {
@@ -85,6 +97,8 @@ export function normalizePolitics(world: World, year: number): void {
     for (const p of world.people.filter((p) => p.countryId === c.id)) link(p);
     c.ruler = link(c.ruler ?? createPerson(year, 30, createFamilyId(), [], c.cultureId, c.religionId, {
       style: world.cultures[c.cultureId]?.nameStyleId ?? legacyNameStyleForCulture(c.cultureId),
+      familyCultureId: c.cultureId,
+      surnameAffix: world.cultures[c.cultureId]?.surnameAffix ?? legacySurnameAffixForCulture(c.cultureId),
     }));
     if (c.heir) {
       c.heir = link(c.heir);
@@ -95,7 +109,8 @@ export function normalizePolitics(world: World, year: number): void {
         c.heir = null;
       } else {
         c.heir.familyId = c.ruler.familyId;
-        c.heir.familyName = familyNameForId(c.heir.familyId);
+        c.heir.familyName = c.ruler.familyName;
+        c.heir.familyCultureId = c.ruler.familyCultureId ?? c.ruler.cultureId;
         c.heir.name = formatPersonName(c.heir.givenName, c.heir.familyName, c.heir.gender,
           parentNamingContext(world, c.heir, world.cultures[c.heir.cultureId]?.nameStyleId ?? legacyNameStyleForCulture(c.heir.cultureId)));
         if (c.heir.countryId < 0) c.heir.countryId = c.id;
@@ -152,13 +167,28 @@ export function countryCharacters(world: World, country: Country): Person[] {
       return rank(b) - rank(a) || b.age - a.age || a.name.localeCompare(b.name);
     });
 }
-/** Keep surnames unique across dynasties that still have living members. */
+/** Migrate family surnames, retain each family's cultural affix, and keep living dynasties distinct. */
 export function ensureUniqueDynastySurnames(world: World): void {
   const membersByFamily = new Map<number, Person[]>();
   for (const p of world.people) {
     const members = membersByFamily.get(p.familyId) ?? [];
     members.push(p);
     membersByFamily.set(p.familyId, members);
+  }
+  const familyNames = new Map<number, string>();
+  const familyCultures = new Map<number, number>();
+  for (const [familyId, members] of membersByFamily) {
+    const knownCulture = members.find((p) => Number.isFinite(p.familyCultureId))?.familyCultureId;
+    const founder = knownCulture !== undefined
+      ? members.find((p) => p.familyCultureId === knownCulture)!
+      : [...members].sort((a, b) => a.bornAt - b.bornAt || a.id - b.id)[0];
+    const familyCultureId = knownCulture ?? founder.cultureId;
+    const affix = world.cultures[familyCultureId]?.surnameAffix ?? legacySurnameAffixForCulture(familyCultureId);
+    const surname = knownCulture !== undefined
+      ? (members.find((p) => p.familyCultureId === knownCulture && p.familyName)?.familyName ?? familyNameForId(familyId, familyCultureId, affix))
+      : familyNameForId(familyId, familyCultureId, affix);
+    familyCultures.set(familyId, familyCultureId);
+    familyNames.set(familyId, surname);
   }
   const dynasties = new Set<number>();
   for (const country of world.countries) {
@@ -167,31 +197,31 @@ export function ensureUniqueDynastySurnames(world: World): void {
   }
   const activeFamilies = [...dynasties].filter((id) => membersByFamily.get(id)?.some((p) => p.alive)).sort((a, b) => a - b);
   const usedNames = new Set<string>();
-  const renames = new Map<number, string>();
   for (const familyId of activeFamilies) {
-    const members = membersByFamily.get(familyId) ?? [];
-    const currentName = members.find((p) => p.alive)?.familyName;
-    let surname = currentName && FAMILY_SURNAME_POOL.includes(currentName as (typeof FAMILY_SURNAME_POOL)[number]) && !usedNames.has(currentName)
-      ? currentName : undefined;
-    if (!surname) {
-      const start = Math.abs(familyId) % FAMILY_SURNAME_POOL.length;
-      for (let offset = 0; offset < FAMILY_SURNAME_POOL.length; offset += 1) {
-        const candidate = FAMILY_SURNAME_POOL[(start + offset) % FAMILY_SURNAME_POOL.length];
-        if (!usedNames.has(candidate)) { surname = candidate; break; }
+    const familyCultureId = familyCultures.get(familyId) ?? 0;
+    const affix = world.cultures[familyCultureId]?.surnameAffix ?? legacySurnameAffixForCulture(familyCultureId);
+    let surname = familyNames.get(familyId)!;
+    if (usedNames.has(surname)) {
+      let variant = 1;
+      while (usedNames.has(surname)) {
+        surname = familyNameForId(familyId, familyCultureId, affix, variant);
+        variant += 1;
       }
     }
-    // The surname pool is much larger than the number of simultaneously living
-    // political dynasties. Keep a deterministic value if a save exceeds it.
-    surname ??= familyNameForId(familyId);
     usedNames.add(surname);
-    renames.set(familyId, surname);
+    familyNames.set(familyId, surname);
   }
   for (const p of world.people) {
-    const surname = renames.get(p.familyId);
-    if (!surname || p.familyName === surname) continue;
+    const surname = familyNames.get(p.familyId);
+    const familyCultureId = familyCultures.get(p.familyId);
+    if (!surname || familyCultureId === undefined) continue;
+    const changed = p.familyName !== surname;
     p.familyName = surname;
-    const style = world.cultures[p.cultureId]?.nameStyleId ?? legacyNameStyleForCulture(p.cultureId);
-    p.name = formatPersonName(givenNameOf(p), surname, p.gender, parentNamingContext(world, p, style));
+    p.familyCultureId = familyCultureId;
+    if (changed) {
+      const style = world.cultures[p.cultureId]?.nameStyleId ?? legacyNameStyleForCulture(p.cultureId);
+      p.name = formatPersonName(givenNameOf(p), surname, p.gender, parentNamingContext(world, p, style));
+    }
   }
 }
 export function familyOf(world: World, p: Person): Person[] {
@@ -233,12 +263,14 @@ export function birth(world: World, c: Country, mother: Person, father: Person, 
       mother.age < 12 || mother.age > 45 || father.age < 12 || !arePartners(mother, father) ||
       related(world, mother, father) || mother.lastBirthYear === year) return null;
   const belongsToRulingFamily = (p: Person) => c.dynastyClaims.includes(p.familyId) || p.id === c.ruler.id || c.previousRulerIds.includes(p.id);
-  const lineage = belongsToRulingFamily(mother) ? mother.familyId : belongsToRulingFamily(father) ? father.familyId : mother.familyId;
+  const lineagePerson = belongsToRulingFamily(mother) ? mother : belongsToRulingFamily(father) ? father : mother;
+  const lineage = lineagePerson.familyId;
   const cultureId = Math.random() < 0.5 ? mother.cultureId : father.cultureId;
   const style = world.cultures[cultureId]?.nameStyleId ?? legacyNameStyleForCulture(cultureId);
   const p = createPerson(year, 0, lineage, [mother.id, father.id], cultureId,
     Math.random() < 0.5 ? mother.religionId : father.religionId,
-    { style, fatherGivenName: givenNameOf(father), paternalSurname: father.familyName, maternalSurname: mother.familyName });
+    { style, familyName: lineagePerson.familyName, familyCultureId: lineagePerson.familyCultureId ?? lineagePerson.cultureId,
+      fatherGivenName: givenNameOf(father), paternalSurname: father.familyName, maternalSurname: mother.familyName });
   p.bornAt = year - Math.random(); p.age = 0; p.trait = ''; p.traits = [];
   mother.lastBirthYear = year;
   return registerPerson(world, c, p);
