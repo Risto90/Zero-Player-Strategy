@@ -29,6 +29,11 @@ export function zoomAround(view: ViewTransform, factor: number, sx: number, sy: 
   return clampView({ scale, ox: sx - mx * scale, oy: sy - my * scale }, width, height);
 }
 
+/** Moves the map so a map coordinate is at the viewport center, preserving zoom. */
+export function centerOnMapPoint(view: ViewTransform, x: number, y: number, width: number, height: number): ViewTransform {
+  return clampView({ ...view, ox: width / 2 - x * view.scale, oy: height / 2 - y * view.scale }, width, height);
+}
+
 export function toMap(view: ViewTransform, sx: number, sy: number): { x: number; y: number } {
   return { x: (sx - view.ox) / view.scale, y: (sy - view.oy) / view.scale };
 }

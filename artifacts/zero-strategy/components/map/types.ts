@@ -5,6 +5,7 @@ export type MapTool = 'brush' | 'hand' | 'city';
 export interface MapViewHandle {
   zoomBy(factor: number): void;
   fit(): void;
+  centerAtPixel(pixel: number): void;
 }
 
 export interface MapViewProps {

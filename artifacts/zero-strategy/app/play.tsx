@@ -1,6 +1,6 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CardPanel } from '@/components/game/CardPanel';
@@ -13,6 +13,7 @@ import { Loading } from '@/components/Loading';
 import { MapView } from '@/components/map/MapView';
 import type { MapTool, MapViewHandle } from '@/components/map/types';
 import colors, { fonts } from '@/constants/colors';
+import { MAP_WIDTH } from '@/game/config';
 import type { Game, PixelInfo } from '@/game/game';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
 import { useGameSnapshot } from '@/game/useGame';
@@ -68,13 +69,20 @@ function GameScreen({ game }: { game: Game }) {
   const mapRef = useRef<MapViewHandle>(null);
   const [tool, setTool] = useState<MapTool>('brush');
   const [inspect, setInspect] = useState<{ info: PixelInfo | null } | null>(null);
+  const onCityPress = useCallback((pixel: number) => {
+    const x = pixel % MAP_WIDTH;
+    const y = Math.floor(pixel / MAP_WIDTH);
+    mapRef.current?.centerAtPixel(pixel);
+    setTool('hand');
+    setInspect({ info: game.inspect(x, y) });
+  }, [game]);
   const changeTool = (t: MapTool) => {
     setTool(t);
     if (t === 'brush') setInspect(null);
   };
 
   // Lists only re-render when their own data changes, not on every brush dab or timer tick.
-  const legend = useMemo(() => <LegendPanel game={game} snap={snap} />, [game, snap.legend, snap.mapMode, snap.layer, snap.selectedCountryId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const legend = useMemo(() => <LegendPanel game={game} snap={snap} onCityPress={onCityPress} />, [game, onCityPress, snap.legend, snap.mapMode, snap.layer, snap.selectedCountryId]); // eslint-disable-line react-hooks/exhaustive-deps
   const log = useMemo(() => <LogPanel log={snap.log} />, [snap.log]);
 
   const wide = width >= WIDE;

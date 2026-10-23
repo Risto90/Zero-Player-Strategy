@@ -60,7 +60,7 @@ function Rows({ rows, unit, onPress, activeId, header, footer }: { rows: LegendR
   );
 }
 
-export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
+export function LegendPanel({ game, snap, onCityPress }: { game: Game; snap: GameSnapshot; onCityPress?: (pixel: number) => void }) {
   const { legend, mapMode, layer } = snap;
   let body: ReactElement;
   let title = '';
@@ -126,7 +126,15 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
     body = (
       <ScrollView nestedScrollEnabled>
         {game.world.cities.length ? game.world.cities.map((city) => (
-          <View key={city.id} style={styles.countryCard}>
+          <Pressable
+            key={city.id}
+            onPress={() => onCityPress?.(city.pixel)}
+            disabled={!onCityPress}
+            accessibilityRole="button"
+            accessibilityLabel={`Показать ${city.name ?? cityRankName(city.rank)} на карте`}
+            style={styles.countryCard}
+            testID={`button-city-${city.id}`}
+          >
             <View style={styles.row}>
               <Image
                 source={cityIconSource(cityIconIndex(city, game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0))}
@@ -141,9 +149,10 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
                 </Text>
               </View>
               <Text style={styles.rowValue}>{cityRankName(city.rank)}</Text>
+              {onCityPress && <Feather name="chevron-right" size={16} color={c.mutedForeground} />}
             </View>
             <CityCompositionRows world={game.world} city={city} />
-          </View>
+          </Pressable>
         )) : <Empty text="Пока нет городов." />}
       </ScrollView>
     );

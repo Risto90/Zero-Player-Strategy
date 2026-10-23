@@ -7,7 +7,7 @@ import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcon
 import { isCityVisibleAtZoom } from './cityIconMath';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
-import { clampView, initialView, minScale, zoomAround } from './viewMath';
+import { centerOnMapPoint, clampView, initialView, minScale, zoomAround } from './viewMath';
 
 /** Browser preview of the map: a plain 2D canvas, same gestures as on the phone. */
 export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect }, ref) {
@@ -113,6 +113,10 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     fit: () => {
       const { width, height } = sizeRef.current;
       applyView(clampView({ scale: minScale(width, height), ox: 0, oy: 0 }, width, height));
+    },
+    centerAtPixel: (pixel: number) => {
+      const { width, height } = sizeRef.current;
+      applyView(centerOnMapPoint(viewRef.current, pixel % MAP_WIDTH, Math.floor(pixel / MAP_WIDTH), width, height));
     },
   }));
 
