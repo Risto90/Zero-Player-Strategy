@@ -87,6 +87,8 @@ export class CardPainter {
   private strokeChangedStart = 0;
   private readonly religionForNewLand: number;
   readonly colonizationMask: Uint8Array | null;
+  readonly colonizationAnchors: Uint8Array | null;
+  private readonly colonizationConnected: Uint8Array | null;
   private readonly colonizationDonors: ColonizationDonorHeap | null;
   readonly extraDirty: Rect[] = [];
   private readonly dirtyTileKeys = new Set<number>();
@@ -104,6 +106,8 @@ export class CardPainter {
       : null;
     const colonization = colonizationCountry ? colonizationPlan(world, colonizationCountry) : null;
     this.colonizationMask = colonization?.targets ?? null;
+    this.colonizationAnchors = colonization?.anchors ?? null;
+    this.colonizationConnected = colonization?.connectedTerritory.slice() ?? null;
     this.colonizationDonors = colonization ? new ColonizationDonorHeap(world, colonization.donors) : null;
     if (working !== null && (card.type === 'expand' || card.type === 'split')) {
       const source = world.countries[card.type === 'split' ? (card.targetCountryId as number) : working];
@@ -278,11 +282,18 @@ export class CardPainter {
         queue.push(p);
       }
     };
-    const first = card.type === 'colonization' || working.pixels === 0;
+    const first = card.type !== 'colonization' && working.pixels === 0;
     for (const p of pixels) {
       if (!canTake(p)) continue;
       let linked = first;
-      if (!linked) {
+      if (card.type === 'colonization') {
+        linked = this.colonizationAnchors?.[p] === 1;
+        if (!linked) {
+          forEachNeighbour(p, (n) => {
+            if (this.colonizationConnected?.[n]) linked = true;
+          });
+        }
+      } else if (!linked) {
         forEachNeighbour(p, (n) => {
           if (world.owner[n] === tag) linked = true;
           else if (card.type !== 'split' && this.seas.size > 0 && world.water.bodyOf[n] >= 0 && this.seas.has(world.water.bodyOf[n])) linked = true;
@@ -298,7 +309,7 @@ export class CardPainter {
           card.type === 'split'
           ? 'Раскол рисуется внутри исходной страны, продолжая уже выделенную часть.'
             : card.type === 'colonization'
-              ? 'Колонизировать можно только выделенные прибрежные и речные области.'
+              ? 'Начните колонию у побережья или реки либо продолжайте от уже связанной с ними территории.'
           : 'Продолжайте от своей территории — по суше или через то же море.';
     }
     for (let head = 0; head < queue.length; head += 1) {
@@ -320,11 +331,15 @@ export class CardPainter {
         this.colonizationDonors?.refreshTop(donor);
         world.setOwner(p, tag);
         this.colonizationDonors?.add(p);
+        if (this.colonizationConnected) this.colonizationConnected[p] = 1;
         this.colonistsMoved += transfer.amount;
         card.ink = Math.max(0, card.ink - transfer.ink);
         this.touch(p);
         this.changed.push(p);
         this.markDirtyPixel(donor);
+        forEachNeighbour(p, (n) => {
+          if (dabMask[n] && canTake(n)) enqueue(n);
+        });
         continue;
       }
       world.setOwner(p, tag);

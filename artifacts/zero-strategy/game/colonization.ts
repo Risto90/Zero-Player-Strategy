@@ -9,6 +9,8 @@ const EPSILON = 1e-9;
 
 export interface ColonizationPlan {
   targets: Uint8Array;
+  anchors: Uint8Array;
+  connectedTerritory: Uint8Array;
   donors: number[];
   averageDensity: number;
   availablePopulation: number;
@@ -251,8 +253,9 @@ export function areColonizationAllies(world: World, a: Country, b: Country): boo
   return false;
 }
 
-function geographicScope(world: World, country: Country): Uint8Array {
+function geographicScope(world: World, country: Country): { scope: Uint8Array; anchors: Uint8Array } {
   const scope = new Uint8Array(MAP_PIXELS);
+  const anchors = new Uint8Array(MAP_PIXELS);
   const seas = new Set<number>();
   const riverSeeds: number[] = [];
   world.forEachCountryPixel(country, (p) => {
@@ -262,7 +265,10 @@ function geographicScope(world: World, country: Country): Uint8Array {
 
   // A coastal state can settle any coast on the seas it already touches.
   for (const sea of seas) {
-    for (const p of world.water.coastsOf[sea] ?? []) scope[p] = 1;
+    for (const p of world.water.coastsOf[sea] ?? []) {
+      scope[p] = 1;
+      anchors[p] = 1;
+    }
   }
 
   // Find the connected river network already inside the country.
@@ -276,10 +282,14 @@ function geographicScope(world: World, country: Country): Uint8Array {
       const p = queue[head];
       riverPixels.push(p);
       scope[p] = 1;
+      anchors[p] = 1;
       forEachNeighbour(p, (n) => {
         if (world.rivers[n] > 0 && !riverSeen[n]) {
           riverSeen[n] = 1;
           queue.push(n);
+        } else if (world.land[n]) {
+          scope[n] = 1;
+          anchors[n] = 1;
         }
       });
     }
@@ -305,7 +315,26 @@ function geographicScope(world: World, country: Country): Uint8Array {
       });
     }
   }
-  return scope;
+  return { scope, anchors };
+}
+
+function connectedCountryTerritory(world: World, country: Country, anchors: Uint8Array): Uint8Array {
+  const connected = new Uint8Array(MAP_PIXELS);
+  const queue: number[] = [];
+  const tag = country.id + 1;
+  world.forEachCountryPixel(country, (p) => {
+    if (!anchors[p]) return;
+    connected[p] = 1;
+    queue.push(p);
+  });
+  for (let head = 0; head < queue.length; head += 1) {
+    forEachNeighbour(queue[head], (n) => {
+      if (connected[n] || world.owner[n] !== tag) return;
+      connected[n] = 1;
+      queue.push(n);
+    });
+  }
+  return connected;
 }
 
 export function colonizationPlan(world: World, country: Country): ColonizationPlan {
@@ -313,7 +342,9 @@ export function colonizationPlan(world: World, country: Country): ColonizationPl
     return cached.plan;
   }
   const averageDensity = demography(world, country).density;
-  const geographic = geographicScope(world, country);
+  const { scope: geographic, anchors } = geographicScope(world, country);
+  const connectedTerritory = connectedCountryTerritory(world, country, anchors);
+  const candidates = new Uint8Array(MAP_PIXELS);
   const targets = new Uint8Array(MAP_PIXELS);
   const allies = new Set<number>();
   for (const other of world.countries) {
@@ -329,23 +360,38 @@ export function colonizationPlan(world: World, country: Country): ColonizationPl
       availablePopulation += world.density[p];
     }
   });
-  let targetCount = 0;
   for (const p of world.landIndex) {
     if (!geographic[p] || world.owner[p] === country.id + 1) continue;
     const owner = world.owner[p];
     if (owner > 0 && (world.density[p] <= EPSILON || world.density[p] >= averageDensity || allies.has(owner - 1))) continue;
-    targets[p] = 1;
-    targetCount += 1;
+    candidates[p] = 1;
   }
 
-  let hint = -1, validCount = 0;
+  const queue: number[] = [];
+  let hint = -1, startCount = 0;
   for (const p of world.landIndex) {
-    if (!targets[p]) continue;
-    validCount += 1;
-    if (hint < 0 || Math.random() < 1 / validCount) hint = p;
+    if (!candidates[p]) continue;
+    let linked = anchors[p] === 1;
+    if (!linked) {
+      forEachNeighbour(p, (n) => {
+        if (connectedTerritory[n]) linked = true;
+      });
+    }
+    if (!linked) continue;
+    targets[p] = 1;
+    queue.push(p);
+    startCount += 1;
+    if (hint < 0 || Math.random() < 1 / startCount) hint = p;
   }
-  targetCount = validCount;
-  const plan = { targets, donors, averageDensity, availablePopulation, targetCount, hint };
+  for (let head = 0; head < queue.length; head += 1) {
+    forEachNeighbour(queue[head], (n) => {
+      if (!candidates[n] || targets[n]) return;
+      targets[n] = 1;
+      queue.push(n);
+    });
+  }
+  const targetCount = queue.length;
+  const plan = { targets, anchors, connectedTerritory, donors, averageDensity, availablePopulation, targetCount, hint };
   cached = { world, version: world.version, countryId: country.id, plan };
   return plan;
 }
