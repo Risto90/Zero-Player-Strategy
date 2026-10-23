@@ -8,10 +8,12 @@ import { lifeOpportunity, marriageCandidates, reformCandidates, type ReformPropo
 import { leadershipOptions } from './succession';
 import { newCitizen, person } from './characters';
 import { demography } from './demography';
+import { colonizationPlan } from './colonization';
 
 export const CARD_TITLES: Record<CardType, string> = {
   create: 'Создание государства',
   expand: 'Расширение страны',
+  colonization: 'Колонизация',
   split: 'Раскол страны',
   drought: 'Засуха',
   rain: 'Ливни',
@@ -196,6 +198,20 @@ function drawExpand(world: World, country: Country): Card | null {
   return makeCard('expand', capacity, country, `Закрашивайте свободные земли у границ ${country.name} или на любом берегу того же моря.`, hint);
 }
 
+function drawColonization(world: World, country: Country): Card | null {
+  const plan = colonizationPlan(world, country);
+  const ink = Math.min(INK.colonization, plan.targetCount, plan.availablePopulation);
+  if (ink < 1 || plan.hint < 0) return null;
+  const card = makeCard(
+    'colonization',
+    ink,
+    country,
+    `Колонизируйте побережья доступных морей или земли в бассейне реки, уже проходящей через ${country.name}. Чужие земли доступны, только если их плотность ниже средней плотности страны и владельцы не союзники. Каждый участок переселяет одного жителя из самых плотных областей страны; его культура и религия сохраняются.`,
+    plan.hint,
+  );
+  return card;
+}
+
 function proposalChoice(world: World, proposal: ReformProposal, ruler?: import('./government').Person): {
   label: string; detail: string; government?: GovernmentId; modifier?: GovernmentModifierId;
   removeModifier?: GovernmentModifierId; termYears?: number; maxTerms?: number; consulCount?: number; violent?: boolean;
@@ -250,7 +266,7 @@ function ageLabel(age: number): string {
 }
 function personDetail(world: World, candidate: import('./government').Person): string {
   const culture = world.cultures[candidate.cultureId]?.name ?? 'неизвестная культура';
-  const religion = candidate.religionId === null ? 'без веры' : world.religions[candidate.religionId]?.name ?? 'неизвестная вера';
+  const religion = candidate.religionId === null ? 'атеист' : world.religions[candidate.religionId]?.name ?? 'неизвестная вера';
   return `${candidate.age} лет · ${candidate.trait || ageLabel(candidate.age)} · ${culture} · ${religion}`;
 }
 function drawLifeCard(world: World, country: Country, year: number): Card | null {
@@ -544,6 +560,7 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   return drawFirstApplicable([
     { value: () => life, weight: 1.4 },
     { value: () => drawExpand(world, country), weight: 4 * consulateScale },
+    { value: () => drawColonization(world, country), weight: Math.max(0, diversity.density * 0.12) * consulateScale },
     { value: () => drawGovernment(world, country, year), weight: 0.16 * consulateScale },
     { value: () => drawGovernment(world, country, year, true), weight: 0.01 * consulateScale },
     { value: () => drawSplit(world, country, year), weight: (big ? 0.3 : 0) * splitScale * consulateScale },

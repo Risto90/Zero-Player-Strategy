@@ -146,7 +146,7 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
             {info.country ? (
               <>
                 <Shares title="НАРОДЫ" rows={info.cultures} />
-                <Shares title="ВЕРЫ" rows={info.religions} extra={{ name: 'Без веры', share: info.nonBelievers }} />
+                <Shares title="ВЕРЫ" rows={info.religions} extra={{ name: 'Атеисты', share: info.nonBelievers }} />
               </>
             ) : (
               <Text style={[styles.muted, { fontStyle: 'italic' }]}>Здесь никто не живёт.</Text>
@@ -162,7 +162,7 @@ function worldCultureName(world: World, id: number): string {
   return world.cultures[id]?.name ?? `культура №${id + 1}`;
 }
 function worldReligionName(world: World, id: number | null): string {
-  return id === null ? 'без веры' : world.religions[id]?.name ?? `вера №${id + 1}`;
+  return id === null ? 'атеист' : world.religions[id]?.name ?? `вера №${id + 1}`;
 }
 
 const styles = StyleSheet.create({

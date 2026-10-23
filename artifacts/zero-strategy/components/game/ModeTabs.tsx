@@ -15,12 +15,13 @@ export const MODES: { id: MapMode; label: string }[] = [
   { id: 'temperature', label: 'Температура' },
   { id: 'drainage', label: 'Дренаж' },
   { id: 'density', label: 'Население' },
+  { id: 'colonization', label: 'Колонизация' },
 ];
 
 export function ModeTabs({ game, snap }: { game: Game; snap: GameSnapshot }) {
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.bar} contentContainerStyle={styles.content} testID="nav-modes">
-      {MODES.map((m) => {
+      {MODES.filter((m) => m.id !== 'colonization' || snap.card?.type === 'colonization').map((m) => {
         const active = snap.mapMode === m.id;
         return (
           <Pressable key={m.id} onPress={() => game.setMapMode(m.id)} style={[styles.tab, active && { backgroundColor: c.primary }]} testID={`button-mode-${m.id}`}>

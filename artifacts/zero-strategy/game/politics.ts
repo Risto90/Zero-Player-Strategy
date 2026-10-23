@@ -23,6 +23,9 @@ export function reformCandidates(world: World, c: Country, year: number, violent
   if (c.government === 'tyranny' && !violent) return [];
   const d = demography(world, c), close = [...d.cultures.values()].sort((a, b) => b - a);
   const faiths = [...d.religions.values()].sort((a, b) => b - a);
+  const faithfulPopulation = [...d.religions].reduce((total, [religionId, population]) =>
+    total + (religionId === null ? 0 : population), 0);
+  const canTheocracy = c.ruler.religionId !== null && faithfulPopulation > 0;
   const family = world.people.filter((p) => p.alive && c.dynastyClaims.includes(p.familyId));
   const relatives = successionOrder(world, c).length;
   const pressure = Object.values(c.pressures).filter((p) => p.until >= year).reduce((n, p) => n + p.strength, 0);
@@ -72,6 +75,7 @@ export function reformCandidates(world: World, c: Country, year: number, violent
     let w = 1 + pressure;
     switch (id) {
       case 'theocracy':
+        if (!canTheocracy) return 0;
         w *= (topFaithShare > 0.5 ? 2 : 0.5) * (topFaithShare > 2 * secondFaith ? 2 : 0.5);
         w *= 1 + faithPressure;
         if (c.ruler.religionId === d.religion) w *= 2;
@@ -187,6 +191,7 @@ export function reformCandidates(world: World, c: Country, year: number, violent
     return Math.max(0, w);
   };
   const removeWeight = (id: GovernmentModifierId): number => {
+    if (id === 'theocracy' && !canTheocracy) return 50;
     let w = addWeight(id);
     if (id === 'theocracy' && c.ruler.religionId !== d.religion && c.government !== 'tyranny' || id === 'ethnic' && c.ruler.cultureId !== d.culture) w *= 4;
     if (id === 'minority' && (age < 12 || age >= 66)) w *= 3;

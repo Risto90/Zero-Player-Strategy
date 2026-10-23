@@ -17,6 +17,7 @@ export const MAX_COUNTRIES = 80;
 /** Ink is measured in map pixels the brush may change. */
 export const INK = {
   expand: 4000,
+  colonization: 4000,
   split: 9000,
   climate: 26000,
   faith: 14000,

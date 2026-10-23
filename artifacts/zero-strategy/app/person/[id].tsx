@@ -41,7 +41,7 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
   const world = game.world;
   const country = world.countries[person.countryId];
   const culture = world.cultures[person.cultureId]?.name ?? 'неизвестна';
-  const religion = person.religionId === null ? 'без веры' : world.religions[person.religionId]?.name ?? 'неизвестна';
+  const religion = person.religionId === null ? 'атеист' : world.religions[person.religionId]?.name ?? 'неизвестна';
   const parents = person.parents.map((parentId) => world.people.find((item) => item.id === parentId)).filter((item) => !!item);
   const partners = [
     ...person.spouseIds.map((partnerId) => ({ person: world.people.find((item) => item.id === partnerId), kind: 'Брак' })),
@@ -94,7 +94,7 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
           <Text style={styles.sectionTitle}>СУПРУГИ И ЛЮБОВНЫЕ ПАРТНЁРЫ</Text>
           {partners.length ? partners.map(({ person: relative, kind }) => (
             <RelativeLink key={relative.id} id={relative.id} title={relative.name}
-              note={`${kind} · ${relative.alive ? 'жив(а)' : `умер${relative.gender === 'female' ? 'ла' : ''} в ${relative.deathYear ?? '?'}`} · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'без веры' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
+              note={`${kind} · ${relative.alive ? 'жив(а)' : `умер${relative.gender === 'female' ? 'ла' : ''} в ${relative.deathYear ?? '?'}`} · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'атеист' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
           )) : <Text style={styles.note}>Браки не зарегистрированы.</Text>}
         </View>
         <View style={styles.section}>
@@ -108,7 +108,7 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
           <Text style={styles.sectionTitle}>ДЕТИ · {children.length}</Text>
           {children.length ? children.map((relative) => (
             <RelativeLink key={relative.id} id={relative.id} title={relative.name}
-              note={`${relative.age} лет · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'без веры' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
+              note={`${relative.age} лет · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'атеист' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
           )) : <Text style={styles.note}>Дети не зарегистрированы.</Text>}
         </View>
         {person.deathReason && <Text style={styles.note}>Причина смерти · {person.deathReason}</Text>}

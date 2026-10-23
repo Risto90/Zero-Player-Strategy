@@ -106,6 +106,16 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
         </View>
       </ScrollView>
     );
+  } else if (mapMode === 'colonization') {
+    title = 'Колонизация';
+    sub = snapCountryName(snap);
+    body = (
+      <ScrollView contentContainerStyle={{ padding: 12 }} nestedScrollEnabled>
+        <Text style={styles.valueNote}>Зелёным отмечены доступные земли. Можно заселять побережья морей, которых уже касается страна, и области вокруг связанных с ней рек.</Text>
+        <Text style={styles.valueNote}>Чужие земли доступны только при плотности ниже средней по стране и если правящие династии не союзники.</Text>
+        <Text style={styles.valueNote}>Каждый участок переносит одного жителя с самого плотного участка страны; общий прирост населения отсутствует.</Text>
+      </ScrollView>
+    );
   } else {
     const stops = RAMPS[mapMode];
     title = VALUE_TITLE[mapMode];
@@ -173,6 +183,7 @@ function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
                 {country.modifiers.map((modifier) => (
                   <Text style={styles.countryModifier} key={modifier}>· {MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
                 ))}
+                <CountryCompositionBlock game={game} countryId={country.id} />
                 <Text style={styles.countrySection}>ПРАВИТЕЛЬ</Text>
                 <View>
                   <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(country.ruler.id) } })}>
@@ -211,7 +222,7 @@ function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
                         <View style={styles.personMetaRow}>
                           <Text style={styles.personMeta}>
                             {person.age} лет · {game.world.cultures[person.cultureId]?.name ?? 'культура неизвестна'} ·
-                            {' '}{person.religionId === null ? 'без веры' : game.world.religions[person.religionId]?.name ?? 'вера неизвестна'} ·
+                            {' '}{person.religionId === null ? 'атеист' : game.world.religions[person.religionId]?.name ?? 'вера неизвестна'} ·
                           </Text>
                           <Pressable onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(person.familyId) } })}
                             accessibilityRole="link" testID={`link-dynasty-${person.familyId}`}>
@@ -232,6 +243,30 @@ function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
   );
 }
 
+function snapCountryName(snap: GameSnapshot): string {
+  return snap.cardCountry ? `${snap.cardCountry.name} · доступные области` : 'Доступные области';
+}
+
+function CountryCompositionBlock({ game, countryId }: { game: Game; countryId: number }) {
+  const composition = game.countryComposition(countryId);
+  return (
+    <View style={styles.composition}>
+      <Text style={styles.countrySection}>ЭТНИЧЕСКИЙ СОСТАВ</Text>
+      {composition.cultures.map((group) => (
+        <Text key={group.id} style={styles.compositionRow}>
+          <Text style={{ color: group.color }}>■ </Text>{group.name} · {pct(group.percent)}
+        </Text>
+      ))}
+      <Text style={styles.countrySection}>РЕЛИГИОЗНЫЙ СОСТАВ</Text>
+      {composition.religions.map((group) => (
+        <Text key={group.id ?? 'atheists'} style={styles.compositionRow}>
+          <Text style={{ color: group.color }}>■ </Text>{group.name} · {pct(group.percent)}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   panel: { flex: 1, backgroundColor: c.card },
   header: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingHorizontal: 8, paddingTop: 6, paddingBottom: 4 },
@@ -243,6 +278,8 @@ const styles = StyleSheet.create({
   countryDetails: { gap: 4, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: c.background },
   countryInfo: { fontFamily: fonts.sans, fontSize: 11, color: c.foreground },
   countryModifier: { fontFamily: fonts.sans, fontSize: 10, lineHeight: 14, color: c.mutedForeground },
+  composition: { gap: 2, marginTop: 4, marginBottom: 3 },
+  compositionRow: { fontFamily: fonts.sans, fontSize: 10, color: c.foreground },
   countrySection: { marginTop: 4, fontFamily: fonts.sansSemiBold, fontSize: 9, letterSpacing: 1, color: c.primary },
   personLink: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.accent, textDecorationLine: 'underline' },
   peopleButton: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 8, paddingHorizontal: 8, paddingVertical: 6, borderRadius: 4, backgroundColor: c.primary },

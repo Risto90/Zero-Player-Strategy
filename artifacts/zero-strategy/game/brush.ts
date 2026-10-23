@@ -1,10 +1,12 @@
-import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, MAX_DENSITY } from './config';
+import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, MAX_DENSITY, SHARE_STEP } from './config';
 import { forEachNeighbour } from './geography';
 import type { World } from './world';
 import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
+import { colonizationPlan, type ColonizationPlan } from './colonization';
+import { quantizeShares } from './composition';
 
-export type CardType = 'create' | 'expand' | 'split' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
+export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
 export interface CardChoice {
   label: string;
   detail: string;
@@ -83,6 +85,12 @@ export class CardPainter {
   private strokeClimateChanges: { p: number; value: number; cost: number; wasInCard: boolean }[] = [];
   private strokeChangedStart = 0;
   private readonly religionForNewLand: number;
+  readonly colonizationMask: Uint8Array | null;
+  private readonly colonizationDonors: number[];
+  private readonly colonizationRefugeeSinks: ColonizationPlan['refugeeSinks'];
+  private colonizationDonorIndex = 0;
+  readonly extraDirty: Rect[] = [];
+  private readonly dirtyTileKeys = new Set<number>();
   dirty: Rect | null = null;
   message = '';
 
@@ -92,6 +100,13 @@ export class CardPainter {
     public mode: BrushMode,
   ) {
     const working = this.workingCountryId();
+    const colonizationCountry = card.type === 'colonization' && card.targetCountryId !== null
+      ? world.countries[card.targetCountryId]
+      : null;
+    const colonization = colonizationCountry ? colonizationPlan(world, colonizationCountry) : null;
+    this.colonizationMask = colonization?.targets ?? null;
+    this.colonizationDonors = colonization?.donors ?? [];
+    this.colonizationRefugeeSinks = colonization?.refugeeSinks ?? new Map();
     if (working !== null && (card.type === 'expand' || card.type === 'split')) {
       const source = world.countries[card.type === 'split' ? (card.targetCountryId as number) : working];
       if (card.type === 'expand') {
@@ -112,7 +127,7 @@ export class CardPainter {
   workingCountryId(): number | null {
     const card = this.card;
     if (card.type === 'create' || card.type === 'split') return card.newCountryId;
-    if (card.type === 'expand') return card.targetCountryId;
+    if (card.type === 'expand' || card.type === 'colonization') return card.targetCountryId;
     return null;
   }
 
@@ -121,6 +136,10 @@ export class CardPainter {
     this.strokeTouched = [];
     this.strokeClimateChanges = [];
     this.strokeChangedStart = this.changed.length;
+  }
+
+  clearExtraDirtyTiles(): void {
+    this.dirtyTileKeys.clear();
   }
 
   /** Roll back a wind stroke whose finger was released over water instead of home territory. */
@@ -206,7 +225,7 @@ export class CardPainter {
     }
     if (pixels.length === 0) return 0;
     const before = card.ink;
-    if (card.type === 'create' || card.type === 'expand' || card.type === 'split') this.paintTerritory(pixels);
+    if (card.type === 'create' || card.type === 'expand' || card.type === 'colonization' || card.type === 'split') this.paintTerritory(pixels);
     else this.paintLayer(pixels);
     const spent = before - card.ink;
     if (spent > 0) {
@@ -225,6 +244,9 @@ export class CardPainter {
     const tag = workingId + 1;
     const sourceTag = card.type === 'split' ? (card.targetCountryId as number) + 1 : 0;
     const canTake = (p: number) => {
+      if (card.type === 'colonization') {
+        return this.colonizationMask?.[p] === 1 && world.owner[p] !== tag;
+      }
       if (world.owner[p] !== sourceTag) return false;
       if (card.type !== 'split' || (card.splitCultureId === undefined && card.splitReligionId === undefined)) return true;
       const cultureMatch = card.splitCultureId !== undefined && world.cultureTable.shareOf(world.culture[p], card.splitCultureId) > 0;
@@ -235,7 +257,7 @@ export class CardPainter {
     };
 
     // Extra population on already owned land ("density" brush).
-    if (card.type !== 'split' && this.mode === 'repeat') {
+    if (card.type !== 'split' && card.type !== 'colonization' && this.mode === 'repeat') {
       for (const p of pixels) {
         if (card.ink <= 0) break;
         if (world.owner[p] !== tag || strokeMask[p] || world.density[p] >= MAX_DENSITY) continue;
@@ -256,7 +278,7 @@ export class CardPainter {
         queue.push(p);
       }
     };
-    const first = working.pixels === 0;
+    const first = card.type === 'colonization' || working.pixels === 0;
     for (const p of pixels) {
       if (!canTake(p)) continue;
       let linked = first;
@@ -273,8 +295,10 @@ export class CardPainter {
     }
     if (queue.length === 0 && !first) {
       this.message =
-        card.type === 'split'
+          card.type === 'split'
           ? 'Раскол рисуется внутри исходной страны, продолжая уже выделенную часть.'
+            : card.type === 'colonization'
+              ? 'Колонизировать можно только выделенные прибрежные и речные области.'
           : 'Продолжайте от своей территории — по суше или через то же море.';
     }
     for (let head = 0; head < queue.length; head += 1) {
@@ -282,6 +306,24 @@ export class CardPainter {
       const p = queue[head];
       if (!canTake(p)) continue;
       if (card.type === 'split' && world.countries[card.targetCountryId as number].pixels <= 1) break;
+      if (card.type === 'colonization') {
+        const donor = this.nextColonizationDonor();
+        if (donor < 0) {
+          this.message = 'У страны больше нет населения для переселения.';
+          break;
+        }
+        const oldOwner = world.owner[p];
+        if (oldOwner > 0 && !this.evacuateResidents(oldOwner - 1, p)) {
+          this.message = 'На этой территории нет места, куда переселить местных жителей.';
+          break;
+        }
+        this.moveColonist(donor, p, workingId);
+        card.ink -= 1;
+        this.touch(p);
+        this.changed.push(p);
+        this.markDirtyPixel(donor);
+        continue;
+      }
       world.setOwner(p, tag);
       if (card.type !== 'split') {
         world.density[p] = working.density;
@@ -300,6 +342,92 @@ export class CardPainter {
     if (card.type === 'split' && world.countries[card.targetCountryId as number].pixels <= 1) {
       this.message = 'Исходная страна должна сохранить хотя бы часть земель.';
     }
+  }
+
+  private nextColonizationDonor(): number {
+    while (this.colonizationDonorIndex < this.colonizationDonors.length) {
+      const p = this.colonizationDonors[this.colonizationDonorIndex];
+      if (this.world.density[p] > 0) return p;
+      this.colonizationDonorIndex += 1;
+    }
+    return -1;
+  }
+
+  private markDirtyPixel(p: number): void {
+    const tileCols = 8, tileRows = 16;
+    const tileWidth = MAP_WIDTH / tileCols, tileHeight = MAP_HEIGHT / tileRows;
+    const x = p % MAP_WIDTH, y = Math.floor(p / MAP_WIDTH);
+    const col = Math.floor(x / tileWidth), row = Math.floor(y / tileHeight);
+    const key = row * tileCols + col;
+    if (this.dirtyTileKeys.has(key)) return;
+    this.dirtyTileKeys.add(key);
+    this.extraDirty.push({
+      x0: col * tileWidth, y0: row * tileHeight,
+      x1: (col + 1) * tileWidth - 1, y1: (row + 1) * tileHeight - 1,
+    });
+  }
+
+  private evacuateResidents(countryId: number, from: number): boolean {
+    const world = this.world;
+    let remaining = world.density[from];
+    if (remaining === 0) return true;
+    const pool = this.colonizationRefugeeSinks.get(countryId);
+    if (!pool) return false;
+
+    let capacity = 0;
+    for (let i = pool.index; i < pool.pixels.length; i += 1) {
+      capacity += MAX_DENSITY - world.density[pool.pixels[i]];
+      if (capacity >= remaining) break;
+    }
+    if (capacity < remaining) return false;
+
+    const culture = world.culture[from], religion = world.religion[from];
+    while (remaining > 0) {
+      const sink = pool.pixels[pool.index];
+      if (sink === undefined) return false;
+      const sinkPopulation = world.density[sink];
+      const moved = Math.min(remaining, MAX_DENSITY - sinkPopulation);
+      if (moved <= 0) {
+        pool.index += 1;
+        continue;
+      }
+      world.culture[sink] = this.blendComposition(world.cultureTable, world.culture[sink], culture, sinkPopulation, moved);
+      world.religion[sink] = this.blendComposition(world.religionTable, world.religion[sink], religion, sinkPopulation, moved);
+      world.density[sink] += moved;
+      remaining -= moved;
+      this.markDirtyPixel(sink);
+      if (world.density[sink] >= MAX_DENSITY) pool.index += 1;
+    }
+    world.density[from] = 0;
+    return true;
+  }
+
+  private moveColonist(from: number, to: number, countryId: number): void {
+    const world = this.world;
+    const destinationPopulation = world.density[to];
+    const sourceCulture = world.culture[from], sourceReligion = world.religion[from];
+    world.density[from] -= 1;
+    world.culture[to] = this.blendComposition(world.cultureTable, world.culture[to], sourceCulture, destinationPopulation);
+    world.religion[to] = this.blendComposition(world.religionTable, world.religion[to], sourceReligion, destinationPopulation);
+    world.density[to] = destinationPopulation + 1;
+    world.setOwner(to, countryId + 1);
+    this.colonizationDonorIndex += world.density[from] === 0 ? 1 : 0;
+  }
+
+  private blendComposition(
+    table: World['cultureTable'],
+    destination: number,
+    migrant: number,
+    destinationPopulation: number,
+    incomingPopulation = 1,
+  ): number {
+    if (destinationPopulation <= 0) return migrant;
+    const old = table.entries[destination], incoming = table.entries[migrant];
+    const values = new Map<number, number>();
+    old.ids.forEach((id, i) => values.set(id, old.shares[i] * destinationPopulation));
+    incoming.ids.forEach((id, i) => values.set(id, (values.get(id) ?? 0) + incoming.shares[i] * incomingPopulation));
+    const total = Math.round((old.total * destinationPopulation + incoming.total * incomingPopulation) / (destinationPopulation + incomingPopulation) / SHARE_STEP) * SHARE_STEP;
+    return table.intern(quantizeShares(values, total));
   }
 
   private paintLayer(pixels: number[]): void {

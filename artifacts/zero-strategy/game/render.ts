@@ -3,7 +3,7 @@ import type { CompositionTable } from './composition';
 import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, MAX_DENSITY, PALETTE } from './config';
 import type { World } from './world';
 
-export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers';
+export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers' | 'colonization';
 export interface EntityLayer {
   kind: 'culture' | 'religion';
   id: number;
@@ -65,7 +65,7 @@ function biomeOf(h: number, t: number, d: number): number {
   return b;
 }
 
-const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7, rivers: 8 };
+const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7, rivers: 8, colonization: 9 };
 
 // Neighbour bits of `nb`: which of the 4 neighbours are land, plus whether the pixel touches water.
 const LEFT = 1;
@@ -89,6 +89,7 @@ export class MapRenderer {
   private cultureColors: number[] = [];
   private religionColors: number[] = [];
   private colorKey = '';
+  private colonizationMask: Uint8Array | null = null;
   /** Colour per composition id (0 = not computed yet); compositions never change once interned. */
   private compCache = { culture: new Int32Array(256), religion: new Int32Array(256) };
   private readonly unclaimed = hexToRgb(PALETTE.unclaimedLand);
@@ -122,11 +123,13 @@ export class MapRenderer {
     }
   }
 
-  setView(mode: MapMode, layer: EntityLayer | null): void {
-    const same = mode === this.mode && (layer === this.layer || (layer !== null && this.layer !== null && layer.kind === this.layer.kind && layer.id === this.layer.id));
+  setView(mode: MapMode, layer: EntityLayer | null, colonizationMask: Uint8Array | null = null): void {
+    const same = mode === this.mode && colonizationMask === this.colonizationMask &&
+      (layer === this.layer || (layer !== null && this.layer !== null && layer.kind === this.layer.kind && layer.id === this.layer.id));
     if (same) return;
     this.mode = mode;
     this.layer = layer;
+    this.colonizationMask = colonizationMask;
     this.compCache.culture.fill(0);
     this.compCache.religion.fill(0);
     this.markAll();
@@ -224,6 +227,7 @@ export class MapRenderer {
     const drainage = w.drainage;
     const density = w.density;
       const rivers = w.rivers;
+    const colonizationMask = this.colonizationMask;
     const culture = w.culture;
     const religion = w.religion;
     const mode = MODE_CODE[this.mode];
@@ -246,6 +250,10 @@ export class MapRenderer {
         const o = owner[p];
         let color: number;
         if (mode === 8) color = unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+        else if (mode === 9) {
+          color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+          if (colonizationMask?.[p]) color = pack(mix([color & 255, (color >> 8) & 255, (color >> 16) & 255], [137, 171, 118], 0.72));
+        }
         else if (mode === 0) color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
         else if (mode === 1) color = biomePacked[biomeOf(humidity[p], temperature[p], drainage[p])];
         else if (o === 0) color = mode >= 5 ? ramp[values[p]] : unclaimedPacked;

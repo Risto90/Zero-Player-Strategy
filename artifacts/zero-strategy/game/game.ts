@@ -14,7 +14,7 @@ import { advancePeople, arePartners, birth, countryCharacters, ensureUniqueDynas
 import { applyReform } from './politics';
 import { appoint, candidateAllowed, ensureOffices, refreshHeirs, successionOrder } from './succession';
 import { randomItem } from './random';
-import { weighted } from './demography';
+import { demography, weighted } from './demography';
 
 export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
 type Slot = { scope: 'world' } | { scope: 'country'; countryId: number };
@@ -38,6 +38,20 @@ export interface Legend {
   nonBelievers: LegendRow;
   biomes: LegendRow[];
   totalPopulation: number;
+}
+
+export interface CountryShare {
+  id: number | null;
+  name: string;
+  color: string;
+  population: number;
+  percent: number;
+}
+
+export interface CountryComposition {
+  population: number;
+  cultures: CountryShare[];
+  religions: CountryShare[];
 }
 
 export interface PixelInfo {
@@ -214,7 +228,7 @@ export class Game {
     game.log = saved.log;
     if (saved.card) game.startCard(saved.card);
     game.mapMode = saved.mapMode;
-    game.renderer.setView(game.mapMode, null);
+    game.renderer.setView(game.mapMode, null, game.mapMode === 'colonization' ? game.painter?.colonizationMask ?? null : null);
     return game;
   }
 
@@ -363,6 +377,9 @@ export class Game {
       this.renderer.mark(painter.dirty);
       painter.dirty = null;
     }
+    for (const rect of painter.extraDirty) this.renderer.mark(rect);
+    painter.extraDirty.length = 0;
+    painter.clearExtraDirtyTiles();
     if (painter.message) this.message = painter.message;
     this.emit(true);
   }
@@ -372,7 +389,7 @@ export class Game {
   setMapMode(mode: MapMode): void {
     this.mapMode = mode;
     this.layer = null;
-    this.renderer.setView(mode, null);
+    this.renderer.setView(mode, null, mode === 'colonization' ? this.painter?.colonizationMask ?? null : null);
     this.emit(true);
   }
 
@@ -380,8 +397,34 @@ export class Game {
   showLayer(layer: EntityLayer | null): void {
     if (layer) this.mapMode = layer.kind === 'culture' ? 'cultures' : 'religions';
     this.layer = layer;
-    this.renderer.setView(this.mapMode, layer);
+    this.renderer.setView(this.mapMode, layer, this.mapMode === 'colonization' ? this.painter?.colonizationMask ?? null : null);
     this.emit(true);
+  }
+
+  countryComposition(countryId: number): CountryComposition {
+    const country = this.world.countries[countryId];
+    if (!country) return { population: 0, cultures: [], religions: [] };
+    const data = demography(this.world, country);
+    const percent = (value: number) => data.population > 0 ? Math.round(value / data.population * 1000) / 10 : 0;
+    return {
+      population: Math.round(data.population),
+      cultures: [...data.cultures.entries()]
+        .filter(([, population]) => population > 0)
+        .map(([id, population]) => ({
+          id, name: this.world.cultures[id]?.name ?? 'Неизвестная культура',
+          color: this.world.cultures[id]?.color ?? PALETTE.unclaimedLand,
+          population: Math.round(population), percent: percent(population),
+        }))
+        .sort((a, b) => b.population - a.population),
+      religions: [...data.religions.entries()]
+        .filter(([, population]) => population > 0)
+        .map(([id, population]) => ({
+          id, name: id === null ? 'Атеисты' : this.world.religions[id]?.name ?? 'Неизвестная вера',
+          color: id === null ? PALETTE.noFaith : this.world.religions[id]?.color ?? PALETTE.noFaith,
+          population: Math.round(population), percent: percent(population),
+        }))
+        .sort((a, b) => b.population - a.population),
+    };
   }
 
   inspect(x: number, y: number): PixelInfo | null {
@@ -519,18 +562,20 @@ export class Game {
       card.type === 'drought' || card.type === 'rain' ? 'humidity'
         : card.type === 'desertification' || card.type === 'swamping' ? 'drainage'
           : ['warmCurrent', 'coldCurrent', 'warmWind', 'coldWind'].includes(card.type) ? 'temperature'
-            : card.type === 'faith' ? 'religions' : card.type === 'culture' ? 'cultures' : 'political';
+        : card.type === 'faith' ? 'religions' : card.type === 'culture' ? 'cultures'
+          : card.type === 'colonization' ? 'colonization' : 'political';
     this.mapMode = mode;
     this.layer = null;
-    this.renderer.setView(mode, null);
+    this.renderer.setView(mode, null, mode === 'colonization' ? this.painter.colonizationMask : null);
   }
 
   private resolveAutomatically(card: Card): void {
     if (card.choices && card.choices.length > 1) card.selectedChoice = Math.floor(Math.random() * card.choices.length);
-    const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split';
+    const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split' || card.type === 'colonization';
     const painter = new CardPainter(this.world, card, card.developmentOnly || (!territorial && Math.random() < 0.3) ? 'repeat' : 'respect');
     autoPaint(painter);
     if (painter.dirty) this.renderer.mark(painter.dirty);
+    for (const rect of painter.extraDirty) this.renderer.mark(rect);
     this.finish(painter);
   }
 
@@ -563,6 +608,9 @@ export class Game {
       }
       case 'expand':
         if (used > 0 && target) this.addLog(`${target.name} расширяется на ${used} земель.`);
+        break;
+      case 'colonization':
+        if (used > 0 && target) this.addLog(`${target.name} колонизирует ${used} земель; переселено ${used} чел.`);
         break;
       case 'split': {
         const country = w.countries[card.newCountryId as number];
@@ -922,7 +970,7 @@ export class Game {
         .sort(byValue),
       nonBelievers: {
         id: -1,
-        name: 'Без веры',
+        name: 'Атеисты',
         color: PALETTE.noFaith,
         value: Math.round(nonBelievers),
         percent: percent(nonBelievers, total),
