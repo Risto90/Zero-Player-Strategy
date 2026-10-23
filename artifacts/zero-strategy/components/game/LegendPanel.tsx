@@ -67,7 +67,7 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
   if (mapMode === 'political') {
     title = 'Страны';
     sub = `${legend.countries.length} · население ${fmt(legend.totalPopulation)}`;
-    body = legend.countries.length ? <CountryRows game={game} rows={legend.countries} /> : <Empty text="Ни одного государства. Пока." />;
+    body = legend.countries.length ? <CountryRows game={game} rows={legend.countries} selectedCountryId={snap.selectedCountryId} /> : <Empty text="Ни одного государства. Пока." />;
   } else if (mapMode === 'cultures' || mapMode === 'religions') {
     const kind = mapMode === 'cultures' ? 'culture' : 'religion';
     const rows = mapMode === 'cultures' ? legend.cultures : legend.religions;
@@ -129,7 +129,7 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
             <View style={styles.row}>
               <View style={[styles.swatch, { backgroundColor: ['#a66f3d', '#bf6741', '#b2493e', '#8f3036', '#672433', '#431c2e'][city.rank - 1] }]} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.rowName}>{city.capital ? 'Столица' : cityRankName(city.rank)}</Text>
+                <Text style={styles.rowName}>{city.name ?? cityRankName(city.rank)}</Text>
                 <Text style={styles.rowDetail}>{game.world.countries[city.countryId]?.name ?? 'Страна распущена'} · {fmt(Math.round(game.world.density[city.pixel]))} чел.</Text>
               </View>
               <Text style={styles.rowValue}>{cityRankName(city.rank)}</Text>
@@ -148,7 +148,9 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
             <View style={[styles.swatch, { backgroundColor: nomad.color }]} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowName}>{nomad.name}</Text>
-              <Text style={styles.rowDetail}>{game.world.cultures[nomad.cultureId]?.name ?? 'народ'} · {fmt(nomad.pixels)} земель ареала</Text>
+              <Text style={styles.rowDetail}>
+                {game.world.cultures[nomad.cultureId]?.name ?? 'народ'} · {fmt(nomad.cells.reduce((sum, cell) => sum + cell.population, 0))} чел. · {fmt(nomad.pixels)} земель ареала
+              </Text>
             </View>
             <Feather name="chevron-right" size={16} color={c.mutedForeground} />
           </Pressable>
@@ -184,8 +186,7 @@ export function LegendPanel({ game, snap }: { game: Game; snap: GameSnapshot }) 
   );
 }
 
-function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: LegendRow[]; selectedCountryId: number | null }) {
   const [showPeople, setShowPeople] = useState(false);
   return (
     <FlatList
@@ -195,7 +196,7 @@ function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
       renderItem={({ item: row }) => {
         const country = game.world.countries[row.id];
         if (!country) return null;
-        const selected = selectedId === country.id;
+        const selected = selectedCountryId === country.id;
         const importantPeople = selected && showPeople ? game.importantPeople(country.id) : [];
         const countryCities = selected ? game.world.cities.filter((city) => city.countryId === country.id) : [];
         const nomadsPresent = selected ? game.world.nomads.map((nomad) => {
@@ -206,7 +207,7 @@ function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
         return (
           <View style={[styles.countryCard, selected && styles.countrySelected]}>
             <Pressable onPress={() => {
-              setSelectedId((current) => current === country.id ? null : country.id);
+              game.selectCountry(selected ? null : country.id);
               setShowPeople(false);
             }} style={styles.row} accessibilityRole="button" accessibilityState={{ expanded: selected }}
               testID={`button-country-${country.id}`}>
@@ -234,7 +235,7 @@ function CountryRows({ game, rows }: { game: Game; rows: LegendRow[] }) {
                 <Text style={styles.countrySection}>ГОРОДА · {countryCities.length}</Text>
                 {countryCities.map((city) => (
                   <Text key={city.id} style={styles.countryInfo}>
-                    · {city.capital ? 'Столица' : cityRankName(city.rank)} · {cityRankName(city.rank)} · {fmt(Math.round(game.world.density[city.pixel]))} чел.
+                    · {city.capital ? 'Столица · ' : ''}{city.name ?? cityRankName(city.rank)} · {cityRankName(city.rank)} · {fmt(Math.round(game.world.density[city.pixel]))} чел.
                   </Text>
                 ))}
                 <CountryCompositionBlock game={game} countryId={country.id} />

@@ -68,8 +68,13 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
         <Text style={styles.title}>{person.name}</Text>
         <Text style={styles.subtitle}>
           {person.alive ? 'Жив(а)' : `Умер${person.gender === 'female' ? 'ла' : ''} в ${person.deathYear ?? 'неизвестном году'}`}
-          {country ? ` · ${country.name}` : ''}
         </Text>
+        {country && (
+          <Pressable onPress={() => router.push({ pathname: '/country/[id]', params: { id: String(country.id) } })}
+            accessibilityRole="link" style={styles.countryLink}>
+            <Text style={styles.link}>{country.name} · карточка страны</Text>
+          </Pressable>
+        )}
         <View style={styles.facts}>
           <Text style={styles.fact}>Возраст · {person.age} лет, {ageStage(person.age)}</Text>
           <Text style={styles.fact}>Пол · {person.gender === 'female' ? 'женский' : 'мужской'}</Text>
@@ -127,6 +132,7 @@ const styles = StyleSheet.create({
   content: { padding: 18, gap: 14 },
   title: { fontFamily: fonts.display, fontSize: 30, color: c.foreground },
   subtitle: { marginTop: -12, fontFamily: fonts.sans, fontSize: 13, color: c.mutedForeground },
+  countryLink: { alignSelf: 'flex-start', marginTop: -8 },
   facts: { padding: 12, gap: 6, borderLeftWidth: 3, borderColor: c.primary, backgroundColor: c.card },
   fact: { fontFamily: fonts.sans, fontSize: 13, color: c.foreground },
   factRow: { flexDirection: 'row', alignItems: 'center' },

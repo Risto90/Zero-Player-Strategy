@@ -79,6 +79,7 @@ export class MapRenderer {
   readonly pixels = new Uint32Array(MAP_PIXELS);
   mode: MapMode = 'political';
   layer: EntityLayer | null = null;
+  private selectedCountryId: number | null = null;
   private readonly dirtyTiles = new Uint8Array(TILES);
   private dirtyCount = 0;
   /** Tile index to continue from, so a long repaint walks the map top to bottom. */
@@ -138,6 +139,20 @@ export class MapRenderer {
     this.compCache.culture.fill(0);
     this.compCache.religion.fill(0);
     this.markAll();
+  }
+
+  setSelectedCountry(countryId: number | null): void {
+    if (countryId === this.selectedCountryId) return;
+    const markCountry = (id: number | null) => {
+      if (id === null) return;
+      const country = this.world.countries[id];
+      if (!country || country.pixels <= 0) return;
+      const [x0, y0, x1, y1] = country.box;
+      this.mark({ x0, y0, x1, y1 });
+    };
+    markCountry(this.selectedCountryId);
+    this.selectedCountryId = countryId;
+    markCountry(countryId);
   }
 
   markAll(): void {
@@ -279,6 +294,7 @@ export class MapRenderer {
           continue;
         }
         const o = owner[p];
+        const selected = mode === 0 && this.selectedCountryId !== null && o === this.selectedCountryId + 1;
         let color: number;
         if (mode === 8) color = unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
         else if (mode === 9) {
@@ -299,15 +315,18 @@ export class MapRenderer {
         else if (mode === 3) color = this.compColor('religion', religion[p]);
         else if (mode === 4) color = ramp[Math.min(100, Math.round(Math.log1p(density[p] + this.nomadDensity[p]) * 12))];
         else color = ramp[values[p]];
+        if (selected) {
+          color = pack(mix([color & 255, (color >> 8) & 255, (color >> 16) & 255], [255, 244, 216], 0.18));
+        }
         // Country borders show in every mode; coasts are lightly outlined.
         const bits = nb[p];
-        if (mode !== 11 && (
+        const boundary = mode !== 11 && (
           ((bits & LEFT) !== 0 && owner[p - 1] !== o) ||
           ((bits & RIGHT) !== 0 && owner[p + 1] !== o) ||
           ((bits & UP) !== 0 && owner[p - MAP_WIDTH] !== o) ||
           ((bits & DOWN) !== 0 && owner[p + MAP_WIDTH] !== o)
-        ))
-          color = shade(color, borderShade);
+        );
+        if (boundary) color = selected ? pack([250, 230, 177]) : shade(color, borderShade);
         else if (bits & COAST) color = shade(color, 0.82);
         if (mode === 8 && rivers[p] > 0) {
           color = rivers[p] >= 3 ? pack([34, 83, 125]) : rivers[p] === 2 ? pack([55, 116, 151]) : pack([102, 153, 174]);

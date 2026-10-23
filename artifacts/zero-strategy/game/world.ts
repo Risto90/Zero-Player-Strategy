@@ -13,6 +13,7 @@ import {
 } from './geography';
 import { randomItem } from './random';
 import { initialGovernment, randomNameStyle, randomSurnameAffix, type GovernmentId, type NameStyleId, type Person, type PoliticalState, type SurnameAffix } from './government';
+import { generateCityIdentity } from './cityNames';
 
 export interface Country extends PoliticalState {
   id: number;
@@ -39,6 +40,10 @@ export interface City {
   pixel: number;
   rank: CityRank;
   capital: boolean;
+  /** Fixed at founding from the leading culture at the city's pixel. */
+  name?: string;
+  namingCultureId?: number;
+  namingStyleId?: NameStyleId;
 }
 
 export interface NomadCell {
@@ -186,7 +191,7 @@ export class World {
   addCity(countryId: number, pixel: number, rank: CityRank = 1, capital = false): City | null {
     const country = this.countries[countryId];
     if (!country || pixel < 0 || pixel >= MAP_PIXELS || !this.land[pixel] || this.cityAt(pixel)) return null;
-    const city: City = { id: this.cities.length, countryId, pixel, rank, capital };
+    const city: City = { id: this.cities.length, countryId, pixel, rank, capital, ...generateCityIdentity(this, pixel) };
     if (capital) for (const existing of this.cities) if (existing.countryId === countryId) existing.capital = false;
     this.cities.push(city);
     this.cityIdAt[pixel] = city.id;

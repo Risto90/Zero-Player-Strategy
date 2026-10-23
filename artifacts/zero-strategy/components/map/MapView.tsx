@@ -12,16 +12,59 @@ import {
 } from '@shopify/react-native-skia';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { StyleSheet, View, type GestureResponderEvent, type LayoutChangeEvent } from 'react-native';
-import { makeMutable, useDerivedValue, useSharedValue } from 'react-native-reanimated';
+import { makeMutable, useDerivedValue, useSharedValue, type SharedValue } from 'react-native-reanimated';
 import colors from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { STRIP_H, STRIPS } from '@/game/render';
+import type { City, World } from '@/game/world';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { clampView, initialView, minScale, zoomAround } from './viewMath';
 
 const NEAREST = { filter: FilterMode.Nearest, mipmap: MipmapMode.None };
 const LINEAR = { filter: FilterMode.Linear, mipmap: MipmapMode.None };
+const CITY_COLORS = ['#a66f3d', '#bf6741', '#b2493e', '#8f3036', '#672433', '#431c2e'];
+type CityMarkerData = { city: City; hasPort: boolean };
+
+function CityMarker({ city, hasPort, counterScale }: CityMarkerData & { counterScale: ReturnType<typeof useDerivedValue<{ scale: number }[]>> }) {
+  const x = city.pixel % MAP_WIDTH;
+  const y = Math.floor(city.pixel / MAP_WIDTH);
+  const radius = 2.15 + city.rank * 0.34;
+  const strokeWidth = 0.75;
+  return (
+    <Group origin={{ x, y }} transform={counterScale}>
+      {hasPort && <Circle cx={x} cy={y} r={radius + 1.15} style="stroke" strokeWidth={strokeWidth} color="#3f91a7" />}
+      {city.capital && <Circle cx={x} cy={y} r={radius + 2.25} style="stroke" strokeWidth={strokeWidth} color="#e8bd56" />}
+      <Circle cx={x} cy={y} r={radius} color={CITY_COLORS[city.rank - 1]} />
+      <Circle cx={x} cy={y} r={strokeWidth} color="#fff3d8" />
+    </Group>
+  );
+}
+
+function CityMarkerLayer({ zoomRank, cities, scale }: { zoomRank: number; cities: CityMarkerData[]; scale: SharedValue<number> }) {
+  const showAt = 0.7 + (6 - zoomRank) * 0.56;
+  const visible = useDerivedValue(() => scale.value >= showAt ? 1 : 0);
+  const counterScale = useDerivedValue(() => [{ scale: 1 / Math.max(scale.value, 0.08) }]);
+  return (
+    <Group opacity={visible}>
+      {cities.map(({ city, hasPort }) => <CityMarker key={city.id} city={city} hasPort={hasPort} counterScale={counterScale} />)}
+    </Group>
+  );
+}
+
+function CityMarkers({ world, scale }: { world: World; scale: SharedValue<number> }) {
+  const byZoomRank = new Map<number, CityMarkerData[]>();
+  for (const city of world.cities) {
+    const hasPort = world.isCoastal(city.pixel) || world.rivers[city.pixel] > 0;
+    const zoomRank = Math.min(6, city.rank + (city.capital ? 2 : 0) + (hasPort ? 1 : 0));
+    const list = byZoomRank.get(zoomRank) ?? [];
+    list.push({ city, hasPort });
+    byZoomRank.set(zoomRank, list);
+  }
+  return [...byZoomRank].map(([zoomRank, cities]) => (
+    <CityMarkerLayer key={zoomRank} zoomRank={zoomRank} cities={cities} scale={scale} />
+  ));
+}
 
 function makeStrip(pixels: Uint32Array, strip: number): SkImage | null {
   const start = strip * STRIP_H * MAP_WIDTH * 4;
@@ -159,6 +202,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           {strips.map((image, s) => (
             <SkiaImage key={s} image={image} x={0} y={s * STRIP_H} width={MAP_WIDTH} height={STRIP_H} sampling={sampling} />
           ))}
+          <CityMarkers world={game.world} scale={scale} />
         </Group>
         <Group opacity={cursorOpacity}>
           <Circle cx={cursorX} cy={cursorY} r={cursorR} style="stroke" strokeWidth={3} color="rgba(255,255,255,0.9)" />

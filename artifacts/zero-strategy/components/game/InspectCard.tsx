@@ -98,6 +98,11 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
                 {info.country ? `${info.country.rank} · ` : ''}
                 {info.biome} · x {info.x}, y {info.y}
               </Text>
+              {info.city && (
+                <Text style={styles.cityLine}>
+                  {info.city.capital ? 'Столица · ' : ''}{info.city.name ?? 'Город'} · {['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][info.city.rank - 1]}
+                </Text>
+              )}
               {info.country && (
                 <View style={styles.countryDetails}>
                   <Text style={styles.countryHeading}>ГОСУДАРСТВО</Text>
@@ -228,6 +233,7 @@ const styles = StyleSheet.create({
   countryDetails: { marginTop: 4, padding: 8, gap: 3, backgroundColor: c.muted, borderLeftWidth: 2, borderLeftColor: c.primary },
   countryHeading: { marginTop: 3, fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1, color: c.primary },
   countryLine: { fontFamily: fonts.sans, fontSize: 12, color: c.foreground },
+  cityLine: { fontFamily: fonts.sansSemiBold, fontSize: 11, color: c.primary },
   personRow: { paddingVertical: 2 },
   personDetails: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   personLink: { color: c.accent, textDecorationLine: 'underline' },

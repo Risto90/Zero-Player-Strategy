@@ -74,7 +74,7 @@ function GameScreen({ game }: { game: Game }) {
   };
 
   // Lists only re-render when their own data changes, not on every brush dab or timer tick.
-  const legend = useMemo(() => <LegendPanel game={game} snap={snap} />, [game, snap.legend, snap.mapMode, snap.layer]); // eslint-disable-line react-hooks/exhaustive-deps
+  const legend = useMemo(() => <LegendPanel game={game} snap={snap} />, [game, snap.legend, snap.mapMode, snap.layer, snap.selectedCountryId]); // eslint-disable-line react-hooks/exhaustive-deps
   const log = useMemo(() => <LogPanel log={snap.log} />, [snap.log]);
 
   const wide = width >= WIDE;

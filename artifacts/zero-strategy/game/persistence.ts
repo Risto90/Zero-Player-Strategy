@@ -3,6 +3,7 @@ import type { MapKind } from './geography';
 import { decodeEarthLand, fillOceanTemperature } from './geography';
 import { fillRings, rasterizeScalar, runSteps, traceCompositionSteps, traceScalarSteps, type EntityZones, type Steps, type TableView, type Zone } from './zones';
 import { World, type City, type Country, type Culture, type NomadGroup, type Religion } from './world';
+import { generateCityIdentity } from './cityNames';
 
 /**
  * Saved map: every layer is stored as closed-curve zones, never as per-pixel values.
@@ -171,6 +172,9 @@ export function deserializeWorld(saved: SavedWorld): World {
     for (const zone of layer.zones) {
       fillRings(zone.rings, (p) => (world.religion[p] = world.religionTable.withEntry(world.religion[p], layer.entity, zone.value)));
     }
+  }
+  for (const city of world.cities) {
+    if (!city.name) Object.assign(city, generateCityIdentity(world, city.pixel));
   }
   world.recountCountries();
   // A version-2 save from before the family system has rulers/heirs but no person registry.

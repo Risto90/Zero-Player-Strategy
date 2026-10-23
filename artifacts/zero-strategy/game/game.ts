@@ -70,6 +70,7 @@ export interface PixelInfo {
   cultures: { id: number; name: string; color: string; share: number }[];
   religions: { id: number; name: string; color: string; share: number }[];
   nonBelievers: number;
+  city: City | null;
   family: Person[];
 }
 
@@ -79,6 +80,7 @@ export interface GameSnapshot {
   role: PlayerRole;
   mapKind: MapKind;
   focusCountry: Country | null;
+  selectedCountryId: number | null;
   card: Card | null;
   /** Country the active card belongs to, if any. */
   cardCountry: Country | null;
@@ -139,6 +141,7 @@ export class Game {
   private year = 1000;
   private turn = 1;
   private focusCountryId: number | null = null;
+  private selectedCountryId: number | null = null;
   private card: Card | null = null;
   private painter: CardPainter | null = null;
   private queue: Slot[] = [];
@@ -482,6 +485,20 @@ export class Game {
     this.emit(true);
   }
 
+  selectCountry(countryId: number | null): void {
+    if (countryId !== null && (!this.world.countries[countryId] || this.world.countries[countryId].pixels <= 0)) return;
+    if (this.selectedCountryId === countryId) return;
+    this.selectedCountryId = countryId;
+    this.renderer.setSelectedCountry(countryId);
+    this.emit(true);
+  }
+
+  showCountryOnMap(countryId: number): void {
+    if (!this.world.countries[countryId] || this.world.countries[countryId].pixels <= 0) return;
+    this.setMapMode('political');
+    this.selectCountry(countryId);
+  }
+
   countryComposition(countryId: number): CountryComposition {
     const country = this.world.countries[countryId];
     if (!country) return { population: 0, cultures: [], religions: [] };
@@ -534,6 +551,7 @@ export class Game {
       cultures: owner > 0 ? cultureEntry.ids.map((id, i) => ({ id, name: w.cultures[id].name, color: w.cultures[id].color, share: cultureEntry.shares[i] })) : [],
       religions: owner > 0 ? religionEntry.ids.map((id, i) => ({ id, name: w.religions[id].name, color: w.religions[id].color, share: religionEntry.shares[i] })) : [],
       nonBelievers: owner > 0 ? 100 - religionEntry.total : 0,
+      city: w.cityAt(p),
       family: country ? w.people.filter((p) => p.countryId === country.id &&
         (p.familyId === country.ruler.familyId || country.coRulerIds.includes(p.id)))
         .sort((a, b) => Number(b.alive) - Number(a.alive) || b.age - a.age).slice(0, 24) : [],
@@ -1174,6 +1192,7 @@ export class Game {
       role: this.role,
       mapKind: w.mapKind,
       focusCountry: this.focusCountryId !== null ? (w.countries[this.focusCountryId] ?? null) : null,
+      selectedCountryId: this.selectedCountryId,
       card: card ? { ...card } : null,
       cardCountry: card && card.targetCountryId !== null ? w.countries[card.targetCountryId] : null,
       queuedCards: this.queue.length,
