@@ -3,7 +3,7 @@ import type { CompositionTable } from './composition';
 import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE } from './config';
 import type { World } from './world';
 
-export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers' | 'colonization';
+export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers' | 'colonization' | 'cities' | 'nomads';
 export interface EntityLayer {
   kind: 'culture' | 'religion';
   id: number;
@@ -65,7 +65,7 @@ function biomeOf(h: number, t: number, d: number): number {
   return b;
 }
 
-const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7, rivers: 8, colonization: 9 };
+const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7, rivers: 8, colonization: 9, cities: 10, nomads: 11 };
 
 // Neighbour bits of `nb`: which of the 4 neighbours are land, plus whether the pixel touches water.
 const LEFT = 1;
@@ -88,6 +88,11 @@ export class MapRenderer {
   private countryColors: number[] = [];
   private cultureColors: number[] = [];
   private religionColors: number[] = [];
+  private nomadColors: number[] = [];
+  private readonly nomadRaster = new Uint32Array(MAP_PIXELS);
+  private readonly nomadDensity = new Float32Array(MAP_PIXELS);
+  private nomadRasterVersion = -1;
+  private cityColors = [pack([166, 111, 61]), pack([191, 103, 65]), pack([178, 73, 62]), pack([143, 48, 54]), pack([103, 36, 51]), pack([67, 28, 46])];
   private colorKey = '';
   private colonizationMask: Uint8Array | null = null;
   /** Colour per composition id (0 = not computed yet); compositions never change once interned. */
@@ -205,14 +210,40 @@ export class MapRenderer {
   private syncColors(): void {
     const w = this.world;
     // Entities may be discarded and recreated with new colours at the same id.
-    const key = `${w.countries.map((c) => c.color).join()}|${w.cultures.map((c) => c.color).join()}|${w.religions.map((c) => c.color).join()}`;
-    if (key === this.colorKey) return;
-    this.colorKey = key;
-    this.countryColors = w.countries.map((c) => pack(hexToRgb(c.color)));
-    this.cultureColors = w.cultures.map((c) => pack(hexToRgb(c.color)));
-    this.religionColors = w.religions.map((c) => pack(hexToRgb(c.color)));
-    this.compCache.culture.fill(0);
-    this.compCache.religion.fill(0);
+    const key = `${w.countries.map((c) => c.color).join()}|${w.cultures.map((c) => c.color).join()}|${w.religions.map((c) => c.color).join()}|${w.nomads.map((c) => c.color).join()}`;
+    if (key !== this.colorKey) {
+      this.colorKey = key;
+      this.countryColors = w.countries.map((c) => pack(hexToRgb(c.color)));
+      this.cultureColors = w.cultures.map((c) => pack(hexToRgb(c.color)));
+      this.religionColors = w.religions.map((c) => pack(hexToRgb(c.color)));
+      this.nomadColors = w.nomads.map((c) => pack(hexToRgb(c.color)));
+      this.compCache.culture.fill(0);
+      this.compCache.religion.fill(0);
+      this.nomadRasterVersion = -1;
+    }
+    if (this.nomadRasterVersion !== w.nomadVersion) {
+      this.nomadRaster.fill(0);
+      this.nomadDensity.fill(0);
+      for (const nomad of w.nomads) {
+        const color = this.nomadColors[nomad.id] ?? pack(hexToRgb(nomad.color));
+        for (const p of nomad.range) {
+          if (p < 0 || p >= MAP_PIXELS || !w.land[p]) continue;
+          const old = this.nomadRaster[p];
+          this.nomadRaster[p] = old
+            ? pack(mix([old & 255, (old >> 8) & 255, (old >> 16) & 255], [color & 255, (color >> 8) & 255, (color >> 16) & 255], 0.5))
+            : color;
+        }
+        for (const cell of nomad.cells) {
+          if (cell.pixel < 0 || cell.pixel >= MAP_PIXELS || !w.land[cell.pixel]) continue;
+          this.nomadDensity[cell.pixel] += cell.population;
+          const old = this.nomadRaster[cell.pixel];
+          this.nomadRaster[cell.pixel] = old
+            ? pack(mix([old & 255, (old >> 8) & 255, (old >> 16) & 255], [color & 255, (color >> 8) & 255, (color >> 16) & 255], 0.75))
+            : color;
+        }
+      }
+      this.nomadRasterVersion = w.nomadVersion;
+    }
   }
 
   private paintTile(x0: number, y0: number): void {
@@ -237,7 +268,7 @@ export class MapRenderer {
     const unclaimedPacked = this.unclaimedPacked;
       const ramp = mode >= 4 && mode <= 7 ? this.ramps[this.mode as keyof typeof RAMPS] : this.ramps.density;
     const values = mode === 5 ? humidity : mode === 6 ? temperature : drainage;
-    const borderShade = mode === 0 ? 0.55 : 0.7;
+    const borderShade = mode === 0 ? 0.55 : mode === 11 ? 1 : 0.7;
     const x1 = x0 + TILE_W;
     for (let y = y0; y < y0 + STRIP_H; y += 1) {
       const row = y * MAP_WIDTH;
@@ -255,20 +286,27 @@ export class MapRenderer {
           if (colonizationMask?.[p]) color = pack(mix([color & 255, (color >> 8) & 255, (color >> 16) & 255], [137, 171, 118], 0.72));
         }
         else if (mode === 0) color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+        else if (mode === 10) {
+          const cityId = w.cityIdAt[p];
+          const city = cityId >= 0 ? w.cities[cityId] : null;
+          color = city ? this.cityColors[city.rank - 1] : o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+        } else if (mode === 11) {
+          color = this.nomadRaster[p] || (o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])]);
+        }
         else if (mode === 1) color = biomePacked[biomeOf(humidity[p], temperature[p], drainage[p])];
-        else if (o === 0) color = mode >= 5 ? ramp[values[p]] : unclaimedPacked;
+        else if (o === 0 && mode !== 4) color = mode >= 5 && mode <= 7 ? ramp[values[p]] : unclaimedPacked;
         else if (mode === 2) color = this.compColor('culture', culture[p]);
         else if (mode === 3) color = this.compColor('religion', religion[p]);
-        else if (mode === 4) color = ramp[Math.min(100, Math.round(Math.log1p(density[p]) * 12))];
+        else if (mode === 4) color = ramp[Math.min(100, Math.round(Math.log1p(density[p] + this.nomadDensity[p]) * 12))];
         else color = ramp[values[p]];
         // Country borders show in every mode; coasts are lightly outlined.
         const bits = nb[p];
-        if (
+        if (mode !== 11 && (
           ((bits & LEFT) !== 0 && owner[p - 1] !== o) ||
           ((bits & RIGHT) !== 0 && owner[p + 1] !== o) ||
           ((bits & UP) !== 0 && owner[p - MAP_WIDTH] !== o) ||
           ((bits & DOWN) !== 0 && owner[p + MAP_WIDTH] !== o)
-        )
+        ))
           color = shade(color, borderShade);
         else if (bits & COAST) color = shade(color, 0.82);
         if (mode === 8 && rivers[p] > 0) {

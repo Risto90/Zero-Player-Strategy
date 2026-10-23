@@ -9,8 +9,8 @@ import { leadershipOptions } from './succession';
 import { newCitizen, person } from './characters';
 import { demography } from './demography';
 import { colonizationPlan } from './colonization';
-import { cityInfluenceMultiplier, cityRankName } from './settlements';
-import type { City } from './world';
+import { CityInfluenceIndex, cityInfluenceMultiplier, cityRankName } from './settlements';
+import type { City, NomadGroup } from './world';
 
 export const CARD_TITLES: Record<CardType, string> = {
   create: 'Создание государства',
@@ -20,6 +20,7 @@ export const CARD_TITLES: Record<CardType, string> = {
   buildCity: 'Создание города',
   upgradeCity: 'Расширение города',
   moveCapital: 'Перенос столицы',
+  nomadExpand: 'Расширение кочевья',
   drought: 'Засуха',
   rain: 'Ливни',
   desertification: 'Опустынивание',
@@ -49,6 +50,7 @@ function makeCard(type: CardType, ink: number, target: Country | null, detail: s
     ink,
     inkTotal: ink,
     targetCountryId: target?.id ?? null,
+    targetNomadId: null,
     newCountryId: null,
     newCultureId: null,
     newReligionId: null,
@@ -62,18 +64,40 @@ function makeCard(type: CardType, ink: number, target: Country | null, detail: s
   };
 }
 
+export function drawNomadCard(world: World, nomad: NomadGroup): Card | null {
+  if (!nomad.range.length) return null;
+  const range = new Set(nomad.range);
+  let hint = -1;
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const pixel = world.landIndex[Math.floor(Math.random() * world.landIndex.length)];
+    if (!range.has(pixel)) { hint = pixel; break; }
+  }
+  const densityOnly = hint < 0;
+  if (densityOnly) hint = nomad.range[0];
+  const card = makeCard(
+    'nomadExpand',
+    INK.expand,
+    null,
+    `${nomad.name}: на карте «Кочевья» кисть расширяет ареал, а на карте «Население» повышает плотность внутри ареала. Колонизация недоступна.`,
+    hint,
+  );
+  card.targetNomadId = nomad.id;
+  card.nomadDensityOnly = densityOnly;
+  return card;
+}
+
 const visited = new Uint8Array(MAP_PIXELS);
 
 /**
  * Counts free land reachable from the seeds (by land, or across any sea to any of its coasts),
  * stopping at `cap`.
  */
-function reachableFree(world: World, seeds: number[], cap: number, seas: Set<number>): number {
+function reachableFree(world: World, seeds: number[], cap: number, seas: Set<number>, accept: (p: number) => boolean = () => true): number {
   const touched: number[] = [];
   const queue: number[] = [];
   const seenSeas = new Set<number>();
   const push = (p: number) => {
-    if (visited[p] || !world.land[p] || world.owner[p] !== 0) return;
+    if (visited[p] || !world.land[p] || world.owner[p] !== 0 || !accept(p)) return;
     visited[p] = 1;
     touched.push(p);
     queue.push(p);
@@ -133,11 +157,13 @@ function countrySeas(world: World, country: Country): Set<number> {
 
 function drawCreate(world: World, year: number): Card | null {
   if (world.countries.filter((c) => c.pixels > 0).length >= MAX_COUNTRIES) return null;
+  const cityAreas = new CityInfluenceIndex(world, -1);
+  const freeOfCityInfluence = (p: number) => cityAreas.at(p).foreignRankSum === 0;
   let best = { seed: -1, capacity: 0 };
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    const seed = randomLandPixel(world, (p) => world.owner[p] === 0);
+    const seed = randomLandPixel(world, (p) => world.owner[p] === 0 && freeOfCityInfluence(p));
     if (seed < 0) break;
-    const capacity = reachableFree(world, [seed], RANKS[RANKS.length - 1].ink, new Set());
+    const capacity = reachableFree(world, [seed], RANKS[RANKS.length - 1].ink, new Set(), freeOfCityInfluence);
     if (capacity > best.capacity) best = { seed, capacity };
     if (capacity >= RANKS[2].ink) break;
   }

@@ -1,11 +1,12 @@
-import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from './config';
+import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, RANKS } from './config';
 import { forEachNeighbour } from './geography';
-import type { World } from './world';
+import type { NomadCell, NomadGroup, World } from './world';
 import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
 import { ColonizationDonorHeap, colonizationPlan, transferColonizationPopulation } from './colonization';
+import { CityInfluenceIndex } from './settlements';
 
-export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'moveCapital' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
+export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'moveCapital' | 'nomadExpand' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
 export interface CardChoice {
   label: string;
   detail: string;
@@ -34,6 +35,7 @@ export interface Card {
   inkTotal: number;
   /** Country the card belongs to (country cards) or acts on. */
   targetCountryId: number | null;
+  targetNomadId?: number | null;
   /** Entities created by the card. */
   newCountryId: number | null;
   newCultureId: number | null;
@@ -50,13 +52,14 @@ export interface Card {
   violentReform?: boolean;
   developmentOnly?: boolean;
   cityPlaced?: boolean;
+  nomadDensityOnly?: boolean;
   /** A pixel where the card certainly applies (used by automatic play). */
   hint: number;
 }
 
 export function brushOptionFor(card: Card | null): BrushOption {
   if (!card) return null;
-  if (card.type === 'create' || card.type === 'expand') return 'density';
+  if (card.type === 'create' || card.type === 'expand' || card.type === 'nomadExpand') return 'density';
   if (['drought', 'rain', 'desertification', 'swamping', 'warmCurrent', 'coldCurrent', 'warmWind', 'coldWind', 'faith', 'culture'].includes(card.type)) return 'repeat';
   return null;
 }
@@ -93,6 +96,10 @@ export class CardPainter {
   readonly colonizationAnchors: Uint8Array | null;
   private readonly colonizationConnected: Uint8Array | null;
   private readonly colonizationDonors: ColonizationDonorHeap | null;
+  private readonly cityInfluence: CityInfluenceIndex | null;
+  private nomadMode: 'range' | 'density' | 'inactive' = 'range';
+  private readonly nomadRange = new Set<number>();
+  private readonly nomadCells = new Map<number, NomadCell>();
   readonly extraDirty: Rect[] = [];
   private readonly dirtyTileKeys = new Set<number>();
   dirty: Rect | null = null;
@@ -104,6 +111,13 @@ export class CardPainter {
     public mode: BrushMode,
   ) {
     const working = this.workingCountryId();
+    if (card.type === 'nomadExpand' && card.targetNomadId !== null && card.targetNomadId !== undefined) {
+      const nomad = world.nomads[card.targetNomadId];
+      if (nomad) {
+        for (const pixel of nomad.range) this.nomadRange.add(pixel);
+        for (const cell of nomad.cells) this.nomadCells.set(cell.pixel, cell);
+      }
+    }
     const colonizationCountry = card.type === 'colonization' && card.targetCountryId !== null
       ? world.countries[card.targetCountryId]
       : null;
@@ -112,6 +126,12 @@ export class CardPainter {
     this.colonizationAnchors = colonization?.anchors ?? null;
     this.colonizationConnected = colonization?.connectedTerritory.slice() ?? null;
     this.colonizationDonors = colonization ? new ColonizationDonorHeap(world, colonization.donors) : null;
+    const influenceCountryId = card.type === 'create' ? -1
+      : card.type === 'expand' || card.type === 'colonization' ? card.targetCountryId
+        : null;
+    this.cityInfluence = influenceCountryId !== null
+      ? new CityInfluenceIndex(world, influenceCountryId, card.type === 'colonization', colonization?.anchors)
+      : null;
     if (working !== null && (card.type === 'expand' || card.type === 'split')) {
       const source = world.countries[card.type === 'split' ? (card.targetCountryId as number) : working];
       if (card.type === 'expand') {
@@ -134,6 +154,10 @@ export class CardPainter {
     if (card.type === 'create' || card.type === 'split') return card.newCountryId;
     if (card.type === 'expand' || card.type === 'colonization') return card.targetCountryId;
     return null;
+  }
+
+  setNomadMode(mode: 'range' | 'density' | 'inactive'): void {
+    this.nomadMode = mode;
   }
 
   endStroke(): void {
@@ -191,6 +215,58 @@ export class CardPainter {
     }
   }
 
+  private distanceAlongLine(from: number, to: number, waterDivisor: number): number {
+    const fromX = from % MAP_WIDTH, fromY = Math.floor(from / MAP_WIDTH);
+    const toX = to % MAP_WIDTH, toY = Math.floor(to / MAP_WIDTH);
+    const distance = Math.hypot(toX - fromX, toY - fromY);
+    const steps = Math.max(1, Math.ceil(distance));
+    const step = distance / steps;
+    let result = 0;
+    for (let i = 1; i <= steps; i += 1) {
+      const x = Math.round(fromX + (toX - fromX) * i / steps);
+      const y = Math.round(fromY + (toY - fromY) * i / steps);
+      const p = y * MAP_WIDTH + x;
+      result += step * (this.world.land[p] ? 1 : 1 / waterDivisor);
+    }
+    return result;
+  }
+
+  /** City spheres scale brush ink and population strength without changing its base cost. */
+  private brushScaling(pixel: number): { cost: number; strength: number } {
+    const card = this.card;
+    const influence = this.cityInfluence?.at(pixel, card.type === 'colonization');
+    if (!influence || (card.type !== 'expand' && card.type !== 'colonization')) return { cost: 1, strength: 1 };
+    const duchyRadius = Math.sqrt(RANKS[2].ink / Math.PI);
+    if (card.type === 'expand') {
+      const cityPixel = influence.nearestOwnCityPixel;
+      let distance = influence.nearestOwnDistance;
+      if (cityPixel !== null) {
+        distance = Math.max(0, this.distanceAlongLine(cityPixel, pixel, 3) - influence.nearestOwnRadius);
+      }
+      let penalty = distance / duchyRadius;
+      if (influence.ownRankSum === 0 && influence.foreignRankSum > 0) penalty *= influence.foreignRankSum;
+      const distanceFactor = 1 + penalty;
+      const multipleCityFactor = Math.max(1, influence.ownRankSum - influence.ownLargestRank);
+      const strength = multipleCityFactor / distanceFactor;
+      return { cost: 1 / strength, strength };
+    }
+    const anchor = influence.nearestOwnAnchorPixel;
+    const cityPixel = influence.nearestOwnCityPixel;
+    const distance = anchor !== null
+      ? this.distanceAlongLine(anchor, pixel, 5)
+      : cityPixel !== null
+        ? Math.max(0, this.distanceAlongLine(cityPixel, pixel, 5) - influence.nearestOwnRadius)
+        : influence.nearestOwnAnchorDistance;
+    let distanceFactor = 1 + distance / duchyRadius;
+    if (influence.ownRankSum === 0 && influence.foreignRankSum > 0) {
+      distanceFactor = 1 + (distance / duchyRadius) * influence.foreignRankSum;
+    }
+    const ownCityBonus = 1 + influence.ownRankSum;
+    const foreignCityPenalty = 1 + influence.foreignRankSum;
+    const cost = distanceFactor * foreignCityPenalty / ownCityBonus;
+    return { cost: Math.max(0.05, cost), strength: 1 / Math.max(0.05, cost) };
+  }
+
   /** Paints a line of dabs from (ax, ay) to (bx, by). Returns ink spent. */
   line(ax: number, ay: number, bx: number, by: number, radius: number): number {
     const distance = Math.hypot(bx - ax, by - ay);
@@ -231,7 +307,7 @@ export class CardPainter {
     if (pixels.length === 0) return 0;
     const before = card.ink;
     const changedStart = this.changed.length;
-    if (card.type === 'create' || card.type === 'expand' || card.type === 'colonization' || card.type === 'split') this.paintTerritory(pixels);
+    if (card.type === 'create' || card.type === 'expand' || card.type === 'colonization' || card.type === 'split' || card.type === 'nomadExpand') this.paintTerritory(pixels);
     else this.paintLayer(pixels);
     const spent = before - card.ink;
     if (spent > 0) {
@@ -246,6 +322,10 @@ export class CardPainter {
   private paintTerritory(pixels: number[]): void {
     const world = this.world;
     const card = this.card;
+    if (card.type === 'nomadExpand') {
+      this.paintNomad(pixels);
+      return;
+    }
     const workingId = this.workingCountryId();
     if (workingId === null) return;
     const working = world.countries[workingId];
@@ -253,9 +333,15 @@ export class CardPainter {
     const sourceTag = card.type === 'split' ? (card.targetCountryId as number) + 1 : 0;
     const canTake = (p: number) => {
       if (card.type === 'colonization') {
-        return this.colonizationMask?.[p] === 1 && world.owner[p] !== tag;
+        const influence = this.cityInfluence?.at(p);
+        return this.colonizationMask?.[p] === 1 && world.owner[p] !== tag &&
+          !world.cityAt(p) && !(influence && influence.foreignRankSum > 0 && influence.ownRankSum === 0);
       }
+      if (card.type === 'create' && (this.cityInfluence?.at(p).foreignRankSum ?? 0) > 0) return false;
       if (world.owner[p] !== sourceTag) return false;
+      if (card.type === 'split' && world.cityAt(p)?.capital) return false;
+      if (card.type === 'split' && working.pixels === 0 && card.requiredCityId !== undefined &&
+        world.cities[card.requiredCityId]?.pixel !== p) return false;
       if (card.type !== 'split' || (card.splitCultureId === undefined && card.splitReligionId === undefined)) return true;
       const cultureMatch = card.splitCultureId !== undefined && world.cultureTable.shareOf(world.culture[p], card.splitCultureId) > 0;
       const faithShare = card.splitReligionId === -1 ? 100 - world.religionTable.entries[world.religion[p]].total :
@@ -269,8 +355,9 @@ export class CardPainter {
       for (const p of pixels) {
         if (card.ink <= 0) break;
         if (world.owner[p] !== tag || strokeMask[p]) continue;
-        world.density[p] += 1;
-        card.ink -= 1;
+        const { cost, strength } = this.brushScaling(p);
+        world.density[p] += strength;
+        card.ink = Math.max(0, card.ink - cost);
         this.touch(p);
       }
     }
@@ -326,7 +413,8 @@ export class CardPainter {
           this.message = 'У страны больше нет населения для переселения.';
           break;
         }
-        const transfer = transferColonizationPopulation(world, donor, p, card.ink);
+        const { cost } = this.brushScaling(p);
+        const transfer = transferColonizationPopulation(world, donor, p, card.ink / cost);
         if (!transfer) {
           this.message = 'На этом участке нельзя переселить население без превышения плотности донора.';
           break;
@@ -336,7 +424,7 @@ export class CardPainter {
         this.colonizationDonors?.add(p);
         if (this.colonizationConnected) this.colonizationConnected[p] = 1;
         this.colonistsMoved += transfer.amount;
-        card.ink = Math.max(0, card.ink - transfer.ink);
+        card.ink = Math.max(0, card.ink - transfer.ink * cost);
         this.touch(p);
         this.changed.push(p);
         this.markDirtyPixel(donor);
@@ -347,11 +435,14 @@ export class CardPainter {
       }
       world.setOwner(p, tag);
       if (card.type !== 'split') {
-        world.density[p] = working.density;
+        const { cost, strength } = this.brushScaling(p);
+        world.density[p] = working.density * strength;
         world.culture[p] = world.cultureTable.single(working.cultureId, 100);
         world.religion[p] = this.religionForNewLand;
+        card.ink = Math.max(0, card.ink - cost);
+      } else {
+        card.ink -= 1;
       }
-      card.ink -= 1;
       this.touch(p);
       this.changed.push(p);
       if (card.type !== 'split' && world.water.coastsOf.length > 0) world.seasOfPixel(p, this.seas);
@@ -362,6 +453,54 @@ export class CardPainter {
     for (const p of pixels) dabMask[p] = 0;
     if (card.type === 'split' && world.countries[card.targetCountryId as number].pixels <= 1) {
       this.message = 'Исходная страна должна сохранить хотя бы часть земель.';
+    }
+  }
+
+  private paintNomad(pixels: number[]): void {
+    const world = this.world;
+    const nomad = this.card.targetNomadId === null || this.card.targetNomadId === undefined
+      ? null
+      : world.nomads[this.card.targetNomadId];
+    if (!nomad) return;
+    if (this.nomadMode === 'inactive') {
+      this.message = 'Для расширения кочевья выберите карту «Кочевья» или «Население».';
+      return;
+    }
+    let changed = false;
+    for (const pixel of pixels) {
+      if (this.card.ink <= 0) break;
+      if (!world.land[pixel] || strokeMask[pixel] ||
+        (this.mode === 'respect' && cardMask[pixel])) continue;
+      if (this.nomadMode === 'range') {
+        if (this.nomadRange.has(pixel)) continue;
+        nomad.range.push(pixel);
+        this.nomadRange.add(pixel);
+        nomad.pixels += 1;
+      } else {
+        if (!this.nomadRange.has(pixel)) continue;
+        let cell = this.nomadCells.get(pixel);
+        if (!cell) {
+          cell = {
+            pixel,
+            population: 0,
+            cultureMix: world.cultureTable.single(nomad.cultureId, 100),
+            religionMix: nomad.religionId === null ? 0 : world.religionTable.single(nomad.religionId, 100),
+          };
+          this.nomadCells.set(pixel, cell);
+          nomad.cells.push(cell);
+        }
+        cell.population += 1;
+      }
+      this.card.ink = Math.max(0, this.card.ink - 1);
+      this.touch(pixel);
+      this.changed.push(pixel);
+      this.markDirtyPixel(pixel);
+      changed = true;
+    }
+    if (changed) {
+      world.nomadVersion += 1;
+      world.version += 1;
+      this.message = this.nomadMode === 'range' ? 'Ареал кочевья расширен.' : 'Плотность кочевого населения увеличена.';
     }
   }
 

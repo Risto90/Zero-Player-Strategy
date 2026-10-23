@@ -92,6 +92,7 @@ export function copyWorld(world: World): WorldCopy {
     cities: world.cities.map((city) => ({ ...city })),
     nomads: world.nomads.map((nomad) => ({
       ...nomad,
+      range: [...nomad.range],
       cells: nomad.cells.map((cell) => ({ ...cell })),
       ruler: { ...nomad.ruler, parents: [...nomad.ruler.parents], spouseIds: [...nomad.ruler.spouseIds], loverIds: [...nomad.ruler.loverIds], friendIds: [...nomad.ruler.friendIds], traits: [...nomad.ruler.traits], formerRulerOf: [...nomad.ruler.formerRulerOf] },
       heir: nomad.heir ? { ...nomad.heir, parents: [...nomad.heir.parents], spouseIds: [...nomad.heir.spouseIds], loverIds: [...nomad.heir.loverIds], friendIds: [...nomad.heir.friendIds], traits: [...nomad.heir.traits], formerRulerOf: [...nomad.heir.formerRulerOf] } : null,
@@ -151,7 +152,8 @@ export function deserializeWorld(saved: SavedWorld): World {
   });
   world.countries = saved.countries.map((c) => ({ ...c }));
   world.cities = (saved.cities ?? []).map((city) => ({ ...city }));
-  world.nomads = (saved.nomads ?? []).map((nomad) => ({ ...nomad, cells: nomad.cells ?? [] }));
+  world.nomads = (saved.nomads ?? []).map((nomad) => ({ ...nomad, range: nomad.range ?? [], cells: nomad.cells ?? [] }));
+  world.nomadVersion = world.nomads.length ? 1 : 0;
   for (const city of world.cities) {
     if (city.pixel >= 0 && city.pixel < MAP_PIXELS) world.cityIdAt[city.pixel] = city.id;
   }

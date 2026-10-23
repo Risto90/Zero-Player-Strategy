@@ -56,6 +56,7 @@ export interface NomadGroup extends PoliticalState {
   cultureId: number;
   religionId: number | null;
   cells: NomadCell[];
+  range: number[];
   sourceCountryId: number | null;
   pixels: number;
 }
@@ -98,6 +99,7 @@ export class World {
   countries: Country[] = [];
   cities: City[] = [];
   nomads: NomadGroup[] = [];
+  nomadVersion = 0;
   cultures: Culture[] = [];
   religions: Religion[] = [];
   people: Person[] = [];

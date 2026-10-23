@@ -27,6 +27,8 @@ export function MapControls({
       ? snap.brushMode === 'repeat' ? 'Повтор: +население на своей земле' : 'Каждая точка — один раз'
       : snap.brushMode === 'repeat' ? 'Каждый мазок действует снова' : 'Каждая точка — один раз';
   const brushOn = tool === 'brush';
+  const handOn = tool === 'hand';
+  const cityOn = tool === 'city';
   return (
     <>
       <View style={styles.left} pointerEvents="box-none">
@@ -35,10 +37,16 @@ export function MapControls({
             <MaterialCommunityIcons name="brush" size={16} color={brushOn ? c.background : c.foreground} />
             <Text style={[styles.segText, brushOn && { color: c.background }]}>Кисть</Text>
           </Pressable>
-          <Pressable onPress={() => setTool('hand')} style={[styles.segButton, styles.segDivider, !brushOn && styles.segOn]} testID="button-tool-hand">
-            <MaterialCommunityIcons name="hand-back-right-outline" size={16} color={!brushOn ? c.background : c.foreground} />
-            <Text style={[styles.segText, !brushOn && { color: c.background }]}>Рука</Text>
+          <Pressable onPress={() => setTool('hand')} style={[styles.segButton, styles.segDivider, handOn && styles.segOn]} testID="button-tool-hand">
+            <MaterialCommunityIcons name="hand-back-right-outline" size={16} color={handOn ? c.background : c.foreground} />
+            <Text style={[styles.segText, handOn && { color: c.background }]}>Рука</Text>
           </Pressable>
+          {snap.cityPlacementAvailable && (
+            <Pressable onPress={() => setTool('city')} style={[styles.segButton, styles.segDivider, cityOn && styles.segOn]} testID="button-tool-city">
+              <MaterialCommunityIcons name="city-variant-outline" size={16} color={cityOn ? c.background : c.foreground} />
+              <Text style={[styles.segText, cityOn && { color: c.background }]}>Город</Text>
+            </Pressable>
+          )}
         </View>
         {brushOn && (
           <View style={styles.segment}>
@@ -71,6 +79,7 @@ export function MapControls({
                 : 'Рисовать нечем — сдвигайте карту'}
           </Text>
         )}
+        {cityOn && snap.cityPlacementAvailable && <Text style={styles.hint}>Коснитесь незанятой точки своей страны для размещения города.</Text>}
       </View>
       <View style={styles.right} pointerEvents="box-none">
         <Pressable style={styles.zoom} onPress={() => onZoom(1.5)} accessibilityLabel="Приблизить" testID="button-zoom-in">

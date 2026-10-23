@@ -22,7 +22,7 @@ export interface GestureHost {
 type Kind = 'none' | 'paint' | 'pan' | 'pinch';
 
 /**
- * One finger paints (brush) or pans (hand); two fingers pan and pinch-zoom.
+ * One finger paints (brush) or pans; the city tool places a city on tap.
  * A short tap with the hand tool inspects the point. Shared by the phone and web map views.
  */
 export class MapGestures {
@@ -117,7 +117,8 @@ export class MapGestures {
     }
     if (this.kind === 'pan' && !this.moved) {
       const m = toMap(host.getView(), this.start.x, this.start.y);
-      host.onInspect(host.game.inspect(m.x, m.y));
+      if (host.tool() === 'city') host.game.selectCityAt(m.x, m.y);
+      else if (host.tool() === 'hand') host.onInspect(host.game.inspect(m.x, m.y));
     }
     if (this.points.size === 0) this.kind = 'none';
     else if (this.kind === 'pinch') {

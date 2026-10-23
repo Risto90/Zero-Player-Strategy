@@ -1,6 +1,6 @@
 import { MAP_HEIGHT, MAP_WIDTH, RANKS } from './config';
 import { quantizeShares } from './composition';
-import type { City, CityRank, World } from './world';
+import type { City, CityRank, NomadCell, NomadGroup, World } from './world';
 
 const CITY_CANONICAL_MODIFIERS = [1, 1, 1, 2, 3, 6];
 const RANK_AREA = RANKS.map((rank) => rank.ink);
@@ -32,7 +32,10 @@ export interface CityInfluence {
   foreignRankSum: number;
   nearestOwnDistance: number;
   nearestOwnAnchorDistance: number;
+  nearestOwnAnchorPixel: number | null;
   nearestOwnCityId: number | null;
+  nearestOwnCityPixel: number | null;
+  nearestOwnRadius: number;
 }
 
 type IndexedCity = City & { x: number; y: number; radius: number };
@@ -49,7 +52,12 @@ export class CityInfluenceIndex {
   private readonly maxX = Math.ceil(MAP_WIDTH / BUCKET);
   private readonly maxY = Math.ceil(MAP_HEIGHT / BUCKET);
 
-  constructor(private readonly world: World, private readonly countryId: number) {
+  constructor(
+    private readonly world: World,
+    private readonly countryId: number,
+    private readonly includeAnchors = false,
+    private readonly anchorMask?: Uint8Array,
+  ) {
     for (const city of world.cities) {
       const x = city.pixel % MAP_WIDTH;
       const y = Math.floor(city.pixel / MAP_WIDTH);
@@ -59,7 +67,7 @@ export class CityInfluenceIndex {
       const list = this.centers.get(key) ?? [];
       list.push(indexed);
       this.centers.set(key, list);
-      if (city.countryId !== countryId) continue;
+      if (city.countryId !== countryId || !this.includeAnchors) continue;
       const r = Math.ceil(indexed.radius);
       const x0 = Math.max(0, x - r), x1 = Math.min(MAP_WIDTH - 1, x + r);
       const y0 = Math.max(0, y - r), y1 = Math.min(MAP_HEIGHT - 1, y + r);
@@ -69,7 +77,8 @@ export class CityInfluenceIndex {
         for (let xx = x0; xx <= x1; xx += 1) {
           if ((xx - x) ** 2 + (yy - y) ** 2 > rr) continue;
           const p = yy * MAP_WIDTH + xx;
-          if (world.land[p] && (world.isCoastal(p) || world.rivers[p] > 0)) seen.add(p);
+          if (world.land[p] && (world.isCoastal(p) || world.rivers[p] > 0) &&
+            (!this.anchorMask || this.anchorMask[p] === 1)) seen.add(p);
         }
       }
       for (const p of seen) {
@@ -81,11 +90,12 @@ export class CityInfluenceIndex {
     }
   }
 
-  at(pixel: number): CityInfluence {
+  at(pixel: number, needAnchor = false): CityInfluence {
     const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
     const bx = Math.floor(x / BUCKET), by = Math.floor(y / BUCKET);
     let ownRankSum = 0, ownLargestRank = 0, ownCityCount = 0, foreignRankSum = 0;
     let nearestOwnDistance = Infinity, nearestOwnCityId: number | null = null;
+    let nearestOwnCityPixel: number | null = null, nearestOwnRadius = 0;
     for (let dy = -2; dy <= 2; dy += 1) {
       for (let dx = -2; dx <= 2; dx += 1) {
         for (const city of this.centers.get(this.key(bx + dx, by + dy)) ?? []) {
@@ -100,6 +110,8 @@ export class CityInfluenceIndex {
             if (edgeDistance < nearestOwnDistance) {
               nearestOwnDistance = edgeDistance;
               nearestOwnCityId = city.id;
+              nearestOwnCityPixel = city.pixel;
+              nearestOwnRadius = city.radius;
             }
           } else if (distance <= city.radius) {
             foreignRankSum += city.rank;
@@ -107,36 +119,79 @@ export class CityInfluenceIndex {
         }
       }
     }
+    if (this.countryId >= 0 && (nearestOwnCityId === null || nearestOwnDistance > 0)) {
+      for (let ring = 3; ring < Math.max(this.maxX, this.maxY); ring += 1) {
+        for (let dx = -ring; dx <= ring; dx += 1) {
+          for (const dy of [-ring, ring]) this.checkCities(bx + dx, by + dy, x, y, (city, distance) => {
+            if (city.countryId !== this.countryId) return;
+            const edgeDistance = Math.max(0, distance - city.radius);
+            if (edgeDistance < nearestOwnDistance) {
+              nearestOwnDistance = edgeDistance;
+              nearestOwnCityId = city.id;
+              nearestOwnCityPixel = city.pixel;
+              nearestOwnRadius = city.radius;
+            }
+          });
+        }
+        for (let dy = -ring + 1; dy < ring; dy += 1) {
+          for (const dx of [-ring, ring]) this.checkCities(bx + dx, by + dy, x, y, (city, distance) => {
+            if (city.countryId !== this.countryId) return;
+            const edgeDistance = Math.max(0, distance - city.radius);
+            if (edgeDistance < nearestOwnDistance) {
+              nearestOwnDistance = edgeDistance;
+              nearestOwnCityId = city.id;
+              nearestOwnCityPixel = city.pixel;
+              nearestOwnRadius = city.radius;
+            }
+          });
+        }
+        if (nearestOwnCityId !== null && nearestOwnDistance <= Math.max(0, (ring - 1) * BUCKET - MAX_CITY_RADIUS)) break;
+      }
+    }
+    const nearestAnchor = this.countryId >= 0 && needAnchor
+      ? this.nearestAnchor(x, y, bx, by)
+      : { distance: Infinity, pixel: null };
     return {
       ownRankSum,
       ownLargestRank,
       ownCityCount,
       foreignRankSum,
       nearestOwnDistance,
-      nearestOwnAnchorDistance: this.nearestAnchor(x, y, bx, by),
+      nearestOwnAnchorDistance: nearestAnchor.distance,
+      nearestOwnAnchorPixel: nearestAnchor.pixel,
       nearestOwnCityId,
+      nearestOwnCityPixel,
+      nearestOwnRadius,
     };
   }
 
-  private nearestAnchor(x: number, y: number, bx: number, by: number): number {
-    let nearest = Infinity;
+  private nearestAnchor(x: number, y: number, bx: number, by: number): { distance: number; pixel: number | null } {
+    let nearest = Infinity, nearestPixel: number | null = null;
     for (let ring = 0; ring < Math.max(this.maxX, this.maxY); ring += 1) {
       for (let dx = -ring; dx <= ring; dx += 1) {
-        for (const dy of [-ring, ring]) this.checkAnchors(bx + dx, by + dy, x, y, (d) => { nearest = Math.min(nearest, d); });
+        for (const dy of [-ring, ring]) this.checkAnchors(bx + dx, by + dy, x, y, (p, d) => {
+          if (d < nearest) { nearest = d; nearestPixel = p; }
+        });
       }
       for (let dy = -ring + 1; dy < ring; dy += 1) {
-        for (const dx of [-ring, ring]) this.checkAnchors(bx + dx, by + dy, x, y, (d) => { nearest = Math.min(nearest, d); });
+        for (const dx of [-ring, ring]) this.checkAnchors(bx + dx, by + dy, x, y, (p, d) => {
+          if (d < nearest) { nearest = d; nearestPixel = p; }
+        });
       }
       const lowerBound = Math.max(0, (ring - 1) * BUCKET - Math.SQRT2 * BUCKET);
       if (nearest <= lowerBound) break;
     }
-    return nearest;
+    return { distance: nearest, pixel: nearestPixel };
   }
 
-  private checkAnchors(bx: number, by: number, x: number, y: number, visit: (distance: number) => void): void {
+  private checkAnchors(bx: number, by: number, x: number, y: number, visit: (pixel: number, distance: number) => void): void {
     for (const pixel of this.anchors.get(this.key(bx, by)) ?? []) {
-      visit(Math.hypot(pixel % MAP_WIDTH - x, Math.floor(pixel / MAP_WIDTH) - y));
+      visit(pixel, Math.hypot(pixel % MAP_WIDTH - x, Math.floor(pixel / MAP_WIDTH) - y));
     }
+  }
+
+  private checkCities(bx: number, by: number, x: number, y: number, visit: (city: IndexedCity, distance: number) => void): void {
+    for (const city of this.centers.get(this.key(bx, by)) ?? []) visit(city, Math.hypot(city.x - x, city.y - y));
   }
 
   private key(x: number, y: number): number {
@@ -230,10 +285,17 @@ export function movePopulationToCity(world: World, source: number, target: numbe
   return actual;
 }
 
-export function addCityAndConcentrate(world: World, countryId: number, pixel: number, capital = false): City | null {
-  const city = world.addCity(countryId, pixel, 1, capital);
-  if (!city) return null;
+export function concentrateCityPopulation(world: World, city: City): void {
   const radius = cityInfluenceRadius(world, city);
+  const pixel = city.pixel;
+  const nomadCellsAtPixel = new Map<number, { nomad: NomadGroup; cell: NomadCell }[]>();
+  for (const nomad of world.nomads) for (const cell of nomad.cells) {
+    const entries = nomadCellsAtPixel.get(cell.pixel) ?? [];
+    entries.push({ nomad, cell });
+    nomadCellsAtPixel.set(cell.pixel, entries);
+  }
+  const emptyNomadCells = new Set<NomadCell>();
+  const affectedNomads = new Set<NomadGroup>();
   const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
   const x0 = Math.max(0, Math.floor(x - radius)), x1 = Math.min(MAP_WIDTH - 1, Math.ceil(x + radius));
   const y0 = Math.max(0, Math.floor(y - radius)), y1 = Math.min(MAP_HEIGHT - 1, Math.ceil(y + radius));
@@ -242,11 +304,73 @@ export function addCityAndConcentrate(world: World, countryId: number, pixel: nu
     for (let xx = x0; xx <= x1; xx += 1) {
       const source = yy * MAP_WIDTH + xx;
       if (source === pixel || !world.land[source] || (xx - x) ** 2 + (yy - y) ** 2 > r2) continue;
-      const amount = world.density[source] * 0.1;
-      if (amount <= 0) continue;
-      movePopulationToCity(world, source, pixel, amount);
+      const pools: { cell: NomadCell | null; nomad: NomadGroup | null; population: number; cultureMix: number; religionMix: number; priority: number }[] = [];
+      const targetCulture = world.cultureTable.entries[world.culture[pixel]];
+      const targetReligion = world.religionTable.entries[world.religion[pixel]];
+      const scoreMix = (cultureMix: number, religionMix: number) => {
+        const cultures = world.cultureTable.entries[cultureMix];
+        const religions = world.religionTable.entries[religionMix];
+        const targetCultures = new Set(targetCulture.ids);
+        const targetFaiths = new Set<number | null>([...targetReligion.ids, null]);
+        const sourceFaiths: (number | null)[] = [...religions.ids, null];
+        const shares = [...religions.shares, 100 - religions.total];
+        let best = 1;
+        cultures.ids.forEach((cultureId, ci) => sourceFaiths.forEach((religionId, ri) => {
+          if (cultures.shares[ci] <= 0 || shares[ri] <= 0) return;
+          const sameCulture = targetCultures.has(cultureId);
+          const sameReligion = targetFaiths.has(religionId);
+          best = Math.max(best, sameCulture && sameReligion ? 3 : sameCulture || sameReligion ? 2 : 1);
+        }));
+        return best;
+      };
+      if (world.density[source] > 0) {
+        pools.push({
+          cell: null, nomad: null, population: world.density[source], cultureMix: world.culture[source], religionMix: world.religion[source],
+          priority: scoreMix(world.culture[source], world.religion[source]),
+        });
+      }
+      for (const { nomad, cell } of nomadCellsAtPixel.get(source) ?? []) {
+        if (cell.population) pools.push({
+          cell, nomad, population: cell.population, cultureMix: cell.cultureMix, religionMix: cell.religionMix,
+          priority: scoreMix(cell.cultureMix, cell.religionMix),
+        });
+      }
+      pools.sort((a, b) => b.priority - a.priority);
+      for (const pool of pools) {
+        const amount = pool.population * 0.1;
+        if (amount <= 0) continue;
+        if (!pool.cell) {
+          movePopulationToCity(world, source, pixel, amount);
+          continue;
+        }
+        const countryDensity = world.density[source];
+        const countryCulture = world.culture[source];
+        const countryReligion = world.religion[source];
+        world.density[source] = pool.cell.population;
+        world.culture[source] = pool.cell.cultureMix;
+        world.religion[source] = pool.cell.religionMix;
+        movePopulationToCity(world, source, pixel, amount);
+        pool.cell.population = world.density[source];
+        pool.cell.cultureMix = world.culture[source];
+        pool.cell.religionMix = world.religion[source];
+        if (pool.nomad) affectedNomads.add(pool.nomad);
+        if (pool.cell.population <= 1e-9) emptyNomadCells.add(pool.cell);
+        world.density[source] = countryDensity;
+        world.culture[source] = countryCulture;
+        world.religion[source] = countryReligion;
+      }
     }
   }
+  if (affectedNomads.size) {
+    for (const nomad of affectedNomads) nomad.cells = nomad.cells.filter((cell) => !emptyNomadCells.has(cell));
+    world.nomadVersion += 1;
+  }
   world.version += 1;
+}
+
+export function addCityAndConcentrate(world: World, countryId: number, pixel: number, capital = false): City | null {
+  const city = world.addCity(countryId, pixel, 1, capital);
+  if (!city) return null;
+  concentrateCityPopulation(world, city);
   return city;
 }

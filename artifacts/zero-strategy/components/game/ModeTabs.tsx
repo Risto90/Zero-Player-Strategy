@@ -7,10 +7,12 @@ const c = colors.light;
 
 export const MODES: { id: MapMode; label: string }[] = [
   { id: 'political', label: 'Страны' },
+  { id: 'cities', label: 'Города' },
   { id: 'biomes', label: 'Биомы' },
   { id: 'rivers', label: 'Реки' },
   { id: 'cultures', label: 'Культуры' },
   { id: 'religions', label: 'Религии' },
+  { id: 'nomads', label: 'Кочевья' },
   { id: 'humidity', label: 'Влажность' },
   { id: 'temperature', label: 'Температура' },
   { id: 'drainage', label: 'Дренаж' },
