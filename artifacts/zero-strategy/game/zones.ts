@@ -248,7 +248,7 @@ export function fillRings(rings: Ring[], visit: (p: number) => void): void {
 }
 
 /** Writes scalar zones back into a raster. */
-export function rasterizeScalar(zones: Zone[], target: Uint8Array | Uint16Array | Float64Array): void {
+export function rasterizeScalar(zones: Zone[], target: Uint8Array | Uint16Array | Float32Array): void {
   for (const zone of zones) fillRings(zone.rings, (p) => (target[p] = zone.value));
 }
 

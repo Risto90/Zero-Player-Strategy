@@ -1,10 +1,9 @@
-import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, MAX_DENSITY, SHARE_STEP } from './config';
+import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from './config';
 import { forEachNeighbour } from './geography';
 import type { World } from './world';
 import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
-import { colonizationPlan, type ColonizationPlan } from './colonization';
-import { quantizeShares } from './composition';
+import { ColonizationDonorHeap, colonizationPlan, transferColonizationPopulation } from './colonization';
 
 export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
 export interface CardChoice {
@@ -79,6 +78,8 @@ const isTemperatureCard = (type: CardType) => isCurrent(type) || isWind(type);
 export class CardPainter {
   /** Pixels changed by this card (for automatic play and logs). */
   readonly changed: number[] = [];
+  /** Total population moved by a colonization card. */
+  colonistsMoved = 0;
   private readonly cardTouched: number[] = [];
   private strokeTouched: number[] = [];
   private readonly seas = new Set<number>();
@@ -86,9 +87,7 @@ export class CardPainter {
   private strokeChangedStart = 0;
   private readonly religionForNewLand: number;
   readonly colonizationMask: Uint8Array | null;
-  private readonly colonizationDonors: number[];
-  private readonly colonizationRefugeeSinks: ColonizationPlan['refugeeSinks'];
-  private colonizationDonorIndex = 0;
+  private readonly colonizationDonors: ColonizationDonorHeap | null;
   readonly extraDirty: Rect[] = [];
   private readonly dirtyTileKeys = new Set<number>();
   dirty: Rect | null = null;
@@ -105,8 +104,7 @@ export class CardPainter {
       : null;
     const colonization = colonizationCountry ? colonizationPlan(world, colonizationCountry) : null;
     this.colonizationMask = colonization?.targets ?? null;
-    this.colonizationDonors = colonization?.donors ?? [];
-    this.colonizationRefugeeSinks = colonization?.refugeeSinks ?? new Map();
+    this.colonizationDonors = colonization ? new ColonizationDonorHeap(world, colonization.donors) : null;
     if (working !== null && (card.type === 'expand' || card.type === 'split')) {
       const source = world.countries[card.type === 'split' ? (card.targetCountryId as number) : working];
       if (card.type === 'expand') {
@@ -263,9 +261,8 @@ export class CardPainter {
     if (card.type !== 'split' && card.type !== 'colonization' && this.mode === 'repeat') {
       for (const p of pixels) {
         if (card.ink <= 0) break;
-        if (world.owner[p] !== tag || strokeMask[p] || world.density[p] >= MAX_DENSITY) continue;
-        const country = world.countries[tag - 1];
-        world.density[p] = Math.min(MAX_DENSITY, world.density[p] + 1);
+        if (world.owner[p] !== tag || strokeMask[p]) continue;
+        world.density[p] += 1;
         card.ink -= 1;
         this.touch(p);
       }
@@ -310,18 +307,21 @@ export class CardPainter {
       if (!canTake(p)) continue;
       if (card.type === 'split' && world.countries[card.targetCountryId as number].pixels <= 1) break;
       if (card.type === 'colonization') {
-        const donor = this.nextColonizationDonor();
+        const donor = this.colonizationDonors?.peek() ?? -1;
         if (donor < 0) {
           this.message = 'У страны больше нет населения для переселения.';
           break;
         }
-        const oldOwner = world.owner[p];
-        if (oldOwner > 0 && !this.evacuateResidents(oldOwner - 1, p)) {
-          this.message = 'На этой территории нет места, куда переселить местных жителей.';
+        const transfer = transferColonizationPopulation(world, donor, p, card.ink);
+        if (!transfer) {
+          this.message = 'На этом участке нельзя переселить население без превышения плотности донора.';
           break;
         }
-        this.moveColonist(donor, p, workingId);
-        card.ink -= 1;
+        this.colonizationDonors?.refreshTop(donor);
+        world.setOwner(p, tag);
+        this.colonizationDonors?.add(p);
+        this.colonistsMoved += transfer.amount;
+        card.ink = Math.max(0, card.ink - transfer.ink);
         this.touch(p);
         this.changed.push(p);
         this.markDirtyPixel(donor);
@@ -347,15 +347,6 @@ export class CardPainter {
     }
   }
 
-  private nextColonizationDonor(): number {
-    while (this.colonizationDonorIndex < this.colonizationDonors.length) {
-      const p = this.colonizationDonors[this.colonizationDonorIndex];
-      if (this.world.density[p] > 0) return p;
-      this.colonizationDonorIndex += 1;
-    }
-    return -1;
-  }
-
   private markDirtyPixel(p: number): void {
     const tileCols = 8, tileRows = 16;
     const tileWidth = MAP_WIDTH / tileCols, tileHeight = MAP_HEIGHT / tileRows;
@@ -368,69 +359,6 @@ export class CardPainter {
       x0: Math.floor(col * tileWidth), y0: Math.floor(row * tileHeight),
       x1: Math.floor((col + 1) * tileWidth) - 1, y1: Math.floor((row + 1) * tileHeight) - 1,
     });
-  }
-
-  private evacuateResidents(countryId: number, from: number): boolean {
-    const world = this.world;
-    let remaining = world.density[from];
-    if (remaining === 0) return true;
-    const pool = this.colonizationRefugeeSinks.get(countryId);
-    if (!pool) return false;
-
-    let capacity = 0;
-    for (let i = pool.index; i < pool.pixels.length; i += 1) {
-      capacity += MAX_DENSITY - world.density[pool.pixels[i]];
-      if (capacity >= remaining) break;
-    }
-    if (capacity < remaining) return false;
-
-    const culture = world.culture[from], religion = world.religion[from];
-    while (remaining > 0) {
-      const sink = pool.pixels[pool.index];
-      if (sink === undefined) return false;
-      const sinkPopulation = world.density[sink];
-      const moved = Math.min(remaining, MAX_DENSITY - sinkPopulation);
-      if (moved <= 0) {
-        pool.index += 1;
-        continue;
-      }
-      world.culture[sink] = this.blendComposition(world.cultureTable, world.culture[sink], culture, sinkPopulation, moved);
-      world.religion[sink] = this.blendComposition(world.religionTable, world.religion[sink], religion, sinkPopulation, moved);
-      world.density[sink] += moved;
-      remaining -= moved;
-      this.markDirtyPixel(sink);
-      if (world.density[sink] >= MAX_DENSITY) pool.index += 1;
-    }
-    world.density[from] = 0;
-    return true;
-  }
-
-  private moveColonist(from: number, to: number, countryId: number): void {
-    const world = this.world;
-    const destinationPopulation = world.density[to];
-    const sourceCulture = world.culture[from], sourceReligion = world.religion[from];
-    world.density[from] -= 1;
-    world.culture[to] = this.blendComposition(world.cultureTable, world.culture[to], sourceCulture, destinationPopulation);
-    world.religion[to] = this.blendComposition(world.religionTable, world.religion[to], sourceReligion, destinationPopulation);
-    world.density[to] = destinationPopulation + 1;
-    world.setOwner(to, countryId + 1);
-    this.colonizationDonorIndex += world.density[from] === 0 ? 1 : 0;
-  }
-
-  private blendComposition(
-    table: World['cultureTable'],
-    destination: number,
-    migrant: number,
-    destinationPopulation: number,
-    incomingPopulation = 1,
-  ): number {
-    if (destinationPopulation <= 0) return migrant;
-    const old = table.entries[destination], incoming = table.entries[migrant];
-    const values = new Map<number, number>();
-    old.ids.forEach((id, i) => values.set(id, old.shares[i] * destinationPopulation));
-    incoming.ids.forEach((id, i) => values.set(id, (values.get(id) ?? 0) + incoming.shares[i] * incomingPopulation));
-    const total = Math.round((old.total * destinationPopulation + incoming.total * incomingPopulation) / (destinationPopulation + incomingPopulation) / SHARE_STEP) * SHARE_STEP;
-    return table.intern(quantizeShares(values, total));
   }
 
   private paintLayer(pixels: number[]): void {

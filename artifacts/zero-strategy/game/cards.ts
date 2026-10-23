@@ -177,7 +177,7 @@ function drawExpand(world: World, country: Country): Card | null {
     // With no unclaimed land, expansion becomes internal development rather than disappearing.
     const available: number[] = [];
     world.forEachCountryPixel(country, (p) => {
-      if (world.density[p] < 20) available.push(p);
+      available.push(p);
     });
     if (!available.length) return null;
     const ink = Math.min(INK.expand, available.length);
@@ -200,13 +200,13 @@ function drawExpand(world: World, country: Country): Card | null {
 
 function drawColonization(world: World, country: Country): Card | null {
   const plan = colonizationPlan(world, country);
-  const ink = Math.min(INK.colonization, plan.targetCount, plan.availablePopulation);
-  if (ink < 1 || plan.hint < 0) return null;
+  const ink = Math.min(INK.colonization, plan.targetCount);
+  if (ink < 1 || plan.hint < 0 || plan.availablePopulation <= 0) return null;
   const card = makeCard(
     'colonization',
     ink,
     country,
-    `Колонизируйте побережья доступных морей или земли в бассейне реки, уже проходящей через ${country.name}. Чужие земли доступны, только если их плотность ниже средней плотности страны и владельцы не союзники. Каждый участок переселяет одного жителя из самых плотных областей страны; его культура и религия сохраняются. Местные жители занятой территории переселяются на свободное место в оставшихся землях прежнего владельца.`,
+    `Колонизируйте побережья доступных морей или земли в бассейне реки, уже проходящей через ${country.name}. Чужие участки доступны, только если их плотность ниже средней плотности страны и государства не союзники. Для каждой точки заново выбирается самый плотный участок страны-донор; переселяется до 10% его населения. На чужой точке число переселенцев ограничено её исходной плотностью, на ничейной — нет. Точка колонии не становится плотнее донора: при меньшей разнице плотности выравниваются, расходуя меньше чернил. Сколько жителей переселилось, столько местных удаляется. Совпадение культуры и религии даёт первый приоритет переселенцам и последний местным на удаление; совпадение только одного признака — следующий приоритет.`,
     plan.hint,
   );
   return card;

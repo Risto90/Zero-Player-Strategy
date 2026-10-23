@@ -596,6 +596,8 @@ export class Game {
     const card = painter.card;
     const w = this.world;
     const used = card.inkTotal - card.ink;
+    const colonizedPixels = card.type === 'colonization' ? painter.changed.length : 0;
+    const colonistsMoved = painter.colonistsMoved;
     painter.dispose();
     const target = card.targetCountryId !== null ? w.countries[card.targetCountryId] : null;
     switch (card.type) {
@@ -615,7 +617,7 @@ export class Game {
         if (used > 0 && target) this.addLog(`${target.name} расширяется на ${used} земель.`);
         break;
       case 'colonization':
-        if (used > 0 && target) this.addLog(`${target.name} колонизирует ${used} земель; переселено ${used} колонистов, местные жители расселены в пределах прежних стран.`);
+        if (colonizedPixels > 0 && target) this.addLog(`${target.name} колонизирует ${colonizedPixels} участков: переселено ${fmt(colonistsMoved)} человек, столько же местных жителей удалено.`);
         break;
       case 'split': {
         const country = w.countries[card.newCountryId as number];

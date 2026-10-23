@@ -39,7 +39,7 @@ export interface WorldCopy {
   seed: number;
   land: Uint8Array;
   owner: Uint16Array;
-  density: Uint8Array;
+  density: Float32Array;
   humidity: Uint8Array;
   temperature: Uint8Array;
   drainage: Uint8Array;
@@ -120,7 +120,7 @@ export function serializeWorld(world: World): SavedWorld {
   return runSteps(serializeSteps(copyWorld(world)));
 }
 
-function rasterize<T extends Uint8Array | Uint16Array>(zones: Zone[], target: T): T {
+function rasterize<T extends Uint8Array | Uint16Array | Float32Array>(zones: Zone[], target: T): T {
   rasterizeScalar(zones, target);
   return target;
 }

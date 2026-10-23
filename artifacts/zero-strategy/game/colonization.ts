@@ -34,7 +34,8 @@ export class ColonizationDonorHeap {
   private readonly heap: number[] = [];
 
   constructor(private readonly world: World, pixels: number[]) {
-    for (const p of pixels) this.push(p);
+    for (const pixel of pixels) this.heap.push(pixel);
+    for (let i = Math.floor(this.heap.length / 2) - 1; i >= 0; i -= 1) this.siftDown(i);
   }
 
   peek(): number {
@@ -42,11 +43,10 @@ export class ColonizationDonorHeap {
     return this.heap[0] ?? -1;
   }
 
-  /** The caller must have just read this pixel from peek(); its new density is reinserted. */
-  consume(donor: number, amount: number): void {
+  /** The caller must have just read this pixel from peek(); its changed density is reinserted. */
+  refreshTop(donor: number): void {
     const root = this.pop();
     if (root !== donor) throw new Error('Colonization donor heap changed before transfer.');
-    this.world.density[donor] = Math.max(0, this.world.density[donor] - amount);
     if (this.world.density[donor] > EPSILON) this.push(donor);
   }
 
@@ -75,19 +75,23 @@ export class ColonizationDonorHeap {
     const last = this.heap.pop();
     if (this.heap.length > 0 && last !== undefined) {
       this.heap[0] = last;
-      let parent = 0;
-      for (;;) {
-        const left = parent * 2 + 1;
-        const right = left + 1;
-        let best = parent;
-        if (left < this.heap.length && this.higher(this.heap[left], this.heap[best])) best = left;
-        if (right < this.heap.length && this.higher(this.heap[right], this.heap[best])) best = right;
-        if (best === parent) break;
-        [this.heap[parent], this.heap[best]] = [this.heap[best], this.heap[parent]];
-        parent = best;
-      }
+      this.siftDown(0);
     }
     return first ?? -1;
+  }
+
+  private siftDown(start: number): void {
+    let parent = start;
+    for (;;) {
+      const left = parent * 2 + 1;
+      const right = left + 1;
+      let best = parent;
+      if (left < this.heap.length && this.higher(this.heap[left], this.heap[best])) best = left;
+      if (right < this.heap.length && this.higher(this.heap[right], this.heap[best])) best = right;
+      if (best === parent) break;
+      [this.heap[parent], this.heap[best]] = [this.heap[best], this.heap[parent]];
+      parent = best;
+    }
   }
 }
 
@@ -109,12 +113,8 @@ export function populationGroupsAt(world: World, pixel: number): PopulationGroup
   return groups;
 }
 
-function matchTier(group: PopulationGroup, reference: PopulationGroup[]): number {
-  const sameCulture = reference.some((other) => other.population > EPSILON && other.cultureId === group.cultureId);
-  const sameReligion = reference.some((other) => other.population > EPSILON && other.religionId === group.religionId);
-  if (sameCulture && sameReligion && reference.some((other) =>
-    other.population > EPSILON && other.cultureId === group.cultureId && other.religionId === group.religionId)) return 0;
-  return sameCulture || sameReligion ? 1 : 2;
+function cohortKey(cultureId: number, religionId: number | null): string {
+  return `${cultureId}/${religionId ?? 'a'}`;
 }
 
 function splitGroups(
@@ -127,15 +127,26 @@ function splitGroups(
   let remainingToSelect = Math.min(amount, total);
   const selected: PopulationGroup[] = [];
   const remaining: PopulationGroup[] = [];
-  const tiers = groups.map((group) => ({ group, tier: matchTier(group, reference) }));
-  const handled = new Set<number>();
+  const cultures = new Set(reference.filter((group) => group.population > EPSILON).map((group) => group.cultureId));
+  const religions = new Set(reference.filter((group) => group.population > EPSILON).map((group) => group.religionId));
+  const exactPairs = new Set(reference.filter((group) => group.population > EPSILON)
+    .map((group) => cohortKey(group.cultureId, group.religionId)));
+  const tiers = groups.map((group) => {
+    const sameCulture = cultures.has(group.cultureId);
+    const sameReligion = religions.has(group.religionId);
+    const tier = sameCulture && sameReligion && exactPairs.has(cohortKey(group.cultureId, group.religionId))
+      ? 0
+      : sameCulture || sameReligion ? 1 : 2;
+    return { group, tier };
+  });
+  const handled = new Set<PopulationGroup>();
   for (const tier of priority) {
     const bucket = tiers.filter((item) => item.tier === tier);
-    const tierTotal = bucket.reduce((sum, group) => sum + group.population, 0);
+    const tierTotal = bucket.reduce((sum, item) => sum + item.group.population, 0);
     const tierTaken = Math.min(remainingToSelect, tierTotal);
     const share = tierTotal > EPSILON ? tierTaken / tierTotal : 0;
     for (const { group } of bucket) {
-      handled.add(group.cultureId * 65536 + (group.religionId ?? 65535));
+      handled.add(group);
       const taken = group.population * share;
       if (taken > EPSILON) selected.push({ ...group, population: taken });
       if (group.population - taken > EPSILON) remaining.push({ ...group, population: group.population - taken });
@@ -143,9 +154,8 @@ function splitGroups(
     remainingToSelect -= tierTaken;
     if (remainingToSelect <= EPSILON) break;
   }
-  for (const { group, tier } of tiers) {
-    const key = group.cultureId * 65536 + (group.religionId ?? 65535);
-    if (!handled.has(key)) remaining.push({ ...group });
+  for (const { group } of tiers) {
+    if (!handled.has(group)) remaining.push({ ...group });
   }
   return { selected, remaining };
 }
@@ -153,7 +163,7 @@ function splitGroups(
 function combineGroups(...sets: PopulationGroup[][]): PopulationGroup[] {
   const totals = new Map<string, PopulationGroup>();
   for (const group of sets.flat()) {
-    const key = `${group.cultureId}/${group.religionId ?? 'a'}`;
+    const key = cohortKey(group.cultureId, group.religionId);
     const current = totals.get(key);
     if (current) current.population += group.population;
     else totals.set(key, { ...group });
@@ -319,45 +329,13 @@ export function colonizationPlan(world: World, country: Country): ColonizationPl
       availablePopulation += world.density[p];
     }
   });
-  donors.sort((a, b) => world.density[b] - world.density[a] || a - b);
-
   let targetCount = 0;
-  const foreignTargets = new Map<number, number[]>();
   for (const p of world.landIndex) {
     if (!geographic[p] || world.owner[p] === country.id + 1) continue;
     const owner = world.owner[p];
-    if (owner > 0 && (world.density[p] >= averageDensity || allies.has(owner - 1))) continue;
+    if (owner > 0 && (world.density[p] <= EPSILON || world.density[p] >= averageDensity || allies.has(owner - 1))) continue;
     targets[p] = 1;
     targetCount += 1;
-    if (owner > 0) {
-      const list = foreignTargets.get(owner - 1) ?? [];
-      list.push(p);
-      foreignTargets.set(owner - 1, list);
-    }
-  }
-
-  const refugeeSinks = new Map<number, { pixels: number[]; index: number }>();
-  for (const [countryId, targetsInCountry] of foreignTargets) {
-    const originalCountry = world.countries[countryId];
-    const sinks: number[] = [];
-    let capacity = 0;
-    world.forEachCountryPixel(originalCountry, (p) => {
-      if (targets[p] || world.density[p] >= MAX_DENSITY) return;
-      sinks.push(p);
-      capacity += MAX_DENSITY - world.density[p];
-    });
-    sinks.sort((a, b) => world.density[a] - world.density[b] || a - b);
-    const orderedTargets = [...targetsInCountry].sort((a, b) => world.density[a] - world.density[b] || a - b);
-    for (const p of orderedTargets) {
-      const displaced = world.density[p];
-      if (displaced > capacity) {
-        targets[p] = 0;
-        targetCount -= 1;
-        continue;
-      }
-      capacity -= displaced;
-    }
-    refugeeSinks.set(countryId, { pixels: sinks, index: 0 });
   }
 
   let hint = -1, validCount = 0;
@@ -367,7 +345,7 @@ export function colonizationPlan(world: World, country: Country): ColonizationPl
     if (hint < 0 || Math.random() < 1 / validCount) hint = p;
   }
   targetCount = validCount;
-  const plan = { targets, donors, refugeeSinks, averageDensity, availablePopulation, targetCount, hint };
+  const plan = { targets, donors, averageDensity, availablePopulation, targetCount, hint };
   cached = { world, version: world.version, countryId: country.id, plan };
   return plan;
 }

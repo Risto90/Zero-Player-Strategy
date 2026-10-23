@@ -1,6 +1,6 @@
 import type { Rect } from './brush';
 import type { CompositionTable } from './composition';
-import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, MAX_DENSITY, PALETTE } from './config';
+import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE } from './config';
 import type { World } from './world';
 
 export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers' | 'colonization';
@@ -259,7 +259,7 @@ export class MapRenderer {
         else if (o === 0) color = mode >= 5 ? ramp[values[p]] : unclaimedPacked;
         else if (mode === 2) color = this.compColor('culture', culture[p]);
         else if (mode === 3) color = this.compColor('religion', religion[p]);
-        else if (mode === 4) color = ramp[Math.round((density[p] / MAX_DENSITY) * 100)];
+        else if (mode === 4) color = ramp[Math.min(100, Math.round(Math.log1p(density[p]) * 12))];
         else color = ramp[values[p]];
         // Country borders show in every mode; coasts are lightly outlined.
         const bits = nb[p];

@@ -1,7 +1,6 @@
 import { Feather } from '@expo/vector-icons';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
-import { MAX_DENSITY } from '@/game/config';
 import type { PixelInfo } from '@/game/game';
 import type { World } from '@/game/world';
 import { MODIFIERS, GOVERNMENTS, ageStage, governmentOf } from '@/game/government';
@@ -48,6 +47,10 @@ function Shares({ title, rows, extra }: { title: string; rows: ShareRow[]; extra
       )}
     </View>
   );
+}
+
+function fmtDensity(value: number): string {
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value);
 }
 
 export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPress }: {
@@ -140,8 +143,7 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
               <Bar label="Влажность" value={info.humidity} />
               <Bar label="Температура" value={info.temperature} />
               <Bar label="Дренаж" value={info.drainage} />
-              <Bar label="Население" value={Math.round((info.density / MAX_DENSITY) * 100)} />
-              <Text style={styles.densityNote}>плотность {info.density} из {MAX_DENSITY}</Text>
+              <Text style={styles.densityNote}>Плотность · {fmtDensity(info.density)} чел. на участок</Text>
             </View>
             {info.country ? (
               <>
