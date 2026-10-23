@@ -15,7 +15,7 @@ import { applyReform } from './politics';
 import { appoint, candidateAllowed, ensureOffices, refreshHeirs, successionOrder } from './succession';
 import { randomItem } from './random';
 import { demography } from './demography';
-import { addCityAndConcentrate, cityInfluenceRadius, cityRankName, concentrateCityPopulation } from './settlements';
+import { addCityAndConcentrate, canUpgradeCityRank, cityInfluenceRadius, cityRankName, concentrateCityPopulation } from './settlements';
 import { dissolveCountryIntoNomads } from './nomads';
 
 export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
@@ -791,7 +791,7 @@ export class Game {
       case 'upgradeCity': {
         const cityId = card.choices?.[card.selectedChoice]?.cityId;
         const city = cityId === undefined ? null : w.cities[cityId];
-        if (city && target && city.countryId === target.id && city.rank < 6) {
+        if (city && target && city.countryId === target.id && canUpgradeCityRank(w, target.id, city.rank)) {
           city.rank = (city.rank + 1) as City['rank'];
           concentrateCityPopulation(w, city);
           this.markCityArea(city);

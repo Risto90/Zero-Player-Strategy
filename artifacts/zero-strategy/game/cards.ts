@@ -1,5 +1,5 @@
 import type { Card, CardType } from './brush';
-import { INK, MAP_PIXELS, MAP_WIDTH, MAX_COUNTRIES, RANKS } from './config';
+import { BRUSH_SIZES, INK, MAP_PIXELS, MAP_WIDTH, MAX_COUNTRIES, RANKS } from './config';
 import { forEachNeighbour } from './geography';
 import { randomItem, weightedPick } from './random';
 import type { Country, World } from './world';
@@ -9,7 +9,7 @@ import { leadershipOptions } from './succession';
 import { newCitizen, person } from './characters';
 import { demography } from './demography';
 import { colonizationPlan } from './colonization';
-import { CityInfluenceIndex, cityInfluenceMultiplier, cityRankName } from './settlements';
+import { canUpgradeCityRank, CityInfluenceIndex, cityInfluenceMultiplier, cityRankName } from './settlements';
 import type { City, NomadGroup } from './world';
 
 export const CARD_TITLES: Record<CardType, string> = {
@@ -41,6 +41,16 @@ export const CARD_TITLES: Record<CardType, string> = {
   revolt: 'Переворот',
   union: 'Объединение',
 };
+
+const STANDARD_EXPANSION_RADIUS = BRUSH_SIZES[1].radius;
+let standardExpansionPassPixels = 0;
+for (let y = -STANDARD_EXPANSION_RADIUS; y <= STANDARD_EXPANSION_RADIUS; y += 1) {
+  for (let x = -STANDARD_EXPANSION_RADIUS; x <= STANDARD_EXPANSION_RADIUS; x += 1) {
+    if (x * x + y * y <= STANDARD_EXPANSION_RADIUS * STANDARD_EXPANSION_RADIUS) standardExpansionPassPixels += 1;
+  }
+}
+// A town gathers 10% from its unmodified sphere; the reference equals five default-M brush dabs.
+const CITY_DENSITY_REFERENCE = 5 * standardExpansionPassPixels / (0.1 * RANKS[0].ink);
 
 function makeCard(type: CardType, ink: number, target: Country | null, detail: string, hint: number): Card {
   return {
@@ -275,8 +285,11 @@ function drawBuildCity(world: World, country: Country): Card | null {
 }
 
 function drawUpgradeCity(world: World, country: Country): Card | null {
-  const cities = world.cities.filter((city) => city.countryId === country.id && city.rank < 6 &&
-    world.cities.filter((other) => other.countryId === country.id && other.rank === city.rank).length >= 3);
+  const eligibleRanks = new Set<number>();
+  for (let rank = 1; rank < 6; rank += 1) {
+    if (canUpgradeCityRank(world, country.id, rank as City['rank'])) eligibleRanks.add(rank);
+  }
+  const cities = world.cities.filter((city) => city.countryId === country.id && eligibleRanks.has(city.rank));
   const candidates = largestCities(world, cities);
   if (candidates.length < 2) return null;
   const card = makeCard(
@@ -672,13 +685,12 @@ export function drawCountryCard(world: World, country: Country, year: number): C
     nonCityPixels += 1;
   });
   const averageNonCityDensity = nonCityDensity / Math.max(1, nonCityPixels);
-  const densityReference = 5 / (0.1 * RANKS[0].ink);
   const cityModifierTotal = countryCities.reduce(
     (sum, city) => sum + city.rank * cityInfluenceMultiplier(world, city),
     0,
   );
   const buildCityWeight = cityModifierTotal > 0
-    ? (1 + country.pixels / RANKS[2].ink) * (averageNonCityDensity / densityReference) / cityModifierTotal
+    ? (1 + country.pixels / RANKS[2].ink) * (averageNonCityDensity / CITY_DENSITY_REFERENCE) / cityModifierTotal
     : 0;
   const upgradeCityWeight = countryCities.length > 0
     ? diversity.population / RANKS[2].ink * countryCities.length

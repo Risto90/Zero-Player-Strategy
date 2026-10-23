@@ -25,6 +25,7 @@ import { clampView, initialView, minScale, zoomAround } from './viewMath';
 
 const NEAREST = { filter: FilterMode.Nearest, mipmap: MipmapMode.None };
 const LINEAR = { filter: FilterMode.Linear, mipmap: MipmapMode.None };
+
 type CityMarkerData = { city: City; iconIndex: number };
 
 function CityMarker({ city, iconIndex, image, counterScale }: CityMarkerData & {
@@ -33,7 +34,7 @@ function CityMarker({ city, iconIndex, image, counterScale }: CityMarkerData & {
 }) {
   const x = city.pixel % MAP_WIDTH;
   const y = Math.floor(city.pixel / MAP_WIDTH);
-  const size = iconIndex === 12 ? 26 : 8 + city.rank * 2;
+  const size = iconIndex === 12 ? 40 : iconIndex >= 6 ? 30 + city.rank : 24 + city.rank;
   return (
     <Group origin={{ x, y }} transform={counterScale}>
       {image && <SkiaImage image={image} x={x - size / 2} y={y - size / 2} width={size} height={size} fit="contain" sampling={LINEAR} />}
@@ -41,14 +42,14 @@ function CityMarker({ city, iconIndex, image, counterScale }: CityMarkerData & {
   );
 }
 
-function CityMarkerLayer({ zoomRank, cities, scale, images }: {
+function CityMarkerLayer({ zoomRank, cities, scale, baseScale, images }: {
   zoomRank: number;
   cities: CityMarkerData[];
   scale: SharedValue<number>;
+  baseScale: SharedValue<number>;
   images: (SkImage | null)[];
 }) {
-  const showAt = 0.7 + (6 - zoomRank) * 0.56;
-  const visible = useDerivedValue(() => scale.value >= showAt ? 1 : 0);
+  const visible = useDerivedValue(() => scale.value >= baseScale.value * (1 + (6 - zoomRank) * 0.2) ? 1 : 0);
   const counterScale = useDerivedValue(() => [{ scale: 1 / Math.max(scale.value, 0.08) }]);
   return (
     <Group opacity={visible}>
@@ -59,7 +60,11 @@ function CityMarkerLayer({ zoomRank, cities, scale, images }: {
   );
 }
 
-function CityMarkers({ world, scale }: { world: World; scale: SharedValue<number> }) {
+function CityMarkers({ world, scale, baseScale }: {
+  world: World;
+  scale: SharedValue<number>;
+  baseScale: SharedValue<number>;
+}) {
   const image0 = useImage(CITY_ICON_SOURCES[0]);
   const image1 = useImage(CITY_ICON_SOURCES[1]);
   const image2 = useImage(CITY_ICON_SOURCES[2]);
@@ -83,7 +88,7 @@ function CityMarkers({ world, scale }: { world: World; scale: SharedValue<number
     byZoomRank.set(zoomRank, list);
   }
   return [...byZoomRank].map(([zoomRank, cities]) => (
-    <CityMarkerLayer key={zoomRank} zoomRank={zoomRank} cities={cities} scale={scale} images={images} />
+    <CityMarkerLayer key={zoomRank} zoomRank={zoomRank} cities={cities} scale={scale} baseScale={baseScale} images={images} />
   ));
 }
 
@@ -111,6 +116,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   inspectRef.current = onInspect;
 
   const scale = useSharedValue(1);
+  const markerBaseScale = useSharedValue(1);
   const ox = useSharedValue(0);
   const oy = useSharedValue(0);
   const cursorX = useSharedValue(0);
@@ -198,6 +204,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const onLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
     sizeRef.current = { width: Math.max(1, width), height: Math.max(1, height) };
+    markerBaseScale.value = initialView(sizeRef.current.width, sizeRef.current.height).scale;
     if (!laidOut.current) {
       laidOut.current = true;
       applyView(initialView(sizeRef.current.width, sizeRef.current.height));
@@ -223,7 +230,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           {strips.map((image, s) => (
             <SkiaImage key={s} image={image} x={0} y={s * STRIP_H} width={MAP_WIDTH} height={STRIP_H} sampling={sampling} />
           ))}
-          <CityMarkers world={game.world} scale={scale} />
+          <CityMarkers world={game.world} scale={scale} baseScale={markerBaseScale} />
         </Group>
         <Group opacity={cursorOpacity}>
           <Circle cx={cursorX} cy={cursorY} r={cursorR} style="stroke" strokeWidth={3} color="rgba(255,255,255,0.9)" />

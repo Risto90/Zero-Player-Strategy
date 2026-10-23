@@ -25,6 +25,25 @@ export function cityRankName(rank: CityRank): string {
   return ['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][rank - 1];
 }
 
+/**
+ * A promotion is offered only if the resulting rank distribution still has at least
+ * two cities of the previous rank for each city of the next rank.
+ */
+export function canUpgradeCityRank(world: World, countryId: number, rank: CityRank): boolean {
+  if (rank >= 6) return false;
+  const counts = new Array<number>(7).fill(0);
+  for (const city of world.cities) {
+    if (city.countryId === countryId) counts[city.rank] += 1;
+  }
+  if (counts[rank] < 1) return false;
+  counts[rank] -= 1;
+  counts[rank + 1] += 1;
+  for (let currentRank = 1; currentRank < 6; currentRank += 1) {
+    if (counts[currentRank] < 2 * counts[currentRank + 1]) return false;
+  }
+  return true;
+}
+
 export interface CityInfluence {
   ownRankSum: number;
   ownLargestRank: number;

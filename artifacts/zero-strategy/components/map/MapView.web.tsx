@@ -1,7 +1,9 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
 import { STRIP_H } from '@/game/render';
+import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { clampView, initialView, minScale, zoomAround } from './viewMath';
@@ -12,8 +14,10 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<ImageData | null>(null);
+  const cityImagesRef = useRef<(HTMLImageElement | null)[]>([]);
   const viewRef = useRef<ViewTransform>({ scale: 1, ox: 0, oy: 0 });
   const sizeRef = useRef({ width: 1, height: 1, dpr: 1 });
+  const baseScaleRef = useRef(1);
   const frameRef = useRef(0);
   const cursorRef = useRef<{ x: number; y: number } | null>(null);
   const toolRef = useRef(tool);
@@ -40,6 +44,18 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     ctx.fillRect(0, 0, width, height);
     ctx.imageSmoothingEnabled = view.scale < 1;
     ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
+    for (const city of game.world.cities) {
+      const hasPort = game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0;
+      const zoomRank = cityVisibilityRank(city, hasPort);
+      if (view.scale < baseScaleRef.current * (1 + (6 - zoomRank) * 0.2)) continue;
+      const icon = cityImagesRef.current[cityIconIndex(city, hasPort)];
+      if (!icon?.complete || icon.naturalWidth === 0) continue;
+      const size = city.capital ? 40 : hasPort ? 30 + city.rank : 24 + city.rank;
+      const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
+      const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
+      if (x + size < 0 || y + size < 0 || x - size > width || y - size > height) continue;
+      ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
+    }
     const cursor = cursorRef.current;
     if (cursor) {
       const radius = game.brushRadius * view.scale;
@@ -59,6 +75,26 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const requestDraw = useCallback(() => {
     if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
   }, [draw]);
+
+  useEffect(() => {
+    const images = CITY_ICON_SOURCES.map((source, index) => {
+      const asset = Asset.fromModule(source);
+      const uri = asset.localUri ?? asset.uri;
+      if (!uri) {
+        console.error(`City icon ${index} has no resolved asset URI`);
+        return null;
+      }
+      const image = new window.Image();
+      image.onload = requestDraw;
+      image.onerror = () => console.error(`Failed to load city icon ${index}`);
+      image.src = uri;
+      return image;
+    });
+    cityImagesRef.current = images;
+    return () => {
+      for (const image of images) if (image) image.onload = null;
+    };
+  }, [requestDraw]);
 
   const applyView = useCallback(
     (view: ViewTransform) => {
@@ -128,6 +164,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       canvas.height = Math.round(height * dpr);
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
+      baseScaleRef.current = initialView(width, height).scale;
       applyView(first ? initialView(width, height) : clampView(viewRef.current, width, height));
       first = false;
     });
