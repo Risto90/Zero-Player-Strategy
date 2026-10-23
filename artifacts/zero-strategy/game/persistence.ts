@@ -2,7 +2,7 @@ import { MAP_PIXELS } from './config';
 import type { MapKind } from './geography';
 import { decodeEarthLand, fillOceanTemperature } from './geography';
 import { fillRings, rasterizeScalar, runSteps, traceCompositionSteps, traceScalarSteps, type EntityZones, type Steps, type TableView, type Zone } from './zones';
-import { World, type Country, type Culture, type Religion } from './world';
+import { World, type City, type Country, type Culture, type NomadGroup, type Religion } from './world';
 
 /**
  * Saved map: every layer is stored as closed-curve zones, never as per-pixel values.
@@ -25,6 +25,8 @@ export interface SavedWorld {
   mapKind: MapKind;
   seed: number;
   countries: Country[];
+  cities?: City[];
+  nomads?: NomadGroup[];
   cultures: Culture[];
   religions: Religion[];
   people: World['people'];
@@ -48,6 +50,8 @@ export interface WorldCopy {
   cultureTable: TableView;
   religionTable: TableView;
   countries: Country[];
+  cities: City[];
+  nomads: NomadGroup[];
   cultures: Culture[];
   religions: Religion[];
   people: World['people'];
@@ -85,6 +89,13 @@ export function copyWorld(world: World): WorldCopy {
       ruler: { ...c.ruler, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], friendIds: [...c.ruler.friendIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
       heir: c.heir ? { ...c.heir, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], friendIds: [...c.heir.friendIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
     })),
+    cities: world.cities.map((city) => ({ ...city })),
+    nomads: world.nomads.map((nomad) => ({
+      ...nomad,
+      cells: nomad.cells.map((cell) => ({ ...cell })),
+      ruler: { ...nomad.ruler, parents: [...nomad.ruler.parents], spouseIds: [...nomad.ruler.spouseIds], loverIds: [...nomad.ruler.loverIds], friendIds: [...nomad.ruler.friendIds], traits: [...nomad.ruler.traits], formerRulerOf: [...nomad.ruler.formerRulerOf] },
+      heir: nomad.heir ? { ...nomad.heir, parents: [...nomad.heir.parents], spouseIds: [...nomad.heir.spouseIds], loverIds: [...nomad.heir.loverIds], friendIds: [...nomad.heir.friendIds], traits: [...nomad.heir.traits], formerRulerOf: [...nomad.heir.formerRulerOf] } : null,
+    })),
     cultures: world.cultures.map((c) => ({ ...c })),
     religions: world.religions.map((r) => ({ ...r })),
     people: world.people.map((p) => ({ ...p, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], friendIds: [...p.friendIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
@@ -108,6 +119,8 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     mapKind: copy.mapKind,
     seed: copy.seed,
     countries: copy.countries,
+    cities: copy.cities,
+    nomads: copy.nomads,
     cultures: copy.cultures,
     religions: copy.religions,
     people: copy.people,
@@ -137,6 +150,11 @@ export function deserializeWorld(saved: SavedWorld): World {
     drainage: rasterize(layers.drainage, new Uint8Array(MAP_PIXELS)),
   });
   world.countries = saved.countries.map((c) => ({ ...c }));
+  world.cities = (saved.cities ?? []).map((city) => ({ ...city }));
+  world.nomads = (saved.nomads ?? []).map((nomad) => ({ ...nomad, cells: nomad.cells ?? [] }));
+  for (const city of world.cities) {
+    if (city.pixel >= 0 && city.pixel < MAP_PIXELS) world.cityIdAt[city.pixel] = city.id;
+  }
   world.people = saved.people ?? [];
   world.cultures = saved.cultures.map((c) => ({ ...c }));
   world.religions = saved.religions.map((r) => ({ ...r }));

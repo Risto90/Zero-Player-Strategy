@@ -1,6 +1,6 @@
 import type { Game, PixelInfo } from '@/game/game';
 
-export type MapTool = 'brush' | 'hand';
+export type MapTool = 'brush' | 'hand' | 'city';
 
 export interface MapViewHandle {
   zoomBy(factor: number): void;

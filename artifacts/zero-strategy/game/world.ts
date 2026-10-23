@@ -31,6 +31,35 @@ export interface Country extends PoliticalState {
   box: [number, number, number, number];
 }
 
+export type CityRank = 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface City {
+  id: number;
+  countryId: number;
+  pixel: number;
+  rank: CityRank;
+  capital: boolean;
+}
+
+export interface NomadCell {
+  pixel: number;
+  population: number;
+  cultureMix: number;
+  religionMix: number;
+}
+
+/** A mobile people with a spatial range, but no state-owned land. */
+export interface NomadGroup extends PoliticalState {
+  id: number;
+  name: string;
+  color: string;
+  cultureId: number;
+  religionId: number | null;
+  cells: NomadCell[];
+  sourceCountryId: number | null;
+  pixels: number;
+}
+
 export interface Culture {
   id: number;
   name: string;
@@ -57,6 +86,7 @@ export class World {
   readonly riverPixelCount: number;
   readonly majorRiverPixelCount: number;
   readonly owner = new Uint16Array(MAP_PIXELS);
+  readonly cityIdAt = new Int32Array(MAP_PIXELS).fill(-1);
   readonly density = new Float32Array(MAP_PIXELS);
   humidity: Uint8Array;
   temperature: Uint8Array;
@@ -66,6 +96,8 @@ export class World {
   readonly cultureTable = new CompositionTable();
   readonly religionTable = new CompositionTable();
   countries: Country[] = [];
+  cities: City[] = [];
+  nomads: NomadGroup[] = [];
   cultures: Culture[] = [];
   religions: Religion[] = [];
   people: Person[] = [];
@@ -142,6 +174,34 @@ export class World {
         box[3] = Math.max(box[3], y);
       }
     }
+  }
+
+  cityAt(p: number): City | null {
+    const cityId = this.cityIdAt[p];
+    return cityId >= 0 ? this.cities[cityId] ?? null : null;
+  }
+
+  addCity(countryId: number, pixel: number, rank: CityRank = 1, capital = false): City | null {
+    const country = this.countries[countryId];
+    if (!country || pixel < 0 || pixel >= MAP_PIXELS || !this.land[pixel] || this.cityAt(pixel)) return null;
+    const city: City = { id: this.cities.length, countryId, pixel, rank, capital };
+    if (capital) for (const existing of this.cities) if (existing.countryId === countryId) existing.capital = false;
+    this.cities.push(city);
+    this.cityIdAt[pixel] = city.id;
+    this.version += 1;
+    return city;
+  }
+
+  removeCity(cityId: number): void {
+    const city = this.cities[cityId];
+    if (!city) return;
+    this.cities.splice(cityId, 1);
+    this.cityIdAt[city.pixel] = -1;
+    this.cities.forEach((item, index) => {
+      item.id = index;
+      this.cityIdAt[item.pixel] = index;
+    });
+    this.version += 1;
   }
 
   /** Visits every pixel of a country (scans its bounding box). */

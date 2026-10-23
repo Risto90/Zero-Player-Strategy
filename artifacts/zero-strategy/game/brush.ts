@@ -5,7 +5,7 @@ import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
 import { ColonizationDonorHeap, colonizationPlan, transferColonizationPopulation } from './colonization';
 
-export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
+export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'moveCapital' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
 export interface CardChoice {
   label: string;
   detail: string;
@@ -18,6 +18,7 @@ export interface CardChoice {
   termYears?: number;
   maxTerms?: number;
   consulCount?: number;
+  cityId?: number;
   violent?: boolean;
 }
 export interface CharacterEvent { kind: 'marriage' | 'birth' | 'death' | 'friendship' | 'trait' | 'engagement' | 'romance'; personIds: number[]; trait?: string; newPerson?: Person }
@@ -45,8 +46,10 @@ export interface Card {
   choices: CardChoice[] | null;
   selectedChoice: number;
   characterEvent: CharacterEvent | null;
+  requiredCityId?: number;
   violentReform?: boolean;
   developmentOnly?: boolean;
+  cityPlaced?: boolean;
   /** A pixel where the card certainly applies (used by automatic play). */
   hint: number;
 }

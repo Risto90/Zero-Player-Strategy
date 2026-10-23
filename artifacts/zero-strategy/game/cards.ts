@@ -9,12 +9,17 @@ import { leadershipOptions } from './succession';
 import { newCitizen, person } from './characters';
 import { demography } from './demography';
 import { colonizationPlan } from './colonization';
+import { cityInfluenceMultiplier, cityRankName } from './settlements';
+import type { City } from './world';
 
 export const CARD_TITLES: Record<CardType, string> = {
   create: 'Создание государства',
   expand: 'Расширение страны',
   colonization: 'Колонизация',
   split: 'Раскол страны',
+  buildCity: 'Создание города',
+  upgradeCity: 'Расширение города',
+  moveCapital: 'Перенос столицы',
   drought: 'Засуха',
   rain: 'Ливни',
   desertification: 'Опустынивание',
@@ -212,6 +217,75 @@ function drawColonization(world: World, country: Country): Card | null {
   return card;
 }
 
+function cityChoices(world: World, cities: City[]): { label: string; detail: string; cityId: number }[] {
+  return cities.map((city) => ({
+    label: `${cityRankName(city.rank)} · ${city.capital ? 'столица' : 'город'}`,
+    detail: `Население точки: ${Math.round(world.density[city.pixel])} чел.`,
+    cityId: city.id,
+  }));
+}
+
+function largestCities(world: World, cities: City[], limit = 2): City[] {
+  return [...cities].sort((a, b) =>
+    b.rank - a.rank ||
+    world.density[b.pixel] - world.density[a.pixel] ||
+    a.pixel - b.pixel,
+  ).slice(0, limit);
+}
+
+function drawBuildCity(world: World, country: Country): Card | null {
+  if (!world.countries[country.id] || !country.pixels) return null;
+  const occupied = new Set(world.cities.map((city) => city.pixel));
+  let hasSite = false;
+  world.forEachCountryPixel(country, (p) => { if (!occupied.has(p)) hasSite = true; });
+  if (!hasSite) return null;
+  return makeCard(
+    'buildCity',
+    0,
+    country,
+    `Выберите инструмент «Город» и укажите незанятую точку суши в ${country.name}. Появится городок.`,
+    -1,
+  );
+}
+
+function drawUpgradeCity(world: World, country: Country): Card | null {
+  const cities = world.cities.filter((city) => city.countryId === country.id && city.rank < 6 &&
+    world.cities.filter((other) => other.countryId === country.id && other.rank === city.rank).length >= 3);
+  const candidates = largestCities(world, cities);
+  if (candidates.length < 2) return null;
+  const card = makeCard(
+    'upgradeCity',
+    0,
+    country,
+    `Выберите один из двух крупнейших подходящих городов ${country.name}; его ранг повысится на один.`,
+    -1,
+  );
+  card.choices = cityChoices(world, candidates).map((choice) => ({
+    label: choice.label,
+    detail: `${choice.detail} Новый ранг: ${cityRankName((world.cities[choice.cityId].rank + 1) as City['rank'])}.`,
+    cityId: choice.cityId,
+  }));
+  return card;
+}
+
+function drawMoveCapital(world: World, country: Country): Card | null {
+  const candidates = largestCities(world, world.cities.filter((city) => city.countryId === country.id && !city.capital));
+  if (world.cities.filter((city) => city.countryId === country.id).length < 3 || candidates.length < 2) return null;
+  const card = makeCard(
+    'moveCapital',
+    0,
+    country,
+    `Выберите новую столицу из двух крупнейших городов, кроме нынешней столицы.`,
+    -1,
+  );
+  card.choices = cityChoices(world, candidates).map((choice) => ({
+    label: choice.label,
+    detail: choice.detail,
+    cityId: choice.cityId,
+  }));
+  return card;
+}
+
 function proposalChoice(world: World, proposal: ReformProposal, ruler?: import('./government').Person): {
   label: string; detail: string; government?: GovernmentId; modifier?: GovernmentModifierId;
   removeModifier?: GovernmentModifierId; termYears?: number; maxTerms?: number; consulCount?: number; violent?: boolean;
@@ -320,6 +394,8 @@ function drawLifeCard(world: World, country: Country, year: number): Card | null
 
 function drawSplit(world: World, country: Country, year: number, uprising = false): Card | null {
   if (country.pixels < 3000) return null;
+  const cities = world.cities.filter((city) => city.countryId === country.id && !city.capital);
+  if (world.cities.filter((city) => city.countryId === country.id).length < 2 || cities.length < 1) return null;
   let splitCultureId: number | undefined;
   let splitReligionId: number | undefined;
   let cultureId = country.cultureId, religionId = country.religionId;
@@ -342,8 +418,9 @@ function drawSplit(world: World, country: Country, year: number, uprising = fals
     const faithMatch = splitReligionId !== undefined && world.religionTable.shareOf(world.religion[p], splitReligionId) > 0;
     return splitCultureId === undefined && splitReligionId === undefined || cultureMatch || faithMatch;
   };
-  const hint = randomCountryPixel(world, country, accept);
-  if (hint < 0) return null;
+  const cityCandidates = largestCities(world, cities.filter((city) => accept(city.pixel)));
+  if (!cityCandidates.length) return null;
+  const hint = cityCandidates[0].pixel;
   const ink = Math.min(INK.split, Math.floor(country.pixels * 0.45));
   const split = world.newCountry({
     rank: country.rank,
@@ -365,6 +442,14 @@ function drawSplit(world: World, country: Country, year: number, uprising = fals
     : `${split.name} отделяется от ${country.name}.`, hint);
   if (uprising) card.title = 'Восстание региона';
   card.newCountryId = split.id;
+  card.requiredCityId = cityCandidates[0].id;
+  if (cityCandidates.length > 1) {
+    card.choices = cityChoices(world, cityCandidates).map((choice) => ({
+      label: choice.label,
+      detail: `${choice.detail} Этот город станет столицей новой страны.`,
+      cityId: choice.cityId,
+    }));
+  }
   if (splitCultureId !== undefined) card.splitCultureId = splitCultureId;
   if (splitReligionId !== undefined) card.splitReligionId = splitReligionId;
   if (splitCultureId !== undefined) card.sourceCultureId = splitCultureId;
@@ -553,6 +638,30 @@ export function drawWorldCard(world: World, year: number): Card | null {
 export function drawCountryCard(world: World, country: Country, year: number): Card | null {
   const big = country.pixels >= 12000;
   const diversity = demography(world, country);
+  const countryCities = world.cities.filter((city) => city.countryId === country.id);
+  let nonCityDensity = 0, nonCityPixels = 0;
+  world.forEachCountryPixel(country, (p) => {
+    if (world.cityIdAt[p] >= 0) return;
+    nonCityDensity += world.density[p];
+    nonCityPixels += 1;
+  });
+  const averageNonCityDensity = nonCityDensity / Math.max(1, nonCityPixels);
+  const densityReference = 5 / (0.1 * RANKS[0].ink);
+  const cityModifierTotal = countryCities.reduce(
+    (sum, city) => sum + city.rank * cityInfluenceMultiplier(world, city),
+    0,
+  );
+  const buildCityWeight = cityModifierTotal > 0
+    ? (1 + country.pixels / RANKS[2].ink) * (averageNonCityDensity / densityReference) / cityModifierTotal
+    : 0;
+  const upgradeCityWeight = countryCities.length > 0
+    ? diversity.population / RANKS[2].ink * countryCities.length
+    : 0;
+  const capital = countryCities.find((city) => city.capital);
+  const largerThanCapital = capital ? countryCities.filter((city) =>
+    city.id !== capital.id &&
+    (city.rank > capital.rank || (city.rank === capital.rank && world.density[city.pixel] > world.density[capital.pixel])),
+  ).length : 0;
   const life = drawLifeCard(world, country, year);
   if (life?.type === 'death' || life?.type === 'election' || life?.type === 'birth' || life?.type === 'marriage') return life;
   const consulateScale = country.modifiers.includes('consulate') ? 1 / Math.max(2, country.consulCount) : country.modifiers.includes('coRule') ? 0.5 : 1;
@@ -561,10 +670,13 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   return drawFirstApplicable([
     { value: () => life, weight: 1.4 },
     { value: () => drawExpand(world, country), weight: 4 * consulateScale },
+    { value: () => drawBuildCity(world, country), weight: buildCityWeight },
+    { value: () => drawUpgradeCity(world, country), weight: upgradeCityWeight },
+    { value: () => drawMoveCapital(world, country), weight: countryCities.length >= 3 ? 1 : 0 },
     { value: () => drawColonization(world, country), weight: Math.max(0, diversity.density * 0.12) * consulateScale },
     { value: () => drawGovernment(world, country, year), weight: 0.16 * consulateScale },
     { value: () => drawGovernment(world, country, year, true), weight: 0.01 * consulateScale },
-    { value: () => drawSplit(world, country, year), weight: (big ? 0.3 : 0) * splitScale * consulateScale },
+    { value: () => drawSplit(world, country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale },
     { value: () => drawSplit(world, country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale },
     { value: () => drawUnion(world, country, year), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0 },
     { value: () => drawClimate(world, 'drought', country), weight: 0.8 },
