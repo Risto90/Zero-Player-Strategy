@@ -129,15 +129,49 @@ export function refreshHeirs(world: World, year?: number): void {
 /** Generated options are proposals only; only the chosen person is added to the world registry. */
 export function leadershipOptions(world: World, c: Country, year: number, old = c.ruler): Person[] {
   const family = successionOrder(world, c, old);
-  const drawFamily = () => {
-    if (hasFixedHeir(c)) return family[0] ?? null;
-    return weighted(family.map((p) => ({ value: p, weight: candidateWeight(world, c, p, old) })));
-  };
+  const unique = (people: (Person | null)[]) => people.filter((p, i, all): p is Person =>
+    !!p && all.findIndex((x) => x?.id === p.id) === i);
   const fresh = () => newCitizen(world, c, year);
-  if (c.government === 'tribal') return [fresh(), drawFamily() ?? fresh()];
-  if (c.government !== 'republic') {
+  const dynastic = (): Person => {
+    const p = fresh();
+    p.familyId = old.familyId;
+    p.parents = [old.id];
+    p.age = c.modifiers.includes('meritocracy') || (c.government === 'republic') ? 24 :
+      c.government === 'tyranny' || c.modifiers.includes('coRule') ? 12 : 16;
+    p.bornAt = year - p.age - Math.random();
+    if (c.modifiers.includes('ethnic') && c.government !== 'republic') p.cultureId = old.cultureId;
+    if (c.modifiers.includes('theocracy') && c.government !== 'republic') p.religionId = old.religionId;
+    return p;
+  };
+  const distinctFamily = unique(family);
+  const ensurePair = (first: Person | null, second: Person | null, fallback: () => Person): Person[] => {
+    const pair = unique([first, second]);
+    while (pair.length < 2) {
+      let candidate = fallback();
+      for (let attempt = 0; attempt < 8 && pair.some((p) => p.id === candidate.id); attempt += 1) candidate = fallback();
+      pair.push(candidate);
+    }
+    return pair.slice(0, 2);
+  };
+  const drawFamily = () => {
+    if (hasFixedHeir(c)) return distinctFamily[0] ?? null;
+    return weighted(distinctFamily.map((p) => ({ value: p, weight: candidateWeight(world, c, p, old) })));
+  };
+  if (c.government === 'tribal') {
+    const child = drawFamily();
+    return child ? ensurePair(fresh(), child, fresh) : ensurePair(fresh(), null, fresh);
+  }
+  if (c.government === 'hereditary') {
+    const eligible = distinctFamily.filter((p) => candidateAllowed(world, c, p, old));
+    const first = hasFixedHeir(c) ? eligible[0] ?? null :
+      weighted(eligible.map((p) => ({ value: p, weight: candidateWeight(world, c, p, old) })));
+    const second = eligible.find((p) => p.id !== first?.id) ?? null;
+    return ensurePair(first, second, dynastic);
+  }
+  if (c.government === 'tyranny') {
     const first = drawFamily();
-    return first ? [first] : [fresh()];
+    const second = distinctFamily.find((p) => p.id !== first?.id && candidateAllowed(world, c, p, old)) ?? null;
+    return ensurePair(first, second, fresh);
   }
   const make = () => {
     const proposal = fresh();
@@ -149,8 +183,8 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
   const incumbent = c.modifiers.includes('continuous') && candidateAllowed(world, c, old, old) ? old : null;
   const a = incumbent ?? make();
   let b = make();
-  if (a.id === b.id) b = fresh();
-  return [a, b];
+  for (let attempt = 0; b.id === a.id && attempt < 8; attempt += 1) b = make();
+  return ensurePair(a, b.id === a.id ? fresh() : b, fresh);
 }
 export function appoint(world: World, c: Country, p: Person, year: number, seatId = c.ruler.id): void {
   const old = person(world, seatId) ?? c.ruler;

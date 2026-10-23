@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { MAX_DENSITY } from '@/game/config';
 import type { PixelInfo } from '@/game/game';
+import type { World } from '@/game/world';
 import { MODIFIERS, GOVERNMENTS, ageStage, governmentOf } from '@/game/government';
 import { fmt } from '@/game/format';
 
@@ -49,7 +50,12 @@ function Shares({ title, rows, extra }: { title: string; rows: ShareRow[]; extra
   );
 }
 
-export function InspectCard({ info, onClose }: { info: PixelInfo | null; onClose: () => void }) {
+export function InspectCard({ info, world, onClose, onPersonPress }: { info: PixelInfo | null; world: World; onClose: () => void; onPersonPress?: (id: number) => void }) {
+  const personLink = (id: number, name: string, detail: string) => (
+    <Pressable key={id} onPress={() => onPersonPress?.(id)} disabled={!onPersonPress}>
+      <Text style={[styles.countryLine, onPersonPress && styles.personLink]}>{name} · {detail}</Text>
+    </Pressable>
+  );
   return (
     <View style={styles.card} testID="panel-inspect">
       <Pressable onPress={onClose} style={styles.close} hitSlop={8} accessibilityLabel="Закрыть" testID="button-close-inspect">
@@ -84,27 +90,32 @@ export function InspectCard({ info, onClose }: { info: PixelInfo | null; onClose
                     <Text key={modifier} style={styles.modifier}>· {MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
                   ))}
                   <Text style={styles.countryHeading}>ПРАВИТЕЛЬ</Text>
-                  <Text style={styles.countryLine}>{info.country.ruler.name} · {info.country.ruler.age} лет · {ageStage(info.country.ruler.age)} · {info.country.ruler.trait}</Text>
+                  {personLink(info.country.ruler.id, info.country.ruler.name,
+                    `${info.country.ruler.age} лет · ${ageStage(info.country.ruler.age)} · ${worldCultureName(world, info.country.ruler.cultureId)} · ${worldReligionName(world, info.country.ruler.religionId)}`)}
                   {info.country.heir && (
                     <>
                       <Text style={styles.countryHeading}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
-                      <Text style={styles.countryLine}>{info.country.heir.name} · {info.country.heir.age} лет · {ageStage(info.country.heir.age)} · {info.country.heir.trait}</Text>
+                      {personLink(info.country.heir.id, info.country.heir.name,
+                        `${info.country.heir.age} лет · ${ageStage(info.country.heir.age)} · ${worldCultureName(world, info.country.heir.cultureId)} · ${worldReligionName(world, info.country.heir.religionId)}`)}
                     </>
                   )}
                   {info.country.coRulerIds.map((id) => {
                     const coRuler = info.family.find((p) => p.id === id);
-                    return coRuler ? <Text key={id} style={styles.countryLine}>Соправитель · {coRuler.name}, {coRuler.age} лет ({ageStage(coRuler.age)})</Text> : null;
+                    return coRuler ? (
+                      <View key={id}>
+                        <Text style={styles.countryHeading}>СОПРАВИТЕЛЬ</Text>
+                        {personLink(coRuler.id, coRuler.name, `${coRuler.age} лет (${ageStage(coRuler.age)}) · ${worldCultureName(world, coRuler.cultureId)} · ${worldReligionName(world, coRuler.religionId)}`)}
+                      </View>
+                    ) : null;
                   })}
                   {info.family.length > 0 && (
                     <>
                       <Text style={styles.countryHeading}>ДИНАСТИЯ И СЕМЬЯ</Text>
                       {info.family.map((member) => (
-                        <Text key={member.id} style={styles.countryLine}>
-                          {member.name} · {member.age} лет · {ageStage(member.age)}{member.alive ? '' : ` · умер${member.gender === 'female' ? 'ла' : ''} в ${member.deathYear ?? '?'}`}
-                          {member.spouseIds.map((id) => info.family.find((relative) => relative.id === id)?.name).filter(Boolean).length
-                            ? ` · супруг(а): ${member.spouseIds.map((id) => info.family.find((relative) => relative.id === id)?.name).filter(Boolean).join(', ')}`
-                            : ''}
-                        </Text>
+                        <View key={member.id}>
+                          {personLink(member.id, member.name,
+                            `${member.age} лет · ${ageStage(member.age)} · ${worldCultureName(world, member.cultureId)} · ${worldReligionName(world, member.religionId)}${member.alive ? '' : ` · умер${member.gender === 'female' ? 'ла' : ''} в ${member.deathYear ?? '?'}`}`)}
+                        </View>
                       ))}
                     </>
                   )}
@@ -131,6 +142,13 @@ export function InspectCard({ info, onClose }: { info: PixelInfo | null; onClose
       </ScrollView>
     </View>
   );
+}
+
+function worldCultureName(world: World, id: number): string {
+  return world.cultures[id]?.name ?? `культура №${id + 1}`;
+}
+function worldReligionName(world: World, id: number | null): string {
+  return id === null ? 'без веры' : world.religions[id]?.name ?? `вера №${id + 1}`;
 }
 
 const styles = StyleSheet.create({
@@ -167,6 +185,7 @@ const styles = StyleSheet.create({
   countryDetails: { marginTop: 4, padding: 8, gap: 3, backgroundColor: c.muted, borderLeftWidth: 2, borderLeftColor: c.primary },
   countryHeading: { marginTop: 3, fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1, color: c.primary },
   countryLine: { fontFamily: fonts.sans, fontSize: 12, color: c.foreground },
+  personLink: { color: c.accent, textDecorationLine: 'underline' },
   modifier: { fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
   sharesTitle: { marginBottom: 4, fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.6, color: c.mutedForeground },
   stack: { flexDirection: 'row', height: 8, backgroundColor: c.muted, borderRadius: 1, overflow: 'hidden', marginBottom: 4 },

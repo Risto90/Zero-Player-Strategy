@@ -1,0 +1,129 @@
+import { Feather } from '@expo/vector-icons';
+import { router, useLocalSearchParams } from 'expo-router';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import colors, { fonts } from '@/constants/colors';
+import { ageStage, type Person } from '@/game/government';
+import { useGameSnapshot } from '@/game/useGame';
+import type { Game } from '@/game/game';
+import { currentGame } from '@/game/session';
+
+const c = colors.light;
+
+function RelativeLink({ id, title, note }: { id: number; title: string; note?: string }) {
+  return (
+    <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(id) } })} style={styles.relative}>
+      <Text style={styles.link}>{title}</Text>
+      {note && <Text style={styles.note}>{note}</Text>}
+    </Pressable>
+  );
+}
+
+export default function PersonPage() {
+  const { id: rawId } = useLocalSearchParams<{ id: string }>();
+  const game = currentGame();
+  const insets = useSafeAreaInsets();
+  const person = game?.world.people.find((item) => item.id === Number(rawId));
+  if (!game || !person) {
+    return (
+      <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}>
+        <Text style={styles.title}>Персонаж не найден</Text>
+        <Pressable onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>Назад</Text></Pressable>
+      </View>
+    );
+  }
+  return <PersonProfile game={game} person={person} />;
+}
+
+function PersonProfile({ game, person }: { game: Game; person: Person }) {
+  useGameSnapshot(game);
+  const insets = useSafeAreaInsets();
+  const world = game.world;
+  const country = world.countries[person.countryId];
+  const culture = world.cultures[person.cultureId]?.name ?? 'неизвестна';
+  const religion = person.religionId === null ? 'без веры' : world.religions[person.religionId]?.name ?? 'неизвестна';
+  const parents = person.parents.map((parentId) => world.people.find((item) => item.id === parentId)).filter((item) => !!item);
+  const spouses = person.spouseIds.map((spouseId) => world.people.find((item) => item.id === spouseId)).filter((item) => !!item);
+  const children = world.people.filter((item) => item.parents.includes(person.id))
+    .sort((a, b) => a.bornAt - b.bornAt);
+  const siblings = person.parents.length
+    ? world.people.filter((item) => item.id !== person.id && item.parents.some((parentId) => person.parents.includes(parentId)))
+      .sort((a, b) => a.bornAt - b.bornAt)
+    : [];
+
+  return (
+    <View style={[styles.screen, { paddingTop: insets.top }]}>
+      <View style={styles.header}>
+        <Pressable onPress={() => router.back()} style={styles.back} accessibilityLabel="Назад">
+          <Feather name="arrow-left" size={18} color={c.foreground} />
+          <Text style={styles.backText}>Назад</Text>
+        </Pressable>
+        <Text style={styles.eyebrow}>ЛЕТОПИСЬ ПЕРСОНАЖА</Text>
+      </View>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+        <Text style={styles.title}>{person.name}</Text>
+        <Text style={styles.subtitle}>
+          {person.alive ? 'Жив(а)' : `Умер${person.gender === 'female' ? 'ла' : ''} в ${person.deathYear ?? 'неизвестном году'}`}
+          {country ? ` · ${country.name}` : ''}
+        </Text>
+        <View style={styles.facts}>
+          <Text style={styles.fact}>Возраст · {person.age} лет, {ageStage(person.age)}</Text>
+          <Text style={styles.fact}>Пол · {person.gender === 'female' ? 'женский' : 'мужской'}</Text>
+          <Text style={styles.fact}>Культура · {culture}</Text>
+          <Text style={styles.fact}>Вероисповедание · {religion}</Text>
+          <Text style={styles.fact}>Династия · № {person.familyId}</Text>
+          {!!person.trait && <Text style={styles.fact}>Черты · {person.traits.join(', ') || person.trait}</Text>}
+          <Text style={styles.fact}>Годы жизни · {Math.floor(person.bornAt)}—{person.deathYear ?? 'настоящее время'}</Text>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>РОДИТЕЛИ</Text>
+          {parents.length ? parents.map((relative) => (
+            <RelativeLink key={relative.id} id={relative.id} title={relative.name} note={`возраст ${relative.age} лет`} />
+          )) : <Text style={styles.note}>Сведения о родителях неизвестны.</Text>}
+        </View>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>БРАКИ</Text>
+          {spouses.length ? spouses.map((relative) => (
+            <RelativeLink key={relative.id} id={relative.id} title={relative.name}
+              note={`${relative.alive ? 'жив(а)' : `умер${relative.gender === 'female' ? 'ла' : ''} в ${relative.deathYear ?? '?'}`} · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'без веры' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
+          )) : <Text style={styles.note}>Браки не зарегистрированы.</Text>}
+        </View>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>БРАТЬЯ И СЁСТРЫ</Text>
+          {siblings.length ? siblings.map((relative) => (
+            <RelativeLink key={relative.id} id={relative.id} title={relative.name}
+              note={`${relative.age} лет · ${relative.alive ? 'жив(а)' : `умер${relative.gender === 'female' ? 'ла' : ''} в ${relative.deathYear ?? '?'}`}`} />
+          )) : <Text style={styles.note}>Сведения не найдены.</Text>}
+        </View>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>ДЕТИ · {children.length}</Text>
+          {children.length ? children.map((relative) => (
+            <RelativeLink key={relative.id} id={relative.id} title={relative.name}
+              note={`${relative.age} лет · ${world.cultures[relative.cultureId]?.name ?? 'культура неизвестна'} · ${relative.religionId === null ? 'без веры' : world.religions[relative.religionId]?.name ?? 'вера неизвестна'}`} />
+          )) : <Text style={styles.note}>Дети не зарегистрированы.</Text>}
+        </View>
+        {person.deathReason && <Text style={styles.note}>Причина смерти · {person.deathReason}</Text>}
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: c.background },
+  center: { alignItems: 'center', justifyContent: 'center', gap: 16 },
+  header: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, borderBottomWidth: 2, borderColor: c.foreground },
+  back: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8 },
+  backText: { fontFamily: fonts.sansMedium, fontSize: 13, color: c.foreground },
+  eyebrow: { marginLeft: 'auto', fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.6, color: c.primary },
+  content: { padding: 18, gap: 14 },
+  title: { fontFamily: fonts.display, fontSize: 30, color: c.foreground },
+  subtitle: { marginTop: -12, fontFamily: fonts.sans, fontSize: 13, color: c.mutedForeground },
+  facts: { padding: 12, gap: 6, borderLeftWidth: 3, borderColor: c.primary, backgroundColor: c.card },
+  fact: { fontFamily: fonts.sans, fontSize: 13, color: c.foreground },
+  section: { paddingTop: 8, gap: 4, borderTopWidth: 1, borderColor: c.border },
+  sectionTitle: { marginBottom: 3, fontFamily: fonts.sansSemiBold, fontSize: 11, letterSpacing: 1.4, color: c.primary },
+  relative: { paddingVertical: 6, borderBottomWidth: 1, borderColor: c.border },
+  link: { fontFamily: fonts.sansSemiBold, fontSize: 14, color: c.accent, textDecorationLine: 'underline' },
+  note: { fontFamily: fonts.sans, fontSize: 12, color: c.mutedForeground },
+});

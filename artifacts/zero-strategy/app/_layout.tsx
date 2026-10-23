@@ -35,6 +35,7 @@ export default function RootLayout() {
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.light.background } }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="play" options={{ gestureEnabled: false }} />
+          <Stack.Screen name="person/[id]" />
         </Stack>
       </ErrorBoundary>
     </SafeAreaProvider>

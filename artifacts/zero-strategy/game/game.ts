@@ -197,7 +197,10 @@ export class Game {
     if (!saved || saved.version !== 2) return null;
     const game = new Game(deserializeWorld(saved.world), saved.role);
     normalizePolitics(game.world, saved.year);
-    for (const choice of saved.card?.choices ?? []) if (choice.ruler) reservePersonId(choice.ruler.id);
+    for (const choice of saved.card?.choices ?? []) {
+      if (choice.ruler) reservePersonId(choice.ruler.id);
+      if (choice.person) reservePersonId(choice.person.id);
+    }
     if (saved.card?.newRuler) reservePersonId(saved.card.newRuler.id);
     if (saved.card?.characterEvent?.newPerson) reservePersonId(saved.card.characterEvent.newPerson.id);
     refreshHeirs(game.world, saved.year);
@@ -392,6 +395,38 @@ export class Game {
     };
   }
 
+  /** Living people who matter to the current or former ruling families of a country. */
+  importantPeople(countryId: number): Person[] {
+    const country = this.world.countries[countryId];
+    if (!country) return [];
+    const rulers = new Set([country.ruler.id, ...country.coRulerIds, ...country.previousRulerIds]);
+    const dynasties = new Set(country.dynastyClaims);
+    const included = new Set<number>(rulers);
+    const children = new Map<number, number[]>();
+    for (const p of this.world.people) {
+      for (const parentId of p.parents) {
+        const list = children.get(parentId) ?? [];
+        list.push(p.id);
+        children.set(parentId, list);
+      }
+    }
+    for (const p of this.world.people) {
+      if (dynasties.has(p.familyId) || rulers.has(p.id) || p.formerRulerOf.includes(countryId)) included.add(p.id);
+    }
+    for (const p of this.world.people) {
+      if (!included.has(p.id)) continue;
+      for (const id of [...p.parents, ...p.spouseIds, ...(children.get(p.id) ?? [])]) {
+        included.add(id);
+      }
+    }
+    return this.world.people
+      .filter((p) => included.has(p.id) && p.alive)
+      .sort((a, b) => {
+        const rank = (p: Person) => p.id === country.ruler.id ? 4 : rulers.has(p.id) ? 3 : dynasties.has(p.familyId) ? 2 : 1;
+        return rank(b) - rank(a) || b.age - a.age || a.name.localeCompare(b.name);
+      });
+  }
+
   // ---------- turns ----------
 
   /** Ends the player's card and plays the rest of the year in slices, showing progress. */
@@ -575,7 +610,7 @@ export class Game {
               pressure.until = Math.max(pressure.until, this.year + 8);
               pressure.strength = Math.max(1, pressure.strength * 2);
               target.pressures.coup = pressure;
-              const ruler = newCitizen(w, target, this.year);
+              const ruler = choice.ruler ?? newCitizen(w, target, this.year);
               appoint(w, target, registerPerson(w, target, ruler), this.year);
               this.addLog(`${target.name}: переворот. ${GOVERNMENTS[target.government].name}, правитель ${target.ruler.name}.`);
             } else this.addLog(`${target.name}: введено изменение «${choice.label}»; форма ${previous}.`);
@@ -686,7 +721,7 @@ export class Game {
     }
     if (event.kind === 'marriage' || event.kind === 'engagement') {
       const a = person(w, ids[0]);
-      const b = person(w, ids[1]) ?? event.newPerson ?? generated;
+      const b = choice?.person ?? choice?.ruler ?? person(w, ids[1]) ?? event.newPerson ?? generated;
       if (a && b && a.alive && b.alive) {
         marry(w, country, a, b, event.kind === 'engagement');
         this.addLog(`${country.name}: ${event.kind === 'engagement' ? 'обручились' : 'поженились'} ${a.name} и ${b.name}.`);

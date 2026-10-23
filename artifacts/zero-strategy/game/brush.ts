@@ -12,6 +12,7 @@ export interface CardChoice {
   modifier?: GovernmentModifierId;
   removeModifier?: GovernmentModifierId;
   ruler?: Person;
+  person?: Person;
   seatId?: number;
   termYears?: number;
   maxTerms?: number;

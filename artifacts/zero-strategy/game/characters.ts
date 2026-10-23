@@ -102,6 +102,8 @@ export function marry(world: World, c: Country, a: Person, b: Person, betrothal 
   if (betrothal) { a.betrothedId = b.id; b.betrothedId = a.id; return; }
   if (!a.spouseIds.includes(b.id)) a.spouseIds.push(b.id);
   if (!b.spouseIds.includes(a.id)) b.spouseIds.push(a.id);
+  // A foreign spouse joins the dynastic household so births and inheritance are tracked locally.
+  b.countryId = c.id;
   a.betrothedId = null; b.betrothedId = null;
 }
 export function birth(world: World, c: Country, mother: Person, father: Person, year: number): Person {

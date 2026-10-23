@@ -4,9 +4,9 @@ import { forEachNeighbour } from './geography';
 import { randomItem, weightedPick } from './random';
 import type { Country, World } from './world';
 import { GOVERNMENTS, MODIFIERS, type GovernmentId, type GovernmentModifierId } from './government';
-import { lifeOpportunity, reformCandidates, type ReformProposal } from './politics';
+import { lifeOpportunity, marriageCandidates, reformCandidates, type ReformProposal } from './politics';
 import { leadershipOptions } from './succession';
-import { person } from './characters';
+import { newCitizen, person } from './characters';
 import { demography } from './demography';
 
 export const CARD_TITLES: Record<CardType, string> = {
@@ -190,9 +190,10 @@ function drawExpand(world: World, country: Country): Card | null {
   return makeCard('expand', capacity, country, `Закрашивайте свободные земли у границ ${country.name} или на любом берегу того же моря.`, hint);
 }
 
-function proposalChoice(proposal: ReformProposal): {
+function proposalChoice(world: World, proposal: ReformProposal, ruler?: import('./government').Person): {
   label: string; detail: string; government?: GovernmentId; modifier?: GovernmentModifierId;
   removeModifier?: GovernmentModifierId; termYears?: number; maxTerms?: number; consulCount?: number; violent?: boolean;
+  ruler?: import('./government').Person;
 } {
   let label: string, detail: string;
   if (proposal.government) {
@@ -209,8 +210,10 @@ function proposalChoice(proposal: ReformProposal): {
   } else {
     label = `Консулов: ${proposal.consulCount}`; detail = `Установить ${proposal.consulCount} мест в консулате.`;
   }
-  return { label, detail, government: proposal.government, modifier: proposal.add, removeModifier: proposal.remove,
-    termYears: proposal.termYears, maxTerms: proposal.maxTerms, consulCount: proposal.consulCount, violent: proposal.forced };
+  return { label: ruler ? `${label} · ${ruler.name}` : label,
+    detail: ruler ? `${detail} Новый правитель: ${personDetail(world, ruler)}` : detail,
+    government: proposal.government, modifier: proposal.add, removeModifier: proposal.remove,
+    termYears: proposal.termYears, maxTerms: proposal.maxTerms, consulCount: proposal.consulCount, violent: proposal.forced, ruler };
 }
 
 function drawGovernment(world: World, country: Country, year: number, violent = false): Card | null {
@@ -222,9 +225,15 @@ function drawGovernment(world: World, country: Country, year: number, violent = 
   };
   const first = take(), second = take();
   if (!first) return null;
+  const secondProposal = second ?? (violent ? first : null);
+  const leaders = violent ? [newCitizen(world, country, year), newCitizen(world, country, year)] : [];
+  if (violent && leaders[0].id === leaders[1].id) leaders[1] = newCitizen(world, country, year);
   const card = makeCard(violent ? 'revolt' : 'government', 0, country,
     violent ? `Переворот в ${country.name}: выберите новую форму правления или реформу.` : `Реформа в ${country.name}: выберите одно из предложенных изменений.`, -1);
-  card.choices = [proposalChoice(first), ...(second ? [proposalChoice(second)] : [])];
+  card.choices = [
+    proposalChoice(world, first, leaders[0]),
+    ...(secondProposal ? [proposalChoice(world, secondProposal, leaders[1])]: []),
+  ];
   card.violentReform = violent;
   card.newGovernmentId = first.government ?? null;
   return card;
@@ -233,11 +242,16 @@ function drawGovernment(world: World, country: Country, year: number, violent = 
 function ageLabel(age: number): string {
   return age < 3 ? 'младенец' : age <= 7 ? 'ребёнок' : age <= 11 ? 'отрок' : age <= 19 ? 'подросток' : 'взрослый';
 }
+function personDetail(world: World, candidate: import('./government').Person): string {
+  const culture = world.cultures[candidate.cultureId]?.name ?? 'неизвестная культура';
+  const religion = candidate.religionId === null ? 'без веры' : world.religions[candidate.religionId]?.name ?? 'неизвестная вера';
+  return `${candidate.age} лет · ${candidate.trait || ageLabel(candidate.age)} · ${culture} · ${religion}`;
+}
 function drawLifeCard(world: World, country: Country, year: number): Card | null {
   if (country.government === 'tribal' && country.ruler.age >= 60 && Math.random() < 0.08) {
     const card = makeCard('succession', 0, country, `Пожилой вождь ${country.ruler.name} может передать власть при жизни.`, -1);
     card.choices = leadershipOptions(world, country, year).slice(0, 2).map((ruler) => ({
-      label: ruler.name, detail: `${ruler.age} лет · ${ruler.trait || ageLabel(ruler.age)}`, ruler, seatId: country.ruler.id,
+      label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: country.ruler.id,
     }));
     return card;
   }
@@ -250,7 +264,7 @@ function drawLifeCard(world: World, country: Country, year: number): Card | null
     card.characterEvent = { kind: 'death', personIds: opportunity.ids };
     if (p.id === country.ruler.id || country.coRulerIds.includes(p.id)) {
       card.choices = leadershipOptions(world, country, year, p).slice(0, 2).map((ruler) => ({
-        label: ruler.name, detail: `${ruler.age} лет · ${ruler.trait || ageLabel(ruler.age)}`, ruler, seatId: p.id,
+          label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: p.id,
       }));
     }
     return card;
@@ -258,19 +272,26 @@ function drawLifeCard(world: World, country: Country, year: number): Card | null
   if (opportunity.kind === 'election') {
     const card = makeCard('election', 0, country, `Срок полномочий истёк. Выберите главу ${country.name} на ${country.termYears} лет.`, -1);
     card.choices = leadershipOptions(world, country, year, p).slice(0, 2).map((ruler) => ({
-      label: ruler.name, detail: `${ruler.age} лет · ${ruler.trait || ageLabel(ruler.age)}`, ruler, seatId: p.id,
+      label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: p.id,
     }));
     return card;
   }
   const type = opportunity.kind === 'birth' ? 'birth' : opportunity.kind === 'marriage' || opportunity.kind === 'engagement' ? 'marriage' : 'character';
   const other = person(world, opportunity.ids[1]);
   const title = type === 'birth' ? 'Ожидается рождение ребёнка' :
-    type === 'marriage' ? `${opportunity.kind === 'engagement' ? 'Обручение' : 'Брак'}: ${p.name} и ${other?.name ?? 'новый спутник'}` :
+    type === 'marriage' ? opportunity.kind === 'engagement' ? `Обручение: ${p.name} и ${other?.name ?? 'персонаж'}` : `Выбор супруга: ${p.name}` :
       opportunity.kind === 'friendship' ? `Дружба: ${p.name} и ${other?.name ?? 'персонаж'}` :
         opportunity.kind === 'romance' ? `Романтическая связь: ${p.name} и ${other?.name ?? 'персонаж'}` : `${p.name} получает новую черту`;
   const card = makeCard(type, 0, country, title, -1);
   card.characterEvent = { kind: opportunity.kind as 'birth' | 'marriage' | 'friendship' | 'trait' | 'engagement',
     personIds: opportunity.ids, newPerson: opportunity.newPerson };
+  if (opportunity.kind === 'marriage') {
+    card.choices = marriageCandidates(world, country, p, year).map((candidate) => ({
+      label: candidate.name,
+      detail: personDetail(world, candidate),
+      person: candidate,
+    }));
+  }
   return card;
 }
 

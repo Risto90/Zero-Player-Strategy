@@ -4,6 +4,7 @@ import { demography } from './demography';
 import { person } from './characters';
 import { candidateAllowed, successionOrder } from './succession';
 import type { Country, World } from './world';
+import { forEachNeighbour } from './geography';
 
 export interface ReformProposal {
   government?: GovernmentId;
@@ -251,6 +252,54 @@ export function applyReform(c: Country, proposal: ReformProposal): void {
   if (proposal.consulCount !== undefined) c.consulCount = proposal.consulCount;
 }
 
+function neighbouringCountries(world: World, country: Country): Set<number> {
+  const neighbours = new Set<number>();
+  world.forEachCountryPixel(country, (pixel) => forEachNeighbour(pixel, (next) => {
+    const owner = world.owner[next];
+    if (owner > 0 && owner - 1 !== country.id) neighbours.add(owner - 1);
+  }));
+  return neighbours;
+}
+
+/** Eligible spouses are ranked by proximity/dynasty first, then by cultural and religious fit. */
+export function marriageCandidates(world: World, country: Country, person: Person, year: number): Person[] {
+  const neighbours = neighbouringCountries(world, country);
+  const knownPairs = new Set(demography(world, country).pairs.map((pair) => `${pair.cultureId}/${pair.religionId ?? 'none'}`));
+  const candidates = world.people.filter((candidate) => {
+    if (candidate.id === person.id || candidate.gender === person.gender || !candidate.alive ||
+        !canMarry(country, candidate) || candidate.spouseIds.some((id) => personWorldAlive(world, id)) ||
+        candidate.betrothedId !== null || candidate.countryId !== country.id && !neighbours.has(candidate.countryId)) return false;
+    if (person.spouseIds.some((id) => personWorldAlive(world, id)) || person.betrothedId !== null) return false;
+    return !related(world, person, candidate);
+  });
+  const category = (candidate: Person) => {
+    const sameCulture = candidate.cultureId === person.cultureId;
+    const sameReligion = candidate.religionId === person.religionId;
+    if (sameCulture && sameReligion) return 3;
+    if (sameCulture || sameReligion) return 2;
+    if (knownPairs.has(`${candidate.cultureId}/${candidate.religionId ?? 'none'}`)) return 1;
+    return 0;
+  };
+  candidates.sort((a, b) => {
+    const priority = (p: Person) => p.countryId !== country.id ? (p.familyId !== person.familyId ? 4 : 3) :
+      (p.familyId !== person.familyId ? 2 : 1);
+    return priority(b) - priority(a) || category(b) - category(a) || a.id - b.id;
+  });
+  const selected = candidates.slice(0, 2);
+  while (selected.length < 2) {
+    const generated = newCitizen(world, country, year);
+    generated.age = Math.max(20, person.age + Math.floor(Math.random() * 11) - 5);
+    generated.bornAt = year - generated.age - Math.random();
+    if (generated.gender === person.gender) generated.gender = person.gender === 'male' ? 'female' : 'male';
+    selected.push(generated);
+  }
+  return selected;
+}
+
+function personWorldAlive(world: World, id: number): boolean {
+  return person(world, id)?.alive ?? false;
+}
+
 export function lifeOpportunity(world: World, c: Country, year: number): { kind: string; ids: number[]; weight: number; newPerson?: import('./government').Person } | null {
   const locals = world.people.filter((p) => p.alive && p.countryId === c.id);
   const birthParents = locals.filter((p) => trackedForBirth(world, c, p) && canMarry(c, p));
@@ -283,16 +332,12 @@ export function lifeOpportunity(world: World, c: Country, year: number): { kind:
       !q.spouseIds.includes(p.id) && !q.parents.includes(p.id) && !p.parents.includes(q.id) &&
       !q.parents.some((id) => p.parents.includes(id)) && !related(world, p, q));
     const isMinor = p.age < 20;
-    if (potential && (!isMinor || !c.modifiers.includes('meritocracy'))) {
+    if (potential && isMinor && !c.modifiers.includes('meritocracy')) {
       const marriageWeight = isMinor ? (p.age < 12 ? 0.005 : c.government === 'tribal' ? 0.06 : 0.02) : 0.1;
       events.push({ kind: isMinor ? 'engagement' : 'marriage', ids: [p.id, potential.id], weight: marriageWeight });
     }
     else if (!isMinor) {
-      const spouse = newCitizen(world, c, year);
-      spouse.age = Math.max(20, p.age + Math.floor(Math.random() * 11) - 5);
-      spouse.bornAt = year - spouse.age - Math.random();
-      if (spouse.gender === p.gender) spouse.gender = p.gender === 'male' ? 'female' : 'male';
-      events.push({ kind: 'marriage', ids: [p.id], newPerson: spouse, weight: 0.06 });
+      events.push({ kind: 'marriage', ids: [p.id], weight: 0.1 });
     } else if (p.age >= 8 && !c.modifiers.includes('meritocracy')) {
       const betrothed = newCitizen(world, c, year);
       betrothed.age = 8 + Math.floor(Math.random() * 4);
