@@ -6,7 +6,7 @@
 - [Unified country residence](nomad-current-homes.md) — characters keep one current countryId; nomadic countries live in the shared country collection.
 - [Design-doc fidelity](design-doc-fidelity.md) — implement only mechanics specified for this game; clarify missing numerical rules instead of inventing them.
 - [Expo build port](zero-strategy-expo-build-port.md) — choose a free Metro port if Replit's preview service occupies 8081.
-- [Published Expo launch URLs](zero-strategy-published-launch.md) — resolve static manifest and bundle asset URLs against the active request origin, not the build hostname.
+- [Browser build base path](zero-strategy-published-launch.md) — Expo web export needs `experiments.baseUrl` aligned with the server's configured prefix for routes and assets.
 - [Expo Router route types](expo-router-types.md) — restart the managed Expo workflow when a new file route is missing from generated typed navigation.
 - [Inheritance partition painting](inheritance-partition-brush.md) — reserve each seed and count prior heir land outside its share quota.
 - [Consulate and partition](consulate-partition.md) — combined inheritance allocates consul seats by city-limited capacity; keep this exception out of ordinary partition rules.
