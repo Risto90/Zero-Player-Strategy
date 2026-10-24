@@ -116,7 +116,6 @@ try {
     previousRulerIds: [],
     dynastyClaims: [oldNomadRuler.familyId],
     coRulerIds: [],
-    pendingDeathIds: [],
     cells: [{
       pixel: staleFixture.pixels[1],
       population: 80,

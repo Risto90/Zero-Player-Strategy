@@ -23,7 +23,7 @@ export function expectedHeirFor(world: World, c: Polity, leader: Person): Person
 }
 export function candidateAllowed(world: World, c: Polity, p: Person, old = c.ruler, partnerExempt = false): boolean {
   const foreignDynast = c.government !== 'republic' && c.dynastyClaims.includes(p.familyId);
-  if (!p.alive || c.pendingDeathIds.includes(p.id) || (!isMember(c, p) && !partnerExempt && !foreignDynast)) return false;
+  if (!p.alive || (!isMember(c, p) && !partnerExempt && !foreignDynast)) return false;
   if (rulers(world, c).some((leader) => leader.id === p.id && leader.id !== old.id)) return false;
   const coRule = c.coRulerIds.includes(p.id);
   const adult = c.government === 'republic' || c.modifiers.includes('meritocracy') ||

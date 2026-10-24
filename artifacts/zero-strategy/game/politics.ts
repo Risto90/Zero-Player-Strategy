@@ -338,8 +338,6 @@ export function lifeOpportunity(world: World, c: Polity, year: number): { kind: 
   const locals = polityPeople(world, c);
   const trackedLocals = locals.filter((p) => trackedForBirth(world, c, p));
   const birthParents = world.people.filter((p) => trackedForBirth(world, c, p) && p.alive);
-  const death = c.pendingDeathIds.length ? { kind: 'death', ids: [c.pendingDeathIds[0]], weight: 10000 } : null;
-  if (death) return death;
   const activeSeats = [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is NonNullable<typeof p> => !!p)];
   const expiredSeat = activeSeats.find((p) => {
     const since = c.seatSince[p.id] ?? c.rulerSince;

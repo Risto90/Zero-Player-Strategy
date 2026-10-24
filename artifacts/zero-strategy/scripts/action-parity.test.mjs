@@ -168,7 +168,6 @@ function worldState(world) {
     dynastyClaims: political.dynastyClaims.map((id) => personIds.get(id) ?? 'missing-person'),
     coRulerIds: political.coRulerIds.map((id) => personIds.get(id) ?? 'missing-person'),
     barredRulerIds: political.barredRulerIds.map((id) => personIds.get(id) ?? 'missing-person'),
-    pendingDeathIds: political.pendingDeathIds.map((id) => personIds.get(id) ?? 'missing-person'),
     seatSince: Object.fromEntries(Object.entries(political.seatSince).map(([id, year]) => [
       personIds.get(Number(id)) ?? 'missing-person',
       year,

@@ -45,6 +45,8 @@ assert.match(automaticBody, /dispatchAction\(\{\s*type: 'selectChoice'/);
 assert.match(automaticBody, /autoPaint\(painter, actions\)/);
 assert.match(automaticBody, /dispatchAction\(\{\s*type: 'placeCity'/);
 assert.match(automaticBody, /dispatchAction\(\{\s*type: 'completeCard'/);
+assert.doesNotMatch(automaticBody, /draw(World|Country|Nomad)Card|startNextPlayerCard/,
+  'automatic resolution must not start another draw unless the turn flow explicitly schedules one');
 assert.doesNotMatch(automaticBody, /this\.finish\(|addCityAndConcentrate\(|\.setOwner\(|\.owner\[[^\]]+\]\s*=|\.density\[[^\]]+\]\s*=/,
   'automatic play must not mutate world state or resolve cards outside the shared commands');
 assert.equal((game.match(/new CardPainter\(/g) ?? []).length, 1,

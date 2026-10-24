@@ -1,4 +1,4 @@
-import { createFamilyId, createPerson, deathChance, familyNameForId, formatPersonName, legacyNameStyleForCulture, legacySurnameAffixForCulture, governmentOf, GOVERNMENTS, reservePersonId, type Person, type PersonNameContext, type SurnameAffix } from './government';
+import { createFamilyId, createPerson, familyNameForId, formatPersonName, legacyNameStyleForCulture, legacySurnameAffixForCulture, governmentOf, GOVERNMENTS, reservePersonId, type Person, type PersonNameContext, type SurnameAffix } from './government';
 import type { Country, NomadGroup, World } from './world';
 import { sampleDemographic } from './demography';
 type Polity = Country | NomadGroup;
@@ -163,13 +163,14 @@ export function normalizePolitics(world: World, year: number): void {
   for (const p of world.people) { reservePersonId(p.id); reservePersonId(p.familyId); }
   const normalized = new Map<number, Person>();
   for (const c of world.countries) {
+    delete (c as Country & { pendingDeathIds?: number[] }).pendingDeathIds;
     c.government = governmentOf(c.government).id;
     c.modifiers ??= [...GOVERNMENTS[c.government].modifiers];
     c.previousRulerIds ??= [];
     c.dynastyClaims ??= [];
     c.coRulerIds ??= [];
     c.termYears ??= 4; c.maxTerms ??= 1; c.consulCount ??= 2;
-    c.seatSince ??= {}; c.termCounts ??= {}; c.barredRulerIds ??= []; c.pendingDeathIds ??= []; c.pressures ??= {};
+    c.seatSince ??= {}; c.termCounts ??= {}; c.barredRulerIds ??= []; c.pressures ??= {};
     const link = (raw: Person): Person => {
       if (Number.isFinite(raw.id) && normalized.has(raw.id)) return normalized.get(raw.id)!;
       const p = normalizePerson(raw, c, year, world);
@@ -206,11 +207,11 @@ export function normalizePolitics(world: World, year: number): void {
     c.termCounts[c.ruler.id] ??= 1;
   }
   for (const nomad of world.nomads) {
+    delete (nomad as NomadGroup & { pendingDeathIds?: number[] }).pendingDeathIds;
     nomad.personIds ??= [];
     nomad.coRulerIds ??= [];
     nomad.previousRulerIds ??= [];
     nomad.dynastyClaims ??= [];
-    nomad.pendingDeathIds ??= [];
     nomad.ruler = normalized.get(nomad.ruler.id) ?? nomad.ruler;
     nomad.heir = nomad.heir ? normalized.get(nomad.heir.id) ?? nomad.heir : null;
     for (const id of [nomad.ruler.id, ...nomad.coRulerIds]) {
@@ -413,7 +414,7 @@ export function birth(world: World, c: Polity, mother: Person, father: Person, y
   mother.lastBirthYear = year;
   return registerPerson(world, c, p);
 }
-export function advancePeople(world: World, year: number, rng = Math.random): void {
+export function advancePeople(world: World, year: number): void {
   for (const p of world.people) {
     if (!p.alive) continue;
     const c = world.countries[p.countryId];
@@ -421,17 +422,7 @@ export function advancePeople(world: World, year: number, rng = Math.random): vo
     const nomads = activeCountries.length ? [] : world.nomads.filter((group) =>
       group.personIds.includes(p.id) || group.ruler.id === p.id || group.coRulerIds.includes(p.id));
     if (!activeCountries.length && !nomads.length) continue;
-    const previousAge = p.age;
-    p.age = Math.max(previousAge, Math.floor(year - p.bornAt));
-    // Annual probability is derived from the full age-period risk so the
-    // cumulative chance across that period matches the design value.
-    const pending = activeCountries.length
-      ? activeCountries[0].pendingDeathIds.includes(p.id)
-      : nomads.some((group) => group.pendingDeathIds.includes(p.id));
-    if (!pending && rng() < deathChance(previousAge)) {
-      if (activeCountries.length) activeCountries[0].pendingDeathIds.push(p.id);
-      else for (const group of nomads) if (!group.pendingDeathIds.includes(p.id)) group.pendingDeathIds.push(p.id);
-    }
+    p.age = Math.max(p.age, Math.floor(year - p.bornAt));
   }
 }
 export function killPerson(world: World, p: Person, year: number, reason: string): void {
@@ -439,6 +430,4 @@ export function killPerson(world: World, p: Person, year: number, reason: string
   const engaged = person(world, p.betrothedId);
   if (engaged) engaged.betrothedId = null;
   p.betrothedId = null;
-  for (const c of world.countries) c.pendingDeathIds = c.pendingDeathIds.filter((id) => id !== p.id);
-  for (const nomad of world.nomads) nomad.pendingDeathIds = nomad.pendingDeathIds.filter((id) => id !== p.id);
 }

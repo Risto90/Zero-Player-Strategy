@@ -95,7 +95,6 @@ export interface PoliticalState {
   seatSince: Record<number, number>;
   termCounts: Record<number, number>;
   barredRulerIds: number[];
-  pendingDeathIds: number[];
   /** Timed political pressure: repeat events extend and double strength. */
   pressures: Record<string, { until: number; strength: number }>;
 }
@@ -189,6 +188,8 @@ export function legacySurnameAffixForCulture(cultureId: number): SurnameAffix {
 }
 const TRAITS = ['Дальновидный', 'Решительный', 'Уступчивый', 'Амбициозный', 'Осторожный', 'Харизматичный', 'Фанатик', 'Циник', 'Космополит', 'Националист', 'Плодовитый'];
 let nextPersonId = 1;
+export function personIdSequence(): number { return nextPersonId; }
+export function restorePersonIdSequence(id: number): void { nextPersonId = id; }
 const pick = <T,>(items: T[]): T => randomItem(items);
 export function ageStage(age: number): string {
   if (age < 3) return 'младенец';
@@ -297,7 +298,7 @@ export function initialGovernment(year: number, cultureId = 0, religionId: numbe
   const familyId = createFamilyId();
   return { government: 'tribal' as GovernmentId, ruler: createPerson(year, 29 + Math.floor(Math.random() * 17), familyId, [], cultureId, religionId, { style: nameStyle, familyCultureId: cultureId, surnameAffix }), heir: null as Person | null, rulerSince: year, modifiers: ['oligarchy'] as GovernmentModifierId[],
     previousRulerIds: [], dynastyClaims: [familyId], coRulerIds: [], termYears: 4, maxTerms: 1, consulCount: 2,
-    seatSince: {}, termCounts: {}, barredRulerIds: [], pendingDeathIds: [], pressures: {} };
+    seatSince: {}, termCounts: {}, barredRulerIds: [], pressures: {} };
 }
 export function availableModifiers(form: GovernmentId, current: GovernmentModifierId[]): GovernmentModifierId[] {
   return (Object.keys(MODIFIERS) as GovernmentModifierId[]).filter((id) => {

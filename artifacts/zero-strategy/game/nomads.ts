@@ -159,7 +159,6 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
       seatSince: { ...country.seatSince },
       termCounts: { ...country.termCounts },
       barredRulerIds: [...country.barredRulerIds],
-      pendingDeathIds: [...country.pendingDeathIds],
       pressures: { ...country.pressures },
     };
     world.nomads.push(nomad);
@@ -199,6 +198,21 @@ export function availableNomadCitySites(world: World, nomad: NomadGroup): number
   return nomad.range.filter((pixel) =>
     world.land[pixel] && world.owner[pixel] === 0 && !world.cityAt(pixel),
   );
+}
+
+function reindexNomadCardMultipliers(world: World, removedId: number): void {
+  const next: Record<string, number> = {};
+  for (const [key, multiplier] of Object.entries(world.cardMultipliers)) {
+    const match = /^nomad:(\d+):(.*)$/.exec(key);
+    if (!match) {
+      next[key] = multiplier;
+      continue;
+    }
+    const id = Number(match[1]);
+    if (id === removedId) continue;
+    next[`nomad:${id > removedId ? id - 1 : id}:${match[2]}`] = multiplier;
+  }
+  world.cardMultipliers = next;
 }
 
 /** Founding a town settles the nomad on the free portion of its influence sphere. */
@@ -250,7 +264,6 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
   country.seatSince = { ...nomad.seatSince };
   country.termCounts = { ...nomad.termCounts };
   country.barredRulerIds = [...nomad.barredRulerIds];
-  country.pendingDeathIds = [...nomad.pendingDeathIds];
   country.pressures = Object.fromEntries(
     Object.entries(nomad.pressures).map(([key, pressure]) => [key, { ...pressure }]),
   );
@@ -323,6 +336,7 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
   }
 
   const nomadIndex = world.nomads.indexOf(nomad);
+  if (nomadIndex >= 0) reindexNomadCardMultipliers(world, nomadIndex);
   for (const personId of nomad.personIds) {
     const resident = world.people.find((person) => person.id === personId);
     if (!resident) continue;

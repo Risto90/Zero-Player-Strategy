@@ -220,7 +220,6 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
     seatSince: {},
     termCounts: {},
     barredRulerIds: [],
-    pendingDeathIds: [],
     pressures: {},
   });
   world.nomadVersion += 1;
@@ -353,7 +352,7 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   assert.equal(foreignCountry.ruler.nomadId, null, 'marrying into a nomad group does not assign a foreign ruler there');
   assert.ok(!nomad.personIds.includes(foreignCountry.ruler.id), 'foreign rulers are not added as nomad residents');
   const ageBefore = mother.age;
-  advancePeople(fixture.world, 10, () => 1);
+  advancePeople(fixture.world, 10);
   assert.ok(mother.age > ageBefore, 'nomad residents age during annual simulation');
 }
 
@@ -380,6 +379,8 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   const nomads = dissolveCountryIntoNomads(fixture.world, fixture.country);
   const nomad = nomads[0];
   const otherNomad = nomads[1];
+  fixture.world.cardMultipliers['nomad:0:marriage:person-1'] = 1.21;
+  fixture.world.cardMultipliers['nomad:1:death:person-2'] = 1.331;
   const totalBefore = nomads.reduce((sum, group) =>
     sum + group.cells.reduce((cellSum, cell) => cellSum + cell.population, 0), 0);
   const cityPixel = nomad.range[0];
@@ -392,6 +393,10 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   assert.equal(fixture.country.ruler.nomadId, null, 'the shared ruler no longer uses a nomadic home after settling');
   assert.equal(otherResident.countryId, -1, 'a resident of the other nomad is not moved into the founded country');
   assert.equal(otherResident.nomadId, 0, 'remaining nomad residents follow the group ID after reindexing');
+  assert.equal(fixture.world.cardMultipliers['nomad:0:marriage:person-1'], undefined,
+    'a dissolved nomad does not transfer its card odds to another group');
+  assert.equal(fixture.world.cardMultipliers['nomad:0:death:person-2'], 1.331,
+    'the remaining nomad keeps its accumulated card odds when its ID shifts');
   assert.ok(fixture.world.nomads[0].personIds.includes(otherResident.id), 'the other nomad retains its resident');
   assert.equal(settled.parentId, fixture.country.id, 'the source remains recorded as the new country parent');
   const totalAfter = fixture.world.nomads.reduce((sum, group) =>

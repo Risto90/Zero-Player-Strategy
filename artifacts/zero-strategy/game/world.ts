@@ -122,6 +122,8 @@ export class World {
   cities: City[] = [];
   nomads: NomadGroup[] = [];
   nomadVersion = 0;
+  /** Persistent per-draw card probability multipliers, keyed by scope and card identity. */
+  cardMultipliers: Record<string, number> = {};
   cultures: Culture[] = [];
   religions: Religion[] = [];
   people: Person[] = [];

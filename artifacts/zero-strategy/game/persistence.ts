@@ -33,6 +33,7 @@ export interface SavedWorld {
   cultures: Culture[];
   religions: Religion[];
   people: World['people'];
+  cardMultipliers?: Record<string, number>;
   /** Added when sea temperatures became part of climate layers. */
   climateWater?: boolean;
   layers: SavedLayers;
@@ -58,6 +59,7 @@ export interface WorldCopy {
   cultures: Culture[];
   religions: Religion[];
   people: World['people'];
+  cardMultipliers: Record<string, number>;
 }
 
 function freezeTable(table: World['cultureTable']): TableView {
@@ -106,6 +108,7 @@ export function copyWorld(world: World): WorldCopy {
     cultures: world.cultures.map((c) => ({ ...c })),
     religions: world.religions.map((r) => ({ ...r })),
     people: world.people.map((p) => ({ ...p, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], friendIds: [...p.friendIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
+    cardMultipliers: { ...world.cardMultipliers },
   };
 }
 
@@ -131,6 +134,7 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     cultures: copy.cultures,
     religions: copy.religions,
     people: copy.people,
+    cardMultipliers: copy.cardMultipliers,
     climateWater: true,
     layers: { land, political, density, humidity, temperature, drainage, cultures, religions },
   };
@@ -170,6 +174,7 @@ export function deserializeWorld(saved: SavedWorld): World {
     if (city.pixel >= 0 && city.pixel < MAP_PIXELS) world.cityIdAt[city.pixel] = city.id;
   }
   world.people = saved.people ?? [];
+  world.cardMultipliers = saved.cardMultipliers ?? {};
   world.cultures = saved.cultures.map((c) => ({ ...c }));
   world.religions = saved.religions.map((r) => ({ ...r }));
   rasterizeScalar(layers.political, world.owner);
