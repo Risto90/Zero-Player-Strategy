@@ -156,6 +156,7 @@ interface SavedGame {
   role: PlayerRole;
   year: number;
   turn: number;
+  paused?: boolean;
   focusCountryId: number | null;
   card: Card | null;
   painterState?: CardPainterState | null;
@@ -353,6 +354,7 @@ export class Game {
       game.startCard(card, saved.painterState);
     }
     game.mapMode = saved.mapMode;
+    game.paused = saved.paused ?? false;
     game.renderer.setView(game.mapMode, null, game.mapMode === 'colonization' ? game.painter?.colonizationMask ?? null : null);
     return game;
   }
@@ -423,6 +425,7 @@ export class Game {
     if (this.busy) this.pauseChangedDuringBusy = true;
     this.paused = !this.paused;
     this.emit();
+    this.scheduleSave();
   }
 
   // ---------- brush ----------
@@ -1930,7 +1933,7 @@ export class Game {
   // ---------- saving ----------
 
   private scheduleSave(): void {
-    if (!Game.persist || this.disposed) return;
+    if (!Game.persist || this.disposed || this.busy) return;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
@@ -1950,6 +1953,8 @@ export class Game {
   /** Copies the world, traces its zones in slices and writes the file. One save at a time. */
   async save(): Promise<void> {
     if (!Game.persist) return;
+    // A turn is applied in slices; never persist its transient automatic-event progress.
+    if (this.busy) return this.saving ?? Promise.resolve();
     if (this.saving) {
       this.saveAgain = true;
       return this.saving;
@@ -1975,6 +1980,7 @@ export class Game {
       role: this.role,
       year: this.year,
       turn: this.turn,
+      paused: this.paused,
       focusCountryId: this.focusCountryId,
       card: this.card ? { ...this.card } : null,
       painterState: this.painter?.snapshotState() ?? null,

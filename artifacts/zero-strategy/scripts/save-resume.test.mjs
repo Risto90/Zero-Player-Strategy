@@ -123,6 +123,34 @@ try {
   tenureGame.discard();
   tenureResumed.discard();
 
+  // An explicit player pause survives a save and can be cleared through the same toggle.
+  await clearSaveBytes();
+  const pausedGame = new Game(makeFixture().world, 'all');
+  pausedGame.togglePause();
+  const pausedResumed = await saveAndLoad(pausedGame);
+  assert.equal(pausedResumed.getSnapshot().paused, true, 'the saved game restores the player pause');
+  pausedResumed.togglePause();
+  assert.equal(pausedResumed.getSnapshot().paused, false, 'the normal pause button resumes a loaded game');
+  pausedGame.discard();
+  pausedResumed.discard();
+
+  // Automatic turn processing is not written as a resumable interruption.
+  await clearSaveBytes();
+  const processingGame = new Game(makeFixture().world, 'all');
+  const savedYear = processingGame.year;
+  await processingGame.saveNow();
+  processingGame.busy = true;
+  processingGame.year += 1;
+  processingGame.togglePause();
+  await processingGame.saveNow();
+  const processingResumed = await Game.load();
+  assert.ok(processingResumed, 'the previous completed state remains loadable during turn processing');
+  assert.equal(processingResumed.year, savedYear, 'an incomplete automatic turn is not persisted');
+  assert.equal(processingResumed.getSnapshot().paused, false,
+    'a pause requested during automatic processing is not saved as a separate turn interruption');
+  processingGame.discard();
+  processingResumed.discard();
+
   // A completed brush stroke must remain protected from a second application.
   await clearSaveBytes();
   const fixture = makeFixture();
