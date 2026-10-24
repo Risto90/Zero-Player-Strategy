@@ -94,7 +94,7 @@ try {
     assert.equal(game.getSnapshot().year, year + 1, 'timeout automatically completes the remaining card and advances the year');
     assert.equal(world.humidity[pixels[20]], manuallyPaintedHumidity,
       'the existing brush state is reused instead of applying the player-painted pixel twice');
-    assert.ok(card.ink > 0, 'the automatic strategy preserves ink when no beneficial climate change remains');
+    assert.equal(card.ink, 0, 'the automatic strategy spends the remaining quota on legal climate targets');
     assert.equal(game.getSnapshot().drawing, true, 'automatic completion waits for the changed map to redraw');
     const nextTurnSeconds = game.secondsLeft;
     game.tick();

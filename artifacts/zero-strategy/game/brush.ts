@@ -502,6 +502,7 @@ export class CardPainter {
         if (!onLand && !this.seas.has(world.water.bodyOf[pixel])) return 0;
       } else if (card.type === 'warmCurrent' || card.type === 'coldCurrent') {
         // Currents affect land and water throughout the world.
+        if (!onLand && world.water.bodyOf[pixel] < 0) return 0;
       } else if (!onLand || (card.targetCountryId !== null && world.owner[pixel] !== targetTag)) {
         return 0;
       }
@@ -513,7 +514,8 @@ export class CardPainter {
         card.type === 'warmCurrent' || card.type === 'warmWind';
       const canChange = canIncrease ? value < 100 : value > 0;
       if (!canChange) return 0;
-      return (card.type === 'warmWind' || card.type === 'coldWind') && !onLand ? 0.5 : 1;
+      const cost = (card.type === 'warmWind' || card.type === 'coldWind') && !onLand ? 0.5 : 1;
+      return cost <= card.ink + 1e-9 ? cost : 0;
     }
 
     if (card.type === 'faith' || card.type === 'culture') {
@@ -533,6 +535,31 @@ export class CardPainter {
     }
 
     return this.strategyImpactAt(pixel) > 0 ? this.brushScaling(pixel).cost : 0;
+  }
+
+  /** Ink cost of painting an otherwise eligible territory pixel. */
+  strategyTerritoryInkCostAt(pixel: number): number {
+    if (pixel < 0 || pixel >= MAP_PIXELS || !this.world.land[pixel]) return 0;
+    return this.brushScaling(pixel).cost;
+  }
+
+  /** Maximum ink one colonization target can consume under its population limit. */
+  strategyColonizationInkCapacityAt(pixel: number, sourceDensity?: number): number {
+    const countryId = this.card.targetCountryId;
+    if (this.card.type !== 'colonization' || countryId === null || pixel < 0 ||
+      pixel >= MAP_PIXELS || this.colonizationMask?.[pixel] !== 1 ||
+      this.world.owner[pixel] === countryId + 1 || this.world.cityAt(pixel)) return 0;
+    const influence = this.cityInfluence?.at(pixel);
+    if (influence && influence.foreignRankSum > 0 && influence.ownRankSum === 0) return 0;
+    const donor = sourceDensity === undefined ? this.colonizationDonors?.peek() ?? -1 : -1;
+    const density = sourceDensity ?? (donor < 0 ? 0 : this.world.density[donor]);
+    const targetDensity = this.world.owner[pixel] > 0 ? this.world.density[pixel] : 0;
+    const ideal = density * 0.1;
+    if (ideal <= 0) return 0;
+    let maximum = Math.min(ideal, density - targetDensity);
+    if (this.world.owner[pixel] > 0) maximum = Math.min(maximum, targetDensity);
+    if (maximum <= 1e-9) return 0;
+    return maximum / ideal * this.brushScaling(pixel).cost;
   }
 
   setNomadMode(mode: 'range' | 'density' | 'inactive'): void {
@@ -998,6 +1025,10 @@ export class CardPainter {
       if (card.ink <= 0) break;
       if (this.strokeMask[p] || (this.mode === 'respect' && this.cardMask[p])) continue;
       const onLand = world.land[p] === 1;
+      const climateInkCost = isWind(card.type) && !onLand ? 0.5 :
+        card.type === 'drought' || card.type === 'rain' || card.type === 'desertification' ||
+        card.type === 'swamping' || isTemperatureCard(card.type) ? 1 : 0;
+      if (climateInkCost > card.ink + 1e-9) continue;
       if (isWind(card.type)) {
         if (onLand && world.owner[p] !== targetTag) { outside += 1; continue; }
         if (!onLand && !this.seas.has(world.water.bodyOf[p])) continue;
@@ -1024,7 +1055,7 @@ export class CardPainter {
         const cost = isWind(card.type) && !onLand ? 0.5 : 1;
         if (isWind(card.type)) this.strokeClimateChanges.push({ p, value, cost, wasInCard: this.cardMask[p] === 1 });
         world.temperature[p] = next;
-        card.ink -= cost;
+        card.ink = Math.max(0, card.ink - cost);
         this.touch(p);
         this.changed.push(p);
         continue;
@@ -1039,7 +1070,7 @@ export class CardPainter {
         if (next === world.culture[p]) continue;
         world.culture[p] = next;
       }
-      card.ink -= 1;
+      card.ink = Math.max(0, card.ink - 1);
       this.touch(p);
       this.changed.push(p);
     }

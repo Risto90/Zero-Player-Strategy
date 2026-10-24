@@ -11,7 +11,10 @@ export interface PaintActions {
 }
 
 const MAX_SCORE_CENTERS = 24;
-const MAX_TERRITORY_DABS = 32;
+const MAX_TERRITORY_DABS = 256;
+const MAX_LAYER_FALLBACK_DABS = MAP_WIDTH * MAP_HEIGHT;
+const LAYER_CARDS = new Set(['drought', 'rain', 'desertification', 'swamping',
+  'warmCurrent', 'coldCurrent', 'warmWind', 'coldWind', 'faith', 'culture']);
 
 function addCountrySeeds(
   world: CardPainter['world'],
@@ -63,7 +66,11 @@ function candidatePixels(painter: CardPainter): number[] {
     ? world.countries[card.newCountryId]
     : card.targetCountryId === null ? null : world.countries[card.targetCountryId];
 
-  if ((card.type === 'create' && (!target || target.pixels === 0)) ||
+  if (LAYER_CARDS.has(card.type)) {
+    for (let pixel = 0; pixel < world.land.length; pixel += 1) {
+      if (painter.strategyInkCostAt(pixel) > 0) candidates.add(pixel);
+    }
+  } else if ((card.type === 'create' && (!target || target.pixels === 0)) ||
     card.type === 'warmCurrent' || card.type === 'coldCurrent' ||
     (card.targetCountryId === null && ['drought', 'rain', 'faith', 'culture'].includes(card.type))) {
     globalSeeds(world, candidates);
@@ -140,6 +147,7 @@ function candidatePixels(painter: CardPainter): number[] {
 
   if (card.hint >= 0) candidates.add(card.hint);
   const ordered = [...candidates].sort((a, b) => a - b);
+  if (LAYER_CARDS.has(card.type)) return ordered;
   if (ordered.length <= 192) return ordered;
   const stride = ordered.length / 192;
   const sampled = Array.from({ length: 192 }, (_, index) => ordered[Math.floor(index * stride)]);
@@ -210,6 +218,17 @@ export function autoPaint(painter: CardPainter, actions: PaintActions): void {
         radius,
       );
     }
+    if (card.type === 'colonization' && card.hint >= 0 &&
+      painter.strategyImpactAt(card.hint) > 0) {
+      // The plan hint is guaranteed to be an anchor or border-connected
+      // target. Paint it first so even a reduced fractional quota has a
+      // reachable target before the general strategy re-scores the frontier.
+      actions.dab(
+        (card.hint % MAP_WIDTH) + 0.5,
+        Math.floor(card.hint / MAP_WIDTH) + 0.5,
+        radius,
+      );
+    }
     // Territory eligibility changes as the frontier grows, so re-score a small
     // bounded candidate set after each successful dab.
     for (let step = 0; step < MAX_TERRITORY_DABS && card.ink > 0; step += 1) {
@@ -248,20 +267,45 @@ export function autoPaint(painter: CardPainter, actions: PaintActions): void {
       selected.push(candidate.pixel);
     }
 
-    const first = selected[0];
-    if (isWind && first !== undefined) {
-      const x = (first % MAP_WIDTH) + 0.5;
-      const y = Math.floor(first / MAP_WIDTH) + 0.5;
+    const windStart = isWind && card.hint >= 0 ? card.hint : -1;
+    if (windStart >= 0) {
+      const x = (windStart % MAP_WIDTH) + 0.5;
+      const y = Math.floor(windStart / MAP_WIDTH) + 0.5;
       actions.beginStroke(x, y);
     }
     for (const pixel of selected) {
       if (card.ink <= 0) break;
-      if (isWind && pixel === first) continue;
+      if (isWind && pixel === windStart) continue;
       actions.dab((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5, radius);
     }
-    if (isWind && first !== undefined) {
-      const x = (first % MAP_WIDTH) + 0.5;
-      const y = Math.floor(first / MAP_WIDTH) + 0.5;
+    if (LAYER_CARDS.has(card.type) && card.ink > 0) {
+      // Benefit scoring is only a preference. The issued quota is based on
+      // legal targets, so spend the remainder there even when the direct
+      // climate benefit is neutral or negative.
+      const legalTargets: number[] = [];
+      for (let pixel = 0; pixel < painter.world.land.length; pixel += 1) {
+        if (painter.strategyInkCostAt(pixel) <= 0) continue;
+        legalTargets.push(pixel);
+      }
+      if (isWind && windStart < 0 && legalTargets.length) {
+        const start = legalTargets.find((pixel) =>
+          painter.world.owner[pixel] === (card.targetCountryId ?? -2) + 1,
+        );
+        if (start !== undefined) {
+          actions.beginStroke((start % MAP_WIDTH) + 0.5, Math.floor(start / MAP_WIDTH) + 0.5);
+        }
+      }
+      let fallbackDabs = 0;
+      for (const pixel of legalTargets) {
+        if (card.ink <= 0 || fallbackDabs >= MAX_LAYER_FALLBACK_DABS) break;
+        if (painter.strategyInkCostAt(pixel) <= 0) continue;
+        actions.dab((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5, 5);
+        fallbackDabs += 1;
+      }
+    }
+    if (isWind && windStart >= 0) {
+      const x = (windStart % MAP_WIDTH) + 0.5;
+      const y = Math.floor(windStart / MAP_WIDTH) + 0.5;
       actions.line(x, y, x, y, radius);
     }
   }

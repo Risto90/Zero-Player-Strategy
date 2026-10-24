@@ -1,4 +1,4 @@
-import type { Card, CardChoice, CardType } from './brush';
+import { CardPainter, type Card, type CardChoice, type CardType } from './brush';
 import { BRUSH_SIZES, INK, MAP_PIXELS, MAP_WIDTH, MAX_COUNTRIES, RANKS } from './config';
 import { forEachNeighbour } from './geography';
 import { randomItem, weightedPick } from './random';
@@ -170,17 +170,33 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
 }
 
 function drawNomadExpansionCard(world: World, nomad: Country): Card | null {
-  const range = new Set(nomad.range ?? []);
+  const queue = (nomad.range ?? []).filter((pixel) => world.land[pixel]);
+  const range = new Set(queue);
+  const visited = new Uint8Array(MAP_PIXELS);
+  for (const pixel of queue) visited[pixel] = 1;
   let hint = -1;
-  for (let attempt = 0; attempt < 300; attempt += 1) {
-    const pixel = world.landIndex[Math.floor(Math.random() * world.landIndex.length)];
-    if (!range.has(pixel)) { hint = pixel; break; }
+  let capacity = 0;
+  for (let head = 0; head < queue.length; head += 1) {
+    forEachNeighbour(queue[head], (next) => {
+      if (!world.land[next] || visited[next]) return;
+      visited[next] = 1;
+      queue.push(next);
+      if (!range.has(next)) {
+        capacity += 1;
+        if (hint < 0) hint = next;
+      }
+    });
   }
-  const densityOnly = hint < 0;
-  if (densityOnly) hint = nomad.range?.[0] ?? -1;
+  const densityOnly = capacity === 0;
+  if (densityOnly) {
+    capacity = range.size;
+    hint = queue[0] ?? -1;
+  }
+  const ink = Math.min(INK.expand, capacity);
+  if (ink < 1 || hint < 0) return null;
   const card = makeCard(
     'nomadExpand',
-    INK.expand,
+    ink,
     nomad,
     `${nomad.name}: на карте «Кочевья» кисть расширяет ареал, а на карте «Население» повышает плотность внутри ареала. Колонизация недоступна.`,
     hint,
@@ -195,7 +211,13 @@ const visited = new Uint8Array(MAP_PIXELS);
  * Counts free land reachable from the seeds (by land, or across any sea to any of its coasts),
  * stopping at `cap`.
  */
-function reachableFree(world: World, seeds: number[], cap: number, seas: Set<number>, accept: (p: number) => boolean = () => true): number {
+function reachableFree(
+  world: World,
+  seeds: number[],
+  cap: number,
+  seas: Set<number>,
+  accept: (p: number) => boolean = () => true,
+): { count: number; pixels: number[] } {
   const touched: number[] = [];
   const queue: number[] = [];
   const seenSeas = new Set<number>();
@@ -223,7 +245,7 @@ function reachableFree(world: World, seeds: number[], cap: number, seas: Set<num
     });
   }
   for (const p of touched) visited[p] = 0;
-  return Math.min(cap, touched.length);
+  return { count: Math.min(cap, touched.length), pixels: touched };
 }
 
 function randomLandPixel(world: World, accept: (p: number) => boolean, tries = 400): number {
@@ -258,6 +280,45 @@ function countrySeas(world: World, country: Country): Set<number> {
   return seas;
 }
 
+type CapacityDonor = { pixel: number; density: number };
+
+function higherCapacityDonor(a: CapacityDonor, b: CapacityDonor): boolean {
+  return Math.abs(a.density - b.density) > 1e-9
+    ? a.density > b.density
+    : a.pixel < b.pixel;
+}
+
+function pushCapacityDonor(heap: CapacityDonor[], donor: CapacityDonor): void {
+  heap.push(donor);
+  let child = heap.length - 1;
+  while (child > 0) {
+    const parent = Math.floor((child - 1) / 2);
+    if (!higherCapacityDonor(heap[child], heap[parent])) break;
+    [heap[child], heap[parent]] = [heap[parent], heap[child]];
+    child = parent;
+  }
+}
+
+function popCapacityDonor(heap: CapacityDonor[]): CapacityDonor | null {
+  const top = heap[0];
+  const last = heap.pop();
+  if (!top || last === undefined) return null;
+  if (heap.length) {
+    heap[0] = last;
+    let parent = 0;
+    for (;;) {
+      const left = parent * 2 + 1, right = left + 1;
+      let best = parent;
+      if (left < heap.length && higherCapacityDonor(heap[left], heap[best])) best = left;
+      if (right < heap.length && higherCapacityDonor(heap[right], heap[best])) best = right;
+      if (best === parent) break;
+      [heap[parent], heap[best]] = [heap[best], heap[parent]];
+      parent = best;
+    }
+  }
+  return top;
+}
+
 function drawCreate(world: World, year: number): Card | null {
   if (world.countries.filter((c) => c.pixels > 0).length >= MAX_COUNTRIES) return null;
   const cityAreas = new CityInfluenceIndex(world, -1);
@@ -266,9 +327,9 @@ function drawCreate(world: World, year: number): Card | null {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const seed = randomLandPixel(world, (p) => world.owner[p] === 0 && freeOfCityInfluence(p));
     if (seed < 0) break;
-    const capacity = reachableFree(world, [seed], RANKS[RANKS.length - 1].ink, new Set(), freeOfCityInfluence);
-    if (capacity > best.capacity) best = { seed, capacity };
-    if (capacity >= RANKS[2].ink) break;
+    const reachable = reachableFree(world, [seed], RANKS[RANKS.length - 1].ink, new Set(), freeOfCityInfluence);
+    if (reachable.count > best.capacity) best = { seed, capacity: reachable.count };
+    if (reachable.count >= RANKS[2].ink) break;
   }
   if (best.seed < 0) return null;
   const fitting = RANKS.filter((rank) => rank.ink <= best.capacity);
@@ -306,18 +367,27 @@ function drawExpand(world: World, country: Country): Card | null {
     });
   });
   const seas = countrySeas(world, country);
-  const capacity = reachableFree(world, frontier, INK.expand, seas);
-  if (capacity < 1) {
+  // Four thousand candidate pixels are enough for a normal expansion quota.
+  // We deliberately cap the scan there; a lower measured cost only reduces
+  // the card stock and cannot create ink the brush cannot spend.
+  const reachable = reachableFree(world, frontier, INK.expand, seas);
+  if (reachable.count < 1) {
     // With no unclaimed land, expansion becomes internal development rather than disappearing.
     const available: number[] = [];
     world.forEachCountryPixel(country, (p) => {
       available.push(p);
     });
     if (!available.length) return null;
-    const ink = Math.min(INK.expand, available.length);
-    const card = makeCard('expand', ink, country, `Свободной суши нет. Повышайте плотность населения в ${country.name}: один мазок развивает уже занятые земли.`, randomItem(available));
+    const card = makeCard('expand', INK.expand, country, `Свободной суши нет. Повышайте плотность населения в ${country.name}: один мазок развивает уже занятые земли.`, randomItem(available));
     card.developmentOnly = true;
-    return card;
+    const painter = new CardPainter(world, card, 'repeat');
+    const inkCapacity = available.reduce(
+      (sum, pixel) => sum + painter.strategyTerritoryInkCostAt(pixel),
+      0,
+    );
+    card.ink = Math.min(INK.expand, inkCapacity);
+    card.inkTotal = card.ink;
+    return card.ink > 0 ? card : null;
   }
   let hint = frontier.length > 0 ? randomItem(frontier) : -1;
   if (hint < 0) {
@@ -329,7 +399,16 @@ function drawExpand(world: World, country: Country): Card | null {
       }
     }
   }
-  return makeCard('expand', capacity, country, `Закрашивайте свободные земли у границ ${country.name} или на любом берегу того же моря.`, hint);
+  const card = makeCard('expand', INK.expand, country,
+    `Закрашивайте свободные земли у границ ${country.name} или на любом берегу того же моря.`, hint);
+  const painter = new CardPainter(world, card, 'respect');
+  const inkCapacity = reachable.pixels.reduce(
+    (sum, pixel) => sum + painter.strategyTerritoryInkCostAt(pixel),
+    0,
+  );
+  card.ink = Math.min(INK.expand, inkCapacity);
+  card.inkTotal = card.ink;
+  return card.ink > 0 ? card : null;
 }
 
 function drawColonization(world: World, country: Country): Card | null {
@@ -343,6 +422,36 @@ function drawColonization(world: World, country: Country): Card | null {
     `Колонизируйте побережья доступных морей или земли в бассейне реки, уже проходящей через ${country.name}. Отдельная колония может быть отделена от основной территории, но должна оставаться связанной с рекой или побережьем. Чужие участки доступны, только если их плотность ниже средней плотности страны и государства не союзники. Для каждой точки заново выбирается самый плотный участок страны-донор; переселяется до 10% его населения. На чужой точке число переселенцев ограничено её исходной плотностью, на ничейной — нет. Точка колонии не становится плотнее донора: при меньшей разнице плотности выравниваются, расходуя меньше чернил. Сколько жителей переселилось, столько местных удаляется. Совпадение культуры и религии даёт первый приоритет переселенцам и последний местным на удаление; совпадение только одного признака — следующий приоритет.`,
     plan.hint,
   );
+  const painter = new CardPainter(world, card, 'respect');
+  const donors: CapacityDonor[] = [];
+  for (const pixel of plan.donors) pushCapacityDonor(donors, { pixel, density: world.density[pixel] });
+  let inkCapacity = 0;
+  for (const pixel of world.landIndex) {
+    if (!plan.targets[pixel] || !donors.length) continue;
+    const donor = donors[0];
+    const costCapacity = painter.strategyColonizationInkCapacityAt(pixel, donor.density);
+    if (costCapacity <= 0) continue;
+    const targetDensity = world.owner[pixel] > 0 ? world.density[pixel] : 0;
+    const ideal = donor.density * 0.1;
+    let transferable = Math.min(ideal, donor.density - targetDensity);
+    if (world.owner[pixel] > 0) transferable = Math.min(transferable, targetDensity);
+    if (transferable <= 1e-9) continue;
+    inkCapacity += costCapacity;
+    const depletedDonor = popCapacityDonor(donors);
+    if (!depletedDonor) break;
+    depletedDonor.density -= transferable;
+    if (depletedDonor.density > 1e-9) pushCapacityDonor(donors, depletedDonor);
+    pushCapacityDonor(donors, {
+      pixel,
+      density: world.owner[pixel] > 0 ? targetDensity : transferable,
+    });
+    if (inkCapacity >= ink) break;
+  }
+  // Simulate the real densest-donor transfer limits: foreign targets may use
+  // less than one pixel's ink, and every new settlement can become a donor.
+  card.ink = Math.min(card.ink, inkCapacity);
+  card.inkTotal = card.ink;
+  if (card.ink < 1) return null;
   return card;
 }
 
@@ -663,8 +772,25 @@ export function drawSplitCard(world: World, country: Country, year: number, upri
   };
   const cityCandidates = largestCities(world, cities.filter((city) => accept(city.pixel)));
   if (!cityCandidates.length) return null;
+  const capitalPixel = world.cities.find((city) => city.countryId === country.id && city.capital)?.pixel ?? -1;
+  const tag = country.id + 1;
+  const capacityAtCity = (seed: number): number => {
+    const seen = new Uint8Array(MAP_PIXELS);
+    const queue = [seed];
+    seen[seed] = 1;
+    for (let head = 0; head < queue.length; head += 1) {
+      forEachNeighbour(queue[head], (next) => {
+        if (seen[next] || world.owner[next] !== tag || next === capitalPixel || !accept(next)) return;
+        seen[next] = 1;
+        queue.push(next);
+      });
+    }
+    return Math.min(queue.length, Math.max(0, country.pixels - 1));
+  };
   const hint = cityCandidates[0].pixel;
-  const ink = Math.min(INK.split, Math.floor(country.pixels * 0.45));
+  const reachableCapacity = capacityAtCity(hint);
+  const ink = Math.min(INK.split, Math.floor(country.pixels * 0.45), reachableCapacity);
+  if (ink < 1 || hint < 0) return null;
   const split = world.newCountry({
     rank: country.rank,
     cultureId,
@@ -733,7 +859,7 @@ function countScope(world: World, country: Country | null, cap: number, accept: 
   return { count, hint };
 }
 
-type ClimateCard = 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind';
+export type ClimateCard = 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind';
 
 function climateCanChange(world: World, type: ClimateCard, p: number): boolean {
   if (type === 'drought') return world.humidity[p] > 0;
@@ -781,30 +907,39 @@ function availableClimateCards(world: World, polity: Polity | null, keys: Set<st
     const land = world.land[pixel] === 1;
     for (const type of candidates) {
       if (available.has(type)) continue;
-      const inScope = type === 'warmCurrent' || type === 'coldCurrent' || land;
+      const inScope = type === 'warmCurrent' || type === 'coldCurrent'
+        ? land || world.water.bodyOf[pixel] >= 0
+        : land;
       if (inScope && climateCanChange(world, type, pixel)) available.add(type);
     }
   }
   return available;
 }
 
-function drawClimate(world: World, type: ClimateCard, country: Country | null): Card | null {
+export function drawClimateCard(world: World, type: ClimateCard, country: Country | null): Card | null {
   const winds = type === 'warmWind' || type === 'coldWind';
   const seas = new Set<number>();
   if (country && winds) world.forEachCountryPixel(country, (p) => world.seasOfPixel(p, seas));
-  let count = 0, hint = -1;
+  let capacity = 0, hint = -1;
   const cap = INK.climate;
-  for (let p = 0; p < MAP_PIXELS && count < cap; p += 1) {
+  for (let p = 0; p < MAP_PIXELS && capacity < cap; p += 1) {
     const land = world.land[p] === 1;
-    const inScope = country
-      ? (land && world.owner[p] === country.id + 1) || (winds && !land && seas.has(world.water.bodyOf[p]))
-      : (type === 'warmCurrent' || type === 'coldCurrent' || land);
+    const isCurrent = type === 'warmCurrent' || type === 'coldCurrent';
+    const inScope = isCurrent
+      ? land || world.water.bodyOf[p] >= 0
+      : country
+        ? (land && world.owner[p] === country.id + 1) || (winds && !land && seas.has(world.water.bodyOf[p]))
+        : land;
     if (!inScope || !climateCanChange(world, type, p)) continue;
-    count += 1;
+    const cost = winds && !land ? 0.5 : 1;
+    if (capacity + cost > cap) continue;
+    capacity += cost;
     // Winds must start on the country's land; other climate brushes may start anywhere eligible.
-    if ((!country || land) && (hint < 0 || Math.random() < 1 / Math.max(1, count))) hint = p;
+    if ((!country || land) && (hint < 0 || Math.random() < 1 / Math.max(1, capacity))) hint = p;
   }
-  if (count < 1) return null;
+  if (capacity <= 0) return null;
+  if (hint < 0 && country && winds) hint = randomCountryPixel(world, country);
+  if (hint < 0) return null;
   const where = country ? `в ${country.name}` : 'по всему миру';
   const detail: Record<ClimateCard, string> = {
     drought: `Снижайте влажность на суше ${where}. Сухие земли (0%) чернил не тратят.`,
@@ -816,7 +951,7 @@ function drawClimate(world: World, type: ClimateCard, country: Country | null): 
     warmWind: `Проведите тёплый ветер по земле ${where} и соседним морям. Начните и завершите мазок на своей суше; вода расходует чернила вдвое медленнее.`,
     coldWind: `Проведите холодный ветер по земле ${where} и соседним морям. Начните и завершите мазок на своей суше; вода расходует чернила вдвое медленнее.`,
   };
-  return makeCard(type, count, country, detail[type], hint);
+  return makeCard(type, capacity, country, detail[type], hint);
 }
 
 function drawFaith(world: World, country: Country | null, year: number): Card | null {
@@ -1005,12 +1140,12 @@ export function drawWorldCard(world: World, year: number): Card | null {
   const living = world.countries.filter((c) => c.pixels > 0).length;
   return drawFirstApplicable(world, 'world', null, [
     { key: 'create', value: (w) => drawCreate(w, year), weight: 3 },
-    { key: 'drought', value: (w) => drawClimate(w, 'drought', null), weight: 1 },
-    { key: 'rain', value: (w) => drawClimate(w, 'rain', null), weight: 1 },
-    { key: 'desertification', value: (w) => drawClimate(w, 'desertification', null), weight: 0.6 },
-    { key: 'swamping', value: (w) => drawClimate(w, 'swamping', null), weight: 0.6 },
-    { key: 'warmCurrent', value: (w) => drawClimate(w, 'warmCurrent', null), weight: 0.3 },
-    { key: 'coldCurrent', value: (w) => drawClimate(w, 'coldCurrent', null), weight: 0.3 },
+    { key: 'drought', value: (w) => drawClimateCard(w, 'drought', null), weight: 1 },
+    { key: 'rain', value: (w) => drawClimateCard(w, 'rain', null), weight: 1 },
+    { key: 'desertification', value: (w) => drawClimateCard(w, 'desertification', null), weight: 0.6 },
+    { key: 'swamping', value: (w) => drawClimateCard(w, 'swamping', null), weight: 0.6 },
+    { key: 'warmCurrent', value: (w) => drawClimateCard(w, 'warmCurrent', null), weight: 0.3 },
+    { key: 'coldCurrent', value: (w) => drawClimateCard(w, 'coldCurrent', null), weight: 0.3 },
     { key: 'faith', value: (w) => drawFaith(w, null, year), weight: living > 0 ? 0.25 * faithRoom(world) : 0 },
     { key: 'culture', value: (w) => drawCultureSplit(w, null, year), weight: living > 0 ? 0.3 : 0 },
   ]);
@@ -1060,12 +1195,12 @@ export function drawCountryCard(world: World, country: Country, year: number): C
     { key: 'split', value: (w, p) => drawSplitCard(w, p as Country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale },
     { key: 'uprising', value: (w, p) => drawSplitCard(w, p as Country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale },
     { key: 'union', value: (w, p) => drawUnion(w, p as Country, year), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0 },
-    { key: 'drought', value: (w, p) => drawClimate(w, 'drought', p as Country), weight: 0.8 },
-    { key: 'rain', value: (w, p) => drawClimate(w, 'rain', p as Country), weight: 0.8 },
-    { key: 'desertification', value: (w, p) => drawClimate(w, 'desertification', p as Country), weight: 0.45 },
-    { key: 'swamping', value: (w, p) => drawClimate(w, 'swamping', p as Country), weight: 0.45 },
-    { key: 'warmWind', value: (w, p) => drawClimate(w, 'warmWind', p as Country), weight: 0.25 },
-    { key: 'coldWind', value: (w, p) => drawClimate(w, 'coldWind', p as Country), weight: 0.25 },
+    { key: 'drought', value: (w, p) => drawClimateCard(w, 'drought', p as Country), weight: 0.8 },
+    { key: 'rain', value: (w, p) => drawClimateCard(w, 'rain', p as Country), weight: 0.8 },
+    { key: 'desertification', value: (w, p) => drawClimateCard(w, 'desertification', p as Country), weight: 0.45 },
+    { key: 'swamping', value: (w, p) => drawClimateCard(w, 'swamping', p as Country), weight: 0.45 },
+    { key: 'warmWind', value: (w, p) => drawClimateCard(w, 'warmWind', p as Country), weight: 0.25 },
+    { key: 'coldWind', value: (w, p) => drawClimateCard(w, 'coldWind', p as Country), weight: 0.25 },
     { key: 'faith', value: (w, p) => drawFaith(w, p as Country, year), weight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) * (country.modifiers.includes('theocracy') ? 2 : 1) },
     { key: 'culture', value: (w, p) => drawCultureSplit(w, p as Country, year), weight: country.pixels >= 6000 ? 0.06 : 0 },
   ];

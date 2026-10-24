@@ -1174,7 +1174,7 @@ export class Game {
     if (!reuseActiveCard) {
       this.dispatchAction({
         type: 'setPainterMode',
-        mode: 'respect',
+        mode: card.developmentOnly ? 'repeat' : 'respect',
       });
     }
     const actions: PaintActions = {

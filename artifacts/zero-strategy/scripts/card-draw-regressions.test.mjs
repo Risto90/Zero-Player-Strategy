@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { Game } from '../game/game.ts';
 import { advancePeople } from '../game/characters.ts';
-import { drawCountryCard, drawWorldCard, normalizedCardProbabilities, updateCardDrawMultipliers } from '../game/cards.ts';
+import { drawClimateCard, drawCountryCard, drawWorldCard, normalizedCardProbabilities, updateCardDrawMultipliers } from '../game/cards.ts';
+import { CardPainter } from '../game/brush.ts';
+import { autoPaint } from '../game/autoPaint.ts';
+import { forEachNeighbour } from '../game/geography.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
 
@@ -82,6 +85,80 @@ try {
   world.cardMultipliers[`country:${nomad.id}:nomadExpand`] = 1e100;
   const nomadCard = drawCountryCard(world, nomad, 1000);
   assert.equal(nomadCard?.type, 'nomadExpand', 'the shared country draw selects a nomadic-country card');
+  const rangeSet = new Set(nomad.range);
+  const reachable = new Set(rangeSet);
+  const queue = [...rangeSet];
+  for (let head = 0; head < queue.length; head += 1) {
+    forEachNeighbour(queue[head], (pixel) => {
+      if (world.land[pixel] && !reachable.has(pixel)) {
+        reachable.add(pixel);
+        queue.push(pixel);
+      }
+    });
+  }
+  const reachableOutside = [...reachable].filter((pixel) => !rangeSet.has(pixel)).length;
+  const nomadCapacity = reachableOutside || rangeSet.size;
+  assert.ok(nomadCard.inkTotal <= nomadCapacity,
+    'nomad expansion ink is capped by connected new land or existing range density targets');
+
+  // Wind water costs half an ink, while country land costs one.
+  world.temperature.fill(100);
+  let coastalLand = -1;
+  let coastalSea = -1;
+  for (const pixel of world.landIndex) {
+    if (world.owner[pixel] > 0) continue;
+    const bodies = new Set();
+    world.seasOfPixel(pixel, bodies);
+    const body = [...bodies][0];
+    if (body !== undefined) {
+      coastalLand = pixel;
+      coastalSea = body;
+      break;
+    }
+  }
+  assert.ok(coastalLand >= 0, 'the fixture includes a free coastal land point');
+  world.setOwner(coastalLand, country.id + 1);
+  world.recountCountries();
+  const countryPixels = [];
+  world.forEachCountryPixel(country, (pixel) => countryPixels.push(pixel));
+  countryPixels.slice(0, 2).forEach((pixel) => { world.temperature[pixel] = 50; });
+  const seas = new Set();
+  world.forEachCountryPixel(country, (pixel) => world.seasOfPixel(pixel, seas));
+  assert.ok(seas.has(coastalSea), 'the country is adjacent to the selected sea');
+  const seaPixel = world.water.bodyOf.findIndex((body) => body === coastalSea);
+  assert.ok(seaPixel >= 0, 'the selected sea includes a paintable water point');
+  world.temperature[seaPixel] = 50;
+  const wind = drawClimateCard(world, 'warmWind', country);
+  assert.equal(wind?.inkTotal, 2.5,
+    'a wind card counts two land points and one half-cost sea point');
+  const painter = new CardPainter(world, wind, 'respect');
+  let availableInk = 0;
+  for (let pixel = 0; pixel < world.land.length; pixel += 1) {
+    availableInk += painter.strategyInkCostAt(pixel);
+  }
+  assert.equal(availableInk, wind.inkTotal,
+    'the generated climate quota equals its brush-eligible capacity');
+  autoPaint(painter, {
+    beginStroke: (x, y) => painter.dab(x, y, 11),
+    dab: (x, y, radius) => painter.dab(x, y, radius),
+    line: (ax, ay, bx, by, radius) => painter.line(ax, ay, bx, by, radius),
+    endStroke: () => painter.endStroke(),
+  });
+  assert.equal(wind.ink, 0, 'the automatic wind painter spends the entire land-and-sea quota');
+  assert.ok(wind.ink >= 0, 'the wind brush never overspends a fractional sea quota');
+  for (const pixel of countryPixels) world.temperature[pixel] = 100;
+  world.temperature[seaPixel] = 50;
+  const seaOnlyWind = drawClimateCard(world, 'warmWind', country);
+  assert.equal(seaOnlyWind?.inkTotal, 0.5,
+    'a sea-only climate opportunity uses a land point only to start the stroke');
+  const seaPainter = new CardPainter(world, seaOnlyWind, 'respect');
+  autoPaint(seaPainter, {
+    beginStroke: (x, y) => seaPainter.dab(x, y, 11),
+    dab: (x, y, radius) => seaPainter.dab(x, y, radius),
+    line: (ax, ay, bx, by, radius) => seaPainter.line(ax, ay, bx, by, radius),
+    endStroke: () => seaPainter.endStroke(),
+  });
+  assert.equal(seaOnlyWind.ink, 0, 'the automatic wind painter can spend a half-ink sea-only quota');
 
   const ruler = country.ruler;
   const other = world.newCountry({

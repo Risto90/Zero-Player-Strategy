@@ -133,8 +133,22 @@ function assertConnected(world, countryId) {
   ]);
   const card = drawSplitCard(world, country, 1000);
   assert.equal(card.hint, cities[2].pixel, 'the split card hints at the largest transferable city');
+  const splitAvailable = new Set([card.hint]);
+  const splitQueue = [card.hint];
+  const capitalPixel = cities[0].pixel;
+  for (let head = 0; head < splitQueue.length; head += 1) {
+    const pixel = splitQueue[head];
+    for (const next of [pixel - 1, pixel + 1, pixel - MAP_WIDTH, pixel + MAP_WIDTH]) {
+      if (next === capitalPixel || splitAvailable.has(next) || world.owner[next] !== country.id + 1) continue;
+      splitAvailable.add(next);
+      splitQueue.push(next);
+    }
+  }
+  assert.ok(card.inkTotal <= splitAvailable.size,
+    'split ink does not exceed the connected transferable area reachable from its required city');
   const game = new Game(world, 'observer');
   game.resolveAutomatically(card);
+  assert.equal(card.ink, 0, 'the automatic split spends every ink issued for the reachable area');
   const destination = world.countries[card.newCountryId];
   assert.ok(destination.pixels > 0, 'automatic brush paints the new country');
   assert.equal(world.owner[cities[0].pixel], country.id + 1, 'automatic brush also preserves the source capital');

@@ -189,15 +189,13 @@ assert.deepEqual(
 assert.equal(repeatedPainter.card.ink, plannedPainter.card.ink,
   'identical AI runs spend identical ink');
 
-const safer = fixture();
-const before = climatePopulationFit(safer.world, safer.touched);
-runPainter(new CardPainter(
-  safer.world,
-  climateCard('warmCurrent', safer.country.id, safer.regions[1][0]),
-  'respect',
-));
-assert.ok(climatePopulationFit(safer.world, safer.touched) >= before,
-  'a country climate card does not spend ink on a harmful-only change');
+const noPopulationBenefit = fixture();
+for (const pixel of noPopulationBenefit.touched) noPopulationBenefit.world.density[pixel] = 0;
+const noBenefitCard = climateCard('warmCurrent', noPopulationBenefit.country.id,
+  noPopulationBenefit.regions[1][0], 20);
+runPainter(new CardPainter(noPopulationBenefit.world, noBenefitCard, 'respect'));
+assert.equal(noBenefitCard.ink, 0,
+  'climate automation spends its quota on eligible points even when no comfort benefit can be scored');
 
 function cityPlacementFixture() {
   const world = World.create('random', 61503);

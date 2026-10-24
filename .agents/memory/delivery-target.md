@@ -1,7 +1,9 @@
 ---
 name: Delivery target
-description: Which app form the user wants for Zero Strategy (Expo vs PWA).
+description: Current production delivery target for Zero Strategy and the boundary with its development runtime.
 ---
-The user wants the new pixel-map game as an Expo app opened in Expo Go (SDK 58, Android). The PWA/web version is NOT wanted, and neither is the old grid Expo version.
-**Why:** the user rejected the PWA ("по определению не оффлайн") and said only the new version should be built.
-**How to apply:** don't propose PWA or browser install; deliver through the Expo artifact.
+Production should open Zero Strategy directly in a mobile browser; the published Expo Go launch page is no longer the delivery target. The separate browser-production task changes the production bundle and server path, not necessarily the development runtime or dependencies.
+
+**Why:** the user pointed to the browser-production task and chose to finish the ink task without changing Expo or the browser launch flow.
+
+**How to apply:** distinguish production delivery from the app's development toolchain. Do not remove Expo dependencies or workflow as part of unrelated game-engine tasks; make those changes only as part of an explicitly approved migration.
