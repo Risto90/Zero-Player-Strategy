@@ -9,22 +9,37 @@ import { currentGame } from '@/game/session';
 import { useGameSnapshot } from '@/game/useGame';
 import { expectedHeirFor, rulers } from '@/game/succession';
 import type { Game } from '@/game/game';
+import type { NomadGroup } from '@/game/world';
+import type { Person } from '@/game/government';
+import { nomadProfileRoute } from '@/game/profileRoutes';
 
 const c = colors.light;
 
 export default function CountryPage() {
-  const { id: rawId } = useLocalSearchParams<{ id: string }>();
+  const { id: rawId, type: entityType } = useLocalSearchParams<{ id: string; type?: string }>();
   const game = currentGame();
   const insets = useSafeAreaInsets();
   if (!game) {
     return <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}><Text style={styles.title}>Игра не открыта</Text></View>;
   }
-  return <CountryProfile game={game} countryId={Number(rawId)} />;
+  return <CountryProfile game={game} countryId={Number(rawId)} entityType={entityType === 'nomad' ? 'nomad' : 'country'} />;
 }
 
-function CountryProfile({ game, countryId }: { game: Game; countryId: number }) {
+function CountryProfile({ game, countryId, entityType }: { game: Game; countryId: number; entityType: 'country' | 'nomad' }) {
   useGameSnapshot(game);
   const insets = useSafeAreaInsets();
+  if (entityType === 'nomad') {
+    const nomad = game.world.nomads.find((group) => group.id === countryId);
+    if (!nomad) {
+      return (
+        <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}>
+          <Text style={styles.title}>Кочевье не найдено</Text>
+          <Pressable onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>Назад</Text></Pressable>
+        </View>
+      );
+    }
+    return <NomadProfile game={game} nomad={nomad} />;
+  }
   const country = game.world.countries[countryId];
   if (!country) {
     return (
@@ -108,7 +123,7 @@ function CountryProfile({ game, countryId }: { game: Game; countryId: number }) 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>КОЧЕВЬЯ НА ТЕРРИТОРИИ</Text>
           {countryNomads.map(({ nomad, overlap }) => (
-            <Pressable key={nomad.id} onPress={() => router.push({ pathname: '/nomad/[id]', params: { id: String(nomad.id) } })} style={styles.linkRow}>
+            <Pressable key={nomad.id} onPress={() => router.push(nomadProfileRoute(nomad.id))} style={styles.linkRow}>
               <Text style={styles.link}>{nomad.name}</Text>
               <Text style={styles.note}>{overlap === nomad.range.length ? 'полностью' : 'частично'}</Text>
             </Pressable>
@@ -123,6 +138,82 @@ function CountryProfile({ game, countryId }: { game: Game; countryId: number }) 
           <Feather name="map" size={16} color={c.primaryForeground} />
           <Text style={styles.mapButtonText}>Показать на карте</Text>
         </Pressable>
+      </ScrollView>
+    </View>
+  );
+}
+
+function NomadProfile({ game, nomad }: { game: Game; nomad: NomadGroup }) {
+  const insets = useSafeAreaInsets();
+  const population = nomad.cells.reduce((sum, cell) => sum + cell.population, 0);
+  const cultureTotals = new Map<number, number>();
+  const religionTotals = new Map<number, number>();
+  let atheistPopulation = 0;
+  for (const cell of nomad.cells) {
+    const cultures = game.world.cultureTable.entries[cell.cultureMix];
+    cultures.ids.forEach((cultureId, index) =>
+      cultureTotals.set(cultureId, (cultureTotals.get(cultureId) ?? 0) + cell.population * cultures.shares[index] / 100),
+    );
+    const religions = game.world.religionTable.entries[cell.religionMix];
+    religions.ids.forEach((religionId, index) =>
+      religionTotals.set(religionId, (religionTotals.get(religionId) ?? 0) + cell.population * religions.shares[index] / 100),
+    );
+    atheistPopulation += cell.population * (100 - religions.total) / 100;
+  }
+  const compositionLines = (parts: Map<number, number>, name: (id: number) => string) =>
+    [...parts.entries()].sort((a, b) => b[1] - a[1]).map(([partId, amount]) =>
+      `${name(partId)} · ${pct(amount / Math.max(population, 1) * 100)}`,
+    );
+  const religions = [
+    ...compositionLines(religionTotals, (religionId) => game.world.religions[religionId]?.name ?? 'неизвестная вера'),
+    ...(atheistPopulation > 0 ? [`Атеисты · ${pct(atheistPopulation / Math.max(population, 1) * 100)}`] : []),
+  ];
+  const personLink = (person: Person, label?: string) => (
+    <Pressable key={`${person.id}-${label ?? person.name}`} onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(person.id) } })} style={styles.linkRow}>
+      <Text style={styles.link}>{label ?? person.name}</Text>
+      <Text style={styles.note}>{person.age} лет{personDeathStatus(person) ? ` · ${personDeathStatus(person)}` : ''}</Text>
+    </Pressable>
+  );
+  return (
+    <View style={[styles.screen, { paddingTop: insets.top }]}>
+      <View style={styles.header}>
+        <Pressable onPress={() => router.back()} style={styles.back}>
+          <Feather name="arrow-left" size={18} color={c.foreground} />
+          <Text style={styles.backText}>Назад</Text>
+        </Pressable>
+        <Text style={styles.eyebrow}>КАРТОЧКА КОЧЕВЬЯ</Text>
+      </View>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+        <Text style={styles.title}>{nomad.name}</Text>
+        <Text style={styles.subtitle}>Кочевье · {GOVERNMENTS[nomad.government].name}</Text>
+        <View style={styles.facts}>
+          <Text style={styles.sectionTitle}>ЭТНИЧЕСКИЙ СОСТАВ</Text>
+          {compositionLines(cultureTotals, (cultureId) => game.world.cultures[cultureId]?.name ?? 'неизвестная культура').map((line) => (
+            <Text key={line} style={styles.fact}>{line}</Text>
+          ))}
+          <Text style={styles.sectionTitle}>РЕЛИГИОЗНЫЙ СОСТАВ</Text>
+          {religions.length ? religions.map((line) => <Text key={line} style={styles.fact}>{line}</Text>) : <Text style={styles.fact}>Атеисты · 100%</Text>}
+          <Text style={styles.fact}>Население · {fmt(population)} чел.</Text>
+          <Text style={styles.fact}>Форма правления · {GOVERNMENTS[nomad.government].name}</Text>
+          {nomad.modifiers.map((modifier) => (
+            <Text key={modifier} style={styles.note}>· {MODIFIERS[modifier]?.name ?? modifier}: {MODIFIERS[modifier]?.effect ?? ''}</Text>
+          ))}
+        </View>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>ПРАВИТЕЛЬ</Text>
+          {personLink(nomad.ruler)}
+          {nomad.heir && <>
+            <Text style={styles.sectionTitle}>ОЖИДАЕМЫЙ НАСЛЕДНИК</Text>
+            {personLink(nomad.heir, `Ожидаемый наследник · ${nomad.heir.name}`)}
+          </>}
+        </View>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>АРЕАЛ И ПРОИСХОЖДЕНИЕ</Text>
+          <Text style={styles.fact}>{fmt(nomad.pixels)} земель; ареал может пересекаться с государствами и другими кочевьями.</Text>
+          {nomad.sourceCountryId !== null && (
+            <Text style={styles.note}>Происхождение: {game.world.countries[nomad.sourceCountryId]?.name ?? 'распущенное государство'}.</Text>
+          )}
+        </View>
       </ScrollView>
     </View>
   );

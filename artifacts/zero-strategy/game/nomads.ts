@@ -61,7 +61,7 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
     ? cultureIds.map((id) => new Set([id]))
     : communist
       ? [new Set(cultureIds)]
-      : memberships(cultureIds, probability, false).map((set) =>
+      : memberships(cultureIds, probability, probability === 0).map((set) =>
           new Set([...set].filter((id): id is number => id !== null)),
         );
   const theocratic = country.modifiers.includes('theocracy');
@@ -104,19 +104,19 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
     for (const [pixel, entries] of perPixel) {
       const cellTotal = entries.reduce((sum, entry) => sum + entry.population, 0);
       const cultureMix = new Map<number, number>(), religionMix = new Map<number, number>();
-      let cellFaithful = 0;
       for (const entry of entries) {
         cultureMix.set(entry.cultureId, (cultureMix.get(entry.cultureId) ?? 0) + entry.population);
         if (entry.religionId !== null) {
           religionMix.set(entry.religionId, (religionMix.get(entry.religionId) ?? 0) + entry.population);
-          cellFaithful += entry.population;
         }
       }
       cells.push({
         pixel,
         population: cellTotal,
         cultureMix: world.cultureTable.intern(quantizeShares(cultureMix, 100)),
-        religionMix: world.religionTable.intern(quantizeShares(religionMix, cellTotal > 0 ? cellFaithful / cellTotal * 100 : 0)),
+        religionMix: world.religionTable.intern(
+          new Map([...religionMix].map(([religionId, amount]) => [religionId, amount / cellTotal * 100])),
+        ),
       });
     }
     const dominantCulture = [...groupCultures].sort((a, b) => b[1] - a[1])[0][0];

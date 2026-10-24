@@ -307,7 +307,7 @@ export class MapRenderer {
           const city = cityId >= 0 ? w.cities[cityId] : null;
           color = city ? this.cityColors[city.rank - 1] : o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
         } else if (mode === 11) {
-          color = this.nomadRaster[p] || (o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])]);
+          color = this.nomadRaster[p] || unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
         }
         else if (mode === 1) color = biomePacked[biomeOf(humidity[p], temperature[p], drainage[p])];
         else if (o === 0 && mode !== 4) color = mode >= 5 && mode <= 7 ? ramp[values[p]] : unclaimedPacked;

@@ -13,6 +13,7 @@ import { RAMPS } from '@/game/render';
 import { expectedHeirFor, rulers } from '@/game/succession';
 import { cityComposition, cityRankName } from '@/game/settlements';
 import { cityIconIndex, cityIconSource } from '@/components/map/cityIcons';
+import { nomadProfileRoute } from '@/game/profileRoutes';
 
 const c = colors.light;
 
@@ -162,7 +163,7 @@ export function LegendPanel({ game, snap, onCityPress }: { game: Game; snap: Gam
     body = (
       <ScrollView nestedScrollEnabled>
         {game.world.nomads.length ? game.world.nomads.map((nomad) => (
-          <Pressable key={nomad.id} onPress={() => router.push({ pathname: '/nomad/[id]', params: { id: String(nomad.id) } })} style={styles.row}>
+          <Pressable key={nomad.id} onPress={() => router.push(nomadProfileRoute(nomad.id))} style={styles.row}>
             <View style={[styles.swatch, { backgroundColor: nomad.color }]} />
             <View style={{ flex: 1 }}>
               <Text style={styles.rowName}>{nomad.name}</Text>
@@ -265,7 +266,7 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
                 <CountryCompositionBlock game={game} countryId={country.id} />
                 <Text style={styles.countrySection}>Кочевья на территории</Text>
                 {nomadsPresent.map(({ nomad, overlap }) => (
-                  <Pressable key={nomad.id} onPress={() => router.push({ pathname: '/nomad/[id]', params: { id: String(nomad.id) } })}>
+                  <Pressable key={nomad.id} onPress={() => router.push(nomadProfileRoute(nomad.id))}>
                     <Text style={styles.familyLink}>{nomad.name} · {overlap === nomad.range.length ? 'полностью' : 'частично'}</Text>
                   </Pressable>
                 ))}

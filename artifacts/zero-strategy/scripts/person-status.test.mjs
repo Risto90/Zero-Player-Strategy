@@ -32,8 +32,7 @@ assert.equal(
 const viewFiles = [
   ['app/person/[id].tsx', 5, 'person and relative profiles'],
   ['app/dynasty/[id].tsx', 2, 'dynasty cards and relation links'],
-  ['app/country/[id].tsx', 3, 'country rulers and heirs'],
-  ['app/nomad/[id].tsx', 2, 'nomad rulers and heirs'],
+  ['app/country/[id].tsx', 5, 'country and nomad rulers and heirs'],
   ['components/game/LegendPanel.tsx', 7, 'country list and map inspection panel'],
   ['components/game/InspectCard.tsx', 2, 'map inspection person rows'],
   ['components/game/CardPanel.tsx', 2, 'event names and person choices'],

@@ -9,3 +9,4 @@
 - [Expo Router route types](expo-router-types.md) — restart the managed Expo workflow when a new file route is missing from generated typed navigation.
 - [Inheritance partition painting](inheritance-partition-brush.md) — reserve each seed and count prior heir land outside its share quota.
 - [Card save and resume](save-resume-card-state.md) — a saved map does not capture transient per-card brush progress; resume parity must compare completed outcomes.
+- [Nomad cohort conservation](nomad-cohort-conservation.md) — keep each faith and atheist population exact when splitting nomad cohorts; avoid rounding subgroup shares.
