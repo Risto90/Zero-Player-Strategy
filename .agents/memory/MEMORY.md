@@ -2,7 +2,7 @@
 - [Delivery target](delivery-target.md) — user wants the new game as an Expo Go app (SDK 58); no PWA, no old grid version.
 - [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
 - [Map redraw and timer](map-redraw-timer.md) — timer starts only after full redraw; every world mutation must mark its renderer area.
-- [Dynasty and lineage rules](zero-strategy-dynasty-rules.md) — separate the current ruler's house from all living named country residents; surnames link to genealogy.
+- [Dynasty, lineage, and office rules](zero-strategy-dynasty-rules.md) — separate dynasty from residents; active offices stay with living leaders while biographies retain deaths.
 - [Design-doc fidelity](design-doc-fidelity.md) — implement only mechanics specified for this game; clarify missing numerical rules instead of inventing them.
 - [Expo build port](zero-strategy-expo-build-port.md) — choose a free Metro port if Replit's preview service occupies 8081.
 - [Published Expo launch URLs](zero-strategy-published-launch.md) — resolve static manifest and bundle asset URLs against the active request origin, not the build hostname.

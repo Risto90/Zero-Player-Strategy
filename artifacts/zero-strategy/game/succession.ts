@@ -229,6 +229,39 @@ export function appoint(world: World, c: Polity, p: Person, year: number, seatId
   else c.coRulerIds = c.coRulerIds.map((id) => id === seatId ? chosen.id : id);
   c.coRulerIds = [...new Set(c.coRulerIds)].filter((id) => id !== c.ruler.id);
 }
+/**
+ * Repairs legacy or inconsistent active offices without changing living leaders.
+ * The callback lets country successions retain the game's normal annexation path.
+ */
+export function repairDeadOfficeHolders(
+  world: World,
+  c: Polity,
+  year: number,
+  appointOffice: (leader: Person, seatId: number) => void = (leader, seatId) => appoint(world, c, leader, year, seatId),
+): boolean {
+  let repaired = false;
+  const replace = (leader: Person, seatId: number) => {
+    const successor = successionOrder(world, c, leader)[0] ?? newCitizen(world, c, year);
+    appointOffice(successor, seatId);
+    repaired = true;
+  };
+
+  for (const seatId of [...c.coRulerIds]) {
+    const leader = person(world, seatId);
+    if (!leader) {
+      c.coRulerIds = c.coRulerIds.filter((id) => id !== seatId);
+      repaired = true;
+    } else if (!leader.alive) {
+      replace(leader, seatId);
+    }
+  }
+
+  const ruler = person(world, c.ruler.id) ?? c.ruler;
+  if (!ruler.alive) replace(ruler, ruler.id);
+
+  if (repaired) ensureOffices(world, c, year);
+  return repaired;
+}
 export function ensureOffices(world: World, c: Polity, year: number): void {
   const desired = c.modifiers.includes('consulate') ? c.consulCount : c.modifiers.includes('coRule') ? 2 : 1;
   c.coRulerIds = c.coRulerIds.filter((id) => !!person(world, id)?.alive).slice(0, desired - 1);

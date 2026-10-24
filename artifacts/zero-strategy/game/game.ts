@@ -14,7 +14,7 @@ import { World, type City, type Country, type NomadGroup } from './world';
 import { GOVERNMENTS, reservePersonId, type Person } from './government';
 import { advancePeople, arePartners, birth, countryCharacters, ensureUniqueDynastySurnames, killPerson, marry, newCitizen, normalizePolitics, person, registerPerson } from './characters';
 import { applyReform } from './politics';
-import { appoint, candidateAllowed, ensureOffices, refreshHeirs, successionOrder } from './succession';
+import { appoint, candidateAllowed, ensureOffices, refreshHeirs, repairDeadOfficeHolders, successionOrder } from './succession';
 import { randomItem } from './random';
 import { demography } from './demography';
 import {
@@ -289,6 +289,7 @@ export class Game {
       }
     }
     const game = new Game(loadedWorld, saved.role);
+    game.year = saved.year;
     normalizePolitics(game.world, saved.year);
     for (const choice of saved.card?.choices ?? []) {
       if (choice.ruler) reservePersonId(choice.ruler.id);
@@ -297,8 +298,17 @@ export class Game {
     if (saved.card?.newRuler) reservePersonId(saved.card.newRuler.id);
     if (saved.card?.characterEvent?.newPerson) reservePersonId(saved.card.characterEvent.newPerson.id);
     refreshHeirs(game.world, saved.year);
-    for (const country of game.world.countries) ensureOffices(game.world, country, saved.year);
-    game.year = saved.year;
+    for (const country of [...game.world.countries]) {
+      if (!game.world.countries.includes(country)) continue;
+      repairDeadOfficeHolders(game.world, country, saved.year,
+        (leader, seatId) => game.appointAndAnnex(country, leader, saved.year, seatId));
+      ensureOffices(game.world, country, saved.year);
+    }
+    for (const nomad of game.world.nomads) {
+      repairDeadOfficeHolders(game.world, nomad, saved.year,
+        (leader, seatId) => appoint(game.world, nomad, leader, saved.year, seatId));
+    }
+    refreshHeirs(game.world, saved.year);
     game.turn = saved.turn;
     game.focusCountryId = saved.focusCountryId;
     game.queue = saved.queue;
