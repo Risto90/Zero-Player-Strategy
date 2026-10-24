@@ -15,7 +15,7 @@ import { MapView } from '@/components/map/MapView';
 import type { MapTool, MapViewHandle } from '@/components/map/types';
 import colors, { fonts } from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
-import type { Game, PixelInfo } from '@/game/game';
+import { hasPlayerActionCard, type Game, type PixelInfo } from '@/game/game';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
 import type { MapMode } from '@/game/render';
@@ -142,7 +142,7 @@ function GameScreen({ game }: { game: Game }) {
   }, [snap.log]);
 
   const log = useMemo(() => <LogPanel log={snap.log} transparent />, [snap.log]);
-  const canOpenEvent = !!snap.card || !!snap.progress || !!snap.message;
+  const canOpenEvent = hasPlayerActionCard(snap);
   const nextLabel = snap.queuedCards > 0
     ? 'Готово'
     : snap.card?.type === 'government'

@@ -128,6 +128,10 @@ export interface GameSnapshot {
   legend: Legend;
 }
 
+export function hasPlayerActionCard(snapshot: Pick<GameSnapshot, 'role' | 'card' | 'progress'>): boolean {
+  return snapshot.role !== 'observer' && !!snapshot.card && !snapshot.progress;
+}
+
 export type GameAction =
   | { type: 'selectChoice'; index: number }
   | { type: 'setBrushMode'; mode: BrushMode }
