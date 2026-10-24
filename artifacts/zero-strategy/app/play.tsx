@@ -7,6 +7,7 @@ import { CardPanel } from '@/components/game/CardPanel';
 import { InspectCard } from '@/components/game/InspectCard';
 import { LegendPanel } from '@/components/game/LegendPanel';
 import { LogPanel } from '@/components/game/LogPanel';
+import { MapLegend } from '@/components/game/MapLegend';
 import { MapControls } from '@/components/game/MapControls';
 import { ModeTabs } from '@/components/game/ModeTabs';
 import { Loading } from '@/components/Loading';
@@ -16,6 +17,7 @@ import colors, { fonts } from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { fmt } from '@/game/format';
 import { hasPlayerActionCard, type Game, type GameSnapshot, type PixelInfo } from '@/game/game';
+import { scheduleMapLegend } from '@/game/mapLegendTimer';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
 import type { MapMode } from '@/game/render';
@@ -96,6 +98,7 @@ function GameScreen({ game }: { game: Game }) {
   const [logOpen, setLogOpen] = useState(false);
   const [logPreview, setLogPreview] = useState(false);
   const [zoomVisible, setZoomVisible] = useState(false);
+  const [legendVisible, setLegendVisible] = useState(true);
 
   const canBrush = snap.canPaint && !snap.busy;
   const canPlaceCity = snap.cityPlacementAvailable && !snap.busy;
@@ -125,6 +128,10 @@ function GameScreen({ game }: { game: Game }) {
 
   useEffect(() => {
     setListMode(null);
+  }, [snap.mapMode]);
+
+  useEffect(() => {
+    return scheduleMapLegend(setLegendVisible);
   }, [snap.mapMode]);
 
   useEffect(() => {
@@ -288,6 +295,10 @@ function GameScreen({ game }: { game: Game }) {
           )}
         </Pressable>
 
+        {legendVisible && !cardOpen && !listMode && !logOpen && (
+          <MapLegend game={game} snap={snap} />
+        )}
+
         {tool === 'hand' && inspect && (
           <InspectCard
             info={selectedInfo}
@@ -296,7 +307,7 @@ function GameScreen({ game }: { game: Game }) {
             onCityPress={(id) => router.push(cityProfileRoute(id))}
           />
         )}
-        {tool === 'hand' && !inspect && (
+        {tool === 'hand' && !inspect && !legendVisible && (
           <View style={styles.tapHint} pointerEvents="none">
             <Text style={styles.tapHintText}>Коснитесь точки, чтобы её изучить</Text>
           </View>

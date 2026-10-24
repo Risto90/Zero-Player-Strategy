@@ -39,6 +39,8 @@ export const RAMPS: Record<'humidity' | 'temperature' | 'drainage' | 'density', 
   density: ['#efe8d2', '#d8c08c', '#c08a52', '#93512f', '#5e2a1d'],
 };
 
+export const CITY_COLORS = ['#a66f3d', '#bf6741', '#b2493e', '#8f3036', '#672433', '#431c2e'] as const;
+
 function rampColor(stops: RGB[], t: number): RGB {
   const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
   const i = Math.min(stops.length - 2, Math.floor(x));
@@ -93,7 +95,7 @@ export class MapRenderer {
   private readonly nomadRaster = new Uint32Array(MAP_PIXELS);
   private readonly nomadDensity = new Float32Array(MAP_PIXELS);
   private nomadRasterVersion = -1;
-  private cityColors = [pack([166, 111, 61]), pack([191, 103, 65]), pack([178, 73, 62]), pack([143, 48, 54]), pack([103, 36, 51]), pack([67, 28, 46])];
+  private cityColors = CITY_COLORS.map((color) => pack(hexToRgb(color)));
   private colorKey = '';
   private colonizationMask: Uint8Array | null = null;
   /** Colour per composition id (0 = not computed yet); compositions never change once interned. */
