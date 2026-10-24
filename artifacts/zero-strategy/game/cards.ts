@@ -9,7 +9,16 @@ import { leadershipOptions } from './succession';
 import { newCitizen, person } from './characters';
 import { demography } from './demography';
 import { colonizationPlan } from './colonization';
-import { canUpgradeCityRank, CityInfluenceIndex, cityInfluenceMultiplier, cityRankName, populationAtPixel } from './settlements';
+import {
+  CityInfluenceIndex,
+  cityAtUpperPopulationThreshold,
+  cityAtWaningThreshold,
+  cityInfluenceMultiplier,
+  cityPopulationMinimum,
+  cityRankName,
+  populationAtPixel,
+  upgradeableCities,
+} from './settlements';
 import type { City, NomadGroup } from './world';
 
 export const CARD_TITLES: Record<CardType, string> = {
@@ -19,6 +28,7 @@ export const CARD_TITLES: Record<CardType, string> = {
   split: 'Раскол страны',
   buildCity: 'Создание города',
   upgradeCity: 'Расширение города',
+  waneCity: 'Увядание города',
   moveCapital: 'Перенос столицы',
   nomadExpand: 'Расширение кочевья',
   drought: 'Засуха',
@@ -285,24 +295,62 @@ export function drawBuildCityCard(world: World, country: Country): Card | null {
 }
 
 export function drawUpgradeCityCard(world: World, country: Country): Card | null {
-  const eligibleRanks = new Set<number>();
-  for (let rank = 1; rank < 6; rank += 1) {
-    if (canUpgradeCityRank(world, country.id, rank as City['rank'])) eligibleRanks.add(rank);
+  const candidates = upgradeableCities(world, country.id);
+  if (!candidates.length) return null;
+  const selected = [...candidates];
+  const shown: City[] = [];
+  while (selected.length && shown.length < 2) {
+    shown.push(selected.splice(Math.floor(Math.random() * selected.length), 1)[0]);
   }
-  const cities = world.cities.filter((city) => city.countryId === country.id && eligibleRanks.has(city.rank));
-  const candidates = largestCities(world, cities);
-  if (candidates.length < 2) return null;
   const card = makeCard(
     'upgradeCity',
     0,
     country,
-    `Выберите один из двух крупнейших подходящих городов ${country.name}; его ранг повысится на один.`,
+    `Выберите подходящий город ${country.name}: население достигло верхнего порога, а в его сфере есть ещё два города того же ранга.`,
     -1,
   );
-  card.choices = cityChoices(world, candidates).map((choice) => ({
+  card.choices = cityChoices(world, shown).map((choice) => ({
     label: choice.label,
     detail: `${choice.detail} Новый ранг: ${cityRankName((world.cities[choice.cityId].rank + 1) as City['rank'])}.`,
     cityId: choice.cityId,
+  }));
+  return card;
+}
+
+export function cityWaningWeight(world: World, country: Country): number {
+  const cities = world.cities.filter((city) => city.countryId === country.id);
+  if (!cities.some(cityAtWaningThreshold)) return 0;
+  const averageDensity = demography(world, country).population / Math.max(1, country.pixels);
+  const rankSum = cities.reduce((sum, city) => sum + city.rank, 0);
+  return rankSum /
+    ((1 + averageDensity / CITY_DENSITY_REFERENCE) * (1 + country.pixels / RANKS[2].ink));
+}
+
+export function drawWaneCityCard(world: World, country: Country): Card | null {
+  const allCities = world.cities.filter((city) => city.countryId === country.id);
+  if (!allCities.length) return null;
+  const candidates = allCities.length > 2 ? allCities.filter((city) => !city.capital) : allCities;
+  const thresholdCities = candidates.filter(cityAtWaningThreshold);
+  if (!thresholdCities.length) return null;
+  const chosen: City[] = [];
+  const takeRandom = (pool: City[]) => {
+    const available = pool.filter((city) => !chosen.includes(city));
+    if (available.length) chosen.push(available[Math.floor(Math.random() * available.length)]);
+  };
+  while (chosen.length < 2 && thresholdCities.some((city) => !chosen.includes(city))) takeRandom(thresholdCities);
+  while (chosen.length < 2 && candidates.some((city) => !chosen.includes(city))) takeRandom(candidates);
+  const card = makeCard(
+    'waneCity',
+    0,
+    country,
+    allCities.length === 1
+      ? `У ${country.name} остался один город. Его увядание произойдёт автоматически.`
+      : `Выберите город ${country.name} у границы населения или за ней. Если городов больше двух, столица не выбирается.`,
+    -1,
+  );
+  card.choices = cityChoices(world, chosen).map((choice) => ({
+    ...choice,
+    detail: `${choice.detail} Порог ранга: ${cityPopulationMinimum(world.cities[choice.cityId].rank)}–${cityAtUpperPopulationThreshold(world.cities[choice.cityId]) ? 'достигнут верхний' : 'нижний'} предел.`,
   }));
   return card;
 }
@@ -684,8 +732,9 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const buildCityWeight = cityModifierTotal > 0
     ? (1 + country.pixels / RANKS[2].ink) * (averageNonCityDensity / CITY_DENSITY_REFERENCE) / cityModifierTotal
     : 0;
+  const upperThresholdCount = countryCities.filter(cityAtUpperPopulationThreshold).length;
   const upgradeCityWeight = countryCities.length > 0
-    ? diversity.population / RANKS[2].ink * countryCities.length
+    ? diversity.population / RANKS[2].ink * countryCities.length * (1 + upperThresholdCount)
     : 0;
   const capital = countryCities.find((city) => city.capital);
   const largerThanCapital = capital ? countryCities.filter((city) =>
@@ -702,6 +751,7 @@ export function drawCountryCard(world: World, country: Country, year: number): C
     { value: () => drawExpand(world, country), weight: 4 * consulateScale },
     { value: () => drawBuildCityCard(world, country), weight: buildCityWeight },
     { value: () => drawUpgradeCityCard(world, country), weight: upgradeCityWeight },
+    { value: () => drawWaneCityCard(world, country), weight: cityWaningWeight(world, country) },
     { value: () => drawMoveCapital(world, country), weight: countryCities.length >= 3 ? 1 : 0 },
     { value: () => drawColonization(world, country), weight: Math.max(0, diversity.density * 0.12) * consulateScale },
     { value: () => drawGovernment(world, country, year), weight: 0.16 * consulateScale },

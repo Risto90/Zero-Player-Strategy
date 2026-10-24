@@ -17,7 +17,15 @@ import { applyReform } from './politics';
 import { appoint, candidateAllowed, ensureOffices, refreshHeirs, successionOrder } from './succession';
 import { randomItem } from './random';
 import { demography } from './demography';
-import { addCityAndConcentrate, canUpgradeCityRank, cityInfluenceRadius, cityRankName, concentrateCityPopulation, populationAtPixel } from './settlements';
+import {
+  addCityAndConcentrate,
+  applyCityWaning,
+  canUpgradeCityRank,
+  cityInfluenceRadius,
+  cityRankName,
+  concentrateCityPopulation,
+  populationAtPixel,
+} from './settlements';
 import { dissolveCountryIntoNomads } from './nomads';
 
 export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
@@ -977,6 +985,21 @@ export class Game {
           concentrateCityPopulation(w, city);
           this.markCityArea(city);
           this.addLog(`${target.name}: город повышен до ранга «${cityRankName(city.rank)}».`);
+        }
+        break;
+      }
+      case 'waneCity': {
+        const cityId = card.choices?.[card.selectedChoice]?.cityId;
+        const city = cityId === undefined ? null : w.cities[cityId];
+        const countryCities = target ? w.cities.filter((item) => item.countryId === target.id) : [];
+        const isAllowedTarget = !!city && !!target && city.countryId === target.id &&
+          (countryCities.length <= 2 || !city.capital);
+        const result = isAllowedTarget && city ? applyCityWaning(w, city) : null;
+        if (result && target && city) {
+          this.renderer.markAll();
+          this.addLog(result.removed
+            ? `${target.name}: городок ${city.name ?? 'без названия'} удалён; половина жителей расселена.`
+            : `${target.name}: ${city.name ?? 'город'} увял; расселено ${fmt(Math.round(result.transferredPopulation))} жителей.`);
         }
         break;
       }

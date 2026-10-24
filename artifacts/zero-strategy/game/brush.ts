@@ -1,12 +1,12 @@
 import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, RANKS } from './config';
 import { forEachNeighbour } from './geography';
-import { cityPopulationGroupsAtPixel, type NomadCell, type NomadGroup, type World } from './world';
+import { type NomadCell, type NomadGroup, type World } from './world';
 import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
 import { ColonizationDonorHeap, colonizationPlan, transferColonizationPopulation } from './colonization';
-import { changeCityPopulation, CityInfluenceIndex } from './settlements';
+import { applyDensityGrowth, changeCityPopulation, CityInfluenceIndex } from './settlements';
 
-export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'moveCapital' | 'nomadExpand' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
+export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'waneCity' | 'moveCapital' | 'nomadExpand' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
 export interface CardChoice {
   label: string;
   detail: string;
@@ -509,9 +509,7 @@ export class CardPainter {
         if (card.ink <= 0) break;
         if (world.owner[p] !== tag || strokeMask[p]) continue;
         const { cost, strength } = this.brushScaling(p);
-        world.density[p] += strength;
-        const city = world.cityAt(p);
-        if (city) changeCityPopulation(world, city, cityPopulationGroupsAtPixel(world, p, strength));
+        applyDensityGrowth(world, p, strength, this.cityInfluence?.citiesAt(p));
         card.ink = Math.max(0, card.ink - cost);
         this.touch(p);
       }

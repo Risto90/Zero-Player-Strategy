@@ -4,6 +4,30 @@ import { cityPopulationGroupsAtPixel, type City, type CityPopulationGroup, type 
 
 const CITY_CANONICAL_MODIFIERS = [1, 1, 1, 2, 3, 6];
 const RANK_AREA = RANKS.map((rank) => rank.ink);
+export const CITY_POPULATION_BANDS = [
+  { minimum: 100, maximum: 500 },
+  { minimum: 500, maximum: 2_500 },
+  { minimum: 2_500, maximum: 10_000 },
+  { minimum: 10_000, maximum: 50_000 },
+  { minimum: 50_000, maximum: 100_000 },
+  { minimum: 100_000, maximum: Infinity },
+] as const;
+
+export function cityPopulationMinimum(rank: CityRank): number {
+  return CITY_POPULATION_BANDS[rank - 1].minimum;
+}
+
+export function cityPopulationMaximum(rank: CityRank): number {
+  return CITY_POPULATION_BANDS[rank - 1].maximum;
+}
+
+export function cityAtUpperPopulationThreshold(city: City): boolean {
+  return city.population >= cityPopulationMaximum(city.rank);
+}
+
+export function cityAtWaningThreshold(city: City): boolean {
+  return city.population <= cityPopulationMinimum(city.rank) || cityAtUpperPopulationThreshold(city);
+}
 
 export function cityInfluenceMultiplier(world: World, city: City): number {
   const coastal = world.isCoastal(city.pixel);
@@ -30,23 +54,34 @@ export function populationAtPixel(world: World, pixel: number): number {
   return world.cityAt(pixel)?.population ?? world.density[pixel];
 }
 
-/**
- * A promotion is offered only if the resulting rank distribution still has at least
- * two cities of the previous rank for each city of the next rank.
- */
+/** Returns true when a top-threshold city has two same-rank, same-country neighbors in its sphere. */
 export function canUpgradeCityRank(world: World, countryId: number, rank: CityRank): boolean {
   if (rank >= 6) return false;
-  const counts = new Array<number>(7).fill(0);
-  for (const city of world.cities) {
-    if (city.countryId === countryId) counts[city.rank] += 1;
+  const influence = new CityInfluenceIndex(world, countryId);
+  return world.cities.some((city) =>
+    city.countryId === countryId &&
+    city.rank === rank &&
+    cityAtUpperPopulationThreshold(city) &&
+    influence.citiesAt(city.pixel).filter((other) =>
+      other.countryId === countryId && other.id !== city.id && other.rank === rank,
+    ).length >= 2,
+  );
+}
+
+export function upgradeableCities(world: World, countryId: number): City[] {
+  const result: City[] = [];
+  for (let rank = 1; rank < 6; rank += 1) {
+    if (!canUpgradeCityRank(world, countryId, rank as CityRank)) continue;
+    const influence = new CityInfluenceIndex(world, countryId);
+    for (const city of world.cities) {
+      if (city.countryId !== countryId || city.rank !== rank || !cityAtUpperPopulationThreshold(city)) continue;
+      const neighbours = influence.citiesAt(city.pixel).filter((other) =>
+        other.countryId === countryId && other.id !== city.id && other.rank === rank,
+      );
+      if (neighbours.length >= 2) result.push(city);
+    }
   }
-  if (counts[rank] < 1) return false;
-  counts[rank] -= 1;
-  counts[rank + 1] += 1;
-  for (let currentRank = 1; currentRank < 6; currentRank += 1) {
-    if (counts[currentRank] < 2 * counts[currentRank + 1]) return false;
-  }
-  return true;
+  return result;
 }
 
 export interface CityInfluence {
@@ -189,6 +224,23 @@ export class CityInfluenceIndex {
     };
   }
 
+  citiesAt(pixel: number): City[] {
+    const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
+    const bx = Math.floor(x / BUCKET), by = Math.floor(y / BUCKET);
+    const result: City[] = [];
+    for (let dy = -2; dy <= 2; dy += 1) {
+      for (let dx = -2; dx <= 2; dx += 1) {
+        for (const city of this.centers.get(this.key(bx + dx, by + dy)) ?? []) {
+          if (Math.hypot(city.x - x, city.y - y) <= city.radius) {
+            const current = this.world.cities[city.id];
+            if (current) result.push(current);
+          }
+        }
+      }
+    }
+    return result;
+  }
+
   private nearestAnchor(x: number, y: number, bx: number, by: number): { distance: number; pixel: number | null } {
     let nearest = Infinity, nearestPixel: number | null = null;
     for (let ring = 0; ring < Math.max(this.maxX, this.maxY); ring += 1) {
@@ -278,6 +330,260 @@ export function changeCityPopulation(
   }
   city.populationGroups = [...combined.values()];
   city.population = city.populationGroups.reduce((sum, group) => sum + group.population, 0);
+}
+
+function pixelGroups(world: World, pixel: number, amount = world.density[pixel]): CityPopulationGroup[] {
+  return cityPopulationGroupsAtPixel(world, pixel, amount);
+}
+
+function addGroupsToPixel(world: World, pixel: number, additions: CityPopulationGroup[]): void {
+  const city = world.cityAt(pixel);
+  if (city) {
+    changeCityPopulation(world, city, additions);
+    return;
+  }
+  const initial = pixelGroups(world, pixel);
+  const groups = [...initial, ...additions];
+  const cultures = new Map<number, number>();
+  const religions = new Map<number, number>();
+  let total = 0, faithful = 0;
+  for (const group of groups) {
+    cultures.set(group.cultureId, (cultures.get(group.cultureId) ?? 0) + group.population);
+    if (group.religionId !== null) {
+      religions.set(group.religionId, (religions.get(group.religionId) ?? 0) + group.population);
+      faithful += group.population;
+    }
+    total += group.population;
+  }
+  world.density[pixel] += additions.reduce((sum, group) => sum + group.population, 0);
+  world.culture[pixel] = world.cultureTable.intern(quantizeShares(cultures, 100));
+  world.religion[pixel] = world.religionTable.intern(
+    quantizeShares(religions, total > 0 ? faithful / total * 100 : 0),
+  );
+}
+
+function takeCityPopulation(world: World, city: City, amount: number): CityPopulationGroup[] {
+  const groups = ensureCityPopulationGroups(world, city);
+  const total = groups.reduce((sum, group) => sum + group.population, 0);
+  const taken = Math.min(Math.max(0, amount), total);
+  const scale = total > 0 ? taken / total : 0;
+  const removed = groups.map((group) => ({ ...group, population: group.population * scale }));
+  resizeCityPopulation(world, city, total - taken);
+  return removed;
+}
+
+function addGroupsAcrossPixels(
+  world: World,
+  pixels: number[],
+  groups: CityPopulationGroup[],
+): void {
+  if (!pixels.length) return;
+  const perPixel = groups.map((group) => ({ ...group, population: group.population / pixels.length }));
+  for (const pixel of pixels) addGroupsToPixel(world, pixel, perPixel);
+}
+
+function apportionByWeightWithCaps(
+  items: { city: City; weight: number; capacity: number }[],
+  requested: number,
+): Map<number, number> {
+  const allocated = new Map<number, number>();
+  let remaining = requested;
+  let active = items.filter((item) => item.capacity > 1e-9 && item.weight > 0);
+  while (remaining > 1e-9 && active.length) {
+    const totalWeight = active.reduce((sum, item) => sum + item.weight, 0);
+    let capped = false;
+    for (const item of active) {
+      const prior = allocated.get(item.city.id) ?? 0;
+      const share = remaining * item.weight / totalWeight;
+      const room = item.capacity - prior;
+      if (share >= room - 1e-9) {
+        allocated.set(item.city.id, item.capacity);
+        remaining -= room;
+        active = active.filter((candidate) => candidate.city.id !== item.city.id);
+        capped = true;
+        break;
+      }
+    }
+    if (capped) continue;
+    for (const item of active) {
+      const share = remaining * item.weight / totalWeight;
+      allocated.set(item.city.id, (allocated.get(item.city.id) ?? 0) + share);
+    }
+    remaining = 0;
+  }
+  return allocated;
+}
+
+/** Splits new density between the rural point and every eligible city covering it. */
+export function applyDensityGrowth(world: World, pixel: number, amount: number, coveringCities?: City[]): void {
+  if (amount <= 0) return;
+  const cities = coveringCities ?? new CityInfluenceIndex(world, -1).citiesAt(pixel);
+  const eligible = cities.filter((city) => !cityAtUpperPopulationThreshold(city));
+  let shares = new Map<number, number>();
+  if (cities.length <= 5) {
+    for (const city of eligible) shares.set(city.id, amount * 0.1);
+  } else if (eligible.length) {
+    const totalWeight = eligible.reduce(
+      (sum, city) => sum + city.rank * cityInfluenceMultiplier(world, city),
+      0,
+    );
+    for (const city of eligible) {
+      shares.set(city.id, amount * 0.5 * city.rank * cityInfluenceMultiplier(world, city) / totalWeight);
+    }
+  }
+  const distributed = [...shares.values()].reduce((sum, share) => sum + share, 0);
+  const local = Math.max(0, amount - distributed);
+  const sourceGroups = pixelGroups(world, pixel, amount);
+  for (const city of eligible) {
+    const share = shares.get(city.id) ?? 0;
+    if (share > 0) {
+      const groups = sourceGroups.map((group) => ({ ...group, population: group.population * share / amount }));
+      changeCityPopulation(world, city, groups);
+    }
+  }
+  const localCity = world.cityAt(pixel);
+  if (localCity) {
+    const groups = sourceGroups.map((group) => ({ ...group, population: group.population * local / amount }));
+    if (local > 0) changeCityPopulation(world, localCity, groups);
+    world.density[pixel] += amount;
+  } else {
+    world.density[pixel] += local;
+  }
+}
+
+/**
+ * Applies an ordinary density loss. Nearby cities in the same state release
+ * residents proportionally, up to their populations above the rank minimum.
+ */
+export function applyDensityLoss(world: World, pixel: number, requested: number): number {
+  const loss = Math.min(Math.max(0, requested), world.density[pixel]);
+  if (loss <= 0) return 0;
+  const countryId = world.owner[pixel] - 1;
+  const covering = new CityInfluenceIndex(world, countryId).citiesAt(pixel);
+  const sourceCity = world.cityAt(pixel);
+  const donors = covering
+    .filter((city) => city.countryId === countryId && city.id !== sourceCity?.id)
+    .map((city) => ({
+      city,
+      weight: city.rank * cityInfluenceMultiplier(world, city),
+      capacity: Math.max(0, city.population - cityPopulationMinimum(city.rank)),
+    }));
+  const allocations = apportionByWeightWithCaps(donors, loss);
+  const migrated: CityPopulationGroup[] = [];
+  for (const donor of donors) {
+    const amount = allocations.get(donor.city.id) ?? 0;
+    if (amount > 0) migrated.push(...takeCityPopulation(world, donor.city, amount));
+  }
+  const compensated = migrated.reduce((sum, group) => sum + group.population, 0);
+  const removed = loss - compensated;
+  const baseGroups = pixelGroups(world, pixel);
+  let toRemove = loss;
+  for (const group of baseGroups) {
+    if (toRemove <= 0) break;
+    const take = Math.min(group.population, toRemove);
+    group.population -= take;
+    toRemove -= take;
+  }
+  const remainingGroups = [...baseGroups, ...migrated].filter((group) => group.population > 1e-9);
+  world.density[pixel] = Math.max(0, world.density[pixel] - removed);
+  const cultures = new Map<number, number>(), religions = new Map<number, number>();
+  let total = 0, faithful = 0;
+  for (const group of remainingGroups) {
+    cultures.set(group.cultureId, (cultures.get(group.cultureId) ?? 0) + group.population);
+    if (group.religionId !== null) {
+      religions.set(group.religionId, (religions.get(group.religionId) ?? 0) + group.population);
+      faithful += group.population;
+    }
+    total += group.population;
+  }
+  world.culture[pixel] = world.cultureTable.intern(quantizeShares(cultures, 100));
+  world.religion[pixel] = world.religionTable.intern(
+    quantizeShares(religions, total > 0 ? faithful / total * 100 : 0),
+  );
+  world.version += 1;
+  return loss;
+}
+
+/** Adds country residents to an existing rural point or city without changing group composition. */
+export function settlePopulationGroups(world: World, pixel: number, groups: CityPopulationGroup[]): void {
+  addGroupsToPixel(world, pixel, groups);
+}
+
+export function removeCityAndChooseCapital(world: World, city: City): City | null {
+  const countryId = city.countryId;
+  const wasCapital = city.capital;
+  world.removeCity(city.id);
+  const remaining = world.cities.filter((candidate) => candidate.countryId === countryId);
+  if (!remaining.length) return null;
+  let capital = remaining.find((candidate) => candidate.capital) ?? null;
+  if (!capital || wasCapital) {
+    capital = [...remaining].sort((a, b) => b.population - a.population || b.rank - a.rank || a.pixel - b.pixel)[0];
+  }
+  for (const candidate of remaining) candidate.capital = candidate.id === capital.id;
+  return capital;
+}
+
+export interface CityWaningResult {
+  removed: boolean;
+  transferredPopulation: number;
+  affectedPixels: number[];
+}
+
+/** Applies the population-loss, resettlement, demotion, and capital rules for a waning city. */
+export function applyCityWaning(world: World, city: City): CityWaningResult | null {
+  if (!cityAtWaningThreshold(city)) return null;
+  const countryId = city.countryId;
+  const x = city.pixel % MAP_WIDTH, y = Math.floor(city.pixel / MAP_WIDTH);
+  const radius = cityInfluenceRadius(world, city);
+  const x0 = Math.max(0, Math.floor(x - radius)), x1 = Math.min(MAP_WIDTH - 1, Math.ceil(x + radius));
+  const y0 = Math.max(0, Math.floor(y - radius)), y1 = Math.min(MAP_HEIGHT - 1, Math.ceil(y + radius));
+  const r2 = radius * radius;
+  const targets: number[] = [];
+  for (let yy = y0; yy <= y1; yy += 1) {
+    for (let xx = x0; xx <= x1; xx += 1) {
+      const pixel = yy * MAP_WIDTH + xx;
+      if (!world.land[pixel] || world.owner[pixel] !== countryId + 1 ||
+        (xx - x) ** 2 + (yy - y) ** 2 > r2) continue;
+      targets.push(pixel);
+    }
+  }
+  if (city.population > cityPopulationMinimum(city.rank)) {
+    const before = ensureCityPopulationGroups(world, city).map((group) => ({ ...group }));
+    const loss = city.population * 0.2;
+    resizeCityPopulation(world, city, city.population - loss);
+    const settlementGroups = before.map((group) => ({
+      ...group,
+      population: group.population * (loss * 0.5 / Math.max(1e-9, before.reduce((sum, item) => sum + item.population, 0))),
+    }));
+    const settlementPixels = targets.filter((pixel) => pixel !== city.pixel);
+    addGroupsAcrossPixels(world, settlementPixels, settlementGroups);
+    world.version += 1;
+    return {
+      removed: false,
+      transferredPopulation: settlementPixels.length ? loss * 0.5 : 0,
+      affectedPixels: [...new Set([city.pixel, ...settlementPixels])],
+    };
+  }
+
+  if (city.rank > 1) {
+    city.rank = (city.rank - 1) as CityRank;
+    world.version += 1;
+    return { removed: false, transferredPopulation: 0, affectedPixels: [city.pixel] };
+  }
+
+  const population = city.population;
+  const groups = ensureCityPopulationGroups(world, city).map((group) => ({
+    ...group,
+    population: group.population * 0.5,
+  }));
+  removeCityAndChooseCapital(world, city);
+  addGroupsAcrossPixels(world, targets, groups);
+  world.version += 1;
+  return {
+    removed: true,
+    transferredPopulation: targets.length ? population * 0.5 : 0,
+    affectedPixels: [...new Set([city.pixel, ...targets])],
+  };
 }
 
 export function cityComposition(world: World, city: City): {
