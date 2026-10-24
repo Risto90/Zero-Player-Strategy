@@ -8,17 +8,18 @@ import { InspectCard } from '@/components/game/InspectCard';
 import { LegendPanel } from '@/components/game/LegendPanel';
 import { LogPanel } from '@/components/game/LogPanel';
 import { MapControls } from '@/components/game/MapControls';
-import { MapLegend } from '@/components/game/MapLegend';
 import { ModeTabs } from '@/components/game/ModeTabs';
 import { Loading } from '@/components/Loading';
 import { MapView } from '@/components/map/MapView';
 import type { MapTool, MapViewHandle } from '@/components/map/types';
 import colors, { fonts } from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
-import { hasPlayerActionCard, type Game, type PixelInfo } from '@/game/game';
+import { fmt } from '@/game/format';
+import { hasPlayerActionCard, type Game, type GameSnapshot, type PixelInfo } from '@/game/game';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
 import type { MapMode } from '@/game/render';
+import { isActiveCountry } from '@/game/world';
 import { useGameSnapshot } from '@/game/useGame';
 
 const c = colors.light;
@@ -26,6 +27,23 @@ const c = colors.light;
 function goHome() {
   if (router.canGoBack()) router.back();
   else router.replace('/');
+}
+
+function mapListCount(game: Game, snap: GameSnapshot): number | null {
+  switch (snap.mapMode) {
+    case 'political':
+      return snap.legend.countries.length;
+    case 'cultures':
+      return snap.legend.cultures.length;
+    case 'religions':
+      return snap.legend.religions.length;
+    case 'cities':
+      return game.world.cities.length;
+    case 'nomads':
+      return game.world.countries.filter((country) => country.type === 'nomadic' && isActiveCountry(country)).length;
+    default:
+      return null;
+  }
 }
 
 export default function PlayScreen() {
@@ -84,7 +102,7 @@ function GameScreen({ game }: { game: Game }) {
   const showTools = 1 + Number(canBrush) + Number(canPlaceCity) >= 2;
   const webTopInset = Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top;
   const webBottomInset = Platform.OS === 'web' ? Math.max(insets.bottom, 34) : insets.bottom;
-  const mapHeight = Math.max(160, height - webTopInset - webBottomInset - 90);
+  const mapHeight = Math.max(160, height - webTopInset - webBottomInset - 46);
   const overlayHeight = Math.max(140, Math.min(620, mapHeight - 56));
 
   const onCityPress = useCallback((pixel: number) => {
@@ -157,6 +175,7 @@ function GameScreen({ game }: { game: Game }) {
               : 'Следующий год';
   const latestText = snap.log[0]?.replace(/^\d+:\s*/, '') ?? '';
   const listTitle = listMode === 'cities' ? 'Города' : 'Список объектов';
+  const currentListCount = mapListCount(game, snap);
   const selectedInfo = inspect?.info ? game.inspect(inspect.info.x, inspect.info.y) : null;
 
   return (
@@ -256,10 +275,17 @@ function GameScreen({ game }: { game: Game }) {
           style={styles.listButton}
           testID="button-open-map-list"
           accessibilityRole="button"
-          accessibilityLabel="Открыть список объектов"
+          accessibilityLabel={currentListCount === null
+            ? 'Открыть список объектов'
+            : `Открыть список объектов: ${fmt(currentListCount)}`}
         >
           <Feather name="list" size={15} color={c.foreground} />
           <Text style={styles.listButtonText}>Список</Text>
+          {currentListCount !== null && (
+            <View style={styles.listCountBadge} testID={`map-list-count-${snap.mapMode}`}>
+              <Text style={styles.listCountText}>{fmt(currentListCount)}</Text>
+            </View>
+          )}
         </Pressable>
 
         {tool === 'hand' && inspect && (
@@ -357,25 +383,6 @@ function GameScreen({ game }: { game: Game }) {
           </View>
         )}
       </View>
-
-      <View style={styles.mapFooter}>
-        <MapLegend game={game} snap={snap} />
-        {snap.mapMode === 'political' && (
-          <Pressable
-            onPress={() => {
-              setCardOpen(false);
-              setLogOpen(false);
-              setListMode('cities');
-            }}
-            style={styles.cityListButton}
-            testID="button-open-cities"
-            accessibilityRole="button"
-          >
-            <Feather name="home" size={14} color={c.secondaryForeground} />
-            <Text style={styles.cityListText}>Города</Text>
-          </Pressable>
-        )}
-      </View>
     </View>
   );
 }
@@ -401,6 +408,8 @@ const styles = StyleSheet.create({
   queueCount: { fontFamily: fonts.mono, fontSize: 10, color: c.primaryForeground },
   listButton: { position: 'absolute', top: 8, right: 8, height: 34, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, borderWidth: 1, borderColor: c.foreground, borderRadius: 4, backgroundColor: c.card, shadowColor: c.foreground, shadowOpacity: 0.16, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
   listButtonText: { fontFamily: fonts.sansSemiBold, fontSize: 11, color: c.foreground },
+  listCountBadge: { minWidth: 23, height: 22, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5, borderRadius: 3, backgroundColor: c.primary },
+  listCountText: { fontFamily: fonts.mono, fontSize: 10, color: c.primaryForeground },
   tapHint: { position: 'absolute', left: 0, right: 0, bottom: 9, alignItems: 'center' },
   tapHintText: { backgroundColor: 'rgba(59,43,33,0.9)', color: c.secondaryForeground, fontFamily: fonts.sans, fontSize: 10, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 4, overflow: 'hidden' },
   chronicleDock: { position: 'absolute', right: 8, bottom: 8, maxWidth: '72%', flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -419,7 +428,4 @@ const styles = StyleSheet.create({
   overlayScroll: { flex: 1 },
   overlayScrollContent: { paddingBottom: 12 },
   overlayBody: { flex: 1, minHeight: 0 },
-  mapFooter: { height: 44, flexDirection: 'row', alignItems: 'center', backgroundColor: c.background, borderTopWidth: 1, borderTopColor: c.border },
-  cityListButton: { height: 34, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, marginRight: 5, borderWidth: 1, borderColor: c.border, borderRadius: 4, backgroundColor: c.secondary },
-  cityListText: { fontFamily: fonts.sansSemiBold, fontSize: 10, color: c.secondaryForeground },
 });
