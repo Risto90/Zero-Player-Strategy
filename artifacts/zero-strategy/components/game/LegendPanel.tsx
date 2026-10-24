@@ -61,8 +61,9 @@ function Rows({ rows, unit, onPress, activeId, header, footer }: { rows: LegendR
   );
 }
 
-export function LegendPanel({ game, snap, onCityPress }: { game: Game; snap: GameSnapshot; onCityPress?: (pixel: number) => void }) {
-  const { legend, mapMode, layer } = snap;
+export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: { game: Game; snap: GameSnapshot; onCityPress?: (pixel: number) => void; mode?: GameSnapshot['mapMode'] }) {
+  const { legend, layer } = snap;
+  const mapMode = modeOverride ?? snap.mapMode;
   let body: ReactElement;
   let title = '';
   let sub = '';

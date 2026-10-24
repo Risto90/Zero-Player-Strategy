@@ -14,6 +14,10 @@ export function MapControls({
   setTool,
   onZoom,
   onFit,
+  showTools,
+  showBrush,
+  showCity,
+  showZoom,
 }: {
   game: Game;
   snap: GameSnapshot;
@@ -21,33 +25,40 @@ export function MapControls({
   setTool: (t: MapTool) => void;
   onZoom: (f: number) => void;
   onFit: () => void;
+  showTools: boolean;
+  showBrush: boolean;
+  showCity: boolean;
+  showZoom: boolean;
 }) {
   const optionLabel =
     snap.brushOption === 'density'
       ? snap.brushMode === 'repeat' ? 'Повтор: +население на своей земле' : 'Каждая точка — один раз'
       : snap.brushMode === 'repeat' ? 'Каждый мазок действует снова' : 'Каждая точка — один раз';
-  const brushOn = tool === 'brush';
+  const brushOn = tool === 'brush' && showBrush;
   const handOn = tool === 'hand';
-  const cityOn = tool === 'city';
+  const cityOn = tool === 'city' && showCity;
   return (
     <>
-      <View style={styles.left} pointerEvents="box-none">
-        <View style={styles.segment}>
-          <Pressable onPress={() => setTool('brush')} style={[styles.segButton, brushOn && styles.segOn]} testID="button-tool-brush">
-            <MaterialCommunityIcons name="brush" size={16} color={brushOn ? c.background : c.foreground} />
-            <Text style={[styles.segText, brushOn && { color: c.background }]}>Кисть</Text>
-          </Pressable>
-          <Pressable onPress={() => setTool('hand')} style={[styles.segButton, styles.segDivider, handOn && styles.segOn]} testID="button-tool-hand">
-            <MaterialCommunityIcons name="hand-back-right-outline" size={16} color={handOn ? c.background : c.foreground} />
-            <Text style={[styles.segText, handOn && { color: c.background }]}>Рука</Text>
-          </Pressable>
-          {snap.cityPlacementAvailable && (
-            <Pressable onPress={() => setTool('city')} style={[styles.segButton, styles.segDivider, cityOn && styles.segOn]} testID="button-tool-city">
-              <MaterialCommunityIcons name="city-variant-outline" size={16} color={cityOn ? c.background : c.foreground} />
-              <Text style={[styles.segText, cityOn && { color: c.background }]}>Город</Text>
+      {showTools && (
+        <View style={styles.left} pointerEvents="box-none">
+          <View style={styles.segment}>
+            {showBrush && (
+              <Pressable onPress={() => setTool('brush')} style={[styles.segButton, brushOn && styles.segOn]} testID="button-tool-brush">
+                <MaterialCommunityIcons name="brush" size={16} color={brushOn ? c.background : c.foreground} />
+                <Text style={[styles.segText, brushOn && { color: c.background }]}>Кисть</Text>
+              </Pressable>
+            )}
+            <Pressable onPress={() => setTool('hand')} style={[styles.segButton, showBrush && styles.segDivider, handOn && styles.segOn]} testID="button-tool-hand">
+              <MaterialCommunityIcons name="hand-back-right-outline" size={16} color={handOn ? c.background : c.foreground} />
+              <Text style={[styles.segText, handOn && { color: c.background }]}>Рука</Text>
             </Pressable>
-          )}
-        </View>
+            {showCity && (
+              <Pressable onPress={() => setTool('city')} style={[styles.segButton, styles.segDivider, cityOn && styles.segOn]} testID="button-tool-city">
+                <MaterialCommunityIcons name="city-variant-outline" size={16} color={cityOn ? c.background : c.foreground} />
+                <Text style={[styles.segText, cityOn && { color: c.background }]}>Город</Text>
+              </Pressable>
+            )}
+          </View>
         {brushOn && (
           <View style={styles.segment}>
             {BRUSH_SIZES.map((s, i) => {
@@ -70,15 +81,6 @@ export function MapControls({
             <Text style={[styles.optionText, snap.brushMode === 'repeat' && { color: c.accentForeground }]}>{optionLabel}</Text>
           </Pressable>
         )}
-        {brushOn && !snap.canPaint && (
-          <Text style={styles.hint}>
-            {snap.card && ['government', 'succession', 'election'].includes(snap.card.type)
-              ? 'Событие применится при нажатии на кнопку хода'
-              : snap.card?.developmentOnly
-                ? 'Мазок повысит плотность населения'
-                : 'Рисовать нечем — сдвигайте карту'}
-          </Text>
-        )}
         {cityOn && snap.cityPlacementAvailable && (
           <Text style={styles.hint}>
             {snap.card?.targetNomadId !== null && snap.card?.targetNomadId !== undefined
@@ -86,18 +88,21 @@ export function MapControls({
               : 'Коснитесь незанятой точки своей страны для размещения города.'}
           </Text>
         )}
-      </View>
-      <View style={styles.right} pointerEvents="box-none">
-        <Pressable style={styles.zoom} onPress={() => onZoom(1.5)} accessibilityLabel="Приблизить" testID="button-zoom-in">
-          <Feather name="plus" size={18} color={c.foreground} />
-        </Pressable>
-        <Pressable style={styles.zoom} onPress={() => onZoom(1 / 1.5)} accessibilityLabel="Отдалить" testID="button-zoom-out">
-          <Feather name="minus" size={18} color={c.foreground} />
-        </Pressable>
-        <Pressable style={styles.zoom} onPress={onFit} accessibilityLabel="Весь мир" testID="button-zoom-fit">
-          <Feather name="maximize" size={16} color={c.foreground} />
-        </Pressable>
-      </View>
+        </View>
+      )}
+      {showZoom && (
+        <View style={styles.right} pointerEvents="box-none">
+          <Pressable style={styles.zoom} onPress={() => onZoom(1.5)} accessibilityLabel="Приблизить" testID="button-zoom-in">
+            <Feather name="plus" size={18} color={c.foreground} />
+          </Pressable>
+          <Pressable style={styles.zoom} onPress={() => onZoom(1 / 1.5)} accessibilityLabel="Отдалить" testID="button-zoom-out">
+            <Feather name="minus" size={18} color={c.foreground} />
+          </Pressable>
+          <Pressable style={styles.zoom} onPress={onFit} accessibilityLabel="Весь мир" testID="button-zoom-fit">
+            <Feather name="maximize" size={16} color={c.foreground} />
+          </Pressable>
+        </View>
+      )}
     </>
   );
 }
@@ -106,7 +111,7 @@ const shadow = { shadowColor: '#2c1e17', shadowOpacity: 0.18, shadowRadius: 6, s
 
 const styles = StyleSheet.create({
   left: { position: 'absolute', left: 8, top: 8, alignItems: 'flex-start', gap: 6 },
-  right: { position: 'absolute', right: 8, top: 8, gap: 6 },
+  right: { position: 'absolute', right: 8, top: 48, gap: 6 },
   segment: { flexDirection: 'row', borderWidth: 1, borderColor: c.foreground, borderRadius: 4, backgroundColor: c.card, overflow: 'hidden', ...shadow },
   segButton: { height: 40, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10 },
   segDivider: { borderLeftWidth: 1, borderLeftColor: c.foreground },

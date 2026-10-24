@@ -105,16 +105,18 @@ function makeStrip(pixels: Uint32Array, strip: number): SkImage | null {
 }
 
 /** Phone map: Skia canvas with pan, pinch zoom, brush painting and tap-to-inspect. */
-export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect }, ref) {
+export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect, onMapActivity }, ref) {
   const sizeRef = useRef({ width: 1, height: 1 });
   const viewRef = useRef<ViewTransform>({ scale: 1, ox: 0, oy: 0 });
   const laidOut = useRef(false);
   const toolRef = useRef(tool);
   const canPaintRef = useRef(canPaint);
   const inspectRef = useRef(onInspect);
+  const activityRef = useRef(onMapActivity);
   toolRef.current = tool;
   canPaintRef.current = canPaint;
   inspectRef.current = onInspect;
+  activityRef.current = onMapActivity;
 
   const scale = useSharedValue(1);
   const markerBaseScale = useSharedValue(1);
@@ -225,9 +227,13 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const onGrant = (event: GestureResponderEvent) => {
     const e = event.nativeEvent;
     offset.current = { x: e.pageX - e.locationX, y: e.pageY - e.locationY };
+    activityRef.current?.();
     gestures.sync(touches(event));
   };
-  const onTouch = (event: GestureResponderEvent) => gestures.sync(touches(event));
+  const onTouch = (event: GestureResponderEvent) => {
+    activityRef.current?.();
+    gestures.sync(touches(event));
+  };
   const onRelease = () => gestures.releaseAll();
 
   return (

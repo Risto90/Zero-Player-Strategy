@@ -34,7 +34,6 @@ const viewFiles = [
   ['app/dynasty/[id].tsx', 2, 'dynasty cards and relation links'],
   ['app/country/[id].tsx', 5, 'country and nomad rulers and heirs'],
   ['components/game/LegendPanel.tsx', 7, 'country list and map inspection panel'],
-  ['components/game/InspectCard.tsx', 2, 'map inspection person rows'],
   ['components/game/CardPanel.tsx', 2, 'event names and person choices'],
 ];
 
@@ -46,5 +45,11 @@ for (const [relativePath, minimumUsages, description] of viewFiles) {
     `${description} should apply the shared death status to each person display (found ${usages})`,
   );
 }
+
+const inspectSource = readFileSync(resolve(process.cwd(), 'components/game/InspectCard.tsx'), 'utf8');
+assert.match(inspectSource, /x \{info\.x\} · y \{info\.y\}/u, 'map inspection keeps point coordinates');
+assert.match(inspectSource, /link-inspect-country/u, 'map inspection links to the controlling country');
+assert.match(inspectSource, /link-inspect-city/u, 'map inspection links to a city at the point');
+assert.doesNotMatch(inspectSource, /personDeathStatus/u, 'detailed person information remains on profile pages');
 
 console.log('Person death status regressions passed.');

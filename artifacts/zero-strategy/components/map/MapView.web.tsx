@@ -10,7 +10,7 @@ import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransf
 import { centerOnMapPoint, clampView, initialView, minScale, zoomAround } from './viewMath';
 
 /** Browser preview of the map: a plain 2D canvas, same gestures as on the phone. */
-export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect }, ref) {
+export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect, onMapActivity }, ref) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
@@ -183,13 +183,14 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (!canvas) return;
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
+      onMapActivity?.();
       const rect = canvas.getBoundingClientRect();
       const { width, height } = sizeRef.current;
       applyView(zoomAround(viewRef.current, Math.exp(-event.deltaY * 0.0015), event.clientX - rect.left, event.clientY - rect.top, width, height));
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
-  }, [applyView]);
+  }, [applyView, onMapActivity]);
 
   const local = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -202,12 +203,15 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         ref={canvasRef}
         data-testid="map-canvas"
         style={{ display: 'block', touchAction: 'none', cursor: tool === 'brush' && canPaint ? 'crosshair' : 'grab' }}
+        onPointerEnter={onMapActivity}
         onPointerDown={(event) => {
+          onMapActivity?.();
           event.currentTarget.setPointerCapture(event.pointerId);
           const p = local(event);
           gestures.down(event.pointerId, p.x, p.y);
         }}
         onPointerMove={(event) => {
+          onMapActivity?.();
           const p = local(event);
           gestures.move(event.pointerId, p.x, p.y);
         }}

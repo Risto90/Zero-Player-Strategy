@@ -14,3 +14,4 @@
 - [Cooperative world generation](cooperative-world-generation.md) — mobile startup generation must yield between bounded work slices and remain output-identical to the synchronous generator.
 - [Task handling](task-handling.md) — when the user refers to an existing task, continue that task instead of creating a replacement.
 - [Chronicle object links](chronicle-object-links.md) — record event links explicitly; never infer them from legacy prose, and account for IDs that shift on removal.
+- [City regression runtime](city-regression-runtime.md) — the full city regression suite may exceed short validation windows; keep UI checks targeted and handle performance separately.

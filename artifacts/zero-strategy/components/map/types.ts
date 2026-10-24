@@ -14,6 +14,7 @@ export interface MapViewProps {
   tool: MapTool;
   canPaint: boolean;
   onInspect?: (info: PixelInfo | null) => void;
+  onMapActivity?: () => void;
 }
 
 export interface ViewTransform {

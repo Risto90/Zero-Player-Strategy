@@ -8,58 +8,12 @@ import type { Game, GameSnapshot } from '@/game/game';
 
 const c = colors.light;
 
-const ROLE_LABEL: Record<string, string> = {
-  all: 'ВЕСЬ МИР',
-  country: 'ОДНА СТРАНА',
-  world: 'МИРОВЫЕ СОБЫТИЯ',
-  observer: 'НАБЛЮДАТЕЛЬ',
-};
-
 export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
   const card = snap.card;
   const inkShare = card && card.inkTotal > 0 ? card.ink / card.inkTotal : 0;
-  const nextLabel = card
-    ? snap.queuedCards > 0
-      ? 'Готово'
-      : card.type === 'government'
-        ? 'Принять реформу'
-        : card.type === 'succession'
-          ? 'Передать власть'
-          : card.type === 'election'
-            ? 'Провести выборы'
-            : card.type === 'death'
-              ? 'Продолжить'
-              : card.type === 'marriage' || card.type === 'birth' || card.type === 'character'
-                ? 'Далее'
-            : 'Следующий год'
-    : 'Следующий год';
   const message = snap.message && snap.message !== card?.detail ? snap.message : '';
-  const hot = !snap.drawing && (snap.paused || snap.secondsLeft <= 10);
   return (
     <View style={styles.panel} testID="panel-card">
-      <View style={styles.top}>
-        <Text style={styles.year} testID="text-year">{snap.year}</Text>
-        <Text style={styles.small}>ГОД</Text>
-        <Text style={[styles.small, { flexShrink: 1 }]} numberOfLines={1}>{ROLE_LABEL[snap.role]}</Text>
-        <View style={styles.actions}>
-          <Text style={[styles.timer, hot && { color: c.primary, borderColor: c.primary }]} testID="text-timer">
-            {snap.drawing ? 'карта…' : `${String(Math.max(0, snap.secondsLeft)).padStart(2, '0')}с`}
-          </Text>
-          <Pressable onPress={() => game.togglePause()} style={styles.iconButton} hitSlop={4} testID="button-pause" accessibilityLabel={snap.paused ? 'Продолжить' : 'Пауза'}>
-            <Feather name={snap.paused ? 'play' : 'pause'} size={16} color={c.foreground} />
-          </Pressable>
-          <Pressable
-            onPress={() => void game.nextTurn()}
-            disabled={snap.busy}
-            style={({ pressed }) => [styles.next, (snap.busy || pressed) && { opacity: 0.6 }]}
-            testID="button-next"
-          >
-            <Text style={styles.nextText}>{nextLabel}</Text>
-            <Feather name="skip-forward" size={15} color={c.primaryForeground} />
-          </Pressable>
-        </View>
-      </View>
-
       {snap.progress ? (
         <View style={styles.block}>
           <Text style={styles.title}>Мир делает ход…</Text>
@@ -153,16 +107,8 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
 }
 
 const styles = StyleSheet.create({
-  panel: { backgroundColor: c.card, borderBottomWidth: 2, borderBottomColor: c.foreground, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 10 },
-  top: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  year: { fontFamily: fonts.display, fontSize: 24, lineHeight: 28, color: c.foreground },
-  small: { fontFamily: fonts.sansMedium, fontSize: 10, letterSpacing: 1, color: c.mutedForeground },
-  actions: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 6 },
-  timer: { fontFamily: fonts.mono, fontSize: 13, color: c.foreground, borderWidth: 1, borderColor: c.border, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 3 },
-  iconButton: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.foreground, borderRadius: 4, backgroundColor: c.background },
-  next: { height: 34, flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: c.primary, borderRadius: 4, paddingHorizontal: 10 },
-  nextText: { fontFamily: fonts.sansSemiBold, fontSize: 13, color: c.primaryForeground },
-  block: { marginTop: 8 },
+  panel: { backgroundColor: c.card, paddingHorizontal: 12, paddingVertical: 10 },
+  block: { marginTop: 0 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   swatch: { width: 12, height: 12, borderRadius: 2, borderWidth: 1, borderColor: 'rgba(44,30,23,0.5)' },
   title: { flexShrink: 1, fontFamily: fonts.display, fontSize: 18, lineHeight: 22, color: c.foreground },

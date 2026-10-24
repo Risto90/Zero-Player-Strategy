@@ -4,9 +4,9 @@ import colors, { fonts } from '@/constants/colors';
 const c = colors.light;
 
 /** The chronicle: newest first, scrolls inside its fixed share of the screen. */
-export function LogPanel({ log }: { log: string[] }) {
+export function LogPanel({ log, transparent = false }: { log: string[]; transparent?: boolean }) {
   return (
-    <View style={styles.panel} testID="panel-log">
+    <View style={[styles.panel, transparent && styles.transparentPanel]} testID="panel-log">
       <Text style={styles.header}>ЛЕТОПИСЬ</Text>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list} nestedScrollEnabled>
         {log.length === 0 && <Text style={styles.empty}>Страницы пока пусты.</Text>}
@@ -28,6 +28,7 @@ export function LogPanel({ log }: { log: string[] }) {
 
 const styles = StyleSheet.create({
   panel: { flex: 1, backgroundColor: c.secondary },
+  transparentPanel: { backgroundColor: 'transparent' },
   header: { paddingHorizontal: 12, paddingTop: 7, fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 2, color: c.secondaryForeground, opacity: 0.6 },
   list: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 8 },
   empty: { fontFamily: fonts.displayItalic, fontSize: 14, color: c.secondaryForeground, opacity: 0.6 },
