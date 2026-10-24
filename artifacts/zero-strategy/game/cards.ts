@@ -544,7 +544,7 @@ function drawDeathCard(world: World, polity: Polity, personId: number, year: num
 function drawLifeCard(world: World, country: Polity, year: number): Card | null {
   if (country.government === 'tribal' && country.ruler.age >= 60 && Math.random() < 0.08) {
     const card = makeCard('succession', 0, country, `Пожилой вождь ${country.ruler.name} может передать власть при жизни.`, -1);
-    card.choices = leadershipOptions(world, country, year).slice(0, 2).map((ruler) => ({
+    card.choices = leadershipOptions(world, country, year, country.ruler, { peacefulTransfer: true }).slice(0, 2).map((ruler) => ({
       label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: country.ruler.id,
     }));
     return card;

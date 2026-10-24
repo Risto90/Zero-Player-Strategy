@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Game } from '../game/game.ts';
 import { createFamilyId, createPerson, personDeathStatus } from '../game/government.ts';
-import { successionOrder } from '../game/succession.ts';
+import { leadershipOptions, successionOrder } from '../game/succession.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
 
@@ -44,6 +44,20 @@ function addChild(world, country, parent, year = 1000) {
   return child;
 }
 
+function worldAddSecondCity(fixture) {
+  const city = fixture.world.addCity(fixture.country.id, fixture.pixels[1], 1, false);
+  assert.ok(city, 'the second city is added to the fixture country');
+}
+
+function addForeignDynast(world, country, age = 30) {
+  const candidate = createPerson(1000, age, createFamilyId(), [], country.cultureId, country.religionId);
+  candidate.gender = 'male';
+  candidate.countryId = country.id;
+  world.people.push(candidate);
+  country.dynastyClaims.push(candidate.familyId);
+  return candidate;
+}
+
 async function saveAndLoad(game) {
   await game.saveNow();
   const restored = await Game.load();
@@ -56,6 +70,84 @@ const previousPause = Game.pause;
 Game.persist = true;
 Game.pause = async () => {};
 try {
+  // Peaceful succession with partition suppresses a foreign dynasty only while
+  // at least two eligible successors of the current ruler remain and there is
+  // more than one city. Death succession keeps its existing candidate pool.
+  {
+    const zeroHeirs = makeFixture();
+    zeroHeirs.country.modifiers = ['partition'];
+    worldAddSecondCity(zeroHeirs);
+    const outsider = addForeignDynast(zeroHeirs.world, zeroHeirs.country);
+    const zeroOptions = leadershipOptions(zeroHeirs.world, zeroHeirs.country, 1000, zeroHeirs.country.ruler, {
+      peacefulTransfer: true,
+    });
+    assert.ok(zeroOptions.some((candidate) => candidate.familyId === outsider.familyId),
+      'a foreign dynasty is allowed when there are no eligible heirs');
+
+    const oneHeir = makeFixture();
+    oneHeir.country.modifiers = ['partition'];
+    worldAddSecondCity(oneHeir);
+    addChild(oneHeir.world, oneHeir.country, oneHeir.country.ruler);
+    const oneOutsider = addForeignDynast(oneHeir.world, oneHeir.country, 35);
+    const oneOptions = leadershipOptions(oneHeir.world, oneHeir.country, 1000, oneHeir.country.ruler, {
+      peacefulTransfer: true,
+    });
+    assert.ok(oneOptions.some((candidate) => candidate.familyId === oneOutsider.familyId),
+      'a foreign dynasty is allowed when exactly one eligible heir remains');
+
+    const ineligibleHeir = makeFixture();
+    ineligibleHeir.country.modifiers = ['partition', 'patriarchal'];
+    worldAddSecondCity(ineligibleHeir);
+    const eligibleChild = addChild(ineligibleHeir.world, ineligibleHeir.country, ineligibleHeir.country.ruler);
+    eligibleChild.gender = 'male';
+    const disallowedChild = addChild(ineligibleHeir.world, ineligibleHeir.country, ineligibleHeir.country.ruler);
+    disallowedChild.gender = 'female';
+    const ineligibleCaseOutsider = addForeignDynast(ineligibleHeir.world, ineligibleHeir.country, 35);
+    const ineligibleCaseOptions = leadershipOptions(
+      ineligibleHeir.world, ineligibleHeir.country, 1000, ineligibleHeir.country.ruler, { peacefulTransfer: true },
+    );
+    assert.ok(ineligibleCaseOptions.some((candidate) => candidate.familyId === ineligibleCaseOutsider.familyId),
+      'a related candidate rejected by the country inheritance rules does not count as an eligible heir');
+
+    const multipleHeirs = makeFixture();
+    multipleHeirs.country.modifiers = ['partition'];
+    worldAddSecondCity(multipleHeirs);
+    addChild(multipleHeirs.world, multipleHeirs.country, multipleHeirs.country.ruler);
+    addChild(multipleHeirs.world, multipleHeirs.country, multipleHeirs.country.ruler);
+    const blockedOutsider = addForeignDynast(multipleHeirs.world, multipleHeirs.country, 35);
+    const peacefulOptions = leadershipOptions(
+      multipleHeirs.world, multipleHeirs.country, 1000, multipleHeirs.country.ruler, { peacefulTransfer: true },
+    );
+    assert.ok(peacefulOptions.every((candidate) => candidate.familyId !== blockedOutsider.familyId),
+      'a foreign dynasty is excluded when multiple eligible heirs and multiple cities remain');
+    const deathOptions = leadershipOptions(multipleHeirs.world, multipleHeirs.country, 1000);
+    assert.ok(deathOptions.some((candidate) => candidate.familyId === blockedOutsider.familyId),
+      'the regular succession candidate pool is unchanged for death events');
+
+    const singleCity = makeFixture();
+    singleCity.country.modifiers = ['partition'];
+    addChild(singleCity.world, singleCity.country, singleCity.country.ruler);
+    addChild(singleCity.world, singleCity.country, singleCity.country.ruler);
+    const cityException = addForeignDynast(singleCity.world, singleCity.country, 35);
+    const cityOptions = leadershipOptions(singleCity.world, singleCity.country, 1000, singleCity.country.ruler, {
+      peacefulTransfer: true,
+    });
+    assert.ok(cityOptions.some((candidate) => candidate.familyId === cityException.familyId),
+      'a single city allows a foreign dynasty despite multiple eligible heirs');
+
+    const noPartition = makeFixture();
+    noPartition.country.modifiers = [];
+    worldAddSecondCity(noPartition);
+    addChild(noPartition.world, noPartition.country, noPartition.country.ruler);
+    addChild(noPartition.world, noPartition.country, noPartition.country.ruler);
+    const noPartitionOutsider = addForeignDynast(noPartition.world, noPartition.country, 35);
+    const noPartitionOptions = leadershipOptions(
+      noPartition.world, noPartition.country, 1000, noPartition.country.ruler, { peacefulTransfer: true },
+    );
+    assert.ok(noPartitionOptions.some((candidate) => candidate.familyId === noPartitionOutsider.familyId),
+      'countries without partition retain the existing foreign-dynasty option');
+  }
+
   // A ruler's death transfers the office to an eligible descendant and keeps the death record.
   const deathFixture = makeFixture();
   const ruler = deathFixture.country.ruler;
