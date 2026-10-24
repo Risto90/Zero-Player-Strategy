@@ -1340,17 +1340,33 @@ export class Game {
       killPerson(w, deceased, this.year, deceased.age >= 66 ? 'старость' : 'болезнь или несчастный случай');
       if (wasLeader) {
         const seatId = deceased.id;
-        let next = choice?.ruler ?? null;
-        const inSuccessionOrder = next && successionOrder(w, country, deceased).some((candidate) => candidate.id === next!.id);
-        if (!next || !next.alive || (!inSuccessionOrder && !candidateAllowed(w, country, next, deceased))) {
-          next = successionOrder(w, country, deceased)[0] ?? null;
+        const closesConsulateSeat = country.modifiers.includes('consulate') && choice?.closeConsulateSeat;
+        let next: Person | null;
+        if (closesConsulateSeat) {
+          if (seatId === country.ruler.id) {
+            const promoted = country.coRulerIds.map((id) => person(w, id))
+              .find((leader): leader is Person => !!leader?.alive);
+            next = promoted ?? registerPerson(w, country, newCitizen(w, country, this.year));
+            this.appointCountryLeader(country, next, this.year, seatId);
+          } else {
+            country.coRulerIds = country.coRulerIds.filter((id) => id !== seatId);
+            next = country.ruler;
+          }
+          country.consulCount = Math.max(1, country.consulCount - 1);
+          if (country.consulCount === 1) country.modifiers = country.modifiers.filter((modifier) => modifier !== 'consulate');
+        } else {
+          next = choice?.ruler ?? null;
+          const inSuccessionOrder = next && successionOrder(w, country, deceased).some((candidate) => candidate.id === next!.id);
+          if (!next || !next.alive || (!inSuccessionOrder && !candidateAllowed(w, country, next, deceased))) {
+            next = successionOrder(w, country, deceased)[0] ?? null;
+          }
+          if (!next) {
+            next = registerPerson(w, country, newCitizen(w, country, this.year));
+            this.addLog(`${country.name}: линия наследования прервалась; выбран новый правитель.`, [polityChronicleReference(country)]);
+          }
+          this.appointCountryLeader(country, next, this.year, seatId);
+          ensureOffices(w, country, this.year);
         }
-        if (!next) {
-          next = registerPerson(w, country, newCitizen(w, country, this.year));
-          this.addLog(`${country.name}: линия наследования прервалась; выбран новый правитель.`, [polityChronicleReference(country)]);
-        }
-        this.appointCountryLeader(country, next, this.year, seatId);
-        ensureOffices(w, country, this.year);
         if (country.government === 'tyranny' && Math.random() < 0.5) {
           const form = randomItem(['tribal', 'hereditary', 'republic'] as const);
           applyReform(country as Country, { government: form, forced: true, weight: 1 });
@@ -1359,6 +1375,10 @@ export class Game {
           pressure.strength = Math.max(1, pressure.strength * 2);
           country.pressures.tyranny = pressure;
           this.addLog(`${country.name}: после смерти правителя тирания сменена на форму «${GOVERNMENTS[form].name}».`, [polityChronicleReference(country)]);
+        } else if (closesConsulateSeat) {
+          this.addLog(`${country.name}: вакантное консульское место закрыто; осталось ${country.consulCount} мест.`, [
+            polityChronicleReference(country),
+          ]);
         } else this.addLog(`${country.name}: ${deceased.name} умер${deceased.gender === 'female' ? 'ла' : ''}; правит ${next.name}.`, [polityChronicleReference(country)]);
         if (country.type === 'settled' && country.modifiers.includes('partition') && country.government !== 'republic' && country.government !== 'tyranny') {
           this.partitionCountry(country, deceased, choice?.ruler ?? next);
@@ -1410,24 +1430,33 @@ export class Game {
   private partitionCountry(source: Country, deceased: Person, preferred: Person): void {
     const w = this.world;
     const sourceCities = w.cities.filter((city) => city.countryId === source.id);
-    if (sourceCities.length < 2) return;
+    const consulatePartition = source.modifiers.includes('consulate') && source.modifiers.includes('partition');
+    if (sourceCities.length < (consulatePartition ? 1 : 2)) return;
     const ranked = successionOrder(w, source, deceased);
     const eligibleChildren = w.people.filter((p) => p.parents.includes(deceased.id) &&
-      candidateAllowed(w, source, p, deceased));
-    if (eligibleChildren.length < 2) return;
+      candidateAllowed(w, source, p, deceased, false, consulatePartition));
+    if (eligibleChildren.length < (consulatePartition ? 1 : 2)) return;
 
     const hasOtherSuccessionLaw = source.modifiers.some((id) =>
       ['seniority', 'minority', 'primogeniture', 'oligarchy', 'pornocracy', 'meritocracy',
         'patriarchal', 'matriarchal', 'theocracy', 'ethnic', 'communist'].includes(id));
-    let heirs = hasOtherSuccessionLaw
-      ? [...ranked, ...eligibleChildren].filter((p, index, all) =>
-          candidateAllowed(w, source, p, deceased) && all.findIndex((x) => x.id === p.id) === index)
-      : [...eligibleChildren];
-    if (hasOtherSuccessionLaw && !heirs.some((p) => p.id === preferred.id) &&
+    let heirs = consulatePartition
+      ? [...ranked.filter((p) => eligibleChildren.some((child) => child.id === p.id)), ...eligibleChildren]
+          .filter((p, index, all) => all.findIndex((x) => x.id === p.id) === index)
+      : hasOtherSuccessionLaw
+        ? [...ranked, ...eligibleChildren].filter((p, index, all) =>
+            candidateAllowed(w, source, p, deceased) && all.findIndex((x) => x.id === p.id) === index)
+        : [...eligibleChildren];
+    if (hasOtherSuccessionLaw && !consulatePartition && !heirs.some((p) => p.id === preferred.id) &&
         candidateAllowed(w, source, preferred, deceased)) {
       heirs.unshift(preferred);
     }
-    if (hasOtherSuccessionLaw) {
+    if (consulatePartition) {
+      const firstChildId = eligibleChildren.some((child) => child.id === source.ruler.id)
+        ? source.ruler.id
+        : preferred.id;
+      heirs.sort((a, b) => Number(b.id === firstChildId) - Number(a.id === firstChildId));
+    } else if (hasOtherSuccessionLaw) {
       const primary = heirs.find((p) => p.id === preferred.id) ?? heirs[0];
       heirs = [primary, ...heirs.filter((p) => p.id !== primary.id)];
     } else {
@@ -1438,23 +1467,69 @@ export class Game {
       }
     }
     heirs = heirs.filter((p) => p.alive && p.id !== deceased.id);
-    if (heirs.length < 2) return;
+    if (heirs.length < (consulatePartition ? 1 : 2)) return;
 
     const pixels: number[] = [];
     w.forEachCountryPixel(source, (p) => pixels.push(p));
-    heirs = heirs.slice(0, Math.min(pixels.length, sourceCities.length));
-    if (heirs.length < 2) return;
+    let partitionCount: number;
+    let destinationHeirs: Person[];
+    let consulateOfficeHolders: Person[] = [];
+    if (consulatePartition) {
+      const childIds = new Set(eligibleChildren.map((child) => child.id));
+      const activeLeaders = [source.ruler, ...source.coRulerIds.map((id) => person(w, id))
+        .filter((leader): leader is Person => !!leader?.alive)].filter((leader) => leader.alive && leader.id !== deceased.id);
+      const retainedConsuls = activeLeaders.filter((leader) => !childIds.has(leader.id));
+      const activeChildLeaders = activeLeaders.filter((leader) => childIds.has(leader.id));
+      const orderedChildren = [
+        ...heirs.filter((heir) => activeChildLeaders.some((leader) => leader.id === heir.id)),
+        ...heirs.filter((heir) => !activeChildLeaders.some((leader) => leader.id === heir.id)),
+      ];
+      const maxChildren = Math.max(0, sourceCities.length * source.consulCount - retainedConsuls.length);
+      heirs = orderedChildren;
+      heirs = heirs.slice(0, maxChildren);
+      const H = heirs.length;
+      const R = retainedConsuls.length;
+      consulateOfficeHolders = [...activeLeaders, ...heirs]
+        .filter((leader, index, all) => all.findIndex((candidate) => candidate.id === leader.id) === index);
+      const K = source.consulCount;
+      const G = sourceCities.length;
+      partitionCount = Math.min(G, Math.max(1, Math.ceil((H + R) / K)));
+      if (partitionCount < 2) {
+        source.coRulerIds = [];
+        const remaining = consulateOfficeHolders.filter((leader) => leader.id !== source.ruler.id);
+        for (const leader of remaining.slice(0, Math.max(0, source.consulCount - 1))) {
+          source.coRulerIds.push(leader.id);
+          leader.countryId = source.id;
+        }
+        ensureOffices(w, source, this.year);
+        return;
+      }
+      destinationHeirs = heirs.slice(1, partitionCount);
+      if (destinationHeirs.length !== partitionCount - 1) return;
+    } else {
+      heirs = heirs.slice(0, Math.min(pixels.length, sourceCities.length));
+      if (heirs.length < 2) return;
+      partitionCount = heirs.length;
+      destinationHeirs = heirs.slice(1);
+    }
     const sourceCapital = sourceCities.find((city) => city.capital) ?? sourceCities[0];
     const heirCities = [
       sourceCapital,
       ...sourceCities.filter((city) => city.id !== sourceCapital.id)
         .sort((a, b) => b.rank - a.rank || b.population - a.population)
-        .slice(0, heirs.length - 1),
+        .slice(0, partitionCount - 1),
     ];
-    heirs = heirs.slice(0, heirCities.length);
-    if (heirs.length < 2) return;
+    if (heirCities.length < partitionCount) return;
     const originalId = source.id;
     const states: Country[] = [source];
+    const originalCoRulerIds = [...source.coRulerIds];
+    const originalOfficeHomes = consulatePartition
+      ? new Map([source.ruler, ...source.coRulerIds.map((id) => person(w, id))
+          .filter((leader): leader is Person => !!leader)].map((leader) => [leader.id, leader.countryId]))
+      : null;
+    const originalHeirHomes = consulatePartition
+      ? new Map(eligibleChildren.map((heir) => [heir.id, heir.countryId]))
+      : null;
     const mergedHomes: {
       destinationId: number;
       homeId: number;
@@ -1463,7 +1538,7 @@ export class Game {
       personIds: number[];
       rulerId: number;
     }[] = [];
-    for (const heir of heirs.slice(1)) {
+    for (const heir of destinationHeirs) {
       const state = w.newCountry({ rank: source.rank, cultureId: heir.cultureId, religionId: heir.religionId, density: source.density,
         foundedYear: this.year, parentId: originalId, government: source.government });
       w.people = w.people.filter((p) => p.id !== state.ruler.id);
@@ -1494,7 +1569,21 @@ export class Game {
       }
       states.push(state);
     }
-    const partitionCount = states.length;
+    partitionCount = states.length;
+    const territoryHeirs = consulatePartition ? [heirs[0], ...destinationHeirs] : heirs.slice(0, partitionCount);
+    if (consulatePartition) {
+      const primaryIds = new Set(states.map((state) => state.ruler.id));
+      const remaining = consulateOfficeHolders.filter((leader) => !primaryIds.has(leader.id));
+      for (const state of states) state.coRulerIds = [];
+      for (const leader of remaining) {
+        const state = states.filter((candidate) => candidate.coRulerIds.length < source.consulCount - 1)
+          .sort((a, b) => a.coRulerIds.length - b.coRulerIds.length)[0];
+        if (!state) break;
+        state.coRulerIds.push(leader.id);
+        leader.countryId = state.id;
+        if (state.seatSince[leader.id] === undefined) state.seatSince[leader.id] = this.year;
+      }
+    }
     const quotas = new Array<number>(partitionCount).fill(0);
     if (hasOtherSuccessionLaw) {
       quotas[0] = Math.floor(pixels.length / 2);
@@ -1534,7 +1623,7 @@ export class Game {
     const transferredPixels: number[] = [];
     const inFrontier = new Uint8Array(MAP_PIXELS);
     for (let stateIndex = 0; stateIndex < partitionCount; stateIndex += 1) {
-      const heir = heirs[stateIndex];
+      const heir = territoryHeirs[stateIndex];
       const buckets: Set<number>[] = [new Set(), new Set(), new Set()];
       const category = (p: number) => {
         const cultureMatch = w.cultureTable.shareOf(w.culture[p], heir.cultureId) > 0;
@@ -1622,13 +1711,20 @@ export class Game {
       for (const state of states.slice(1).reverse()) {
         if (w.countries[w.countries.length - 1]?.id === state.id) w.discardLast('countries', state.id);
       }
+      if (consulatePartition) {
+        source.coRulerIds = originalCoRulerIds;
+        for (const [personId, countryId] of [...(originalOfficeHomes ?? []), ...(originalHeirHomes ?? [])]) {
+          const leader = w.people.find((person) => person.id === personId);
+          if (leader) leader.countryId = countryId;
+        }
+      }
       w.recountCountries();
       return;
     }
     for (const state of states.slice(1)) finalizeSplitCities(w, state.id);
     for (const state of states) ensureOffices(w, state, this.year);
     w.recountCountries(); w.version += 1; this.renderer.markAll();
-    this.addLog(`${source.name}: страна разделена между ${heirs.length} наследниками.`, [
+    this.addLog(`${source.name}: страна разделена на ${partitionCount} части между ${consulatePartition ? heirs.length : partitionCount} наследниками.`, [
       chronicleReference('country', source.id),
       ...states.map((state) => chronicleReference('country', state.id)),
       ...w.cities.filter((city) => states.some((state) => state.id === city.countryId)).map((city) => chronicleReference('city', city.id)),

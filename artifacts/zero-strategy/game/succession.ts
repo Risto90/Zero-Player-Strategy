@@ -15,10 +15,17 @@ export function expectedHeirFor(world: World, c: Country, leader: Person): Perso
   if (!hasFixedHeir(c)) return null;
   return successionOrder(world, c, leader)[0] ?? null;
 }
-export function candidateAllowed(world: World, c: Country, p: Person, old = c.ruler, partnerExempt = false): boolean {
+export function candidateAllowed(
+  world: World,
+  c: Country,
+  p: Person,
+  old = c.ruler,
+  partnerExempt = false,
+  allowCurrentLeader = false,
+): boolean {
   const foreignDynast = c.government !== 'republic' && c.dynastyClaims.includes(p.familyId);
   if (!p.alive || (!isMember(c, p) && !partnerExempt && !foreignDynast)) return false;
-  if (rulers(world, c).some((leader) => leader.id === p.id && leader.id !== old.id)) return false;
+  if (!allowCurrentLeader && rulers(world, c).some((leader) => leader.id === p.id && leader.id !== old.id)) return false;
   const coRule = c.coRulerIds.includes(p.id);
   const adult = c.government === 'republic' || c.modifiers.includes('meritocracy') ||
     (c.government === 'tyranny' && c.modifiers.includes('communist'));

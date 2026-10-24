@@ -21,6 +21,7 @@ export interface CardChoice {
   consulCount?: number;
   cityId?: number;
   violent?: boolean;
+  closeConsulateSeat?: boolean;
 }
 export interface CharacterEvent { kind: 'marriage' | 'birth' | 'death' | 'friendship' | 'trait' | 'engagement' | 'romance'; personIds: number[]; trait?: string; newPerson?: Person }
 /** 'respect': a pixel changes at most once per card. 'repeat': every new stroke applies again. */

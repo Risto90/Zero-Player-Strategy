@@ -61,12 +61,12 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
         <ProfileFact>Форма правления · {GOVERNMENTS[country.government].name}</ProfileFact>
         <ProfileFact>Основана в {country.foundedYear} году · {country.rank}</ProfileFact>
         {country.modifiers.map((modifier) => (
-          <Text key={modifier} style={styles.note}>· {modifier === 'consulate' ? `Консулат ${country.consulCount}` : MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
+          <Text key={modifier} style={styles.note}>· {modifier === 'consulate' ? `Консулат (${country.consulCount})` : MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
         ))}
       </View>
 
       <ProfileSection title={country.modifiers.includes('consulate') ? 'ПРАВИТЕЛИ' : 'ПРАВИТЕЛЬ'}>
-        {rulers(game.world, country).map((leader) => (
+        {rulers(game.world, country).filter((leader) => leader.alive).map((leader) => (
           <View key={leader.id}>
             {personLink(leader.id, leader.name, `${leader.age} лет · ${ageStage(leader.age)}${personDeathStatus(leader) ? ` · ${personDeathStatus(leader)}` : ''}`)}
             {country.heir && !country.modifiers.includes('consulate') &&

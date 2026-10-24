@@ -1,11 +1,11 @@
-import type { Card, CardType } from './brush';
+import type { Card, CardChoice, CardType } from './brush';
 import { BRUSH_SIZES, INK, MAP_PIXELS, MAP_WIDTH, MAX_COUNTRIES, RANKS } from './config';
 import { forEachNeighbour } from './geography';
 import { randomItem, weightedPick } from './random';
 import { isActiveCountry, type Country, type World } from './world';
 import { deathChance, personIdSequence, reservePersonId, restorePersonIdSequence, GOVERNMENTS, MODIFIERS, type GovernmentId, type GovernmentModifierId, type Person } from './government';
 import { lifeOpportunity, marriageCandidates, reformCandidates, type ReformProposal } from './politics';
-import { leadershipOptions } from './succession';
+import { candidateAllowed, leadershipOptions, successionOrder } from './succession';
 import { newCitizen, person } from './characters';
 import { demography } from './demography';
 import { colonizationPlan } from './colonization';
@@ -152,8 +152,8 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
   const options: CardDrawOption[] = [
     ...lifeDrawOptions(world, nomad, year),
     { key: 'nomadExpand', value: (_w, p) => drawNomadExpansionCard(_w, p as Country), weight: 4 * consulateScale },
-    { key: 'government', value: (_w, p) => drawGovernment(_w, p!, year), weight: 0.16 * consulateScale },
-    { key: 'revolt', value: (_w, p) => drawGovernment(_w, p!, year, true), weight: 0.01 * consulateScale },
+    { key: 'government', value: (_w, p) => drawGovernment(_w, p!, year), weight: governmentEventWeight(world, nomad, year, false, consulateScale) },
+    { key: 'revolt', value: (_w, p) => drawGovernment(_w, p!, year, true), weight: governmentEventWeight(world, nomad, year, true, consulateScale) },
     { key: 'buildCity', value: (_w, p) => {
       const candidate = p as Country;
       const freeSite = (candidate.range ?? []).find((pixel) => _w.land[pixel] && _w.owner[pixel] === 0 && !_w.cityAt(pixel));
@@ -505,6 +505,49 @@ function drawGovernment(world: World, country: Polity, year: number, violent = f
   return card;
 }
 
+export function governmentEventWeight(world: World, country: Polity, year: number, violent: boolean, consulateScale: number): number {
+  const base = (violent ? 0.01 : 0.16) * consulateScale;
+  if (!country.modifiers.includes('consulate') || !country.modifiers.includes('partition')) return base;
+  const total = (polity: Polity) => reformCandidates(world, polity, year, violent)
+    .reduce((sum, proposal) => sum + proposal.weight, 0);
+  const adjustedTotal = total(country);
+  const baseline = total({ ...country, modifiers: country.modifiers.filter((modifier) => modifier !== 'partition') });
+  return baseline > 0 ? base * adjustedTotal / baseline : 0;
+}
+
+export function consulDeathChoices(world: World, country: Polity, year: number, deceased: Person): CardChoice[] {
+  const heirs = successionOrder(world, country, deceased)
+    .filter((candidate) => candidateAllowed(world, country, candidate, deceased));
+  const choices: CardChoice[] = heirs.slice(0, 2).map((ruler) => ({
+    label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: deceased.id,
+  }));
+  const heirIds = new Set(heirs.map((heir) => heir.id));
+  const usedIds = new Set(choices.map((choice) => choice.ruler?.id));
+  const residents = world.people.filter((candidate) =>
+    candidate.countryId === country.id && !heirIds.has(candidate.id) &&
+    candidateAllowed(world, country, candidate, deceased));
+  for (const resident of residents) {
+    if (choices.length >= 2) break;
+    choices.push({ label: resident.name, detail: personDetail(world, resident), ruler: resident, seatId: deceased.id });
+    usedIds.add(resident.id);
+  }
+  while (choices.length < 2) {
+    const generated = newCitizen(world, country, year);
+    if (usedIds.has(generated.id)) continue;
+    choices.push({ label: generated.name, detail: personDetail(world, generated), ruler: generated, seatId: deceased.id });
+    usedIds.add(generated.id);
+  }
+  if (heirs.length < 2 && choices.length > heirs.length && Math.random() < 0.5) {
+    choices[choices.length - 1] = {
+      label: 'Не назначать консула',
+      detail: 'Закрыть вакантное место и уменьшить число консульских мест на одно.',
+      seatId: deceased.id,
+      closeConsulateSeat: true,
+    };
+  }
+  return choices;
+}
+
 function ageLabel(age: number): string {
   return age < 3 ? 'младенец' : age <= 7 ? 'ребёнок' : age <= 11 ? 'отрок' : age <= 19 ? 'подросток' : 'взрослый';
 }
@@ -557,9 +600,11 @@ function drawLifeCard(world: World, country: Polity, year: number): Card | null 
     const card = makeCard('death', 0, country, `${p.name}, ${p.age} лет, умер${p.gender === 'female' ? 'ла' : ''}.`, -1);
     card.characterEvent = { kind: 'death', personIds: opportunity.ids };
     if (p.id === country.ruler.id || country.coRulerIds.includes(p.id)) {
-      card.choices = leadershipOptions(world, country, year, p).slice(0, 2).map((ruler) => ({
+      card.choices = country.modifiers.includes('consulate')
+        ? consulDeathChoices(world, country, year, p)
+        : leadershipOptions(world, country, year, p).slice(0, 2).map((ruler) => ({
           label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: p.id,
-      }));
+        }));
     }
     return card;
   }
@@ -1010,8 +1055,8 @@ export function drawCountryCard(world: World, country: Country, year: number): C
     { key: 'waneCity', value: (w, p) => drawWaneCityCard(w, p as Country), weight: cityWaningWeight(world, country) },
     { key: 'moveCapital', value: (w, p) => drawMoveCapital(w, p as Country), weight: countryCities.length >= 3 ? 1 : 0 },
     { key: 'colonization', value: (w, p) => drawColonization(w, p as Country), weight: Math.max(0, diversity.density * 0.12) * consulateScale },
-    { key: 'government', value: (w, p) => drawGovernment(w, p!, year), weight: 0.16 * consulateScale },
-    { key: 'revolt', value: (w, p) => drawGovernment(w, p!, year, true), weight: 0.01 * consulateScale },
+    { key: 'government', value: (w, p) => drawGovernment(w, p!, year), weight: governmentEventWeight(world, country, year, false, consulateScale) },
+    { key: 'revolt', value: (w, p) => drawGovernment(w, p!, year, true), weight: governmentEventWeight(world, country, year, true, consulateScale) },
     { key: 'split', value: (w, p) => drawSplitCard(w, p as Country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale },
     { key: 'uprising', value: (w, p) => drawSplitCard(w, p as Country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale },
     { key: 'union', value: (w, p) => drawUnion(w, p as Country, year), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0 },

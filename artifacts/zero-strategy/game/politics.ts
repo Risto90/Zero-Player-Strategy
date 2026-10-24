@@ -48,6 +48,11 @@ export function reformCandidates(world: World, c: Country, year: number, violent
   const divCulture = d.cultureFragmentation, divFaith = d.religionFragmentation;
   const age = c.ruler.age, rulerTraits = c.ruler.traits;
   const density = Math.max(0.01, d.density), area = Math.max(1, c.type === 'nomadic' ? c.range?.length ?? 0 : c.pixels);
+  const consulatePartition = c.modifiers.includes('consulate') && c.modifiers.includes('partition');
+  const partitionForConsulate = c.modifiers.includes('partition');
+  const cityCount = world.cities.filter((city) => city.countryId === c.id).length;
+  const suitableRulerChildren = world.people.filter((p) =>
+    p.parents.includes(c.ruler.id) && candidateAllowed(world, c, p, c.ruler, false, true)).length;
   const proposals: ReformProposal[] = [];
 
   if (violent) {
@@ -182,6 +187,9 @@ export function reformCandidates(world: World, c: Country, year: number, violent
       case 'consulate':
         if (c.government === 'tyranny' || c.modifiers.includes('coRule')) return 0;
         w *= Math.max(1, d.cultureFragmentation + d.religionFragmentation);
+        if (partitionForConsulate && !c.modifiers.includes('consulate')) {
+          w *= suitableRulerChildren / Math.max(1, cityCount);
+        }
         break;
       case 'federation':
         if ((c.government === 'tyranny' && !c.modifiers.includes('communist')) || c.modifiers.includes('confederation')) return 0;
@@ -219,7 +227,7 @@ export function reformCandidates(world: World, c: Country, year: number, violent
     if (id === 'communist') w *= 2;
     if ((id === 'theocracy' || id === 'ethnic') && c.modifiers.includes('communist')) w = 0;
     if ((id === 'patriarchal' || id === 'matriarchal') && c.modifiers.includes('communist')) w = 0;
-    return Math.max(0.05, w);
+    return Math.max(0.05, w) / (id === 'consulate' && consulatePartition ? c.consulCount : 1);
   };
   for (const id of availableModifiers(c.government, c.modifiers)) {
     if (id === 'communist' && !violent) continue;
@@ -227,7 +235,7 @@ export function reformCandidates(world: World, c: Country, year: number, violent
     if (weight > 0) proposals.push({ add: id, weight, forced: violent });
   }
   for (const id of c.modifiers) {
-    if (id === 'consulate' && c.consulCount > 2) continue;
+    if (id === 'consulate' && c.consulCount !== 2) continue;
     const weight = removeWeight(id) * (violent ? 1 : 0.12);
     if (weight > 0) proposals.push({ remove: id, weight, forced: violent });
   }
@@ -236,8 +244,17 @@ export function reformCandidates(world: World, c: Country, year: number, violent
     if (c.modifiers.includes('termLimit')) proposals.push({ maxTerms: Math.min(8, c.maxTerms + 1), weight: 0.3 }, { maxTerms: Math.max(1, c.maxTerms - 1), weight: 0.3 });
   }
   if (c.modifiers.includes('consulate')) {
-    if (c.government !== 'tyranny' && c.consulCount < 7) proposals.push({ consulCount: c.consulCount + 1, weight: 0.35 });
-    if (c.consulCount > 2) proposals.push({ consulCount: c.consulCount - 1, weight: c.government === 'tyranny' ? 0.7 : 0.35 });
+    if (c.government !== 'tyranny' && c.consulCount < 7) {
+      const weight = consulatePartition
+        ? 0.35 * (suitableRulerChildren - c.consulCount) / Math.max(1, cityCount) / c.consulCount
+        : 0.35;
+      if (weight > 0) proposals.push({ consulCount: c.consulCount + 1, weight });
+    }
+    if (c.consulCount > 2) {
+      const baseWeight = c.government === 'tyranny' ? 0.7 : 0.35;
+      proposals.push({ consulCount: c.consulCount - 1,
+        weight: consulatePartition ? baseWeight / c.consulCount : baseWeight });
+    }
   }
   return proposals;
 }

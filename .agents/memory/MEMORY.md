@@ -9,6 +9,7 @@
 - [Published Expo launch URLs](zero-strategy-published-launch.md) — resolve static manifest and bundle asset URLs against the active request origin, not the build hostname.
 - [Expo Router route types](expo-router-types.md) — restart the managed Expo workflow when a new file route is missing from generated typed navigation.
 - [Inheritance partition painting](inheritance-partition-brush.md) — reserve each seed and count prior heir land outside its share quota.
+- [Consulate and partition](consulate-partition.md) — combined inheritance allocates consul seats by city-limited capacity; keep this exception out of ordinary partition rules.
 - [Card save and resume](save-resume-card-state.md) — a saved map does not capture transient per-card brush progress; resume parity must compare completed outcomes.
 - [Nomad cohort conservation](nomad-cohort-conservation.md) — keep each faith and atheist population exact when splitting nomad cohorts; avoid rounding subgroup shares.
 - [Cooperative world generation](cooperative-world-generation.md) — mobile startup generation must yield between bounded work slices and remain output-identical to the synchronous generator.
