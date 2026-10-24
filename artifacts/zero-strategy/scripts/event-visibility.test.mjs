@@ -6,6 +6,7 @@ import { mulberry32 } from '../game/random.ts';
 
 const root = process.cwd();
 const screen = readFileSync(resolve(root, 'app/play.tsx'), 'utf8');
+const mapControls = readFileSync(resolve(root, 'components/game/MapControls.tsx'), 'utf8');
 const cardPanel = readFileSync(resolve(root, 'components/game/CardPanel.tsx'), 'utf8');
 const logPanel = readFileSync(resolve(root, 'components/game/LogPanel.tsx'), 'utf8');
 
@@ -32,22 +33,40 @@ const activePlayerCard = {
 };
 
 assert.equal(hasPlayerActionCard(activePlayerCard), true,
-  'an active player card keeps the event button available');
+  'an active player card remains eligible for a choice panel');
 assert.equal(hasPlayerActionCard({ ...activePlayerCard, progress: { done: 1, total: 3 } }), false,
-  'AI turn progress hides the event button even if a card is present');
+  'AI turn progress hides the choice panel even if a card is present');
 assert.equal(hasPlayerActionCard({ role: 'world', card: null, progress: null }), false,
-  'a player with no active card does not get an event button');
+  'a player with no active card does not get a choice panel');
 assert.equal(hasPlayerActionCard({ role: 'world', card: null, progress: null, message: 'В этом году нет карт.' }), false,
-  'an informational message alone does not show an event button');
+  'an informational message alone does not show a choice panel');
 assert.equal(hasPlayerActionCard({ ...activePlayerCard, role: 'observer' }), false,
-  'observer mode never shows the player event button');
+  'observer mode never shows the player choice panel');
 
-assert.match(screen, /const canOpenEvent = hasPlayerActionCard\(snap\);/,
-  'the event button and card overlay use the tested visibility condition');
-assert.match(screen, /onPress=\{\(\) => setCardOpen\(\(open\) => \{[\s\S]*?testID="button-event-card"/,
-  'pressing the event button still opens the card overlay');
-assert.match(screen, /cardOpen && canOpenEvent && \([\s\S]*?<CardPanel game=\{game\} snap=\{snap\} \/>/,
-  'the opened overlay still renders the active card and its actions');
+assert.match(screen, /const canOpenChoices = canOpenEvent && snap\.card\?\.choices\?\.length === 2;/,
+  'the choice tool appears only for an active card with exactly two choices');
+assert.match(screen, /showChoice=\{canOpenChoices\}[\s\S]*?onToggleChoice=/,
+  'the choice toggle is passed into the shared map tool panel');
+assert.match(mapControls, /onPress=\{onToggleChoice\}[\s\S]*?testID="button-tool-choice"/,
+  'the choice control is rendered as part of the map tool panel');
+assert.match(screen, /const showTools = 1 \+ Number\(canBrush\) \+ Number\(canPlaceCity\) \+ Number\(canOpenChoices\) >= 2;/,
+  'the tool panel stays hidden if the hand is the only available tool');
+assert.match(screen, /compact=\{width < 420\}/,
+  'the toolbar switches to accessible icon-only controls on narrow screens');
+assert.doesNotMatch(screen, /button-event-card|eventBadge/,
+  'the floating event badge is removed');
+assert.match(screen, /cardOpen && canOpenChoices && \([\s\S]*?<CardPanel game=\{game\} snap=\{snap\} \/>/,
+  'the centered choice window still renders the existing card content and actions');
+assert.match(screen, /testID="map-ink-status"/,
+  'the remaining-ink strip stays at the top of the screen');
+assert.doesNotMatch(cardPanel, /text-ink|fmt\(card\.ink\)/,
+  'the card panel no longer displays numeric ink counts');
+assert.match(screen, /testID="map-hint-toast"[\s\S]*?hintToastText/,
+  'map instructions and game messages use the transient hint toast');
+assert.match(screen, /setTimeout\(\(\) => \{\s*setHint\(''\)/,
+  'hint messages disappear automatically');
+assert.match(screen, /hintToastText: \{[^}]*backgroundColor: 'rgba\(0,0,0,0\.72\)'[^}]*color: '#fff'/,
+  'transient messages use white text on a translucent black background');
 assert.match(cardPanel, /game\.selectChoice\(index\)/,
   'card choices still dispatch their existing game action');
 assert.match(screen, /onPress=\{\(\) => \{[\s\S]*?setLogOpen\(true\);[\s\S]*?testID="button-toggle-log"/,

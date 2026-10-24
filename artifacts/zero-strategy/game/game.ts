@@ -115,6 +115,8 @@ export interface GameSnapshot {
   queuedCards: number;
   canPaint: boolean;
   cityPlacementAvailable: boolean;
+  /** The current card can be finished without asking the automatic strategy to act. */
+  canCompleteCard: boolean;
   brushMode: BrushMode;
   brushOption: BrushOption;
   brushSize: BrushSize;
@@ -879,6 +881,7 @@ export class Game {
   /** Ends the player's card and plays the rest of the year in slices, showing progress. */
   async nextTurn(automaticallyCompleteCard = false): Promise<void> {
     if (this.busy) return;
+    if (this.card && !automaticallyCompleteCard && !this.canCompleteCardNormally()) return;
     if (automaticallyCompleteCard && this.card) {
       const activeCard = this.card;
       const previousResolutionState = this.resolvingAutomatically;
@@ -889,22 +892,11 @@ export class Game {
         this.resolvingAutomatically = previousResolutionState;
       }
     }
-    if (this.card && this.needsCityPlacement()) {
-      this.message = 'Сначала выберите на карте точку для города.';
+    const completionBlocker = this.cardCompletionBlocker();
+    if (completionBlocker) {
+      this.message = completionBlocker;
       this.emit();
       return;
-    }
-    if (this.card?.type === 'split' && this.card.targetCountryId !== null && this.card.newCountryId !== null) {
-      const batch = this.card.splitBatch;
-      const result = batch && batch.nextIndex === batch.destinationIds.length - 1
-        ? validateSplitPartition(this.world, batch.sourceCountryId, batch.destinationIds, batch.quotas, batch.baselinePixels)
-        : validateSplitTerritory(this.world, this.card.targetCountryId, this.card.newCountryId,
-          this.card.splitRequiredPixels, this.card.splitBaselinePixels);
-      if (!result.valid) {
-        this.message = result.reason;
-        this.emit();
-        return;
-      }
     }
     const completedCard = this.card;
     if (completedCard?.type === 'split' && completedCard.splitBatch &&
@@ -990,6 +982,26 @@ export class Game {
     if (!country || !isActiveCountry(country) || this.card.cityPlaced) return false;
     if (this.card.type === 'create') return !this.world.cities.some((city) => city.countryId === country.id);
     return this.hasOpenCitySite(country);
+  }
+
+  /** Shared card-level guard used by manual completion and automatic resolution. */
+  private cardCompletionBlocker(): string | null {
+    const card = this.card;
+    if (!card) return null;
+    if (this.needsCityPlacement()) return 'Сначала выберите на карте точку для города.';
+    if (card.type === 'split' && card.targetCountryId !== null && card.newCountryId !== null) {
+      const batch = card.splitBatch;
+      const result = batch && batch.nextIndex === batch.destinationIds.length - 1
+        ? validateSplitPartition(this.world, batch.sourceCountryId, batch.destinationIds, batch.quotas, batch.baselinePixels)
+        : validateSplitTerritory(this.world, card.targetCountryId, card.newCountryId,
+          card.splitRequiredPixels, card.splitBaselinePixels);
+      if (!result.valid) return result.reason;
+    }
+    return null;
+  }
+
+  private canCompleteCardNormally(): boolean {
+    return !!this.card && !!this.painter && this.card.ink <= 0 && this.cardCompletionBlocker() === null;
   }
 
   private playerSlots(): Slot[] {
@@ -1167,17 +1179,11 @@ export class Game {
 
   private applyCardCompletion(): void {
     if (!this.painter) return;
-    if (this.card?.type === 'split' && this.card.targetCountryId !== null && this.card.newCountryId !== null) {
-      const batch = this.card.splitBatch;
-      const result = batch && batch.nextIndex === batch.destinationIds.length - 1
-        ? validateSplitPartition(this.world, batch.sourceCountryId, batch.destinationIds, batch.quotas, batch.baselinePixels)
-        : validateSplitTerritory(this.world, this.card.targetCountryId, this.card.newCountryId,
-          this.card.splitRequiredPixels, this.card.splitBaselinePixels);
-      if (!result.valid) {
-        this.message = result.reason;
-        this.emit();
-        return;
-      }
+    const completionBlocker = this.cardCompletionBlocker();
+    if (completionBlocker) {
+      this.message = completionBlocker;
+      this.emit();
+      return;
     }
     this.afterPaint();
     this.finish(this.painter);
@@ -1966,6 +1972,7 @@ export class Game {
       queuedCards: this.queue.length,
       canPaint: !!this.painter && (card?.ink ?? 0) > 0,
       cityPlacementAvailable: this.canPlaceCity(),
+      canCompleteCard: this.canCompleteCardNormally(),
       brushMode: this.brushMode,
       brushOption: brushOptionFor(card),
       brushSize: this.brushSize,

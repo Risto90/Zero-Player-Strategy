@@ -2,7 +2,6 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
-import { fmt } from '@/game/format';
 import { personDeathStatus } from '@/game/government';
 import type { Game, GameSnapshot } from '@/game/game';
 
@@ -10,8 +9,6 @@ const c = colors.light;
 
 export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
   const card = snap.card;
-  const inkShare = card && card.inkTotal > 0 ? card.ink / card.inkTotal : 0;
-  const message = snap.message && snap.message !== card?.detail ? snap.message : '';
   return (
     <View style={styles.panel} testID="panel-card">
       {snap.progress ? (
@@ -87,20 +84,9 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
               ))}
             </View>
           )}
-          {card.inkTotal > 0 && (
-            <View style={styles.inkRow}>
-              <View style={styles.inkTrack}>
-                <View style={[styles.inkFill, { width: `${inkShare * 100}%` }]} />
-              </View>
-              <Text style={styles.inkText} testID="text-ink">{fmt(card.ink)} / {fmt(card.inkTotal)}</Text>
-            </View>
-          )}
         </View>
       ) : (
         <Text style={styles.empty}>Карт нет. Мир идёт своим чередом.</Text>
-      )}
-      {message !== '' && !snap.progress && (
-        <Text style={styles.message} numberOfLines={3} testID="text-message">{message}</Text>
       )}
     </View>
   );
@@ -129,5 +115,4 @@ const styles = StyleSheet.create({
   inkFill: { height: '100%', backgroundColor: c.foreground },
   inkText: { fontFamily: fonts.mono, fontSize: 11, color: c.foreground },
   empty: { marginTop: 6, fontFamily: fonts.displayItalic, fontSize: 13, color: c.mutedForeground },
-  message: { marginTop: 6, borderLeftWidth: 2, borderLeftColor: c.primary, paddingLeft: 8, fontFamily: fonts.sans, fontSize: 12.5, lineHeight: 17, color: c.primary },
 });

@@ -17,6 +17,10 @@ export function MapControls({
   showTools,
   showBrush,
   showCity,
+  compact,
+  showChoice,
+  choiceOpen,
+  onToggleChoice,
   showZoom,
 }: {
   game: Game;
@@ -28,6 +32,10 @@ export function MapControls({
   showTools: boolean;
   showBrush: boolean;
   showCity: boolean;
+  compact: boolean;
+  showChoice: boolean;
+  choiceOpen: boolean;
+  onToggleChoice: () => void;
   showZoom: boolean;
 }) {
   const optionLabel =
@@ -43,19 +51,35 @@ export function MapControls({
         <View style={styles.left} pointerEvents="box-none">
           <View style={styles.segment}>
             {showBrush && (
-              <Pressable onPress={() => setTool('brush')} style={[styles.segButton, brushOn && styles.segOn]} testID="button-tool-brush">
+              <Pressable onPress={() => setTool('brush')} style={[styles.segButton, compact && styles.segButtonCompact, brushOn && styles.segOn]}
+                testID="button-tool-brush" accessibilityRole="button" accessibilityLabel="Кисть">
                 <MaterialCommunityIcons name="brush" size={16} color={brushOn ? c.background : c.foreground} />
-                <Text style={[styles.segText, brushOn && { color: c.background }]}>Кисть</Text>
+                {!compact && <Text style={[styles.segText, brushOn && { color: c.background }]}>Кисть</Text>}
               </Pressable>
             )}
-            <Pressable onPress={() => setTool('hand')} style={[styles.segButton, showBrush && styles.segDivider, handOn && styles.segOn]} testID="button-tool-hand">
+            <Pressable onPress={() => setTool('hand')} style={[styles.segButton, compact && styles.segButtonCompact, showBrush && styles.segDivider, handOn && styles.segOn]}
+              testID="button-tool-hand" accessibilityRole="button" accessibilityLabel="Рука">
               <MaterialCommunityIcons name="hand-back-right-outline" size={16} color={handOn ? c.background : c.foreground} />
-              <Text style={[styles.segText, handOn && { color: c.background }]}>Рука</Text>
+              {!compact && <Text style={[styles.segText, handOn && { color: c.background }]}>Рука</Text>}
             </Pressable>
             {showCity && (
-              <Pressable onPress={() => setTool('city')} style={[styles.segButton, styles.segDivider, cityOn && styles.segOn]} testID="button-tool-city">
+              <Pressable onPress={() => setTool('city')} style={[styles.segButton, compact && styles.segButtonCompact, styles.segDivider, cityOn && styles.segOn]}
+                testID="button-tool-city" accessibilityRole="button" accessibilityLabel="Город">
                 <MaterialCommunityIcons name="city-variant-outline" size={16} color={cityOn ? c.background : c.foreground} />
-                <Text style={[styles.segText, cityOn && { color: c.background }]}>Город</Text>
+                {!compact && <Text style={[styles.segText, cityOn && { color: c.background }]}>Город</Text>}
+              </Pressable>
+            )}
+            {showChoice && (
+              <Pressable
+                onPress={onToggleChoice}
+                style={[styles.segButton, compact && styles.segButtonCompact, styles.segDivider, choiceOpen && styles.segOn]}
+                testID="button-tool-choice"
+                accessibilityRole="button"
+                accessibilityLabel={choiceOpen ? 'Скрыть варианты' : 'Показать варианты'}
+                accessibilityState={{ expanded: choiceOpen }}
+              >
+                <Feather name="git-branch" size={16} color={choiceOpen ? c.background : c.foreground} />
+                {!compact && <Text style={[styles.segText, choiceOpen && { color: c.background }]}>Выбор</Text>}
               </Pressable>
             )}
           </View>
@@ -80,13 +104,6 @@ export function MapControls({
             <MaterialCommunityIcons name={snap.brushMode === 'repeat' ? 'repeat' : 'repeat-once'} size={16} color={snap.brushMode === 'repeat' ? c.accentForeground : c.foreground} />
             <Text style={[styles.optionText, snap.brushMode === 'repeat' && { color: c.accentForeground }]}>{optionLabel}</Text>
           </Pressable>
-        )}
-        {cityOn && snap.cityPlacementAvailable && (
-          <Text style={styles.hint}>
-            {snap.card && snap.card.targetCountryId !== null && game.world.countries[snap.card.targetCountryId]?.type === 'nomadic'
-              ? 'Коснитесь свободной точки суши в ареале кочевья.'
-              : 'Коснитесь незанятой точки своей страны для размещения города.'}
-          </Text>
         )}
         </View>
       )}
@@ -113,14 +130,14 @@ const styles = StyleSheet.create({
   left: { position: 'absolute', left: 8, top: 8, alignItems: 'flex-start', gap: 6 },
   right: { position: 'absolute', right: 8, top: 48, gap: 6 },
   segment: { flexDirection: 'row', borderWidth: 1, borderColor: c.foreground, borderRadius: 4, backgroundColor: c.card, overflow: 'hidden', ...shadow },
-  segButton: { height: 40, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10 },
+  segButton: { height: 40, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 7 },
+  segButtonCompact: { width: 42, justifyContent: 'center', paddingHorizontal: 0 },
   segDivider: { borderLeftWidth: 1, borderLeftColor: c.foreground },
   segOn: { backgroundColor: c.foreground },
-  segText: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.foreground },
+  segText: { fontFamily: fonts.sansSemiBold, fontSize: 11, color: c.foreground },
   size: { width: 38, height: 36, alignItems: 'center', justifyContent: 'center' },
   sizeText: { fontFamily: fonts.mono, fontSize: 12, color: c.foreground },
   option: { maxWidth: 200, flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: c.foreground, borderRadius: 4, backgroundColor: c.card, paddingHorizontal: 8, paddingVertical: 6, ...shadow },
   optionText: { flexShrink: 1, fontFamily: fonts.sansMedium, fontSize: 11, lineHeight: 14, color: c.foreground },
-  hint: { backgroundColor: 'rgba(59,43,33,0.9)', color: c.secondaryForeground, fontFamily: fonts.sans, fontSize: 11, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, overflow: 'hidden' },
   zoom: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.foreground, borderRadius: 4, backgroundColor: c.card, ...shadow },
 });

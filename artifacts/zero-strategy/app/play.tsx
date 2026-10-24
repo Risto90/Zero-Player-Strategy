@@ -88,13 +88,15 @@ export default function PlayScreen() {
 function GameScreen({ game }: { game: Game }) {
   const snap = useGameSnapshot(game);
   const insets = useSafeAreaInsets();
-  const { height } = useWindowDimensions();
+  const { height, width } = useWindowDimensions();
   const mapRef = useRef<MapViewHandle>(null);
   const zoomTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLogLine = useRef<string | undefined>(undefined);
   const [tool, setTool] = useState<MapTool>('hand');
   const [inspect, setInspect] = useState<{ info: PixelInfo | null } | null>(null);
+  const [hint, setHint] = useState('');
   const [listMode, setListMode] = useState<MapMode | null>(null);
   const [cardOpen, setCardOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
@@ -106,7 +108,9 @@ function GameScreen({ game }: { game: Game }) {
 
   const canBrush = snap.canPaint && !snap.busy;
   const canPlaceCity = snap.cityPlacementAvailable && !snap.busy;
-  const showTools = 1 + Number(canBrush) + Number(canPlaceCity) >= 2;
+  const canOpenEvent = hasPlayerActionCard(snap);
+  const canOpenChoices = canOpenEvent && snap.card?.choices?.length === 2;
+  const showTools = 1 + Number(canBrush) + Number(canPlaceCity) + Number(canOpenChoices) >= 2;
   const webTopInset = Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top;
   const webBottomInset = Platform.OS === 'web' ? Math.max(insets.bottom, 34) : insets.bottom;
   const mapHeight = Math.max(160, height - webTopInset - webBottomInset - 72);
@@ -120,10 +124,28 @@ function GameScreen({ game }: { game: Game }) {
     setInspect({ info: game.inspect(x, y) });
   }, [game]);
 
+  const showHint = useCallback((message: string) => {
+    setHint(message);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    hintTimer.current = setTimeout(() => {
+      setHint('');
+      hintTimer.current = null;
+    }, 2600);
+  }, []);
+
   const changeTool = useCallback((nextTool: MapTool) => {
     setTool(nextTool);
     if (nextTool !== 'hand') setInspect(null);
-  }, []);
+    if (nextTool === 'brush') showHint('Проведите кистью по карте.');
+    else if (nextTool === 'city') {
+      const target = snap.card?.targetCountryId == null ? null : game.world.countries[snap.card.targetCountryId];
+      showHint(target?.type === 'nomadic'
+        ? 'Коснитесь свободной точки суши в ареале кочевья.'
+        : 'Коснитесь незанятой точки своей страны, чтобы поставить город.');
+    } else {
+      showHint('Коснитесь точки на карте, чтобы её изучить.');
+    }
+  }, [game, showHint, snap.card]);
 
   useEffect(() => {
     if (!canBrush && tool === 'brush') setTool('hand');
@@ -143,8 +165,8 @@ function GameScreen({ game }: { game: Game }) {
   }, [snap.mapMode]);
 
   useEffect(() => {
-    if (!snap.card && !snap.progress) setCardOpen(false);
-  }, [snap.card, snap.progress]);
+    if (!canOpenChoices) setCardOpen(false);
+  }, [canOpenChoices]);
 
   const showZoomForAWhile = useCallback(() => {
     setZoomVisible(true);
@@ -158,7 +180,14 @@ function GameScreen({ game }: { game: Game }) {
   useEffect(() => () => {
     if (zoomTimer.current) clearTimeout(zoomTimer.current);
     if (previewTimer.current) clearTimeout(previewTimer.current);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
   }, []);
+
+  useEffect(() => {
+    const message = snap.message.trim();
+    if (!message || message === snap.card?.detail) return;
+    showHint(message);
+  }, [snap.message, snap.card?.detail, showHint]);
 
   useEffect(() => {
     const newest = snap.log[0];
@@ -174,7 +203,6 @@ function GameScreen({ game }: { game: Game }) {
   }, [snap.log]);
 
   const log = useMemo(() => <LogPanel log={snap.chronicle} transparent minimal />, [snap.chronicle]);
-  const canOpenEvent = hasPlayerActionCard(snap);
   const nextLabel = snap.queuedCards > 0
     ? 'Готово'
     : snap.card?.type === 'government'
@@ -192,9 +220,15 @@ function GameScreen({ game }: { game: Game }) {
   const listTitle = listMode === 'cities' ? 'Города' : 'Список объектов';
   const currentListCount = mapListCount(game, snap);
   const selectedInfo = inspect?.info ? game.inspect(inspect.info.x, inspect.info.y) : null;
+  const inkShare = snap.card && snap.card.inkTotal > 0
+    ? Math.max(0, Math.min(1, snap.card.ink / snap.card.inkTotal))
+    : 0;
 
   return (
     <View style={[styles.screen, { paddingTop: webTopInset, paddingBottom: webBottomInset }]}>
+      <View style={styles.inkTrack} testID="map-ink-status" accessibilityLabel="Остаток чернил">
+        <View style={[styles.inkFill, { width: `${inkShare * 100}%` }]} />
+      </View>
       <View style={styles.titleRow}>
         <Text style={styles.brand} numberOfLines={1}>Zero Strategy</Text>
       </View>
@@ -227,15 +261,15 @@ function GameScreen({ game }: { game: Game }) {
                 longPressFired.current = false;
                 return;
               }
-              if (!snap.card) void game.nextTurn();
+              if (!snap.card || snap.canCompleteCard) void game.nextTurn();
             }}
             onPressIn={() => {
               longPressFired.current = false;
-              setHoldingNext(true);
+              setHoldingNext(!!snap.card && !snap.canCompleteCard);
             }}
             // React Native Web keeps a touch responder through mobile contextmenu
             // only when onLongPress is configured.
-            onLongPress={snap.card && !snap.busy ? () => {
+            onLongPress={snap.card && !snap.canCompleteCard && !snap.busy ? () => {
               longPressFired.current = true;
               setHoldingNext(false);
               void game.nextTurn(true);
@@ -246,7 +280,9 @@ function GameScreen({ game }: { game: Game }) {
             style={({ pressed }) => [styles.next, (snap.busy || pressed) && styles.disabled]}
             testID="button-next"
             accessibilityLabel={nextLabel}
-            accessibilityHint={snap.card ? 'Удерживайте 3 секунды, чтобы автоматически завершить карточку.' : undefined}
+            accessibilityHint={snap.card && !snap.canCompleteCard
+              ? 'Удерживайте 3 секунды, чтобы автоматически завершить карточку.'
+              : undefined}
           >
             <Feather name="skip-forward" size={15} color={c.primaryForeground} />
           </Pressable>
@@ -275,6 +311,17 @@ function GameScreen({ game }: { game: Game }) {
           showTools={showTools}
           showBrush={canBrush}
           showCity={canPlaceCity}
+          compact={width < 420}
+          showChoice={canOpenChoices}
+          choiceOpen={cardOpen}
+          onToggleChoice={() => setCardOpen((open) => {
+            const next = !open;
+            if (next) {
+              setListMode(null);
+              setLogOpen(false);
+            }
+            return next;
+          })}
           showZoom={zoomVisible}
           onZoom={(factor) => {
             showZoomForAWhile();
@@ -285,27 +332,6 @@ function GameScreen({ game }: { game: Game }) {
             mapRef.current?.fit();
           }}
         />
-
-        {canOpenEvent && (
-          <Pressable
-            onPress={() => setCardOpen((open) => {
-              const next = !open;
-              if (next) {
-                setListMode(null);
-                setLogOpen(false);
-              }
-              return next;
-            })}
-            style={styles.eventBadge}
-            testID="button-event-card"
-            accessibilityRole="button"
-            accessibilityState={{ expanded: cardOpen }}
-          >
-            <Feather name="book-open" size={14} color={c.primaryForeground} />
-            <Text style={styles.eventBadgeText} numberOfLines={1}>{snap.progress ? 'Ход мира' : snap.card?.title ?? 'Событие'}</Text>
-            {snap.queuedCards > 0 && <Text style={styles.queueCount}>+{snap.queuedCards}</Text>}
-          </Pressable>
-        )}
 
         {hasMapObjectList(snap.mapMode) && (
           <Pressable
@@ -342,9 +368,9 @@ function GameScreen({ game }: { game: Game }) {
             onCityPress={(id) => router.push(cityProfileRoute(id))}
           />
         )}
-        {tool === 'hand' && !inspect && !hasMapObjectList(snap.mapMode) && !legendVisible && (
-          <View style={styles.tapHint} pointerEvents="none">
-            <Text style={styles.tapHintText}>Коснитесь точки, чтобы её изучить</Text>
+        {!!hint && (
+          <View style={styles.hintToast} pointerEvents="none" testID="map-hint-toast">
+            <Text style={styles.hintToastText} numberOfLines={2}>{hint}</Text>
           </View>
         )}
 
@@ -376,8 +402,8 @@ function GameScreen({ game }: { game: Game }) {
           </View>
         )}
 
-        {cardOpen && canOpenEvent && (
-          <View style={[styles.overlayPanel, styles.cardOverlay, { height: overlayHeight }]}>
+        {cardOpen && canOpenChoices && (
+          <View style={[styles.overlayPanel, styles.cardOverlay, { height: overlayHeight, top: (mapHeight - overlayHeight) / 2 }]}>
             <View style={styles.overlayHeader}>
               <Text style={styles.overlayTitle} numberOfLines={1}>{snap.progress ? 'Ход мира' : snap.card?.title ?? 'Событие'}</Text>
               <Pressable onPress={() => setCardOpen(false)} style={styles.closeButton} hitSlop={8} testID="button-close-event">
@@ -435,6 +461,8 @@ function GameScreen({ game }: { game: Game }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: c.background },
+  inkTrack: { height: 2, backgroundColor: c.muted, overflow: 'hidden' },
+  inkFill: { height: '100%', backgroundColor: c.primary },
   titleRow: { minHeight: 26, justifyContent: 'center', paddingHorizontal: 10, backgroundColor: c.secondary },
   topBar: { minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 5, backgroundColor: c.secondary, zIndex: 20 },
   homeButton: { height: 38, flexDirection: 'row', alignItems: 'center', gap: 1, paddingHorizontal: 3 },
@@ -452,22 +480,19 @@ const styles = StyleSheet.create({
   mapArea: { flex: 1, minHeight: 120, position: 'relative', overflow: 'hidden', backgroundColor: c.mapBackdrop },
   holdHint: { position: 'absolute', top: 48, alignSelf: 'center', zIndex: 30, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.72)' },
   holdHintText: { fontFamily: fonts.sansMedium, fontSize: 11, color: c.primaryForeground },
-  eventBadge: { position: 'absolute', top: 8, alignSelf: 'center', maxWidth: '55%', minHeight: 34, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, borderWidth: 1, borderColor: c.foreground, borderRadius: 5, backgroundColor: c.primary, shadowColor: c.foreground, shadowOpacity: 0.2, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
-  eventBadgeText: { flexShrink: 1, fontFamily: fonts.sansSemiBold, fontSize: 11, color: c.primaryForeground },
-  queueCount: { fontFamily: fonts.mono, fontSize: 10, color: c.primaryForeground },
   listButton: { position: 'absolute', top: 8, right: 8, height: 34, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, borderWidth: 1, borderColor: c.foreground, borderRadius: 4, backgroundColor: c.card, shadowColor: c.foreground, shadowOpacity: 0.16, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
   listButtonText: { fontFamily: fonts.sansSemiBold, fontSize: 11, color: c.foreground },
   listCountBadge: { minWidth: 23, height: 22, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5, borderRadius: 3, backgroundColor: c.primary },
   listCountText: { fontFamily: fonts.mono, fontSize: 10, color: c.primaryForeground },
-  tapHint: { position: 'absolute', left: 0, right: 0, bottom: 9, alignItems: 'center' },
-  tapHintText: { backgroundColor: 'rgba(59,43,33,0.9)', color: c.secondaryForeground, fontFamily: fonts.sans, fontSize: 10, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 4, overflow: 'hidden' },
+  hintToast: { position: 'absolute', left: '8%', right: '8%', bottom: 58, alignItems: 'center', zIndex: 5 },
+  hintToastText: { maxWidth: '100%', overflow: 'hidden', borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.72)', paddingHorizontal: 10, paddingVertical: 6, fontFamily: fonts.sansMedium, fontSize: 11, lineHeight: 15, color: '#fff', textAlign: 'center' },
   chronicleDock: { position: 'absolute', right: 8, bottom: 8, maxWidth: '72%', flexDirection: 'row', alignItems: 'center', gap: 6 },
   latestEntry: { maxWidth: 220, flex: 1, paddingHorizontal: 9, paddingVertical: 7, borderWidth: 1, borderColor: 'rgba(44,30,23,0.5)', borderRadius: 4, backgroundColor: 'rgba(59,43,33,0.88)' },
   latestText: { fontFamily: fonts.sans, fontSize: 10, color: c.secondaryForeground },
   chatButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.foreground, borderRadius: 20, backgroundColor: c.card, shadowColor: c.foreground, shadowOpacity: 0.18, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
   chatButtonOpen: { backgroundColor: c.primary },
   overlayPanel: { position: 'absolute', left: 8, right: 8, borderWidth: 1, borderColor: c.foreground, borderRadius: 6, overflow: 'hidden', shadowColor: c.foreground, shadowOpacity: 0.25, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
-  cardOverlay: { top: 48, alignSelf: 'center', maxWidth: 580, backgroundColor: c.card },
+  cardOverlay: { alignSelf: 'center', maxWidth: 580, backgroundColor: c.card },
   listOverlay: { top: 48, maxWidth: 560, alignSelf: 'center', backgroundColor: c.card },
   logOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 10, backgroundColor: 'rgba(17,21,27,0.9)' },
   logCloseButton: { position: 'absolute', top: 6, right: 6, zIndex: 11, width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 22, borderWidth: 1, borderColor: 'rgba(245,238,232,0.4)', backgroundColor: 'rgba(17,21,27,0.96)' },

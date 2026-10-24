@@ -73,6 +73,14 @@ for (const [name, marker, pattern] of [
 
 const completionBody = methodBody(game, 'private applyCardCompletion(): void');
 assert.match(completionBody, /this\.finish\(this\.painter\)/);
+assert.match(completionBody, /this\.cardCompletionBlocker\(\)/,
+  'manual and automatic card completion share the same game-rule validation');
+assert.match(methodBody(game, 'async nextTurn(automaticallyCompleteCard = false): Promise<void>'),
+  /this\.cardCompletionBlocker\(\)/,
+  'the turn flow checks the shared completion rules before advancing');
+assert.match(methodBody(game, 'private canCompleteCardNormally(): boolean'),
+  /this\.cardCompletionBlocker\(\)/,
+  'the UI readiness state uses the same card completion rules as the engine');
 assert.match(methodBody(game, 'private completeCard(): void'), /dispatchAction\(\{\s*type: 'completeCard'/);
 assert.equal((game.match(/this\.finish\(/g) ?? []).length, 1,
   'all cards must pass through the single shared completion function');

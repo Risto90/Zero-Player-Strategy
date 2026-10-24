@@ -81,6 +81,10 @@ try {
     const manuallyPaintedHumidity = world.humidity[pixels[20]];
     assert.ok(card.ink < card.inkTotal, 'the player can make a partial card action');
     const year = game.getSnapshot().year;
+    assert.equal(game.getSnapshot().canCompleteCard, false, 'remaining ink still requires the automatic hold');
+    await game.nextTurn();
+    assert.equal(game.getSnapshot().year, year, 'a short press cannot skip unfinished card work');
+    assert.ok(game.getSnapshot().card, 'an unfinished card remains active after a short press');
     game.secondsLeft = 1;
     game.tick();
     assert.equal(game.secondsLeft, 1, 'the timer waits for the initial map redraw');
@@ -105,15 +109,37 @@ try {
   {
     const { world, country } = makeFixture(61_402);
     const game = new Game(world, 'all');
-    const card = makeCard('buildCity', { targetCountryId: country.id });
+    const card = makeCard('buildCity', { targetCountryId: country.id, ink: 0, inkTotal: 0 });
     const oldCityCount = world.cities.filter((city) => city.countryId === country.id).length;
     game.startCard(card);
     const year = game.getSnapshot().year;
+    assert.equal(game.getSnapshot().canCompleteCard, false, 'a required city blocks ordinary completion');
+    await game.nextTurn();
+    assert.equal(game.getSnapshot().year, year, 'a short press cannot bypass required city placement');
     await game.nextTurn(true);
     assert.equal(card.cityPlaced, true, 'automatic completion places the required city');
     assert.equal(world.cities.filter((city) => city.countryId === country.id).length, oldCityCount + 1,
       'a blank city card creates exactly one city');
     assert.equal(game.getSnapshot().year, year + 1, 'the city card completes through the ordinary turn flow');
+    game.discard();
+  }
+
+  // Spent ink plus a placed city makes the ordinary next button finish the card.
+  {
+    const { world, country } = makeFixture(61_404);
+    const game = new Game(world, 'all');
+    const card = makeCard('buildCity', {
+      targetCountryId: country.id,
+      ink: 0,
+      inkTotal: 12,
+      cityPlaced: true,
+    });
+    game.startCard(card);
+    const year = game.getSnapshot().year;
+    assert.equal(game.getSnapshot().canCompleteCard, true, 'an exhausted card with its city placed is ready to finish');
+    await game.nextTurn();
+    assert.equal(game.getSnapshot().year, year + 1, 'a short press ends a ready card and advances the year');
+    assert.notEqual(game.getSnapshot().card?.title, card.title, 'the completed card is no longer the active player card');
     game.discard();
   }
 
@@ -147,14 +173,14 @@ try {
 
 assert.match(screen, /<View style=\{styles\.titleRow\}>[\s\S]*?Zero Strategy[\s\S]*?<View style=\{styles\.topBar\}>/,
   'the game title is on its own line above the top bar');
-assert.match(screen, /onLongPress=\{snap\.card && !snap\.busy \? \(\) => \{[\s\S]*?game\.nextTurn\(true\)/,
+assert.match(screen, /onLongPress=\{snap\.card && !snap\.canCompleteCard && !snap\.busy \? \(\) => \{[\s\S]*?game\.nextTurn\(true\)/,
   'the platform long-press handler starts automatic card completion');
 assert.match(screen, /delayLongPress=\{AUTO_TURN_HOLD_MS\}/,
   'automatic completion requires a full three-second hold');
 assert.match(screen, /onPressOut=\{\(\) => setHoldingNext\(false\)\}/,
   'releasing early clears the hold hint');
-assert.match(screen, /if \(!snap\.card\) void game\.nextTurn\(\)/,
-  'a short press does not finish an active card');
+assert.match(screen, /if \(!snap\.card \|\| snap\.canCompleteCard\) void game\.nextTurn\(\)/,
+  'a short press finishes only cards the game marks ready');
 assert.match(screen, /Удерживайте 3 секунды для автохода/,
   'the active hold shows the three-second confirmation hint');
 
