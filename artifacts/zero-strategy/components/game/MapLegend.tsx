@@ -19,7 +19,6 @@ const MODE_LABELS: Record<MapMode, string> = {
   drainage: 'Дренаж',
   density: 'Плотность',
   rivers: 'Реки',
-  colonization: 'Колонизация',
   cities: 'Города',
   nomads: 'Кочевья',
 };
@@ -90,13 +89,6 @@ function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
             <View style={[styles.riverSwatch, { backgroundColor: '#22537d' }]} />
             <Text style={styles.keyText}>Крупные реки</Text>
           </View>
-        </View>
-      );
-    case 'colonization':
-      return (
-        <View style={styles.key}>
-          <View style={[styles.swatch, { backgroundColor: '#89ab76' }]} />
-          <Text style={styles.keyText}>Доступные земли</Text>
         </View>
       );
     case 'cities':

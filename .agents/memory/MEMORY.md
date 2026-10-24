@@ -19,3 +19,4 @@
 - [Point inspection demographics](point-inspection-demographics.md) — use the selected tile’s population layer and raster mixes; keep city population and composition in city profiles.
 - [Chronicle importance](chronicle-importance.md) — only user-specified event types are important; routine state and nomad expansion is not.
 - [Human-origin climate model](human-origin-climate-model.md) — habitat ranges reflect generations in a region, and shared-table references outside rasters need stable save mappings.
+- [Notification recipients](notification-recipients.md) — interface notices target player slots, never AI/automation status; the chronicle remains shared.

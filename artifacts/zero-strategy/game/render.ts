@@ -3,7 +3,7 @@ import type { CompositionTable } from './composition';
 import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE } from './config';
 import type { World } from './world';
 
-export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers' | 'colonization' | 'cities' | 'nomads';
+export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers' | 'cities' | 'nomads';
 export interface EntityLayer {
   kind: 'culture' | 'religion';
   id: number;
@@ -67,7 +67,7 @@ function biomeOf(h: number, t: number, d: number): number {
   return b;
 }
 
-const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7, rivers: 8, colonization: 9, cities: 10, nomads: 11 };
+const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7, rivers: 8, cities: 9, nomads: 10 };
 
 // Neighbour bits of `nb`: which of the 4 neighbours are land, plus whether the pixel touches water.
 const LEFT = 1;
@@ -97,7 +97,6 @@ export class MapRenderer {
   private nomadRasterVersion = -1;
   private cityColors = CITY_COLORS.map((color) => pack(hexToRgb(color)));
   private colorKey = '';
-  private colonizationMask: Uint8Array | null = null;
   /** Colour per composition id (0 = not computed yet); compositions never change once interned. */
   private compCache = { culture: new Int32Array(256), religion: new Int32Array(256) };
   private readonly unclaimed = hexToRgb(PALETTE.unclaimedLand);
@@ -150,13 +149,12 @@ export class MapRenderer {
     }
   }
 
-  setView(mode: MapMode, layer: EntityLayer | null, colonizationMask: Uint8Array | null = null): void {
-    const same = mode === this.mode && colonizationMask === this.colonizationMask &&
+  setView(mode: MapMode, layer: EntityLayer | null): void {
+    const same = mode === this.mode &&
       (layer === this.layer || (layer !== null && this.layer !== null && layer.kind === this.layer.kind && layer.id === this.layer.id));
     if (same) return;
     this.mode = mode;
     this.layer = layer;
-    this.colonizationMask = colonizationMask;
     this.compCache.culture.fill(0);
     this.compCache.religion.fill(0);
     this.markAll();
@@ -294,7 +292,6 @@ export class MapRenderer {
     const drainage = w.drainage;
     const density = w.density;
       const rivers = w.rivers;
-    const colonizationMask = this.colonizationMask;
     const culture = w.culture;
     const religion = w.religion;
     const mode = MODE_CODE[this.mode];
@@ -304,7 +301,7 @@ export class MapRenderer {
     const unclaimedPacked = this.unclaimedPacked;
       const ramp = mode >= 4 && mode <= 7 ? this.ramps[this.mode as keyof typeof RAMPS] : this.ramps.density;
     const values = mode === 5 ? humidity : mode === 6 ? temperature : drainage;
-    const borderShade = mode === 0 ? 0.55 : mode === 11 ? 1 : 0.7;
+    const borderShade = mode === 0 ? 0.55 : mode === 10 ? 1 : 0.7;
     const x1 = x0 + TILE_W;
     for (let y = y0; y < y0 + STRIP_H; y += 1) {
       const row = y * MAP_WIDTH;
@@ -318,16 +315,12 @@ export class MapRenderer {
         const selected = mode === 0 && this.selectedCountryId !== null && o === this.selectedCountryId + 1;
         let color: number;
         if (mode === 8) color = unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
-        else if (mode === 9) {
-          color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
-          if (colonizationMask?.[p]) color = pack(mix([color & 255, (color >> 8) & 255, (color >> 16) & 255], [137, 171, 118], 0.72));
-        }
         else if (mode === 0) color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
-        else if (mode === 10) {
+        else if (mode === 9) {
           const cityId = w.cityIdAt[p];
           const city = cityId >= 0 ? w.cities[cityId] : null;
           color = city ? this.cityColors[city.rank - 1] : o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
-        } else if (mode === 11) {
+        } else if (mode === 10) {
           color = this.nomadRaster[p] || unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
         }
         else if (mode === 1) color = biomePacked[biomeOf(humidity[p], temperature[p], drainage[p])];
@@ -341,7 +334,7 @@ export class MapRenderer {
         }
         // Country borders show in every mode; coasts are lightly outlined.
         const bits = nb[p];
-        const boundary = mode !== 11 && (
+        const boundary = mode !== 10 && (
           ((bits & LEFT) !== 0 && owner[p - 1] !== o) ||
           ((bits & RIGHT) !== 0 && owner[p + 1] !== o) ||
           ((bits & UP) !== 0 && owner[p - MAP_WIDTH] !== o) ||

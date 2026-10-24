@@ -20,6 +20,7 @@ import { hasPlayerActionCard, type Game, type GameSnapshot, type PixelInfo } fro
 import { AUTO_TURN_HOLD_MS } from '@/game/holdConfirmation';
 import { hasMapObjectList } from '@/game/mapModeCapabilities';
 import { scheduleMapLegend } from '@/game/mapLegendTimer';
+import { notificationIsForSubscriber, type NotificationSubscription } from '@/game/notifications';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
 import type { MapMode } from '@/game/render';
@@ -93,12 +94,15 @@ function GameScreen({ game }: { game: Game }) {
   const zoomTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cardHelpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLogLine = useRef<string | undefined>(undefined);
   const [tool, setTool] = useState<MapTool>('hand');
   const [inspect, setInspect] = useState<{ info: PixelInfo | null } | null>(null);
   const [hint, setHint] = useState('');
+  const hintSource = useRef<'local' | 'notification' | null>(null);
   const [listMode, setListMode] = useState<MapMode | null>(null);
   const [cardOpen, setCardOpen] = useState(false);
+  const [cardHelpOpen, setCardHelpOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [logPreview, setLogPreview] = useState(false);
   const [zoomVisible, setZoomVisible] = useState(false);
@@ -109,6 +113,17 @@ function GameScreen({ game }: { game: Game }) {
   const canBrush = snap.canPaint && !snap.busy;
   const canPlaceCity = snap.cityPlacementAvailable && !snap.busy;
   const canOpenEvent = hasPlayerActionCard(snap);
+  const activeCard = canOpenEvent ? snap.card : null;
+  const notificationSubscriptions = useMemo<NotificationSubscription[]>(() => {
+    if (snap.role === 'all' || snap.role === 'observer') return [{ scope: 'any' }];
+    if (snap.role === 'world') return [{ scope: 'world' }];
+    return snap.focusCountry
+      ? [{ scope: 'country', countryId: snap.focusCountry.id }]
+      : [];
+  }, [snap.role, snap.focusCountry?.id]);
+  const messageForViewer = notificationIsForSubscriber(snap.messageRecipient, notificationSubscriptions)
+    ? snap.message.trim()
+    : '';
   const canOpenChoices = canOpenEvent && snap.card?.choices?.length === 2;
   const showTools = 1 + Number(canBrush) + Number(canPlaceCity) + Number(canOpenChoices) >= 2;
   const webTopInset = Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top;
@@ -124,13 +139,23 @@ function GameScreen({ game }: { game: Game }) {
     setInspect({ info: game.inspect(x, y) });
   }, [game]);
 
-  const showHint = useCallback((message: string) => {
+  const showHint = useCallback((message: string, source: 'local' | 'notification' = 'local') => {
     setHint(message);
+    hintSource.current = source;
     if (hintTimer.current) clearTimeout(hintTimer.current);
     hintTimer.current = setTimeout(() => {
       setHint('');
+      hintSource.current = null;
       hintTimer.current = null;
     }, 2600);
+  }, []);
+
+  const clearNotificationHint = useCallback(() => {
+    if (hintSource.current !== 'notification') return;
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    hintTimer.current = null;
+    hintSource.current = null;
+    setHint('');
   }, []);
 
   const changeTool = useCallback((nextTool: MapTool) => {
@@ -146,6 +171,20 @@ function GameScreen({ game }: { game: Game }) {
       showHint('Коснитесь точки на карте, чтобы её изучить.');
     }
   }, [game, showHint, snap.card]);
+
+  const openCardHelp = useCallback(() => {
+    if (cardHelpTimer.current) clearTimeout(cardHelpTimer.current);
+    cardHelpTimer.current = null;
+    setCardHelpOpen(true);
+  }, []);
+
+  const closeCardHelp = useCallback(() => {
+    if (cardHelpTimer.current) clearTimeout(cardHelpTimer.current);
+    cardHelpTimer.current = setTimeout(() => {
+      setCardHelpOpen(false);
+      cardHelpTimer.current = null;
+    }, 180);
+  }, []);
 
   useEffect(() => {
     if (!canBrush && tool === 'brush') setTool('hand');
@@ -168,6 +207,12 @@ function GameScreen({ game }: { game: Game }) {
     if (!canOpenChoices) setCardOpen(false);
   }, [canOpenChoices]);
 
+  useEffect(() => {
+    if (cardHelpTimer.current) clearTimeout(cardHelpTimer.current);
+    cardHelpTimer.current = null;
+    setCardHelpOpen(false);
+  }, [activeCard?.type, activeCard?.title, activeCard?.detail]);
+
   const showZoomForAWhile = useCallback(() => {
     setZoomVisible(true);
     if (zoomTimer.current) clearTimeout(zoomTimer.current);
@@ -181,13 +226,16 @@ function GameScreen({ game }: { game: Game }) {
     if (zoomTimer.current) clearTimeout(zoomTimer.current);
     if (previewTimer.current) clearTimeout(previewTimer.current);
     if (hintTimer.current) clearTimeout(hintTimer.current);
+    if (cardHelpTimer.current) clearTimeout(cardHelpTimer.current);
   }, []);
 
   useEffect(() => {
-    const message = snap.message.trim();
-    if (!message || message === snap.card?.detail) return;
-    showHint(message);
-  }, [snap.message, snap.card?.detail, showHint]);
+    if (!messageForViewer || messageForViewer === snap.card?.detail) {
+      clearNotificationHint();
+      return;
+    }
+    showHint(messageForViewer, 'notification');
+  }, [messageForViewer, snap.card?.detail, showHint, clearNotificationHint]);
 
   useEffect(() => {
     const newest = snap.log[0];
@@ -231,6 +279,39 @@ function GameScreen({ game }: { game: Game }) {
       </View>
       <View style={styles.titleRow}>
         <Text style={styles.brand} numberOfLines={1}>Zero Strategy</Text>
+        {activeCard && (
+          <View style={styles.cardTitleAnchor}>
+            <Pressable
+              onPress={() => setCardHelpOpen((open) => Platform.OS === 'web' ? true : !open)}
+              onHoverIn={openCardHelp}
+              onHoverOut={closeCardHelp}
+              onFocus={openCardHelp}
+              onBlur={closeCardHelp}
+              style={styles.cardTitleButton}
+              accessibilityRole="button"
+              accessibilityLabel={`Активная карта: ${activeCard.title}`}
+              accessibilityHint="Наведите указатель или коснитесь, чтобы открыть инструкцию."
+              accessibilityState={{ expanded: cardHelpOpen }}
+              testID="button-active-card"
+            >
+              <Text style={styles.cardTitleText} numberOfLines={1}>{activeCard.title}</Text>
+              <Feather name={cardHelpOpen ? 'chevron-up' : 'info'} size={12} color={c.primaryForeground} />
+            </Pressable>
+            {cardHelpOpen && (
+              <Pressable
+                accessible={false}
+                onHoverIn={openCardHelp}
+                onHoverOut={closeCardHelp}
+                style={[styles.cardHelp, { width: Math.max(220, Math.min(360, width - 20)) }]}
+                testID="card-help-tooltip"
+              >
+                <ScrollView nestedScrollEnabled style={styles.cardHelpScroll}>
+                  <Text style={styles.cardHelpText}>{activeCard.detail}</Text>
+                </ScrollView>
+              </Pressable>
+            )}
+          </View>
+        )}
       </View>
       <View style={styles.topBar}>
         <Pressable onPress={goHome} style={styles.homeButton} hitSlop={8} testID="link-home" accessibilityLabel="Меню">
@@ -463,7 +544,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: c.background },
   inkTrack: { height: 2, backgroundColor: c.muted, overflow: 'hidden' },
   inkFill: { height: '100%', backgroundColor: c.primary },
-  titleRow: { minHeight: 26, justifyContent: 'center', paddingHorizontal: 10, backgroundColor: c.secondary },
+  titleRow: { minHeight: 30, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 10, backgroundColor: c.secondary, zIndex: 40 },
   topBar: { minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 5, backgroundColor: c.secondary, zIndex: 20 },
   homeButton: { height: 38, flexDirection: 'row', alignItems: 'center', gap: 1, paddingHorizontal: 3 },
   homeText: { fontFamily: fonts.sans, fontSize: 11, color: c.secondaryForeground },
@@ -471,6 +552,12 @@ const styles = StyleSheet.create({
   year: { fontFamily: fonts.display, fontSize: 18, color: c.secondaryForeground },
   yearCaption: { fontFamily: fonts.sansMedium, fontSize: 8, letterSpacing: 0.6, color: c.secondaryForeground, opacity: 0.65 },
   brand: { fontFamily: fonts.displayItalic, fontSize: 13, color: c.secondaryForeground },
+  cardTitleAnchor: { position: 'relative', maxWidth: '68%', alignItems: 'flex-end', zIndex: 41 },
+  cardTitleButton: { minHeight: 24, maxWidth: '100%', flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, borderRadius: 3, backgroundColor: c.primary },
+  cardTitleText: { flexShrink: 1, fontFamily: fonts.sansSemiBold, fontSize: 10, color: c.primaryForeground },
+  cardHelp: { position: 'absolute', top: 28, right: 0, maxHeight: 172, zIndex: 42, overflow: 'hidden', borderWidth: 1, borderColor: c.foreground, borderRadius: 5, backgroundColor: c.card, shadowColor: c.foreground, shadowOpacity: 0.25, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 10 },
+  cardHelpScroll: { maxHeight: 170 },
+  cardHelpText: { paddingHorizontal: 11, paddingVertical: 9, fontFamily: fonts.sans, fontSize: 12, lineHeight: 17, color: c.foreground },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   timer: { minWidth: 33, textAlign: 'center', fontFamily: fonts.mono, fontSize: 11, color: c.secondaryForeground },
   timerHot: { color: c.primaryForeground, backgroundColor: c.primary, borderRadius: 3, overflow: 'hidden' },

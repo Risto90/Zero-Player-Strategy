@@ -19,14 +19,11 @@ export const MODES: { id: MapMode; label: string }[] = [
   { id: 'temperature', label: 'Температура' },
   { id: 'drainage', label: 'Дренаж' },
   { id: 'density', label: 'Население' },
-  { id: 'colonization', label: 'Колонизация' },
 ];
 
 export function ModeTabs({ game, snap }: { game: Game; snap: GameSnapshot }) {
   const [open, setOpen] = useState(false);
   const selected = MODES.find((mode) => mode.id === snap.mapMode);
-  const modes = MODES.filter((mode) => mode.id !== 'colonization' || snap.card?.type === 'colonization');
-
   return (
     <View style={styles.anchor} testID="nav-modes">
       <Pressable
@@ -44,7 +41,7 @@ export function ModeTabs({ game, snap }: { game: Game; snap: GameSnapshot }) {
       {open && (
         <View style={styles.menu}>
           <ScrollView nestedScrollEnabled>
-            {modes.map((mode) => {
+            {MODES.map((mode) => {
               const active = snap.mapMode === mode.id;
               return (
                 <Pressable

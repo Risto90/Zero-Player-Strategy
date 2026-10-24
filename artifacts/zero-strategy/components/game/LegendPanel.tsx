@@ -177,17 +177,6 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: { g
         </View>
       </ScrollView>
     );
-  } else if (mapMode === 'colonization') {
-    title = 'Колонизация';
-    sub = snapCountryName(snap);
-    body = (
-      <ScrollView contentContainerStyle={{ padding: 12 }} nestedScrollEnabled>
-        <Text style={styles.valueNote}>Зелёным отмечены доступные земли для колонизации: побережье или область вокруг реки в бассейне страны. Каждая отдельная колония должна сохранять непрерывную связь с рекой или побережьем, но не обязана соединяться с основной территорией.</Text>
-        <Text style={styles.valueNote}>Чужие земли доступны только при плотности ниже средней по стране и если правящие династии не союзники.</Text>
-        <Text style={styles.valueNote}>Для каждой точки заново выбирается самый плотный участок-донор. Переселяется до 10% его населения; на чужой земле столько же местных удаляется. Целевая плотность не превышает плотность донора, а при частичном переселении тратится меньше чернил.</Text>
-        <Text style={styles.valueNote}>Совпадение культуры и религии даёт первый приоритет переселенцам и последний местным на удаление; совпадение только одного признака — следующий приоритет.</Text>
-      </ScrollView>
-    );
   } else if (mapMode === 'cities') {
     title = 'Города';
     sub = `${game.world.cities.length} · по рангам`;
@@ -440,10 +429,6 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
       }}
     />
   );
-}
-
-function snapCountryName(snap: GameSnapshot): string {
-  return snap.cardCountry ? `${snap.cardCountry.name} · доступные области` : 'Доступные области';
 }
 
 function CountryCompositionBlock({ game, countryId }: { game: Game; countryId: number }) {

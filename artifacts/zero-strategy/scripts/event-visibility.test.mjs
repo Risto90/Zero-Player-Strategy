@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Game, hasPlayerActionCard } from '../game/game.ts';
+import { notificationIsForSubscriber } from '../game/notifications.ts';
 import { mulberry32 } from '../game/random.ts';
 
 const root = process.cwd();
@@ -9,6 +10,10 @@ const screen = readFileSync(resolve(root, 'app/play.tsx'), 'utf8');
 const mapControls = readFileSync(resolve(root, 'components/game/MapControls.tsx'), 'utf8');
 const cardPanel = readFileSync(resolve(root, 'components/game/CardPanel.tsx'), 'utf8');
 const logPanel = readFileSync(resolve(root, 'components/game/LogPanel.tsx'), 'utf8');
+const modeTabs = readFileSync(resolve(root, 'components/game/ModeTabs.tsx'), 'utf8');
+const renderer = readFileSync(resolve(root, 'game/render.ts'), 'utf8');
+const notifications = readFileSync(resolve(root, 'game/notifications.ts'), 'utf8');
+const gameSource = readFileSync(resolve(root, 'game/game.ts'), 'utf8');
 
 function makePauseGate() {
   let entered;
@@ -43,8 +48,45 @@ assert.equal(hasPlayerActionCard({ role: 'world', card: null, progress: null, me
 assert.equal(hasPlayerActionCard({ ...activePlayerCard, role: 'observer' }), false,
   'observer mode never shows the player choice panel');
 
+const countrySeven = { scope: 'country', countryId: 7 };
+assert.equal(notificationIsForSubscriber(countrySeven, [countrySeven]), true,
+  'a country-slot notification reaches a viewer subscribed to that country');
+assert.equal(notificationIsForSubscriber(countrySeven, [{ scope: 'country', countryId: 8 }]), false,
+  'a country-slot notification does not reach a viewer subscribed to another country');
+assert.equal(notificationIsForSubscriber({ scope: 'world' }, [{ scope: 'country', countryId: 7 }]), false,
+  'world-slot notifications do not leak into a country-only view');
+assert.equal(notificationIsForSubscriber({ scope: 'game' }, [{ scope: 'country', countryId: 7 }]), true,
+  'game-wide notifications reach every subscribed viewer');
+assert.equal(notificationIsForSubscriber({ scope: 'world' }, [{ scope: 'any' }]), true,
+  'a viewer subscribed to all recipients receives each slot notification');
+assert.doesNotMatch(notifications, /AI|ИИ|artificial intelligence|автоматическ/u,
+  'notification delivery contains no producer or automation-specific rules');
+assert.match(gameSource, /messageRecipient: NotificationRecipient/,
+  'the game snapshot carries an explicit notification recipient');
+assert.match(gameSource, /this\.startCard\(card, undefined, true, slot\)/,
+  'player-card notifications inherit the slot that drew the card');
+assert.match(gameSource, /this\.resolveAutomatically\(card, \{ scope: 'country', countryId: id \}\)/,
+  'country-slot notifications retain their recipient when the card is processed');
+
 assert.match(screen, /const canOpenChoices = canOpenEvent && snap\.card\?\.choices\?\.length === 2;/,
   'the choice tool appears only for an active card with exactly two choices');
+assert.match(screen, /const activeCard = canOpenEvent \? snap\.card : null;/,
+  'the header only receives a card while the player can act');
+assert.match(screen, /activeCard && \([\s\S]*?testID="button-active-card"[\s\S]*?\{activeCard\.title\}/,
+  'the active player card is visible in the game-title row');
+assert.match(screen, /onHoverIn=\{openCardHelp\}[\s\S]*?onHoverOut=\{closeCardHelp\}/,
+  'hovering the card title opens and closes its help');
+assert.match(screen, /onHoverIn=\{openCardHelp\}[\s\S]*?onHoverOut=\{closeCardHelp\}[\s\S]*?testID="card-help-tooltip"/,
+  'moving the pointer into the instruction block keeps the help open');
+assert.match(screen, /cardHelpTimer\.current = setTimeout\(\(\) => \{\s*setCardHelpOpen\(false\)[\s\S]*?180\);/,
+  'card help closes after a short delay so long instructions stay usable');
+assert.match(screen, /testID="card-help-tooltip"[\s\S]*?\{activeCard\.detail\}/,
+  'the card help uses the existing card instructions');
+assert.match(modeTabs, /export const MODES:[\s\S]*?\{ id: 'density', label: 'Население' \},[\s\S]*?\];/);
+assert.doesNotMatch(modeTabs, /colonization|Колонизация/,
+  'the standalone colonization map mode is absent from the mode picker');
+assert.doesNotMatch(renderer, /colonizationMask|mode === 9[\s\S]{0,240}137, 171, 118/,
+  'the renderer has no dedicated colonization overlay or fill');
 assert.match(screen, /showChoice=\{canOpenChoices\}[\s\S]*?onToggleChoice=/,
   'the choice toggle is passed into the shared map tool panel');
 assert.match(mapControls, /onPress=\{onToggleChoice\}[\s\S]*?testID="button-tool-choice"/,
@@ -63,6 +105,10 @@ assert.doesNotMatch(cardPanel, /text-ink|fmt\(card\.ink\)/,
   'the card panel no longer displays numeric ink counts');
 assert.match(screen, /testID="map-hint-toast"[\s\S]*?hintToastText/,
   'map instructions and game messages use the transient hint toast');
+assert.match(screen, /notificationIsForSubscriber\(snap\.messageRecipient, notificationSubscriptions\)/,
+  'the screen displays game messages only when the viewer is subscribed to their recipient');
+assert.match(screen, /showHint\(messageForViewer, 'notification'\)/,
+  'game messages use the recipient-filtered notification path');
 assert.match(screen, /setTimeout\(\(\) => \{\s*setHint\(''\)/,
   'hint messages disappear automatically');
 assert.match(screen, /hintToastText: \{[^}]*backgroundColor: 'rgba\(0,0,0,0\.72\)'[^}]*color: '#fff'/,
@@ -103,13 +149,47 @@ let game;
 try {
   game = await Game.createCooperative('random', 'all', 105_240);
 
-  // Automatic AI cards resolve without replacing the player's selected map view.
+  // Card processing keeps the selected map view and carries the event recipient.
   const firstCard = game.getSnapshot().card;
   assert.ok(firstCard, 'the test game starts with a player card');
   game.setMapMode('cultures');
-  game.resolveAutomatically(firstCard);
+  game.resolveAutomatically(firstCard, { scope: 'world' });
   assert.equal(game.getSnapshot().mapMode, 'cultures',
-    'automatic card resolution preserves the selected map mode');
+    'card processing preserves the selected map mode');
+  assert.deepEqual(game.getSnapshot().messageRecipient, { scope: 'world' },
+    'card processing preserves its explicit recipient in the game snapshot');
+
+  // Starting a rain card selects humidity and queues a real raster repaint.
+  game.setMapMode('political');
+  game.renderer.flush();
+  const previousPixels = game.renderer.pixels.slice();
+  game.startCard({ ...firstCard, type: 'rain' });
+  assert.equal(game.mapMode, 'humidity',
+    'starting a rain card selects the humidity map mode');
+  assert.equal(game.renderer.mode, 'humidity',
+    'the map renderer receives the humidity view');
+  assert.equal(game.renderer.pending, true,
+    'changing to the card view marks its map tiles dirty immediately');
+  game.renderer.flush();
+  assert.ok(game.world.landIndex.some((pixel) => previousPixels[pixel] !== game.renderer.pixels[pixel]),
+    'flushing the new view changes rendered map pixels');
+
+  // Other player-card types keep the existing view mappings; colonization uses political colors.
+  for (const [type, mode] of [
+    ['drought', 'humidity'],
+    ['desertification', 'drainage'],
+    ['warmCurrent', 'temperature'],
+    ['faith', 'religions'],
+    ['culture', 'cultures'],
+    ['colonization', 'political'],
+  ]) {
+    const previousMode = game.renderer.mode;
+    game.startCard({ ...firstCard, type });
+    assert.equal(game.mapMode, mode, `starting ${type} selects ${mode}`);
+    assert.equal(game.renderer.mode, mode, `the renderer switches to ${mode} for ${type}`);
+    assert.equal(game.renderer.pending, previousMode !== mode, `${type} redraws when its selected mode changes`);
+    game.renderer.flush();
+  }
 
   // The regular player-card path continues to select a mode based on card type.
   game.startCard({ ...firstCard, type: 'drought' });

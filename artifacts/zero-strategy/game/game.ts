@@ -18,6 +18,7 @@ import { appoint, candidateAllowed, closeRulerTerms, ensureOffices, refreshHeirs
 import { randomItem } from './random';
 import { demography } from './demography';
 import { humanClimateSuitabilityAt } from './human';
+import type { NotificationRecipient } from './notifications';
 import {
   addCityAndConcentrate,
   applyCityWaning,
@@ -134,6 +135,7 @@ export interface GameSnapshot {
   /** Structured linked records for object profile pages. */
   chronicle: ChronicleEntry[];
   message: string;
+  messageRecipient: NotificationRecipient;
   legend: Legend;
 }
 
@@ -224,6 +226,7 @@ export class Game {
   static pause: () => Promise<void> = nextFrame;
   private log: ChronicleEntry[] = [];
   private message = '';
+  private messageRecipient: NotificationRecipient = { scope: 'game' };
   private lastPoint: { x: number; y: number } | null = null;
   private legendCache: { version: number; legend: Legend } | null = null;
   private snapshot: GameSnapshot | null = null;
@@ -276,16 +279,19 @@ export class Game {
     game.addLog('Мир создан.');
     const first = firstCreateCard(game.world, game.year);
     if (!first) {
-      game.message = 'На карте нет свободной суши.';
+      game.setMessage('На карте нет свободной суши.', { scope: 'game' });
       return game;
     }
     if (role === 'observer') {
       game.resolveAutomatically(first);
       game.secondsLeft = OBSERVER_SECONDS;
-      game.message = game.log[0] ? `${game.log[0].year}: ${game.log[0].text}` : '';
+      game.setMessage(game.log[0] ? `${game.log[0].year}: ${game.log[0].text}` : '', { scope: 'observer' });
     } else {
       if (role === 'country') game.focusCountryId = first.newCountryId;
-      game.startCard(first);
+      const recipient: NotificationRecipient = role === 'country' && first.newCountryId !== null
+        ? { scope: 'country', countryId: first.newCountryId }
+        : { scope: 'world' };
+      game.startCard(first, undefined, true, recipient);
     }
     game.scheduleSave();
     return game;
@@ -358,9 +364,10 @@ export class Game {
       }
       game.startCard(card, saved.painterState);
     }
-    game.mapMode = saved.mapMode;
+    const savedMapMode = saved.mapMode as MapMode | 'colonization';
+    game.mapMode = savedMapMode === 'colonization' ? 'political' : savedMapMode;
     game.paused = saved.paused ?? false;
-    game.renderer.setView(game.mapMode, null, game.mapMode === 'colonization' ? game.painter?.colonizationMask ?? null : null);
+    game.renderer.setView(game.mapMode, null);
     return game;
   }
 
@@ -398,6 +405,20 @@ export class Game {
     this.snapshot = null;
     this.listeners.forEach((listener) => listener());
     if (mapChanged) this.mapListeners.forEach((listener) => listener());
+  }
+
+  private setMessage(message: string, recipient: NotificationRecipient = this.messageRecipient): void {
+    this.message = message;
+    this.messageRecipient = recipient;
+  }
+
+  private defaultNotificationRecipient(): NotificationRecipient {
+    if (this.role === 'world') return { scope: 'world' };
+    if (this.role === 'country' && this.focusCountryId !== null) {
+      return { scope: 'country', countryId: this.focusCountryId };
+    }
+    if (this.role === 'observer') return { scope: 'observer' };
+    return { scope: 'all' };
   }
 
   /** The map view calls this when every changed tile is on screen. */
@@ -473,7 +494,7 @@ export class Game {
   private applyChoice(index: number): void {
     if (!this.card?.choices || index < 0 || index >= this.card.choices.length) return;
     this.card.selectedChoice = index;
-    this.message = this.card.choices[index].detail;
+    this.setMessage(this.card.choices[index].detail);
     this.emit();
     this.scheduleSave();
   }
@@ -492,13 +513,13 @@ export class Game {
       ? this.world.countries[card.targetCountryId] : null;
     if (targetCountry?.type === 'nomadic') {
       if (!availableNomadCitySites(this.world, targetCountry).includes(pixel)) {
-        this.message = 'Кочевье может основать город только на свободной суше в пределах своего ареала.';
+        this.setMessage('Кочевье может основать город только на свободной суше в пределах своего ареала.');
         this.emit();
         return false;
       }
       const country = settleNomadAsCountry(this.world, targetCountry, pixel, this.year);
       if (!country) {
-        this.message = 'Не удалось основать город и расселить кочевье.';
+        this.setMessage('Не удалось основать город и расселить кочевье.');
         this.emit();
         return false;
       }
@@ -506,7 +527,7 @@ export class Game {
       refreshHeirs(this.world, this.year);
       card.newCountryId = country.id;
       card.cityPlaced = true;
-      this.message = `${country.name} основано; кочевая страна стала оседлой.`;
+      this.setMessage(`${country.name} основано; кочевая страна стала оседлой.`);
       if (!this.resolvingAutomatically) {
         this.mapMode = 'political';
         this.layer = null;
@@ -520,23 +541,23 @@ export class Game {
     const countryId = card.type === 'buildCity' ? card.targetCountryId : card.newCountryId;
     const country = countryId === null ? null : this.world.countries[countryId];
     if (!country || this.world.owner[pixel] !== country.id + 1 || !this.world.land[pixel]) {
-      this.message = 'Город можно разместить только на незанятой точке суши своей страны.';
+      this.setMessage('Город можно разместить только на незанятой точке суши своей страны.');
       this.emit();
       return false;
     }
     if (this.world.cityAt(pixel)) {
-      this.message = 'На этой точке уже есть город.';
+      this.setMessage('На этой точке уже есть город.');
       this.emit();
       return false;
     }
     const city = addCityAndConcentrate(this.world, country.id, pixel, card.type === 'create');
     if (!city) {
-      this.message = 'Не удалось создать город в этой точке.';
+      this.setMessage('Не удалось создать город в этой точке.');
       this.emit();
       return false;
     }
     card.cityPlaced = true;
-    this.message = `${cityRankName(city.rank)} создан. Население собрано из зоны влияния.`;
+    this.setMessage(`${cityRankName(city.rank)} создан. Население собрано из зоны влияния.`);
     this.markCityArea(city);
     this.emit();
     this.scheduleSave();
@@ -695,7 +716,7 @@ export class Game {
       const countryId = this.card.targetCountryId;
       if (px < 0 || py < 0 || px >= MAP_WIDTH || py >= MAP_HEIGHT ||
         countryId === null || this.world.owner[py * MAP_WIDTH + px] !== countryId + 1) {
-        this.message = 'Начните мазок на суше своей страны.';
+        this.setMessage('Начните мазок на суше своей страны.');
         this.emit();
         return;
       }
@@ -744,7 +765,7 @@ export class Game {
     }
     this.painter.endStroke();
     this.lastPoint = null;
-    this.message = this.painter.message || this.message;
+    if (this.painter.message) this.setMessage(this.painter.message);
     this.emit();
     this.scheduleSave();
   }
@@ -769,7 +790,7 @@ export class Game {
     for (const rect of painter.extraDirty) this.renderer.mark(rect);
     painter.extraDirty.length = 0;
     painter.clearExtraDirtyTiles();
-    if (painter.message) this.message = painter.message;
+    if (painter.message) this.setMessage(painter.message);
     this.emit(true);
   }
 
@@ -781,7 +802,7 @@ export class Game {
     if (this.painter?.card.type === 'nomadExpand') {
       this.painter.setNomadMode(mode === 'nomads' ? 'range' : mode === 'density' ? 'density' : 'inactive');
     }
-    this.renderer.setView(mode, null, mode === 'colonization' ? this.painter?.colonizationMask ?? null : null);
+    this.renderer.setView(mode, null);
     this.emit(true);
   }
 
@@ -789,7 +810,7 @@ export class Game {
   showLayer(layer: EntityLayer | null): void {
     if (layer) this.mapMode = layer.kind === 'culture' ? 'cultures' : 'religions';
     this.layer = layer;
-    this.renderer.setView(this.mapMode, layer, this.mapMode === 'colonization' ? this.painter?.colonizationMask ?? null : null);
+    this.renderer.setView(this.mapMode, layer);
     this.emit(true);
   }
 
@@ -894,7 +915,7 @@ export class Game {
     }
     const completionBlocker = this.cardCompletionBlocker();
     if (completionBlocker) {
-      this.message = completionBlocker;
+      this.setMessage(completionBlocker);
       this.emit();
       return;
     }
@@ -935,7 +956,7 @@ export class Game {
       if (this.role === 'country' || this.role === 'observer') {
         jobs.push(() => {
           const card = drawWorldCard(this.world, this.year);
-          if (card) this.resolveAutomatically(card);
+          if (card) this.resolveAutomatically(card, { scope: 'world' });
         });
       }
       if (this.role !== 'all') {
@@ -946,7 +967,7 @@ export class Game {
             const country = this.world.countries[id];
             if (!country || !isActiveCountry(country)) return;
             const card = drawCountryCard(this.world, country, this.year);
-            if (card) this.resolveAutomatically(card);
+            if (card) this.resolveAutomatically(card, { scope: 'country', countryId: id });
           });
         }
       }
@@ -1024,38 +1045,43 @@ export class Game {
         if (country && isActiveCountry(country)) card = drawCountryCard(this.world, country, this.year);
       }
       if (card) {
-        this.startCard(card);
+        this.startCard(card, undefined, true, slot);
         return true;
       }
     }
     this.card = null;
     this.painter = null;
     this.secondsLeft = this.role === 'observer' ? OBSERVER_SECONDS : TURN_SECONDS;
-    this.message = this.role === 'observer'
+    this.setMessage(this.role === 'observer'
       ? (this.log[0] ? `${this.log[0].year}: ${this.log[0].text}` : 'Мир развивается сам.')
-      : 'В этом году нет применимых карт.';
+      : 'В этом году нет применимых карт.', this.defaultNotificationRecipient());
     return false;
   }
 
-  private startCard(card: Card, painterState?: CardPainterState | null, selectMapMode = true): void {
+  private startCard(
+    card: Card,
+    painterState?: CardPainterState | null,
+    selectMapMode = true,
+    recipient: NotificationRecipient = this.defaultNotificationRecipient(),
+  ): void {
     this.card = card;
     if (card.developmentOnly) this.brushMode = 'repeat';
     this.painter = new CardPainter(this.world, card, this.brushMode, painterState);
     this.secondsLeft = TURN_SECONDS;
     if (!this.busy || !this.pauseChangedDuringBusy) this.paused = false;
-    this.message = card.detail;
+    this.setMessage(card.detail, recipient);
     const mode: MapMode =
       card.type === 'drought' || card.type === 'rain' ? 'humidity'
         : card.type === 'desertification' || card.type === 'swamping' ? 'drainage'
           : ['warmCurrent', 'coldCurrent', 'warmWind', 'coldWind'].includes(card.type) ? 'temperature'
         : card.type === 'faith' ? 'religions' : card.type === 'culture' ? 'cultures'
-          : card.type === 'colonization' ? 'colonization'
+          : card.type === 'colonization' ? 'political'
           : card.type === 'buildCity' && card.targetCountryId !== null && this.world.countries[card.targetCountryId]?.type === 'nomadic' ? 'nomads'
           : card.type === 'nomadExpand' ? (card.nomadDensityOnly ? 'density' : 'nomads') : 'political';
     if (selectMapMode) {
       this.mapMode = mode;
       this.layer = null;
-      this.renderer.setView(mode, null, mode === 'colonization' ? this.painter.colonizationMask : null);
+      this.renderer.setView(mode, null);
     }
     if (card.type === 'nomadExpand') this.painter.setNomadMode(card.nomadDensityOnly ? 'density' : 'range');
   }
@@ -1071,7 +1097,10 @@ export class Game {
     const source = this.world.countries[batch.sourceCountryId];
     const destination = this.world.countries[batch.destinationIds[index]];
     if (!source || !destination) {
-      this.message = 'Не удалось продолжить разделение наследства: страна больше не найдена.';
+      this.setMessage('Не удалось продолжить разделение наследства: страна больше не найдена.', {
+        scope: 'country',
+        countryId: batch.sourceCountryId,
+      });
       this.emit();
       return;
     }
@@ -1113,25 +1142,32 @@ export class Game {
       splitBaselinePixels: batch.baselinePixels[index] ?? 0,
       hint,
     };
-    this.startCard(card);
+    this.startCard(card, undefined, true, { scope: 'country', countryId: source.id });
   }
 
-  private resolveAutomatically(card: Card): void {
+  private resolveAutomatically(card: Card, recipient: NotificationRecipient = this.defaultNotificationRecipient()): void {
     const previousResolutionState = this.resolvingAutomatically;
     this.resolvingAutomatically = true;
     try {
-      this.resolveAutomaticCard(card);
+      this.resolveAutomaticCard(card, false, true, recipient);
     } finally {
       this.resolvingAutomatically = previousResolutionState;
     }
   }
 
-  private resolveAutomaticCard(card: Card, reuseActiveCard = false, complete = true): void {
+  private resolveAutomaticCard(
+    card: Card,
+    reuseActiveCard = false,
+    complete = true,
+    recipient: NotificationRecipient = this.messageRecipient,
+  ): void {
+    const activeRecipient = reuseActiveCard ? this.messageRecipient : recipient;
+    this.messageRecipient = activeRecipient;
     if (!reuseActiveCard) this.card = card;
     if (!reuseActiveCard && card.choices && card.choices.length > 1) {
       this.dispatchAction({ type: 'selectChoice', index: this.automaticChoiceIndex(card) });
     }
-    if (!reuseActiveCard) this.startCard(card, undefined, false);
+    if (!reuseActiveCard) this.startCard(card, undefined, false, activeRecipient);
     const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split' || card.type === 'colonization' || card.type === 'nomadExpand';
     const painter = this.painter;
     if (!painter) return;
@@ -1181,7 +1217,7 @@ export class Game {
     if (!this.painter) return;
     const completionBlocker = this.cardCompletionBlocker();
     if (completionBlocker) {
-      this.message = completionBlocker;
+      this.setMessage(completionBlocker);
       this.emit();
       return;
     }
@@ -1189,11 +1225,6 @@ export class Game {
     this.finish(this.painter);
     this.painter = null;
     this.card = null;
-    if (!this.resolvingAutomatically && this.mapMode === 'colonization') {
-      this.mapMode = 'political';
-      this.layer = null;
-      this.renderer.setView('political', null);
-    }
   }
 
   /** Writes the outcome to the log and drops entities the card created but never used. */
@@ -1986,6 +2017,7 @@ export class Game {
       log: this.log.slice(0, LOG_LIMIT).map((entry) => entry.year ? `${entry.year}: ${entry.text}` : entry.text),
       chronicle: this.log,
       message: this.message,
+      messageRecipient: this.messageRecipient,
       legend: this.lastPoint ? (this.legendCache?.legend ?? this.computeLegend()) : this.legend(),
     };
   }
@@ -2176,7 +2208,7 @@ export class Game {
         if (this.ownsSave) await writeSaveBytes(bytes);
       });
     } catch (error) {
-      this.message = `Не удалось сохранить игру: ${(error as Error).message}`;
+      this.setMessage(`Не удалось сохранить игру: ${(error as Error).message}`, this.defaultNotificationRecipient());
       this.emit();
     }
   }

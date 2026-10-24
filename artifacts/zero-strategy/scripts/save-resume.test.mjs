@@ -123,6 +123,19 @@ try {
   tenureGame.discard();
   tenureResumed.discard();
 
+  // Saves created before the colonization map mode was removed load on the
+  // ordinary political view while preserving the active card mechanics.
+  await clearSaveBytes();
+  const legacyModeGame = new Game(makeFixture().world, 'all');
+  legacyModeGame.mapMode = 'colonization';
+  await legacyModeGame.saveNow();
+  const legacyModeResumed = await Game.load();
+  assert.ok(legacyModeResumed, 'a save containing the retired view can be loaded');
+  assert.equal(legacyModeResumed.mapMode, 'political', 'the retired view migrates to political colors');
+  assert.equal(legacyModeResumed.renderer.mode, 'political', 'the loaded renderer uses the migrated view');
+  legacyModeGame.discard();
+  legacyModeResumed.discard();
+
   // An explicit player pause survives a save and can be cleared through the same toggle.
   await clearSaveBytes();
   const pausedGame = new Game(makeFixture().world, 'all');

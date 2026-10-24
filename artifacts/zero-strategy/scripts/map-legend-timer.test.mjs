@@ -42,7 +42,7 @@ assert.equal(MAP_LEGEND_DURATION_MS, 5000, 'the legend must stay visible for fiv
 for (const mode of ['political', 'cities', 'cultures', 'religions', 'nomads']) {
   assert.equal(hasMapObjectList(mode), true, `${mode} must expose its object list`);
 }
-for (const mode of ['biomes', 'humidity', 'temperature', 'drainage', 'density', 'rivers', 'colonization']) {
+for (const mode of ['biomes', 'humidity', 'temperature', 'drainage', 'density', 'rivers']) {
   assert.equal(hasMapObjectList(mode), false, `${mode} must not expose an object list`);
 }
 
