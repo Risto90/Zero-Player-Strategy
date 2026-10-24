@@ -132,6 +132,7 @@ function assertConnected(world, countryId) {
     { column: 3800, rank: 4 },
   ]);
   const card = drawSplitCard(world, country, 1000);
+  assert.equal(card.hint, cities[2].pixel, 'the split card hints at the largest transferable city');
   const game = new Game(world, 'observer');
   game.resolveAutomatically(card);
   const destination = world.countries[card.newCountryId];

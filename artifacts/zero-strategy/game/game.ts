@@ -3,7 +3,7 @@ import type { PaintActions } from './autoPaint';
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
   type BrushMode, type BrushOption, type Card, type CardChoice, type CardPainterState, type CharacterEvent } from './brush';
 import { drawCountryCard, drawWorldCard, firstCreateCard } from './cards';
-import { BIOMES, BRUSH_SIZES, MAX_COUNTRIES, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
+import { BIOMES, BRUSH_SIZES, MAX_COUNTRIES, RANKS, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
 import { forEachNeighbour, type MapKind } from './geography';
 import { copyWorld, deserializeWorld, serializeSteps, type SavedWorld } from './persistence';
 import { decodeSave, encodeSave } from './saveFile';
@@ -541,6 +541,109 @@ export class Game {
     return true;
   }
 
+  private chooseAutomaticCitySite(country: Country): number {
+    if (country.type === 'nomadic') {
+      const sites = availableNomadCitySites(this.world, country);
+      if (!sites.length) return -1;
+      const stride = sites.length <= 4096 ? 1 : Math.max(1, Math.ceil(sites.length / 256));
+      const nomadPopulation = new Map((country.cells ?? []).map((cell) => [cell.pixel, cell.population]));
+      let best = sites[0];
+      let bestScore = -1;
+      for (let index = 0; index < sites.length; index += stride) {
+        const pixel = sites[index];
+        const score = this.expectedCityPopulation(pixel, true, nomadPopulation, true);
+        if (score > bestScore || (score === bestScore && pixel < best)) {
+          best = pixel;
+          bestScore = score;
+        }
+      }
+      return best;
+    }
+
+    const nomadPopulation = new Map<number, number>();
+    for (const nomad of this.world.countries) {
+      if (nomad.type !== 'nomadic') continue;
+      for (const cell of nomad.cells ?? []) {
+        nomadPopulation.set(cell.pixel, (nomadPopulation.get(cell.pixel) ?? 0) + cell.population);
+      }
+    }
+    const [x0, y0, x1, y1] = country.box;
+    const area = Math.max(1, (x1 - x0 + 1) * (y1 - y0 + 1));
+    const step = Math.max(1, Math.ceil(Math.sqrt(area / 128)));
+    const candidates = new Set<number>();
+    const tag = country.id + 1;
+    if (country.pixels <= 4096 && area <= 65_536) {
+      this.world.forEachCountryPixel(country, (pixel) => {
+        if (!this.world.cityAt(pixel)) candidates.add(pixel);
+      });
+    } else {
+      for (let y = y0; y <= y1; y += step) {
+        for (let x = x0; x <= x1; x += step) {
+          const pixel = y * MAP_WIDTH + x;
+          if (this.world.owner[pixel] === tag && !this.world.cityAt(pixel)) candidates.add(pixel);
+        }
+      }
+    }
+    if (candidates.size < 32) {
+      if (area <= 65_536) {
+        this.world.forEachCountryPixel(country, (pixel) => {
+          if (!this.world.cityAt(pixel)) candidates.add(pixel);
+        });
+      } else {
+        const land = this.world.landIndex;
+        const stride = Math.max(1, Math.ceil(land.length / 256));
+        for (let index = 0; index < land.length; index += stride) {
+          const pixel = land[index];
+          if (this.world.owner[pixel] === tag && !this.world.cityAt(pixel)) candidates.add(pixel);
+        }
+      }
+    }
+    let best = -1;
+    let bestScore = -1;
+    const isCapital = !this.world.cities.some((city) => city.countryId === country.id);
+    for (const pixel of candidates) {
+      const score = this.expectedCityPopulation(pixel, false, nomadPopulation, isCapital);
+      if (score > bestScore || (score === bestScore && pixel < best)) {
+        best = pixel;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  /** Predicts the population that the shared city-concentration rule can gather. */
+  private expectedCityPopulation(
+    pixel: number,
+    nomadic: boolean,
+    nomadPopulation = new Map<number, number>(),
+    capital = nomadic,
+  ): number {
+    const coastal = this.world.isCoastal(pixel);
+    const river = this.world.rivers[pixel] > 0;
+    const port = coastal && river ? 3 : coastal || river ? 2 : 1;
+    const radius = Math.sqrt(RANKS[0].ink * port * (capital ? 2 : 1) / Math.PI);
+    const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
+    const x0 = Math.max(0, Math.floor(x - radius)), x1 = Math.min(MAP_WIDTH - 1, Math.ceil(x + radius));
+    const y0 = Math.max(0, Math.floor(y - radius)), y1 = Math.min(MAP_HEIGHT - 1, Math.ceil(y + radius));
+    const r2 = radius * radius;
+    let gathered = nomadic ? nomadPopulation.get(pixel) ?? 0 : this.world.density[pixel];
+    for (let yy = y0; yy <= y1; yy += 1) {
+      for (let xx = x0; xx <= x1; xx += 1) {
+        if ((xx - x) ** 2 + (yy - y) ** 2 > r2 || (xx === x && yy === y)) continue;
+        const source = yy * MAP_WIDTH + xx;
+        if (!this.world.land[source]) continue;
+        if (nomadic) {
+          if (this.world.owner[source] === 0 && !this.world.cityAt(source)) {
+            gathered += nomadPopulation.get(source) ?? 0;
+          }
+        } else {
+          gathered += this.world.density[source] * 0.1 + (nomadPopulation.get(source) ?? 0) * 0.1;
+        }
+      }
+    }
+    return gathered;
+  }
+
   private canPlaceCity(): boolean {
     const card = this.card;
     if (!card || !['create', 'buildCity'].includes(card.type)) return false;
@@ -1014,7 +1117,7 @@ export class Game {
   private resolveAutomaticCard(card: Card, reuseActiveCard = false, complete = true): void {
     if (!reuseActiveCard) this.card = card;
     if (!reuseActiveCard && card.choices && card.choices.length > 1) {
-      this.dispatchAction({ type: 'selectChoice', index: Math.floor(Math.random() * card.choices.length) });
+      this.dispatchAction({ type: 'selectChoice', index: this.automaticChoiceIndex(card) });
     }
     if (!reuseActiveCard) this.startCard(card, undefined, false);
     const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split' || card.type === 'colonization' || card.type === 'nomadExpand';
@@ -1023,7 +1126,7 @@ export class Game {
     if (!reuseActiveCard) {
       this.dispatchAction({
         type: 'setPainterMode',
-        mode: card.developmentOnly || (!territorial && Math.random() < 0.3) ? 'repeat' : 'respect',
+        mode: 'respect',
       });
     }
     const actions: PaintActions = {
@@ -1037,26 +1140,25 @@ export class Game {
     const targetCountry = card.type === 'buildCity' && card.targetCountryId !== null
       ? this.world.countries[card.targetCountryId] : null;
     if (targetCountry?.type === 'nomadic') {
-      const pixel = availableNomadCitySites(this.world, targetCountry)[0];
-      if (pixel !== undefined) this.dispatchAction({ type: 'placeCity', x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH) });
+      const pixel = this.chooseAutomaticCitySite(targetCountry);
+      if (pixel >= 0) this.dispatchAction({ type: 'placeCity', x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH) });
     } else if (card.type === 'create' || card.type === 'buildCity') {
       const countryId = card.type === 'create' ? card.newCountryId : card.targetCountryId;
       const country = countryId === null ? null : this.world.countries[countryId];
       const hasCity = country ? this.world.cities.some((city) => city.countryId === country.id) : false;
       const shouldPlace = card.type === 'create' ? !hasCity : !card.cityPlaced;
       if (country && country.type === 'settled' && country.pixels > 0 && shouldPlace) {
-        let best = -1;
-        let bestDensity = -1;
-        this.world.forEachCountryPixel(country, (p) => {
-          if (this.world.cityAt(p) || this.world.density[p] <= bestDensity) return;
-          best = p; bestDensity = this.world.density[p];
-        });
+        const best = this.chooseAutomaticCitySite(country);
         if (best >= 0) {
           this.dispatchAction({ type: 'placeCity', x: best % MAP_WIDTH, y: Math.floor(best / MAP_WIDTH) });
         }
       }
     }
     if (complete) this.dispatchAction({ type: 'completeCard' });
+  }
+
+  private automaticChoiceIndex(card: Card): number {
+    return card.choices?.length ? Math.floor(Math.random() * card.choices.length) : 0;
   }
 
   private completeCard(): void {
