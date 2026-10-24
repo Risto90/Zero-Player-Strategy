@@ -3,7 +3,7 @@ import { useMemo } from 'react';
 import { Text, View } from 'react-native';
 import { useGameSnapshot } from '@/game/useGame';
 import { currentGame } from '@/game/session';
-import { filterChronicle, chronicleReference } from '@/game/chronicle';
+import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt } from '@/game/format';
 import { cityComposition } from '@/game/settlements';
 import { cityProfileRoute, countryProfileRoute, cultureProfileRoute } from '@/game/profileRoutes';
@@ -15,6 +15,10 @@ export default function CulturePage() {
   const id = Number(rawId);
   if (!game || !Number.isInteger(id) || id < 0) return <MissingProfile title="Этнос не найден" />;
   const snapshot = useGameSnapshot(game);
+  const historyObjectOptions = useMemo(
+    () => chronicleObjectOptions(game.world),
+    [game, game.world.version],
+  );
   const culture = game.world.cultures[id];
   if (!culture) return <MissingProfile title="Этнос не найден" />;
   const { countries, cities, branches } = useMemo(() => ({
@@ -63,7 +67,11 @@ export default function CulturePage() {
   );
   return <ProfileLayout eyebrow="КАРТОЧКА ЭТНОСА" title={culture.name}
     subtitle="Этнос" details={details}
-    chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('culture', culture.id)])} />;
+    chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('culture', culture.id)])}
+    archive={snapshot.chronicle}
+    initialReference={chronicleReference('culture', culture.id)}
+    objectOptions={historyObjectOptions}
+  />;
 }
 
 const styles = {

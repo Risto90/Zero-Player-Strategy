@@ -14,6 +14,7 @@ import { Loading } from '@/components/Loading';
 import { MapView } from '@/components/map/MapView';
 import type { MapTool, MapViewHandle } from '@/components/map/types';
 import colors, { fonts } from '@/constants/colors';
+import { chronicleObjectOptions } from '@/game/chronicle';
 import { MAP_WIDTH } from '@/game/config';
 import { hasPlayerActionCard, type Game, type PixelInfo } from '@/game/game';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
@@ -87,6 +88,10 @@ function GameScreen({ game }: { game: Game }) {
   const mapHeight = Math.max(160, height - webTopInset - webBottomInset - 90);
   const overlayHeight = Math.max(140, Math.min(620, mapHeight - 56));
   const logHeight = Math.max(140, Math.min(420, mapHeight * 0.47));
+  const historyObjectOptions = useMemo(
+    () => chronicleObjectOptions(game.world),
+    [game, game.world.version],
+  );
 
   const onCityPress = useCallback((pixel: number) => {
     const x = pixel % MAP_WIDTH;
@@ -141,7 +146,9 @@ function GameScreen({ game }: { game: Game }) {
     }, 3000);
   }, [snap.log]);
 
-  const log = useMemo(() => <LogPanel log={snap.chronicle} transparent />, [snap.chronicle]);
+  const log = useMemo(() => (
+    <LogPanel log={snap.chronicle} transparent objectOptions={historyObjectOptions} />
+  ), [historyObjectOptions, snap.chronicle]);
   const canOpenEvent = hasPlayerActionCard(snap);
   const nextLabel = snap.queuedCards > 0
     ? 'Готово'

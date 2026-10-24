@@ -3,7 +3,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
-import { filterChronicle, chronicleReference } from '@/game/chronicle';
+import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt, pct } from '@/game/format';
 import { ageStage, GOVERNMENTS, MODIFIERS, personDeathStatus } from '@/game/government';
 import { currentGame } from '@/game/session';
@@ -41,6 +41,10 @@ function CountryProfile({ game, countryId }: { game: Game; countryId: number }) 
 
 function CountryDetails({ game, country }: { game: Game; country: Country }) {
   const snapshot = useGameSnapshot(game);
+  const historyObjectOptions = useMemo(
+    () => chronicleObjectOptions(game.world),
+    [game, game.world.version],
+  );
   const composition = useMemo(() => game.countryComposition(country.id), [game, country.id, game.world.version]);
   const cities = useMemo(() => game.world.cities.filter((city) => city.countryId === country.id), [game, country.id, game.world.version]);
   const residents = countryCharacters(game.world, country);
@@ -142,7 +146,11 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
           content: <CountryCandidatesList game={game} country={country} candidates={candidates} />,
         }] : []),
       ]}
-      chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('country', country.id)])} />
+      chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('country', country.id)])}
+      archive={snapshot.chronicle}
+      initialReference={chronicleReference('country', country.id)}
+      objectOptions={historyObjectOptions}
+    />
   );
 }
 

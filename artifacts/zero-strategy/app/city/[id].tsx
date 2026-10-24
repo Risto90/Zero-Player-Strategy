@@ -4,7 +4,7 @@ import { View } from 'react-native';
 import { MAP_WIDTH } from '@/game/config';
 import { useGameSnapshot } from '@/game/useGame';
 import { currentGame } from '@/game/session';
-import { filterChronicle, chronicleReference } from '@/game/chronicle';
+import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt, pct } from '@/game/format';
 import { cityComposition, cityRankName } from '@/game/settlements';
 import { countryProfileRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
@@ -16,6 +16,10 @@ export default function CityPage() {
   const id = Number(rawId);
   if (!game || !Number.isInteger(id) || id < 0) return <MissingProfile title="Город не найден" />;
   const snapshot = useGameSnapshot(game);
+  const historyObjectOptions = useMemo(
+    () => chronicleObjectOptions(game.world),
+    [game, game.world.version],
+  );
   const city = game.world.cities.find((item) => item.id === id);
   if (!city) return <MissingProfile title="Город не найден" />;
   const country = game.world.countries[city.countryId];
@@ -56,7 +60,12 @@ export default function CityPage() {
   );
   return <ProfileLayout eyebrow="КАРТОЧКА ГОРОДА" title={city.name ?? 'Город'}
     subtitle={`${cityRankName(city.rank)}${city.capital ? ' · столица' : ''}`}
-    details={details} chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('city', city.id)])} />;
+    details={details}
+    chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('city', city.id)])}
+    archive={snapshot.chronicle}
+    initialReference={chronicleReference('city', city.id)}
+    objectOptions={historyObjectOptions}
+  />;
 }
 
 const styles = {

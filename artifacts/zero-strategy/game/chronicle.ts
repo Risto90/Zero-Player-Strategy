@@ -5,6 +5,11 @@ export interface ChronicleReference {
   id: number;
 }
 
+export interface ChronicleObjectOption {
+  reference: ChronicleReference;
+  label: string;
+}
+
 export interface ChronicleEntry {
   year: number;
   text: string;
@@ -15,6 +20,35 @@ export interface ChronicleEntry {
 export const CHRONICLE_OBJECT_HISTORY_LIMIT = 100;
 export const CHRONICLE_PAGE_SIZE = 25;
 const OBJECT_TYPES = new Set<ChronicleObjectType>(['country', 'city', 'person', 'culture', 'religion']);
+
+function normalizeChronicleSearch(value: string): string {
+  return value.trim().toLocaleLowerCase().replace(/ё/gu, 'е').normalize('NFD').replace(/[\u0300-\u036f]/gu, '');
+}
+
+export function chronicleObjectOptions(world: import('./world').World): ChronicleObjectOption[] {
+  return [
+    ...world.countries.map((country) => ({
+      reference: chronicleReference('country', country.id),
+      label: `${country.name} · страна`,
+    })),
+    ...world.cities.map((city) => ({
+      reference: chronicleReference('city', city.id),
+      label: `${city.name ?? `Город ${city.id + 1}`} · город`,
+    })),
+    ...world.people.map((person) => ({
+      reference: chronicleReference('person', person.id),
+      label: `${person.name} · персонаж`,
+    })),
+    ...world.cultures.map((culture) => ({
+      reference: chronicleReference('culture', culture.id),
+      label: `${culture.name} · этнос`,
+    })),
+    ...world.religions.map((religion) => ({
+      reference: chronicleReference('religion', religion.id),
+      label: `${religion.name} · религия`,
+    })),
+  ];
+}
 
 function isRoutineExpansion(text: string): boolean {
   return /(?:расширяется на|кочевой ареал расширен на)\s+\d+\s+земель/iu.test(text);
@@ -67,6 +101,29 @@ export function filterChronicle(entries: ChronicleEntry[], references: Chronicle
   const linked = entries.filter((entry) => entry.objects.some(({ type, id }) => keys.has(`${type}:${id}`)));
   const recent = new Set(linked.slice(0, CHRONICLE_OBJECT_HISTORY_LIMIT));
   return linked.filter((entry) => recent.has(entry) || entry.important);
+}
+
+/** Filter the archive without changing its newest-first order or limiting the matching history. */
+export function searchChronicle(
+  entries: ChronicleEntry[],
+  filters: { text?: string; year?: string; reference?: ChronicleReference | null },
+): ChronicleEntry[] {
+  const terms = normalizeChronicleSearch(filters.text ?? '').split(/\s+/u).filter(Boolean);
+  const yearQuery = (filters.year ?? '').trim();
+  const year = yearQuery === '' ? null : /^-?\d+$/u.test(yearQuery) ? Number(yearQuery) : Number.NaN;
+  const reference = filters.reference;
+  if (yearQuery !== '' && !Number.isSafeInteger(year)) return [];
+
+  return entries.filter((entry) => {
+    if (year !== null && entry.year !== year) return false;
+    if (reference && !entry.objects.some((item) =>
+      item.type === reference.type && item.id === reference.id)) return false;
+    if (terms.length) {
+      const text = normalizeChronicleSearch(entry.text);
+      if (!terms.every((term) => text.includes(term))) return false;
+    }
+    return true;
+  });
 }
 
 /** Select one page from the newest-first global archive without copying the whole list. */

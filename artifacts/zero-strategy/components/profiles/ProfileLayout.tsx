@@ -4,8 +4,9 @@ import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LogPanel } from '@/components/game/LogPanel';
 import colors, { fonts } from '@/constants/colors';
-import type { ChronicleEntry } from '@/game/chronicle';
+import type { ChronicleEntry, ChronicleObjectOption, ChronicleReference } from '@/game/chronicle';
 
 const c = colors.light;
 
@@ -15,6 +16,9 @@ export function ProfileLayout({
   subtitle,
   details,
   chronicle,
+  archive = chronicle,
+  initialReference,
+  objectOptions = [],
   extraTabs = [],
 }: {
   eyebrow: string;
@@ -22,6 +26,9 @@ export function ProfileLayout({
   subtitle: string;
   details: ReactNode;
   chronicle: ChronicleEntry[];
+  archive?: ChronicleEntry[];
+  initialReference?: ChronicleReference;
+  objectOptions?: ChronicleObjectOption[];
   extraTabs?: { key: string; label: string; content: ReactNode }[];
 }) {
   const insets = useSafeAreaInsets();
@@ -67,18 +74,15 @@ export function ProfileLayout({
           {details}
         </ScrollView>
       ) : tab === 'chronicle' ? (
-        <ScrollView style={[styles.pageScroll, styles.chronicleScroll]} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
-          nestedScrollEnabled>
-          {chronicle.length ? chronicle.map((entry, index) => (
-            <View key={`${entry.year}-${index}-${entry.text}`} style={styles.chronicleRow}>
-              <Text style={styles.year}>{entry.year || '—'}</Text>
-              <View style={styles.chronicleEntry}>
-                <Text style={styles.chronicleText}>{entry.text}</Text>
-                {entry.important && <Text style={styles.important}>Важное событие</Text>}
-              </View>
-            </View>
-          )) : <Text style={styles.empty}>Связанных записей пока нет.</Text>}
-        </ScrollView>
+        <View style={[styles.pageScroll, styles.chroniclePanel, { paddingBottom: insets.bottom }]}>
+          <LogPanel
+            key={initialReference ? `${initialReference.type}:${initialReference.id}` : 'all'}
+            log={archive}
+            initialReference={initialReference}
+            objectOptions={objectOptions}
+            showHeading={false}
+          />
+        </View>
       ) : selectedExtraTab ? (
         <ScrollView style={styles.pageScroll} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
           nestedScrollEnabled>
@@ -150,7 +154,7 @@ const styles = StyleSheet.create({
   tabText: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.foreground },
   activeTabText: { color: c.primaryForeground },
   pageScroll: { flex: 1 },
-  chronicleScroll: { maxHeight: 560 },
+  chroniclePanel: { maxHeight: 560, overflow: 'hidden', backgroundColor: c.secondary },
   content: { padding: 18, paddingTop: 8, gap: 14 },
   section: { paddingTop: 8, gap: 5, borderTopWidth: 1, borderColor: c.border },
   sectionTitle: { marginBottom: 3, fontFamily: fonts.sansSemiBold, fontSize: 11, letterSpacing: 1.4, color: c.primary },
@@ -160,11 +164,6 @@ const styles = StyleSheet.create({
   link: { fontFamily: fonts.sansSemiBold, fontSize: 14, color: c.accent, textDecorationLine: 'underline' },
   listScroll: { maxHeight: 190, flexGrow: 0, borderTopWidth: 1, borderBottomWidth: 1, borderColor: c.border },
   listContent: { paddingVertical: 3 },
-  chronicleRow: { flexDirection: 'row', gap: 10, paddingVertical: 4, borderBottomWidth: 1, borderColor: c.border },
-  year: { minWidth: 42, fontFamily: fonts.mono, fontSize: 12, color: c.primary },
-  chronicleEntry: { flex: 1, gap: 2 },
-  chronicleText: { flex: 1, fontFamily: fonts.sans, fontSize: 13, lineHeight: 19, color: c.foreground },
-  important: { alignSelf: 'flex-start', paddingHorizontal: 5, paddingVertical: 1, fontFamily: fonts.sansSemiBold, fontSize: 9, color: c.primaryForeground, backgroundColor: c.primary },
   empty: { fontFamily: fonts.displayItalic, fontSize: 14, color: c.mutedForeground },
   missing: { alignItems: 'center', justifyContent: 'center', gap: 16 },
 });

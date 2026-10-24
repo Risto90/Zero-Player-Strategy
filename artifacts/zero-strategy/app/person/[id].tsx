@@ -1,15 +1,16 @@
 import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LogPanel } from '@/components/game/LogPanel';
 import colors, { fonts } from '@/constants/colors';
 import { ageStage, personDeathStatus, type Person } from '@/game/government';
 import { countryProfileRoute } from '@/game/profileRoutes';
 import { useGameSnapshot } from '@/game/useGame';
 import type { Game } from '@/game/game';
 import { currentGame } from '@/game/session';
-import { chronicleReference, filterChronicle } from '@/game/chronicle';
+import { chronicleObjectOptions, chronicleReference, filterChronicle } from '@/game/chronicle';
 
 const c = colors.light;
 
@@ -43,6 +44,10 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
   const [showChronicle, setShowChronicle] = useState(false);
   const insets = useSafeAreaInsets();
   const world = game.world;
+  const historyObjectOptions = useMemo(
+    () => chronicleObjectOptions(world),
+    [world, world.version],
+  );
   const homeCountry = person.countryId < 0 ? undefined : world.countries[person.countryId];
   const culture = world.cultures[person.cultureId]?.name ?? 'неизвестна';
   const religion = person.religionId === null ? 'атеист' : world.religions[person.religionId]?.name ?? 'неизвестна';
@@ -80,19 +85,15 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
         </Pressable>
       </View>
       {showChronicle ? (
-        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-          {personChronicle.length
-            ? personChronicle.map((entry, index) => (
-              <View key={`${entry.year}-${index}-${entry.text}`} style={styles.chronicleRow}>
-                <Text style={styles.year}>{entry.year || '—'}</Text>
-                <View style={styles.chronicleEntry}>
-                  <Text style={styles.fact}>{entry.text}</Text>
-                  {entry.important && <Text style={styles.important}>Важное событие</Text>}
-                </View>
-              </View>
-            ))
-            : <Text style={styles.note}>Связанных записей пока нет.</Text>}
-        </ScrollView>
+        <View style={[styles.chroniclePanel, { paddingBottom: insets.bottom }]}>
+          <LogPanel
+            key={`person:${person.id}`}
+            log={snapshot.chronicle}
+            initialReference={chronicleReference('person', person.id)}
+            objectOptions={historyObjectOptions}
+            showHeading={false}
+          />
+        </View>
       ) : (
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
         <Text style={styles.title}>{person.name}</Text>
@@ -159,6 +160,7 @@ const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center', gap: 16 },
   header: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, borderBottomWidth: 2, borderColor: c.foreground },
   tabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingVertical: 10 },
+  chroniclePanel: { flex: 1, minHeight: 0, backgroundColor: c.secondary },
   tab: { paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.card },
   activeTab: { backgroundColor: c.primary, borderColor: c.primary },
   tabText: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.foreground },
@@ -176,10 +178,6 @@ const styles = StyleSheet.create({
   factFamily: { fontFamily: fonts.sans, fontSize: 13, color: c.accent, textDecorationLine: 'underline' },
   section: { paddingTop: 8, gap: 4, borderTopWidth: 1, borderColor: c.border },
   sectionTitle: { marginBottom: 3, fontFamily: fonts.sansSemiBold, fontSize: 11, letterSpacing: 1.4, color: c.primary },
-  chronicleRow: { flexDirection: 'row', gap: 10, paddingVertical: 4, borderBottomWidth: 1, borderColor: c.border },
-  chronicleEntry: { flex: 1, gap: 2 },
-  year: { minWidth: 42, fontFamily: fonts.mono, fontSize: 12, color: c.primary },
-  important: { alignSelf: 'flex-start', paddingHorizontal: 5, paddingVertical: 1, fontFamily: fonts.sansSemiBold, fontSize: 9, color: c.primaryForeground, backgroundColor: c.primary },
   relative: { paddingVertical: 6, borderBottomWidth: 1, borderColor: c.border },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 14, color: c.accent, textDecorationLine: 'underline' },
   note: { fontFamily: fonts.sans, fontSize: 12, color: c.mutedForeground },

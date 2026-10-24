@@ -3,7 +3,7 @@ import { useMemo } from 'react';
 import { Text, View } from 'react-native';
 import { useGameSnapshot } from '@/game/useGame';
 import { currentGame } from '@/game/session';
-import { filterChronicle, chronicleReference } from '@/game/chronicle';
+import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt } from '@/game/format';
 import { cityComposition } from '@/game/settlements';
 import { cityProfileRoute, countryProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
@@ -15,6 +15,10 @@ export default function ReligionPage() {
   const id = Number(rawId);
   if (!game || !Number.isInteger(id) || id < 0) return <MissingProfile title="Религия не найдена" />;
   const snapshot = useGameSnapshot(game);
+  const historyObjectOptions = useMemo(
+    () => chronicleObjectOptions(game.world),
+    [game, game.world.version],
+  );
   const religion = game.world.religions[id];
   if (!religion) return <MissingProfile title="Религия не найдена" />;
   const { countries, cities, branches } = useMemo(() => ({
@@ -63,7 +67,11 @@ export default function ReligionPage() {
   );
   return <ProfileLayout eyebrow="КАРТОЧКА РЕЛИГИИ" title={religion.name}
     subtitle="Религия" details={details}
-    chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('religion', religion.id)])} />;
+    chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('religion', religion.id)])}
+    archive={snapshot.chronicle}
+    initialReference={chronicleReference('religion', religion.id)}
+    objectOptions={historyObjectOptions}
+  />;
 }
 
 const styles = {

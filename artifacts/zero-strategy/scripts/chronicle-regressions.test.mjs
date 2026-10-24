@@ -6,6 +6,7 @@ import {
   filterChronicle,
   migrateChronicle,
   reindexChronicleObjects,
+  searchChronicle,
   transferCountryChronicle,
 } from '../game/chronicle.ts';
 
@@ -61,6 +62,20 @@ assert.deepEqual(objectHistory.slice(-2).map(({ text }) => text), ['Event 115', 
   'important events survive regardless of age');
 assert.equal(filterChronicle(longArchive, [{ type: 'country', id: 99 }]).length, 0,
   'importance does not make unrelated objects inherit an event');
+const completeObjectSearch = searchChronicle(longArchive, { reference: { type: 'country', id: 7 } });
+assert.equal(completeObjectSearch.length, 160,
+  'archive search reaches linked records older than the profile history limit');
+assert.equal(chroniclePage(completeObjectSearch, 1)[0].text, 'Event 25',
+  'filtered archive pages keep the original newest-first ordering');
+assert.deepEqual(searchChronicle(longArchive, { text: 'EVENT 15', year: '1985' }).map(({ text }) => text),
+  ['Event 15'], 'text and exact year filters combine without changing newest-first ordering');
+assert.deepEqual(searchChronicle([
+  { year: 9, text: 'Основан город ВЕЖА', objects: [], important: false },
+  { year: 8, text: 'Основан город', objects: [], important: false },
+], { text: 'основан вежа' }).map(({ year }) => year),
+  [9], 'text search ignores letter case and requires every search term');
+assert.equal(searchChronicle(longArchive, { year: 'invalid' }).length, 0,
+  'invalid year filters never silently return the unfiltered archive');
 
 const archivePages = Array.from({ length: 61 }, (_, index) => ({
   year: 2060 - index, text: `Archive ${index}`, objects: [], important: false,
