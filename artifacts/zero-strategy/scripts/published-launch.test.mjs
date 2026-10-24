@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import path from 'node:path';
@@ -9,6 +10,12 @@ const serverScript = path.join(projectRoot, 'server', 'serve.js');
 const basePath = '/preview-zero-strategy';
 const publicOrigin = 'https://published.zero-strategy.example';
 const publicHost = new URL(publicOrigin).host;
+
+assert.doesNotMatch(
+  readFileSync(path.resolve(projectRoot, '../../.replitignore'), 'utf8'),
+  /(?:^|\n)\s*artifacts\/zero-strategy\/static-build\/?(?:\s|$)/,
+  'generated Expo launch files must be included in the published image',
+);
 
 async function findFreePort() {
   const server = createServer();
@@ -90,6 +97,21 @@ try {
     const manifest = await response.json();
     assert.equal(manifest.runtimeVersion, 'exposdk:58.0.0');
     assert.ok(manifest.launchAsset?.url, `${platform} manifest needs a launch bundle`);
+    assert.equal(
+      manifest.launchAsset.contentType,
+      'application/javascript',
+      `${platform} launch bundle must be declared as JavaScript`,
+    );
+    assert.equal(
+      manifest.extra?.expoClient?.hostUri,
+      `${publicHost}${basePath}/${platform}`,
+      `${platform} host URI must use the public host and configured base path`,
+    );
+    assert.equal(
+      manifest.extra?.expoGo?.debuggerHost,
+      `${publicHost}${basePath}/${platform}`,
+      `${platform} debugger host must use the public host and configured base path`,
+    );
     assert.doesNotMatch(
       JSON.stringify(manifest),
       /localhost|127\.0\.0\.1|spock\.replit\.dev/i,
