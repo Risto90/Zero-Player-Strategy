@@ -23,6 +23,7 @@ import {
 } from '@/components/profiles/ProfileLayout';
 import { CountryCandidatesList, CountryResidentsList, CountryRulerHistoryList } from '@/components/profiles/CountryLists';
 import { countryCharacters } from '@/game/characters';
+import { OriginComposition } from '@/components/profiles/OriginComposition';
 
 const c = colors.light;
 
@@ -112,6 +113,10 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
               onPress={() => router.push(religionProfileRoute(religionId))} />;
           }) : <ProfileFact>Нет данных.</ProfileFact>}
         </ProfileScrollList>
+      </ProfileSection>
+
+      <ProfileSection title="РАСЫ">
+        <OriginComposition rows={composition.humanOrigins} />
       </ProfileSection>
 
       <ProfileSection title={`ГОРОДА · ${cities.length}`}>

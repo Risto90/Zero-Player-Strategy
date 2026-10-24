@@ -42,6 +42,8 @@ function mapListCount(game: Game, snap: GameSnapshot): number | null {
       return snap.legend.cultures.length;
     case 'religions':
       return snap.legend.religions.length;
+    case 'origins':
+      return snap.legend.origins.length;
     case 'cities':
       return game.world.cities.length;
     case 'nomads':
@@ -265,7 +267,7 @@ function GameScreen({ game }: { game: Game }) {
               ? 'Далее'
               : 'Следующий год';
   const latestText = snap.log[0]?.replace(/^\d+:\s*/, '') ?? '';
-  const listTitle = listMode === 'cities' ? 'Города' : 'Список объектов';
+  const listTitle = listMode === 'cities' ? 'Города' : listMode === 'origins' ? 'Расы' : 'Список объектов';
   const currentListCount = mapListCount(game, snap);
   const selectedInfo = inspect?.info ? game.inspect(inspect.info.x, inspect.info.y) : null;
   const inkShare = snap.card && snap.card.inkTotal > 0

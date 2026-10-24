@@ -14,6 +14,7 @@ const MODE_LABELS: Record<MapMode, string> = {
   biomes: 'Биомы',
   cultures: 'Культуры',
   religions: 'Религии',
+  origins: 'Расы',
   humidity: 'Влажность',
   temperature: 'Температура',
   drainage: 'Дренаж',

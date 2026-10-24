@@ -17,7 +17,7 @@ import { applyReform } from './politics';
 import { appoint, candidateAllowed, closeRulerTerms, ensureOffices, refreshHeirs, repairDeadOfficeHolders, successionOrder, syncRulerTerms } from './succession';
 import { randomItem } from './random';
 import { demography } from './demography';
-import { humanClimateSuitabilityAt } from './human';
+import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS, humanClimateSuitabilityAt, humanOriginMixFromTable, humanOriginShares } from './human';
 import type { NotificationRecipient } from './notifications';
 import {
   addCityAndConcentrate,
@@ -64,6 +64,7 @@ export interface Legend {
   countries: LegendRow[];
   cultures: LegendRow[];
   religions: LegendRow[];
+  origins: LegendRow[];
   /** People who follow no religion. */
   nonBelievers: LegendRow;
   biomes: LegendRow[];
@@ -82,6 +83,7 @@ export interface CountryComposition {
   population: number;
   cultures: CountryShare[];
   religions: CountryShare[];
+  humanOrigins: ReturnType<typeof humanOriginShares>;
 }
 
 export interface PixelInfo {
@@ -97,6 +99,7 @@ export interface PixelInfo {
   density: number;
   cultures: { id: number; name: string; color: string; share: number }[];
   religions: { id: number; name: string; color: string; share: number }[];
+  humanOrigins: ReturnType<typeof humanOriginShares>;
   nonBelievers: number;
   humanClimateSuitability: number | null;
   city: City | null;
@@ -808,7 +811,13 @@ export class Game {
 
   /** Shows a single culture or religion layer: its share at every point. */
   showLayer(layer: EntityLayer | null): void {
-    if (layer) this.mapMode = layer.kind === 'culture' ? 'cultures' : 'religions';
+    if (layer) {
+      this.mapMode = layer.kind === 'culture'
+        ? 'cultures'
+        : layer.kind === 'religion'
+          ? 'religions'
+          : 'origins';
+    }
     this.layer = layer;
     this.renderer.setView(this.mapMode, layer);
     this.emit(true);
@@ -830,7 +839,7 @@ export class Game {
 
   countryComposition(countryId: number): CountryComposition {
     const country = this.world.countries[countryId];
-    if (!country) return { population: 0, cultures: [], religions: [] };
+    if (!country) return { population: 0, cultures: [], religions: [], humanOrigins: null };
     const data = demography(this.world, country);
     const percent = (value: number) => data.population > 0 ? Math.round(value / data.population * 1000) / 10 : 0;
     return {
@@ -851,6 +860,7 @@ export class Game {
           population: Math.round(population), percent: percent(population),
         }))
         .sort((a, b) => b.population - a.population),
+      humanOrigins: data.population > 0 ? humanOriginShares(data.humanOrigin) : null,
     };
   }
 
@@ -864,6 +874,7 @@ export class Game {
     const owner = w.owner[p];
     const cultureEntry = w.cultureTable.entries[w.culture[p]];
     const religionEntry = w.religionTable.entries[w.religion[p]];
+    const originEntry = w.humanOriginTable.entries[w.humanOrigins[p]];
     const country = owner > 0 ? w.countries[owner - 1] : null;
     const countryPopulation = country ? this.legend().countries.find((row) => row.id === country.id)?.value ?? 0 : 0;
     return {
@@ -879,6 +890,9 @@ export class Game {
       density: owner > 0 ? w.density[p] : 0,
       cultures: owner > 0 ? cultureEntry.ids.map((id, i) => ({ id, name: w.cultures[id].name, color: w.cultures[id].color, share: cultureEntry.shares[i] })) : [],
       religions: owner > 0 ? religionEntry.ids.map((id, i) => ({ id, name: w.religions[id].name, color: w.religions[id].color, share: religionEntry.shares[i] })) : [],
+      humanOrigins: owner > 0 && w.density[p] > 0 && originEntry?.total === 100
+        ? humanOriginShares(humanOriginMixFromTable(originEntry.ids, originEntry.shares))
+        : null,
       nonBelievers: owner > 0 ? 100 - religionEntry.total : 0,
       humanClimateSuitability: owner > 0 && w.density[p] > 0
         ? humanClimateSuitabilityAt(w, p)
@@ -2034,11 +2048,20 @@ export class Game {
     const countryPop = new Float64Array(w.countries.length);
     const culturePop = new Float64Array(w.cultures.length);
     const religionPop = new Float64Array(w.religions.length);
+    const originPop = new Float64Array(HUMAN_ORIGINS.length);
     const biomeCount = new Float64Array(BIOMES.length);
     const cultureAcc = new Float64Array(w.cultureTable.entries.length);
     const religionAcc = new Float64Array(w.religionTable.entries.length);
     let nonBelievers = 0;
     let total = 0;
+    const addOriginPopulation = (mixId: number, population: number) => {
+      if (!(population > 0)) return;
+      const entry = w.humanOriginTable.entries[mixId];
+      if (entry?.total !== 100) return;
+      entry.ids.forEach((id, index) => {
+        if (HUMAN_ORIGINS[id]) originPop[id] += population * (entry.shares[index] ?? 0) / 100;
+      });
+    };
     for (const p of w.landIndex) {
       biomeCount[w.biomeAt(p)] += 1;
       const owner = w.owner[p];
@@ -2048,6 +2071,7 @@ export class Game {
       total += d;
       cultureAcc[w.culture[p]] += d;
       religionAcc[w.religion[p]] += d;
+      addOriginPopulation(w.humanOrigins[p], d);
     }
     for (const country of w.countries) {
       if (country.type !== 'nomadic') continue;
@@ -2057,6 +2081,7 @@ export class Game {
         total += population;
         cultureAcc[cell.cultureMix] += population;
         religionAcc[cell.religionMix] += population;
+        addOriginPopulation(cell.humanOriginMix, population);
       }
     }
     w.cultureTable.entries.forEach((entry, c) => {
@@ -2106,6 +2131,17 @@ export class Game {
           percent: percent(religionPop[r.id], total),
           detail: `с ${r.foundedYear} г.`,
         }))
+        .sort(byValue),
+      origins: HUMAN_ORIGINS
+        .map((origin, id) => ({
+          id,
+          name: origin.name,
+          color: HUMAN_ORIGIN_COLORS[origin.id],
+          value: Math.round(originPop[id]),
+          percent: percent(originPop[id], total),
+          detail: '',
+        }))
+        .filter((row) => originPop[row.id] > 0)
         .sort(byValue),
       nonBelievers: {
         id: -1,

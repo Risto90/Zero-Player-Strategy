@@ -8,12 +8,13 @@ import colors, { fonts } from '@/constants/colors';
 import { BIOME_NOTE } from '@/game/config';
 import { fmt, pct } from '@/game/format';
 import type { Game, GameSnapshot, LegendRow } from '@/game/game';
+import { HUMAN_ORIGINS } from '@/game/human';
 import { ageStage, GOVERNMENTS, MODIFIERS, governmentOf, personDeathStatus } from '@/game/government';
 import { RAMPS } from '@/game/render';
 import { expectedHeirFor, rulers } from '@/game/succession';
 import { cityComposition, cityRankName } from '@/game/settlements';
 import { cityIconIndex, cityIconSource } from '@/components/map/cityIcons';
-import { cityProfileRoute, countryProfileRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
+import { cityProfileRoute, countryProfileRoute, cultureProfileRoute, raceProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
 import { isActiveCountry } from '@/game/world';
 
 const c = colors.light;
@@ -96,6 +97,62 @@ function Rows({ rows, unit, onPress, activeId, header, footer }: { rows: LegendR
       ListHeaderComponent={header ?? undefined}
       stickyHeaderIndices={header ? [0] : undefined}
       ListFooterComponent={footer ?? undefined}
+      initialNumToRender={12}
+      nestedScrollEnabled
+      keyboardShouldPersistTaps="handled"
+    />
+  );
+}
+
+function OriginRows({ rows, activeId, onSelect, header }: {
+  rows: LegendRow[];
+  activeId: number | null;
+  onSelect: (row: LegendRow) => void;
+  header?: ReactElement | null;
+}) {
+  return (
+    <FlatList
+      data={rows}
+      keyExtractor={(row) => String(row.id)}
+      style={styles.list}
+      ListHeaderComponent={header ?? undefined}
+      renderItem={({ item: row }) => {
+        const origin = HUMAN_ORIGINS[row.id];
+        if (!origin) return null;
+        const active = activeId === row.id;
+        return (
+          <View style={[styles.originEntityRow, active && styles.originEntityRowActive]} testID={`row-race-${row.id}`}>
+            <Pressable
+              onPress={() => onSelect(row)}
+              style={styles.originSelectButton}
+              accessibilityRole="button"
+              accessibilityLabel={`Показать на карте: ${origin.name}`}
+              accessibilityState={{ selected: active }}
+              testID={`button-race-layer-${row.id}`}
+            >
+              <View style={[styles.swatch, { backgroundColor: row.color }]} />
+              <View style={styles.originNameBlock}>
+                <Text style={styles.rowName} numberOfLines={1}>{origin.name}</Text>
+                <Text style={styles.rowDetail}>{fmt(row.value)} чел.</Text>
+              </View>
+              <View style={styles.originPopulation}>
+                <Text style={styles.rowPct}>{pct(row.percent)}</Text>
+                <Feather name={active ? 'check' : 'layers'} size={15} color={active ? c.primary : c.mutedForeground} />
+              </View>
+            </Pressable>
+            <Pressable
+              onPress={() => router.push(raceProfileRoute(origin.id))}
+              style={styles.originProfileButton}
+              accessibilityRole="link"
+              accessibilityLabel={`Открыть карточку расы: ${origin.name}`}
+              testID={`link-race-profile-${row.id}`}
+            >
+              <Text style={styles.familyLink}>Карточка</Text>
+              <Feather name="chevron-right" size={14} color={c.accent} />
+            </Pressable>
+          </View>
+        );
+      }}
       initialNumToRender={12}
       nestedScrollEnabled
       keyboardShouldPersistTaps="handled"
@@ -246,6 +303,32 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: { g
         ) : <NoSearchResults />}
       </View>
     ) : <Empty text="Кочевых стран пока нет." />;
+  } else if (mapMode === 'origins') {
+    const filteredRows = legend.origins.filter((row) => normalizeSearchText(row.name).includes(query));
+    const activeId = layer?.kind === 'origin' ? layer.id : null;
+    const selected = activeId === null ? null : legend.origins.find((row) => row.id === activeId);
+    title = 'Расы';
+    sub = selected ? `слой: ${selected.name}` : `${legend.origins.length} · нажмите строку — доля расы на карте`;
+    const back = layer ? (
+      <Pressable onPress={() => game.showLayer(null)} style={styles.back} testID="button-race-layer-back">
+        <Feather name="arrow-left" size={15} color={c.primary} />
+        <Text style={styles.backText}>Все расы вместе</Text>
+      </Pressable>
+    ) : null;
+    body = legend.origins.length ? (
+      <View style={styles.listContent}>
+        <NameSearch value={search} placeholder="Найти расу" onChangeText={setSearch} />
+        {filteredRows.length ? (
+          <OriginRows rows={filteredRows} activeId={activeId} header={back}
+            onSelect={(row) => game.showLayer({ kind: 'origin', id: row.id })} />
+        ) : (
+          <View style={styles.list}>
+            {back}
+            <NoSearchResults />
+          </View>
+        )}
+      </View>
+    ) : <Empty text="На карте рас нет." />;
   } else {
     const valueMode = mapMode as keyof typeof RAMPS;
     const stops = RAMPS[valueMode];
@@ -519,6 +602,12 @@ const styles = StyleSheet.create({
   rowDetail: { fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
   rowPct: { fontFamily: fonts.mono, fontSize: 12, color: c.foreground },
   rowValue: { fontFamily: fonts.mono, fontSize: 10, color: c.mutedForeground },
+  originEntityRow: { flexDirection: 'row', alignItems: 'stretch', borderBottomWidth: 1, borderBottomColor: 'rgba(201,185,166,0.7)' },
+  originEntityRowActive: { backgroundColor: c.muted },
+  originSelectButton: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8, paddingVertical: 7 },
+  originNameBlock: { flex: 1, minWidth: 0 },
+  originPopulation: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  originProfileButton: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 8, borderLeftWidth: 1, borderLeftColor: c.border },
   empty: { paddingHorizontal: 12, paddingVertical: 14, fontFamily: fonts.displayItalic, fontSize: 14, color: c.mutedForeground },
   back: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, paddingVertical: 7, backgroundColor: c.card, borderBottomWidth: 2, borderBottomColor: c.primary },
   backText: { fontFamily: fonts.sansSemiBold, fontSize: 12.5, color: c.primary },

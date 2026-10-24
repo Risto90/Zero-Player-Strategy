@@ -1,3 +1,5 @@
+import type { HumanOriginId } from './human';
+
 export function countryProfileRoute(id: number) {
   return { pathname: '/country/[id]' as const, params: { id: String(id) } };
 }
@@ -20,4 +22,8 @@ export function cultureProfileRoute(id: number) {
 
 export function religionProfileRoute(id: number) {
   return { pathname: '/religion/[id]' as const, params: { id: String(id) } };
+}
+
+export function raceProfileRoute(id: HumanOriginId) {
+  return { pathname: '/race/[id]' as const, params: { id } };
 }

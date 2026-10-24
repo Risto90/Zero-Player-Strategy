@@ -63,10 +63,49 @@ export const HUMAN_ORIGINS: readonly HumanOriginCategory[] = [
 ];
 
 export type HumanOriginMix = { ids: HumanOriginId[]; shares: number[] };
+export interface HumanOriginShare {
+  id: HumanOriginId;
+  name: string;
+  color: string;
+  share: number;
+}
+
+export const HUMAN_ORIGIN_COLORS: Record<HumanOriginId, string> = {
+  european: '#527d8c',
+  negroid: '#b65d3d',
+  pygmy: '#547b4b',
+  bushman: '#ad8b3f',
+  ethiopian: '#795d93',
+  amerindian: '#3f8a79',
+  australoid: '#a44f68',
+  veddoid: '#6371a4',
+};
+
 export const HUMAN_ORIGIN_SHARE_STEP = 25;
 export const DEFAULT_LEGACY_ORIGIN: HumanOriginId = 'european';
 
 const originOrder = new Map(HUMAN_ORIGINS.map((origin, index) => [origin.id, index]));
+
+/** Creates display rows only from an already-canonical, complete composition. */
+export function humanOriginShares(mix: HumanOriginMix | null | undefined): HumanOriginShare[] | null {
+  if (!mix || !Array.isArray(mix.ids) || !Array.isArray(mix.shares) ||
+      mix.ids.length === 0 || mix.ids.length !== mix.shares.length) return null;
+  const seen = new Set<HumanOriginId>();
+  const total = mix.shares.reduce((sum, share, index) => {
+    const id = mix.ids[index];
+    if (!originOrder.has(id) || seen.has(id) || !Number.isInteger(share) ||
+        share <= 0 || share % HUMAN_ORIGIN_SHARE_STEP !== 0) return Number.NaN;
+    seen.add(id);
+    return sum + share;
+  }, 0);
+  if (total !== 100) return null;
+  return mix.ids.map((id, index) => ({
+    id,
+    name: HUMAN_ORIGINS[originOrder.get(id)!].name,
+    color: HUMAN_ORIGIN_COLORS[id],
+    share: mix.shares[index],
+  }));
+}
 
 export function humanOriginMixToTable(mix: HumanOriginMix): Map<number, number> {
   return new Map(mix.ids.map((id, index) => [originOrder.get(id)!, mix.shares[index] ?? 0]));

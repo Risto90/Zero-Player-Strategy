@@ -1,11 +1,13 @@
 import type { Rect } from './brush';
 import type { CompositionTable } from './composition';
 import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE } from './config';
+import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS } from './human';
+import { ensureCityPopulationGroups } from './settlements';
 import type { World } from './world';
 
-export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers' | 'cities' | 'nomads';
+export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers' | 'cities' | 'nomads' | 'origins';
 export interface EntityLayer {
-  kind: 'culture' | 'religion';
+  kind: 'culture' | 'religion' | 'origin';
   id: number;
 }
 
@@ -67,7 +69,7 @@ function biomeOf(h: number, t: number, d: number): number {
   return b;
 }
 
-const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7, rivers: 8, cities: 9, nomads: 10 };
+const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, density: 4, humidity: 5, temperature: 6, drainage: 7, rivers: 8, cities: 9, nomads: 10, origins: 11 };
 
 // Neighbour bits of `nb`: which of the 4 neighbours are land, plus whether the pixel touches water.
 const LEFT = 1;
@@ -95,6 +97,11 @@ export class MapRenderer {
   private readonly nomadRaster = new Uint32Array(MAP_PIXELS);
   private readonly nomadDensity = new Float32Array(MAP_PIXELS);
   private nomadRasterVersion = -1;
+  private originRasterVersion = -1;
+  private readonly originRaster = new Uint8Array(MAP_PIXELS);
+  private readonly originComputed = new Uint8Array(MAP_PIXELS);
+  private readonly nomadOriginScores = new Map<number, Float64Array>();
+  private readonly originColors = HUMAN_ORIGINS.map((origin) => pack(hexToRgb(HUMAN_ORIGIN_COLORS[origin.id])));
   private cityColors = CITY_COLORS.map((color) => pack(hexToRgb(color)));
   private colorKey = '';
   /** Colour per composition id (0 = not computed yet); compositions never change once interned. */
@@ -278,6 +285,106 @@ export class MapRenderer {
       }
       this.nomadRasterVersion = w.version;
     }
+    if (this.originRasterVersion !== w.version) this.prepareOriginRaster();
+  }
+
+  private prepareOriginRaster(): void {
+    const w = this.world;
+    this.originRaster.fill(0);
+    this.originComputed.fill(0);
+    this.nomadOriginScores.clear();
+    for (const country of w.countries) {
+      if (country.type !== 'nomadic') continue;
+      for (const cell of country.cells ?? []) {
+        if (!(cell.population > 0) || cell.pixel < 0 || cell.pixel >= MAP_PIXELS || !w.land[cell.pixel]) continue;
+        const entry = w.humanOriginTable.entries[cell.humanOriginMix];
+        if (entry?.total !== 100) continue;
+        const scores = this.nomadOriginScores.get(cell.pixel) ?? new Float64Array(HUMAN_ORIGINS.length);
+        this.addTableMix(scores, entry, cell.population);
+        this.nomadOriginScores.set(cell.pixel, scores);
+      }
+    }
+    this.originRasterVersion = w.version;
+  }
+
+  private addTableMix(scores: Float64Array, entry: { ids: number[]; shares: number[] }, population: number): void {
+    entry.ids.forEach((id, index) => {
+      if (HUMAN_ORIGINS[id]) scores[id] += population * (entry.shares[index] ?? 0) / 100;
+    });
+  }
+
+  private originAt(pixel: number): number {
+    if (this.originComputed[pixel]) return this.originRaster[pixel];
+    const w = this.world;
+    const city = w.cityAt(pixel);
+    const nomadScores = this.nomadOriginScores.get(pixel);
+    let scores: Float64Array | null = null;
+    if (city || nomadScores) {
+      scores = new Float64Array(HUMAN_ORIGINS.length);
+      if (city) {
+        for (const group of ensureCityPopulationGroups(w, city)) {
+          if (!(group.population > 0)) continue;
+          const entry = w.humanOriginTable.entries[group.humanOriginMix];
+          if (entry?.total === 100) this.addTableMix(scores, entry, group.population);
+        }
+      } else if (w.owner[pixel] > 0 && w.density[pixel] > 0) {
+        const entry = w.humanOriginTable.entries[w.humanOrigins[pixel]];
+        if (entry?.total === 100) this.addTableMix(scores, entry, w.density[pixel]);
+      }
+      if (nomadScores) {
+        for (let index = 0; index < scores.length; index += 1) scores[index] += nomadScores[index];
+      }
+    } else if (w.owner[pixel] > 0 && w.density[pixel] > 0) {
+      const entry = w.humanOriginTable.entries[w.humanOrigins[pixel]];
+      if (entry?.total === 100) {
+        let leading = 0;
+        for (let index = 1; index < entry.ids.length; index += 1) {
+          if (entry.shares[index] > entry.shares[leading]) leading = index;
+        }
+        this.originRaster[pixel] = entry.ids[leading] + 1;
+      }
+    }
+    if (scores) {
+      let leading = 0;
+      for (let index = 1; index < scores.length; index += 1) {
+        if (scores[index] > scores[leading]) leading = index;
+      }
+      if (scores[leading] > 0) this.originRaster[pixel] = leading + 1;
+    }
+    this.originComputed[pixel] = 1;
+    return this.originRaster[pixel];
+  }
+
+  private originShareAt(pixel: number, originId: number): number {
+    if (!HUMAN_ORIGINS[originId]) return 0;
+    const w = this.world;
+    let population = 0;
+    let selectedPopulation = 0;
+    const addMix = (mixId: number, amount: number) => {
+      if (!(amount > 0)) return;
+      const entry = w.humanOriginTable.entries[mixId];
+      if (entry?.total !== 100) return;
+      population += amount;
+      entry.ids.forEach((id, index) => {
+        if (id === originId) selectedPopulation += amount * (entry.shares[index] ?? 0) / 100;
+      });
+    };
+
+    const city = w.cityAt(pixel);
+    if (city) {
+      for (const group of ensureCityPopulationGroups(w, city)) {
+        addMix(group.humanOriginMix, group.population);
+      }
+    } else if (w.owner[pixel] > 0 && w.density[pixel] > 0) {
+      addMix(w.humanOrigins[pixel], w.density[pixel]);
+    }
+
+    const nomadScores = this.nomadOriginScores.get(pixel);
+    if (nomadScores) {
+      for (let index = 0; index < nomadScores.length; index += 1) population += nomadScores[index];
+      selectedPopulation += nomadScores[originId];
+    }
+    return population > 0 ? selectedPopulation / population : 0;
   }
 
   private paintTile(x0: number, y0: number): void {
@@ -314,7 +421,17 @@ export class MapRenderer {
         const o = owner[p];
         const selected = mode === 0 && this.selectedCountryId !== null && o === this.selectedCountryId + 1;
         let color: number;
-        if (mode === 8) color = unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+        if (mode === 11) {
+          if (this.layer?.kind === 'origin') {
+            const packed = this.originColors[this.layer.id] ?? this.unclaimedPacked;
+            const selectedColor = [packed & 255, (packed >> 8) & 255, (packed >> 16) & 255] as RGB;
+            color = pack(mix([238, 233, 218], selectedColor, this.originShareAt(p, this.layer.id)));
+          } else {
+            const origin = this.originAt(p);
+            color = origin ? this.originColors[origin - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+          }
+        }
+        else if (mode === 8) color = unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
         else if (mode === 0) color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
         else if (mode === 9) {
           const cityId = w.cityIdAt[p];

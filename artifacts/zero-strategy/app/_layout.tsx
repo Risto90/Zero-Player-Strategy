@@ -41,6 +41,7 @@ export default function RootLayout() {
           <Stack.Screen name="city/[id]" />
           <Stack.Screen name="culture/[id]" />
           <Stack.Screen name="religion/[id]" />
+          <Stack.Screen name="race/[id]" />
           <Stack.Screen name="person/[id]" />
         </Stack>
       </ErrorBoundary>

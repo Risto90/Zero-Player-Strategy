@@ -11,6 +11,8 @@ import { useGameSnapshot } from '@/game/useGame';
 import type { Game } from '@/game/game';
 import { currentGame } from '@/game/session';
 import { chronicleObjectOptions, chronicleReference, filterChronicle } from '@/game/chronicle';
+import { humanOriginShares } from '@/game/human';
+import { OriginComposition } from '@/components/profiles/OriginComposition';
 
 const c = colors.light;
 
@@ -149,6 +151,10 @@ function PersonProfile({
         <Text style={styles.fact}>Пол · {person.gender === 'female' ? 'женский' : 'мужской'}</Text>
         <Text style={styles.fact}>Культура · {culture}</Text>
         <Text style={styles.fact}>Вероисповедание · {religion}</Text>
+        <View style={styles.originSection}>
+          <Text style={styles.originHeading}>Расы</Text>
+          <OriginComposition rows={humanOriginShares(person.humanOrigin)} />
+        </View>
         <View style={styles.factRow}>
           <Text style={styles.fact}>Династия · </Text>
           <Text onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(person.familyId) } })}
@@ -232,6 +238,8 @@ const styles = StyleSheet.create({
   subtitle: { marginTop: -12, fontFamily: fonts.sans, fontSize: 13, color: c.mutedForeground },
   countryLink: { alignSelf: 'flex-start', marginTop: -8 },
   facts: { padding: 12, gap: 6, borderLeftWidth: 3, borderColor: c.primary, backgroundColor: c.card },
+  originSection: { gap: 5, marginTop: 3 },
+  originHeading: { fontFamily: fonts.sansSemiBold, fontSize: 11, letterSpacing: 1.1, color: c.primary },
   fact: { fontFamily: fonts.sans, fontSize: 13, color: c.foreground },
   factRow: { flexDirection: 'row', alignItems: 'center' },
   factFamily: { fontFamily: fonts.sans, fontSize: 13, color: c.accent, textDecorationLine: 'underline' },

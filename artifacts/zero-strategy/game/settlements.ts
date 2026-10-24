@@ -1,6 +1,6 @@
 import { MAP_HEIGHT, MAP_WIDTH, RANKS } from './config';
 import { quantizeShares } from './composition';
-import { combineHumanOriginTableMixes, humanOriginMixToTable, expectedOriginsForPopulation, humanOriginMixFromTable, defaultHumanOriginMix } from './human';
+import { combineHumanOriginTableMixes, combineHumanOrigins, humanOriginMixToTable, expectedOriginsForPopulation, humanOriginMixFromTable, defaultHumanOriginMix, type HumanOriginMix } from './human';
 import { cityPopulationGroupsAtPixel, type City, type CityPopulationGroup, type CityRank, type NomadCell, type Country, type World } from './world';
 
 const CITY_CANONICAL_MODIFIERS = [1, 1, 1, 2, 3, 6];
@@ -622,6 +622,7 @@ export function applyCityWaning(world: World, city: City): CityWaningResult | nu
 export function cityComposition(world: World, city: City): {
   cultures: { id: number; percent: number }[];
   religions: { id: number | null; percent: number }[];
+  humanOrigins: HumanOriginMix | null;
 } {
   const groups = ensureCityPopulationGroups(world, city);
   const cultures = new Map<number, number>();
@@ -634,7 +635,18 @@ export function cityComposition(world: World, city: City): {
   const shares = <T,>(values: Map<T, number>) => [...values.entries()]
     .map(([id, population]) => ({ id, percent: total > 0 ? Math.round(population / total * 1000) / 10 : 0 }))
     .sort((a, b) => b.percent - a.percent);
-  return { cultures: shares(cultures), religions: shares(religions) };
+  const originMixes = groups.flatMap((group) => {
+    if (!(group.population > 0)) return [];
+    const entry = world.humanOriginTable.entries[group.humanOriginMix];
+    return entry?.total === 100
+      ? [{ mix: humanOriginMixFromTable(entry.ids, entry.shares), weight: group.population }]
+      : [];
+  });
+  return {
+    cultures: shares(cultures),
+    religions: shares(religions),
+    humanOrigins: total > 0 && originMixes.length ? combineHumanOrigins(originMixes) : null,
+  };
 }
 
 /** Moves 10% from each source pixel into a city, preferring matches to the city's population. */

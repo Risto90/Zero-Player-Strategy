@@ -6,9 +6,11 @@ import { useGameSnapshot } from '@/game/useGame';
 import { currentGame } from '@/game/session';
 import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt, pct } from '@/game/format';
+import { humanOriginShares } from '@/game/human';
 import { cityComposition, cityRankName } from '@/game/settlements';
 import { countryProfileRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
 import { MissingProfile, ProfileFact, ProfileLayout, ProfileLink, ProfileSection, ProfileScrollList } from '@/components/profiles/ProfileLayout';
+import { OriginComposition } from '@/components/profiles/OriginComposition';
 
 export default function CityPage() {
   const { id: rawId } = useLocalSearchParams<{ id: string }>();
@@ -55,6 +57,9 @@ export default function CityPage() {
               note={pct(percent)} onPress={() => router.push(religionProfileRoute(religionId))} />
           )) : <ProfileFact>Нет данных.</ProfileFact>}
         </ProfileScrollList>
+      </ProfileSection>
+      <ProfileSection title="РАСЫ">
+        <OriginComposition rows={composition.humanOrigins ? humanOriginShares(composition.humanOrigins) : null} />
       </ProfileSection>
     </>
   );

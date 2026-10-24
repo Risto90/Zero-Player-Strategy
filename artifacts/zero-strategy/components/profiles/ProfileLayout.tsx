@@ -20,6 +20,7 @@ export function ProfileLayout({
   initialReference,
   objectOptions = [],
   extraTabs = [],
+  showChronicleTab = true,
 }: {
   eyebrow: string;
   title: string;
@@ -30,13 +31,16 @@ export function ProfileLayout({
   initialReference?: ChronicleReference;
   objectOptions?: ChronicleObjectOption[];
   extraTabs?: { key: string; label: string; content: ReactNode }[];
+  showChronicleTab?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState('details');
   const selectedExtraTab = extraTabs.find((item) => item.key === tab);
   useEffect(() => {
-    if (tab !== 'details' && tab !== 'chronicle' && !selectedExtraTab) setTab('details');
-  }, [extraTabs, selectedExtraTab, tab]);
+    if ((!showChronicleTab && tab === 'chronicle') || (tab !== 'details' && tab !== 'chronicle' && !selectedExtraTab)) {
+      setTab('details');
+    }
+  }, [extraTabs, selectedExtraTab, showChronicleTab, tab]);
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -63,10 +67,12 @@ export function ProfileLayout({
             <Text style={[styles.tabText, tab === item.key && styles.activeTabText]}>{item.label}</Text>
           </Pressable>
         ))}
-        <Pressable onPress={() => setTab('chronicle')} style={[styles.tab, tab === 'chronicle' && styles.activeTab]}
-          accessibilityState={{ selected: tab === 'chronicle' }}>
-          <Text style={[styles.tabText, tab === 'chronicle' && styles.activeTabText]}>Летопись · {chronicle.length}</Text>
-        </Pressable>
+        {showChronicleTab && (
+          <Pressable onPress={() => setTab('chronicle')} style={[styles.tab, tab === 'chronicle' && styles.activeTab]}
+            accessibilityState={{ selected: tab === 'chronicle' }}>
+            <Text style={[styles.tabText, tab === 'chronicle' && styles.activeTabText]}>Летопись · {chronicle.length}</Text>
+          </Pressable>
+        )}
       </ScrollView>
       {tab === 'details' ? (
         <ScrollView style={styles.pageScroll} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}

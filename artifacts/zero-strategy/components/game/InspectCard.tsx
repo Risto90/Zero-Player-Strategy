@@ -52,6 +52,18 @@ export function InspectCard({ info, onClose, onCountryPress, onCityPress }: {
                   Культуры: {info.cultures.map(({ name, share }) => `${name} ${pct(share)}`).join(' · ')}
                 </Text>
               )}
+              {info.humanOrigins?.length ? (
+                <Text style={styles.composition} testID="inspect-human-origins">
+                  Расы: {info.humanOrigins.map(({ name, share }) => `${name} ${pct(share)}`).join(' · ')}
+                </Text>
+              ) : (
+                <Text style={styles.composition} testID="inspect-human-origins-empty">Расы: нет данных</Text>
+              )}
+              {info.humanClimateSuitability !== null && (
+                <Text style={styles.composition} testID="inspect-climate-suitability">
+                  Пригодность климата: {pct(info.humanClimateSuitability)}. Игровая агрегированная оценка.
+                </Text>
+              )}
               {(info.religions.length > 0 || info.nonBelievers > 0) && (
                 <Text style={styles.composition}>
                   Веры: {[
