@@ -204,7 +204,9 @@ export class Game {
   private layer: EntityLayer | null = null;
   private secondsLeft = TURN_SECONDS;
   private paused = false;
+  private pauseChangedDuringBusy = false;
   private busy = false;
+  private resolvingAutomatically = false;
   /** True from the end of a turn until the map view has shown the new map. */
   private drawing = false;
   private progress: { done: number; total: number } | null = null;
@@ -418,6 +420,7 @@ export class Game {
   }
 
   togglePause(): void {
+    if (this.busy) this.pauseChangedDuringBusy = true;
     this.paused = !this.paused;
     this.emit();
   }
@@ -496,9 +499,11 @@ export class Game {
       card.newCountryId = country.id;
       card.cityPlaced = true;
       this.message = `${country.name} основано; кочевая страна стала оседлой.`;
-      this.mapMode = 'political';
-      this.layer = null;
-      this.renderer.setView('political', null);
+      if (!this.resolvingAutomatically) {
+        this.mapMode = 'political';
+        this.layer = null;
+        this.renderer.setView('political', null);
+      }
       this.renderer.markAll();
       this.emit();
       this.scheduleSave();
@@ -783,6 +788,7 @@ export class Game {
     if (completedCard?.type === 'split' && completedCard.splitBatch &&
       completedCard.splitBatch.nextIndex < completedCard.splitBatch.destinationIds.length - 1) {
       const batch = completedCard.splitBatch;
+      this.pauseChangedDuringBusy = false;
       this.busy = true;
       try {
         this.completeCard();
@@ -790,11 +796,13 @@ export class Game {
         return;
       } finally {
         this.busy = false;
+        this.pauseChangedDuringBusy = false;
         this.drawing = this.renderer.pending;
         this.emit(true);
         this.scheduleSave();
       }
     }
+    this.pauseChangedDuringBusy = false;
     this.busy = true;
     try {
       this.completeCard();
@@ -845,6 +853,7 @@ export class Game {
       this.startNextPlayerCard();
     } finally {
       this.busy = false;
+      this.pauseChangedDuringBusy = false;
       this.progress = null;
       this.drawing = this.renderer.pending;
       this.emit(true);
@@ -894,12 +903,12 @@ export class Game {
     return false;
   }
 
-  private startCard(card: Card, painterState?: CardPainterState | null): void {
+  private startCard(card: Card, painterState?: CardPainterState | null, selectMapMode = true): void {
     this.card = card;
     if (card.developmentOnly) this.brushMode = 'repeat';
     this.painter = new CardPainter(this.world, card, this.brushMode, painterState);
     this.secondsLeft = TURN_SECONDS;
-    this.paused = false;
+    if (!this.busy || !this.pauseChangedDuringBusy) this.paused = false;
     this.message = card.detail;
     const mode: MapMode =
       card.type === 'drought' || card.type === 'rain' ? 'humidity'
@@ -909,9 +918,11 @@ export class Game {
           : card.type === 'colonization' ? 'colonization'
           : card.type === 'buildCity' && card.targetCountryId !== null && this.world.countries[card.targetCountryId]?.type === 'nomadic' ? 'nomads'
           : card.type === 'nomadExpand' ? (card.nomadDensityOnly ? 'density' : 'nomads') : 'political';
-    this.mapMode = mode;
-    this.layer = null;
-    this.renderer.setView(mode, null, mode === 'colonization' ? this.painter.colonizationMask : null);
+    if (selectMapMode) {
+      this.mapMode = mode;
+      this.layer = null;
+      this.renderer.setView(mode, null, mode === 'colonization' ? this.painter.colonizationMask : null);
+    }
     if (card.type === 'nomadExpand') this.painter.setNomadMode(card.nomadDensityOnly ? 'density' : 'range');
   }
 
@@ -972,11 +983,21 @@ export class Game {
   }
 
   private resolveAutomatically(card: Card): void {
+    const previousResolutionState = this.resolvingAutomatically;
+    this.resolvingAutomatically = true;
+    try {
+      this.resolveAutomaticCard(card);
+    } finally {
+      this.resolvingAutomatically = previousResolutionState;
+    }
+  }
+
+  private resolveAutomaticCard(card: Card): void {
     this.card = card;
     if (card.choices && card.choices.length > 1) {
       this.dispatchAction({ type: 'selectChoice', index: Math.floor(Math.random() * card.choices.length) });
     }
-    this.startCard(card);
+    this.startCard(card, undefined, false);
     const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split' || card.type === 'colonization' || card.type === 'nomadExpand';
     const painter = this.painter;
     if (!painter) return;
@@ -1039,7 +1060,7 @@ export class Game {
     this.finish(this.painter);
     this.painter = null;
     this.card = null;
-    if (this.mapMode === 'colonization') {
+    if (!this.resolvingAutomatically && this.mapMode === 'colonization') {
       this.mapMode = 'political';
       this.layer = null;
       this.renderer.setView('political', null);
