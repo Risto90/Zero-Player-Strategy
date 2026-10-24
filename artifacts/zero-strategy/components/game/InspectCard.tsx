@@ -2,6 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import type { PixelInfo } from '@/game/game';
+import { fmt, pct } from '@/game/format';
 import { cityRankName } from '@/game/settlements';
 
 const c = colors.light;
@@ -43,6 +44,24 @@ export function InspectCard({ info, onClose, onCountryPress, onCityPress }: {
               <Text style={styles.link}>{info.country.rank} {info.country.name}</Text>
             </Pressable>
           )}
+          {info.land && info.country && info.density > 0 && (
+            <View style={styles.demographics} testID="inspect-demographics">
+              <Text style={styles.demographic}>Население точки: {fmt(info.density)} чел.</Text>
+              {info.cultures.length > 0 && (
+                <Text style={styles.composition}>
+                  Культуры: {info.cultures.map(({ name, share }) => `${name} ${pct(share)}`).join(' · ')}
+                </Text>
+              )}
+              {(info.religions.length > 0 || info.nonBelievers > 0) && (
+                <Text style={styles.composition}>
+                  Веры: {[
+                    ...info.religions.map(({ name, share }) => `${name} ${pct(share)}`),
+                    ...(info.nonBelievers > 0 ? [`Неверующие ${pct(info.nonBelievers)}`] : []),
+                  ].join(' · ')}
+                </Text>
+              )}
+            </View>
+          )}
           {info.land && !info.city && !info.country && <Text style={styles.description}>Ничья земля</Text>}
         </>
       )}
@@ -76,4 +95,7 @@ const styles = StyleSheet.create({
   coords: { fontFamily: fonts.mono, fontSize: 10, color: c.mutedForeground },
   description: { fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.accent, textDecorationLine: 'underline' },
+  demographics: { gap: 2, marginTop: 3, paddingTop: 4, borderTopWidth: 1, borderTopColor: c.border },
+  demographic: { fontFamily: fonts.sansSemiBold, fontSize: 11, color: c.foreground },
+  composition: { fontFamily: fonts.sans, fontSize: 10, color: c.mutedForeground },
 });

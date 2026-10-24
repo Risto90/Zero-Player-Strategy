@@ -16,3 +16,4 @@
 - [Task handling](task-handling.md) — when the user refers to an existing task, continue that task instead of creating a replacement.
 - [Chronicle object links](chronicle-object-links.md) — record event links explicitly; never infer them from legacy prose, and account for IDs that shift on removal.
 - [City regression runtime](city-regression-runtime.md) — the full city regression suite may exceed short validation windows; keep UI checks targeted and handle performance separately.
+- [Point inspection demographics](point-inspection-demographics.md) — use the selected tile’s population layer and raster mixes; keep city population and composition in city profiles.
