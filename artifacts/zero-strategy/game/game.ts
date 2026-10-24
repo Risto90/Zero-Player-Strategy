@@ -18,7 +18,7 @@ import { appoint, candidateAllowed, closeRulerTerms, ensureOffices, refreshHeirs
 import { randomItem } from './random';
 import { demography } from './demography';
 import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS, humanClimateSuitabilityAt, humanOriginMixFromTable, humanOriginShares } from './human';
-import type { NotificationRecipient } from './notifications';
+import type { GameNotification, NotificationRecipient } from './notifications';
 import {
   addCityAndConcentrate,
   applyCityWaning,
@@ -139,6 +139,7 @@ export interface GameSnapshot {
   chronicle: ChronicleEntry[];
   message: string;
   messageRecipient: NotificationRecipient;
+  notificationSequence: number;
   legend: Legend;
 }
 
@@ -179,6 +180,15 @@ interface SavedGame {
 const OBSERVER_SECONDS = 3;
 /** Work is cut into slices of about this many milliseconds, so the screen never freezes. */
 const SLICE_MS = 12;
+const EMPTY_TEST_LEGEND: Legend = {
+  countries: [],
+  cultures: [],
+  religions: [],
+  origins: [],
+  nonBelievers: { id: 0, name: 'Атеисты', color: '#000000', value: 0, percent: 0, detail: '' },
+  biomes: [],
+  totalPopulation: 0,
+};
 
 /** Save-file reads, writes and deletes run one at a time, in the order they were requested. */
 let fileQueue: Promise<unknown> = Promise.resolve();
@@ -224,12 +234,15 @@ export class Game {
   private disposed = false;
   /** Turned off by the test harness, which has no storage. */
   static persist = true;
+  /** Set only by the browser notification campaign build to avoid unrelated map legend work. */
+  static notificationE2eFastMode = false;
   private static saveOwner: Game | null = null;
   /** How to wait between slices; the harness can swap in an immediate one. */
   static pause: () => Promise<void> = nextFrame;
   private log: ChronicleEntry[] = [];
   private message = '';
   private messageRecipient: NotificationRecipient = { scope: 'game' };
+  private readonly notificationEvents: GameNotification[] = [];
   private lastPoint: { x: number; y: number } | null = null;
   private legendCache: { version: number; legend: Legend } | null = null;
   private snapshot: GameSnapshot | null = null;
@@ -413,6 +426,18 @@ export class Game {
   private setMessage(message: string, recipient: NotificationRecipient = this.messageRecipient): void {
     this.message = message;
     this.messageRecipient = recipient;
+    if (message.trim()) {
+      this.notificationEvents.push({
+        id: this.notificationEvents.length + 1,
+        message,
+        recipient,
+      });
+    }
+  }
+
+  /** Returns all messages emitted after the caller's last processed sequence. */
+  notificationsAfter(sequence: number): GameNotification[] {
+    return this.notificationEvents.slice(Math.max(0, Math.floor(sequence)));
   }
 
   private defaultNotificationRecipient(): NotificationRecipient {
@@ -2032,7 +2057,10 @@ export class Game {
       chronicle: this.log,
       message: this.message,
       messageRecipient: this.messageRecipient,
-      legend: this.lastPoint ? (this.legendCache?.legend ?? this.computeLegend()) : this.legend(),
+      notificationSequence: this.notificationEvents.length,
+      legend: Game.notificationE2eFastMode
+        ? EMPTY_TEST_LEGEND
+        : this.lastPoint ? (this.legendCache?.legend ?? this.computeLegend()) : this.legend(),
     };
   }
 

@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Game, hasPlayerActionCard } from '../game/game.ts';
-import { notificationIsForSubscriber } from '../game/notifications.ts';
+import {
+  notificationIsForSubscriber,
+  notificationSubscriptionsForViewer,
+} from '../game/notifications.ts';
 import { mulberry32 } from '../game/random.ts';
 
 const root = process.cwd();
@@ -55,10 +58,28 @@ assert.equal(notificationIsForSubscriber(countrySeven, [{ scope: 'country', coun
   'a country-slot notification does not reach a viewer subscribed to another country');
 assert.equal(notificationIsForSubscriber({ scope: 'world' }, [{ scope: 'country', countryId: 7 }]), false,
   'world-slot notifications do not leak into a country-only view');
-assert.equal(notificationIsForSubscriber({ scope: 'game' }, [{ scope: 'country', countryId: 7 }]), true,
-  'game-wide notifications reach every subscribed viewer');
+assert.equal(notificationIsForSubscriber({ scope: 'game' }, [{ scope: 'any' }]), true,
+  'game-wide notifications reach a viewer explicitly subscribed to all recipients');
+assert.equal(notificationIsForSubscriber({ scope: 'game' }, [{ scope: 'country', countryId: 7 }]), false,
+  'game-wide notifications do not bypass a country-only subscription');
+assert.equal(notificationIsForSubscriber({ scope: 'game' }, []), false,
+  'game-wide notifications do not bypass the subscription matcher');
 assert.equal(notificationIsForSubscriber({ scope: 'world' }, [{ scope: 'any' }]), true,
   'a viewer subscribed to all recipients receives each slot notification');
+assert.deepEqual(notificationSubscriptionsForViewer('all'), [{ scope: 'any' }],
+  'god mode subscribes to every explicit notification recipient');
+assert.equal(notificationIsForSubscriber(
+  { scope: 'world' },
+  notificationSubscriptionsForViewer('all'),
+), true, 'god mode receives world notifications');
+assert.deepEqual(notificationSubscriptionsForViewer('world'), [{ scope: 'world' }],
+  'world mode subscribes to world notifications');
+assert.deepEqual(notificationSubscriptionsForViewer('country', 7), [{ scope: 'country', countryId: 7 }],
+  'country mode subscribes only to its selected country');
+assert.deepEqual(notificationSubscriptionsForViewer('country'), [],
+  'country mode with no selected country has no implicit recipient');
+assert.deepEqual(notificationSubscriptionsForViewer('observer'), [],
+  'observer mode has no game-notification subscriptions');
 assert.doesNotMatch(notifications, /AI|ИИ|artificial intelligence|автоматическ/u,
   'notification delivery contains no producer or automation-specific rules');
 assert.match(gameSource, /messageRecipient: NotificationRecipient/,
@@ -105,10 +126,20 @@ assert.doesNotMatch(cardPanel, /text-ink|fmt\(card\.ink\)/,
   'the card panel no longer displays numeric ink counts');
 assert.match(screen, /testID="map-hint-toast"[\s\S]*?hintToastText/,
   'map instructions and game messages use the transient hint toast');
-assert.match(screen, /notificationIsForSubscriber\(snap\.messageRecipient, notificationSubscriptions\)/,
-  'the screen displays game messages only when the viewer is subscribed to their recipient');
-assert.match(screen, /showHint\(messageForViewer, 'notification'\)/,
-  'game messages use the recipient-filtered notification path');
+assert.match(screen, /game\.notificationsAfter\(lastNotificationSequence\.current\)/,
+  'the screen drains every newly emitted message rather than losing intermediate notifications');
+assert.match(screen, /notificationIsForSubscriber\(event\.recipient, notificationSubscriptions\)/,
+  'the screen displays messages only when the viewer is subscribed to their explicit recipient');
+assert.match(screen, /snap\.role === 'country' && snap\.card\?\.type === 'create' \? snap\.card\.newCountryId : null/,
+  'the first country card subscribes to its country slot before the country exists');
+assert.match(screen, /setPendingNotifications\(\(current\) => \[\.\.\.current, \.\.\.displayable\]\)/,
+  'recipient-matched notifications are queued for visible delivery');
+assert.match(gameSource, /notificationSequence: this\.notificationEvents\.length/,
+  'notification updates have a sequence that the screen can drain without polling losses');
+assert.match(screen, /snap\.role !== 'observer' && !!hint/,
+  'observer mode never renders the local or notification toast');
+assert.match(screen, /if \(snap\.role !== 'observer'\) return;\s*setPendingNotifications\(\[\]\)/,
+  'switching into observer mode clears previously queued hints');
 assert.match(screen, /setTimeout\(\(\) => \{\s*setHint\(''\)/,
   'hint messages disappear automatically');
 assert.match(screen, /hintToastText: \{[^}]*backgroundColor: 'rgba\(0,0,0,0\.72\)'[^}]*color: '#fff'/,
@@ -152,12 +183,22 @@ try {
   // Card processing keeps the selected map view and carries the event recipient.
   const firstCard = game.getSnapshot().card;
   assert.ok(firstCard, 'the test game starts with a player card');
+  const initialNotificationSequence = game.getSnapshot().notificationSequence;
+  const initialNotifications = game.notificationsAfter(0);
+  assert.equal(initialNotifications.at(-1)?.message, firstCard.detail,
+    'the initial card message is retained for later UI delivery');
+  assert.deepEqual(initialNotifications.at(-1)?.recipient, { scope: 'world' },
+    'the initial god-mode notification has its explicit world recipient');
+  assert.equal(game.notificationsAfter(initialNotificationSequence).length, 0,
+    'draining from the latest notification sequence does not redeliver old messages');
   game.setMapMode('cultures');
   game.resolveAutomatically(firstCard, { scope: 'world' });
   assert.equal(game.getSnapshot().mapMode, 'cultures',
     'card processing preserves the selected map mode');
   assert.deepEqual(game.getSnapshot().messageRecipient, { scope: 'world' },
     'card processing preserves its explicit recipient in the game snapshot');
+  assert.deepEqual(game.notificationsAfter(initialNotificationSequence).at(-1)?.recipient, { scope: 'world' },
+    'automatic card messages are retained with the recipient provided by their caller');
 
   // Starting a rain card selects humidity and queues a real raster repaint.
   game.setMapMode('political');

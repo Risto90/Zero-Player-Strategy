@@ -16,11 +16,15 @@ import type { MapTool, MapViewHandle } from '@/components/map/types';
 import colors, { fonts } from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { fmt } from '@/game/format';
-import { hasPlayerActionCard, type Game, type GameSnapshot, type PixelInfo } from '@/game/game';
+import { Game, hasPlayerActionCard, type GameSnapshot, type PixelInfo } from '@/game/game';
 import { AUTO_TURN_HOLD_MS } from '@/game/holdConfirmation';
 import { hasMapObjectList } from '@/game/mapModeCapabilities';
 import { scheduleMapLegend } from '@/game/mapLegendTimer';
-import { notificationIsForSubscriber, type NotificationSubscription } from '@/game/notifications';
+import {
+  notificationIsForSubscriber,
+  notificationSubscriptionsForViewer,
+  type GameNotification,
+} from '@/game/notifications';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
 import type { MapMode } from '@/game/render';
@@ -28,6 +32,19 @@ import { isActiveCountry } from '@/game/world';
 import { useGameSnapshot } from '@/game/useGame';
 
 const c = colors.light;
+
+declare global {
+  interface Window {
+    __ZERO_STRATEGY_NOTIFICATION_TEST__?: {
+      advanceTurn: () => Promise<void>;
+      getSnapshot: () => GameSnapshot;
+      getNotificationsAfter: (sequence: number) => GameNotification[];
+      getRoutedNotificationIds: () => number[];
+      getDisplayableNotificationIds: () => number[];
+      getActiveCountryIds: () => number[];
+    };
+  }
+}
 
 function goHome() {
   if (router.canGoBack()) router.back();
@@ -89,6 +106,9 @@ export default function PlayScreen() {
 }
 
 function GameScreen({ game }: { game: Game }) {
+  const notificationE2e = Platform.OS === 'web' &&
+    process.env.EXPO_PUBLIC_NOTIFICATION_E2E === 'true';
+  if (notificationE2e) Game.notificationE2eFastMode = true;
   const snap = useGameSnapshot(game);
   const insets = useSafeAreaInsets();
   const { height, width } = useWindowDimensions();
@@ -102,6 +122,10 @@ function GameScreen({ game }: { game: Game }) {
   const [inspect, setInspect] = useState<{ info: PixelInfo | null } | null>(null);
   const [hint, setHint] = useState('');
   const hintSource = useRef<'local' | 'notification' | null>(null);
+  const [pendingNotifications, setPendingNotifications] = useState<GameNotification[]>([]);
+  const lastNotificationSequence = useRef(0);
+  const routedNotificationIds = useRef<number[]>([]);
+  const displayableNotificationIds = useRef<number[]>([]);
   const [listMode, setListMode] = useState<MapMode | null>(null);
   const [cardOpen, setCardOpen] = useState(false);
   const [cardHelpOpen, setCardHelpOpen] = useState(false);
@@ -116,16 +140,13 @@ function GameScreen({ game }: { game: Game }) {
   const canPlaceCity = snap.cityPlacementAvailable && !snap.busy;
   const canOpenEvent = hasPlayerActionCard(snap);
   const activeCard = canOpenEvent ? snap.card : null;
-  const notificationSubscriptions = useMemo<NotificationSubscription[]>(() => {
-    if (snap.role === 'all' || snap.role === 'observer') return [{ scope: 'any' }];
-    if (snap.role === 'world') return [{ scope: 'world' }];
-    return snap.focusCountry
-      ? [{ scope: 'country', countryId: snap.focusCountry.id }]
-      : [];
-  }, [snap.role, snap.focusCountry?.id]);
-  const messageForViewer = notificationIsForSubscriber(snap.messageRecipient, notificationSubscriptions)
-    ? snap.message.trim()
-    : '';
+  const notificationCountryId = snap.focusCountry?.id ??
+    (snap.role === 'country' && snap.card?.type === 'create' ? snap.card.newCountryId : null);
+  const notificationSubscriptions = useMemo(
+    () => notificationSubscriptionsForViewer(snap.role, notificationCountryId),
+    [snap.role, notificationCountryId],
+  );
+  const activeNotification = pendingNotifications[0] ?? null;
   const canOpenChoices = canOpenEvent && snap.card?.choices?.length === 2;
   const showTools = 1 + Number(canBrush) + Number(canPlaceCity) + Number(canOpenChoices) >= 2;
   const webTopInset = Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top;
@@ -150,14 +171,6 @@ function GameScreen({ game }: { game: Game }) {
       hintSource.current = null;
       hintTimer.current = null;
     }, 2600);
-  }, []);
-
-  const clearNotificationHint = useCallback(() => {
-    if (hintSource.current !== 'notification') return;
-    if (hintTimer.current) clearTimeout(hintTimer.current);
-    hintTimer.current = null;
-    hintSource.current = null;
-    setHint('');
   }, []);
 
   const changeTool = useCallback((nextTool: MapTool) => {
@@ -232,12 +245,77 @@ function GameScreen({ game }: { game: Game }) {
   }, []);
 
   useEffect(() => {
-    if (!messageForViewer || messageForViewer === snap.card?.detail) {
-      clearNotificationHint();
+    const unseen = game.notificationsAfter(lastNotificationSequence.current);
+    if (!unseen.length) return;
+    lastNotificationSequence.current = unseen[unseen.length - 1].id;
+    const routed = unseen.filter((event) =>
+      notificationIsForSubscriber(event.recipient, notificationSubscriptions),
+    );
+    if (notificationE2e) routedNotificationIds.current.push(...routed.map(({ id }) => id));
+    const displayable = routed.filter((event) => event.message !== snap.card?.detail);
+    if (notificationE2e) displayableNotificationIds.current.push(...displayable.map(({ id }) => id));
+    if (displayable.length) {
+      setPendingNotifications((current) => [...current, ...displayable]);
+    }
+  }, [game, notificationE2e, snap.notificationSequence, snap.card?.detail, notificationSubscriptions]);
+
+  useEffect(() => {
+    if (snap.role !== 'observer') return;
+    setPendingNotifications([]);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    hintTimer.current = null;
+    hintSource.current = null;
+    setHint('');
+  }, [snap.role]);
+
+  useEffect(() => {
+    if (!activeNotification || snap.role === 'observer') {
       return;
     }
-    showHint(messageForViewer, 'notification');
-  }, [messageForViewer, snap.card?.detail, showHint, clearNotificationHint]);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    setHint(activeNotification.message);
+    hintSource.current = 'notification';
+    hintTimer.current = setTimeout(() => {
+      setHint((current) => current === activeNotification.message ? '' : current);
+      hintSource.current = null;
+      hintTimer.current = null;
+      setPendingNotifications((current) =>
+        current[0]?.id === activeNotification.id ? current.slice(1) : current,
+      );
+    }, process.env.EXPO_PUBLIC_NOTIFICATION_E2E === 'true' ? 100 : 2600);
+    return () => {
+      if (hintTimer.current) clearTimeout(hintTimer.current);
+      hintTimer.current = null;
+    };
+  }, [activeNotification?.id, snap.role]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || process.env.EXPO_PUBLIC_NOTIFICATION_E2E !== 'true') return;
+    const previousPersist = Game.persist;
+    const previousPause = Game.pause;
+    const previousFastMode = Game.notificationE2eFastMode;
+    Game.persist = false;
+    Game.pause = async () => {};
+    Game.notificationE2eFastMode = true;
+    game.stop();
+    const bridge = {
+      advanceTurn: () => game.nextTurn(true),
+      getSnapshot: () => game.getSnapshot(),
+      getNotificationsAfter: (sequence: number) => game.notificationsAfter(sequence),
+      getRoutedNotificationIds: () => [...routedNotificationIds.current],
+      getDisplayableNotificationIds: () => [...displayableNotificationIds.current],
+      getActiveCountryIds: () => game.world.countries.filter(isActiveCountry).map(({ id }) => id),
+    };
+    window.__ZERO_STRATEGY_NOTIFICATION_TEST__ = bridge;
+    return () => {
+      if (window.__ZERO_STRATEGY_NOTIFICATION_TEST__ === bridge) {
+        delete window.__ZERO_STRATEGY_NOTIFICATION_TEST__;
+      }
+      Game.persist = previousPersist;
+      Game.pause = previousPause;
+      Game.notificationE2eFastMode = previousFastMode;
+    };
+  }, [game]);
 
   useEffect(() => {
     const newest = snap.log[0];
@@ -373,48 +451,54 @@ function GameScreen({ game }: { game: Game }) {
       </View>
 
       <View style={styles.mapArea}>
-        <MapView
-          ref={mapRef}
-          game={game}
-          tool={tool}
-          canPaint={canBrush}
-          onInspect={(info) => setInspect({ info })}
-          onMapActivity={showZoomForAWhile}
-        />
+        {notificationE2e
+          ? <View style={styles.e2eMapPlaceholder} testID="notification-test-map" />
+          : (
+            <MapView
+              ref={mapRef}
+              game={game}
+              tool={tool}
+              canPaint={canBrush}
+              onInspect={(info) => setInspect({ info })}
+              onMapActivity={showZoomForAWhile}
+            />
+          )}
         {holdingNext && snap.card && (
           <View style={styles.holdHint} pointerEvents="none" testID="hint-hold-next">
             <Text style={styles.holdHintText}>Удерживайте 3 секунды для автохода</Text>
           </View>
         )}
-        <MapControls
-          game={game}
-          snap={snap}
-          tool={tool}
-          setTool={changeTool}
-          showTools={showTools}
-          showBrush={canBrush}
-          showCity={canPlaceCity}
-          compact={width < 420}
-          showChoice={canOpenChoices}
-          choiceOpen={cardOpen}
-          onToggleChoice={() => setCardOpen((open) => {
-            const next = !open;
-            if (next) {
-              setListMode(null);
-              setLogOpen(false);
-            }
-            return next;
-          })}
-          showZoom={zoomVisible}
-          onZoom={(factor) => {
-            showZoomForAWhile();
-            mapRef.current?.zoomBy(factor);
-          }}
-          onFit={() => {
-            showZoomForAWhile();
-            mapRef.current?.fit();
-          }}
-        />
+        {!notificationE2e && (
+          <MapControls
+            game={game}
+            snap={snap}
+            tool={tool}
+            setTool={changeTool}
+            showTools={showTools}
+            showBrush={canBrush}
+            showCity={canPlaceCity}
+            compact={width < 420}
+            showChoice={canOpenChoices}
+            choiceOpen={cardOpen}
+            onToggleChoice={() => setCardOpen((open) => {
+              const next = !open;
+              if (next) {
+                setListMode(null);
+                setLogOpen(false);
+              }
+              return next;
+            })}
+            showZoom={zoomVisible}
+            onZoom={(factor) => {
+              showZoomForAWhile();
+              mapRef.current?.zoomBy(factor);
+            }}
+            onFit={() => {
+              showZoomForAWhile();
+              mapRef.current?.fit();
+            }}
+          />
+        )}
 
         {hasMapObjectList(snap.mapMode) && (
           <Pressable
@@ -439,7 +523,7 @@ function GameScreen({ game }: { game: Game }) {
           </Pressable>
         )}
 
-        {legendVisible && !hasMapObjectList(snap.mapMode) && !cardOpen && !listMode && !logOpen && (
+        {!notificationE2e && legendVisible && !hasMapObjectList(snap.mapMode) && !cardOpen && !listMode && !logOpen && (
           <MapLegend game={game} snap={snap} />
         )}
 
@@ -451,8 +535,14 @@ function GameScreen({ game }: { game: Game }) {
             onCityPress={(id) => router.push(cityProfileRoute(id))}
           />
         )}
-        {!!hint && (
-          <View style={styles.hintToast} pointerEvents="none" testID="map-hint-toast">
+        {snap.role !== 'observer' && !!hint && (
+          <View
+            style={styles.hintToast}
+            pointerEvents="none"
+            testID="map-hint-toast"
+            accessibilityLabel={hintSource.current === 'notification' ? `Уведомление: ${hint}` : hint}
+            nativeID={hintSource.current === 'notification' && activeNotification ? `notification-${activeNotification.id}` : undefined}
+          >
             <Text style={styles.hintToastText} numberOfLines={2}>{hint}</Text>
           </View>
         )}
@@ -567,6 +657,7 @@ const styles = StyleSheet.create({
   next: { width: 38, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 4, backgroundColor: c.primary },
   disabled: { opacity: 0.55 },
   mapArea: { flex: 1, minHeight: 120, position: 'relative', overflow: 'hidden', backgroundColor: c.mapBackdrop },
+  e2eMapPlaceholder: { flex: 1, backgroundColor: c.mapBackdrop },
   holdHint: { position: 'absolute', top: 48, alignSelf: 'center', zIndex: 30, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.72)' },
   holdHintText: { fontFamily: fonts.sansMedium, fontSize: 11, color: c.primaryForeground },
   listButton: { position: 'absolute', top: 8, right: 8, height: 34, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, borderWidth: 1, borderColor: c.foreground, borderRadius: 4, backgroundColor: c.card, shadowColor: c.foreground, shadowOpacity: 0.16, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3 },

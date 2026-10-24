@@ -13,12 +13,30 @@ export type NotificationSubscription =
   | { scope: 'observer' }
   | { scope: 'country'; countryId: number };
 
-/** Matches an event recipient against the viewer's subscriptions, without regard to its producer. */
+export type NotificationViewerRole = 'all' | 'country' | 'world' | 'observer';
+
+export interface GameNotification {
+  id: number;
+  message: string;
+  recipient: NotificationRecipient;
+}
+
+/** A viewer's subscriptions describe the notifications they can receive, not who processes turns. */
+export function notificationSubscriptionsForViewer(
+  role: NotificationViewerRole,
+  countryId: number | null = null,
+): NotificationSubscription[] {
+  if (role === 'all') return [{ scope: 'any' }];
+  if (role === 'world') return [{ scope: 'world' }];
+  if (role === 'country' && countryId !== null) return [{ scope: 'country', countryId }];
+  return [];
+}
+
+/** Matches an event recipient against explicit subscriptions, without regard to its producer. */
 export function notificationIsForSubscriber(
   recipient: NotificationRecipient,
   subscriptions: readonly NotificationSubscription[],
 ): boolean {
-  if (recipient.scope === 'game') return true;
   return subscriptions.some((subscription) =>
     subscription.scope === 'any' ||
     (subscription.scope === recipient.scope &&
