@@ -191,13 +191,9 @@ export function trackedForBirth(world: World, country: Country, p: Person): bool
 }
 /** Every living named person belonging to this country, independent of dynasty. */
 export function countryCharacters(world: World, country: Country): Person[] {
-  const rulers = new Set([country.ruler.id, ...country.coRulerIds]);
   return world.people
-    .filter((p) => p.alive && (p.countryId === country.id || rulers.has(p.id)))
-    .sort((a, b) => {
-      const rank = (p: Person) => p.id === country.ruler.id ? 2 : country.coRulerIds.includes(p.id) ? 1 : 0;
-      return rank(b) - rank(a) || b.age - a.age || a.name.localeCompare(b.name);
-    });
+    .filter((p) => p.alive && p.countryId === country.id)
+    .sort((a, b) => b.age - a.age || a.name.localeCompare(b.name) || a.id - b.id);
 }
 /** Migrate family surnames, retain each family's cultural affix, and keep living dynasties distinct. */
 export function ensureUniqueDynastySurnames(world: World): void {

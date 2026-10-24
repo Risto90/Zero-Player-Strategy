@@ -8,11 +8,11 @@ import { fmt, pct } from '@/game/format';
 import { ageStage, GOVERNMENTS, MODIFIERS, personDeathStatus } from '@/game/government';
 import { currentGame } from '@/game/session';
 import { useGameSnapshot } from '@/game/useGame';
-import { expectedHeirFor, rulers } from '@/game/succession';
+import { countryCandidates, countryRulerHistory, expectedHeirFor, rulers } from '@/game/succession';
 import type { Game } from '@/game/game';
 import type { Country } from '@/game/world';
 import type { Person } from '@/game/government';
-import { cityProfileRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
+import { cityProfileRoute, countryCandidatesRoute, countryRulersRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
 import {
   MissingProfile,
   ProfileFact,
@@ -21,6 +21,8 @@ import {
   ProfileScrollList,
   ProfileSection,
 } from '@/components/profiles/ProfileLayout';
+import { CountryCandidatesList, CountryResidentsList, CountryRulerHistoryList } from '@/components/profiles/CountryLists';
+import { countryCharacters } from '@/game/characters';
 
 const c = colors.light;
 
@@ -41,6 +43,11 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
   const snapshot = useGameSnapshot(game);
   const composition = useMemo(() => game.countryComposition(country.id), [game, country.id, game.world.version]);
   const cities = useMemo(() => game.world.cities.filter((city) => city.countryId === country.id), [game, country.id, game.world.version]);
+  const residents = countryCharacters(game.world, country);
+  const candidates = useMemo(
+    () => countryCandidates(game.world, country),
+    [game, country.id, game.world.version],
+  );
 
   const personLink = (personId: number, name: string, note?: string) => (
     <ProfileLink key={`${personId}-${name}`} title={name} note={note}
@@ -71,6 +78,11 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
             })()}
           </View>
         ))}
+        <ProfileLink title="Хронология правителей по годам"
+          note={`${countryRulerHistory(game.world, country).length} записей`}
+          onPress={() => router.push(countryRulersRoute(country.id))} />
+        {candidates.length > 0 && <ProfileLink title={`Кандидаты на власть · ${candidates.length}`}
+          onPress={() => router.push(countryCandidatesRoute(country.id))} />}
       </ProfileSection>
 
       <ProfileSection title="ЭТНИЧЕСКИЙ СОСТАВ">
@@ -121,7 +133,16 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
   return (
     <ProfileLayout eyebrow="КАРТОЧКА СТРАНЫ" title={country.name}
       subtitle={`${country.rank} · основана в ${country.foundedYear} году`}
-      details={details} chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('country', country.id)])} />
+      details={details}
+      extraTabs={[
+        { key: 'residents', label: `Жители · ${residents.length}`, content: <CountryResidentsList game={game} country={country} /> },
+        ...(candidates.length ? [{
+          key: 'candidates',
+          label: `Кандидаты · ${candidates.length}`,
+          content: <CountryCandidatesList game={game} country={country} candidates={candidates} />,
+        }] : []),
+      ]}
+      chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('country', country.id)])} />
   );
 }
 

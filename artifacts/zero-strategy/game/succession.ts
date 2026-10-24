@@ -11,6 +11,35 @@ function isMember(c: Country, p: Person): boolean {
 export function rulers(world: World, c: Country): Person[] {
   return [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is Person => !!p)];
 }
+export interface RulerHistoryEntry {
+  person: Person;
+  year: number | null;
+  current: boolean;
+  currentCoRuler: boolean;
+}
+/** Appointment years are limited to the per-person seatSince fields currently stored in saves. */
+export function countryRulerHistory(world: World, c: Country): RulerHistoryEntry[] {
+  const activeIds = new Set([c.ruler.id, ...c.coRulerIds]);
+  const ids = new Set([
+    ...c.previousRulerIds,
+    ...world.people.filter((p) => p.formerRulerOf.includes(c.id)).map((p) => p.id),
+    ...activeIds,
+  ]);
+  const byId = new Map(world.people.map((p) => [p.id, p]));
+  byId.set(c.ruler.id, c.ruler);
+  return [...ids].flatMap((id) => {
+    const p = byId.get(id);
+    if (!p) return [];
+    const year = c.seatSince[id] ?? (id === c.ruler.id ? c.rulerSince : null);
+    return [{
+      person: p,
+      year: Number.isFinite(year) ? year : null,
+      current: activeIds.has(id),
+      currentCoRuler: c.coRulerIds.includes(id),
+    }];
+  }).sort((a, b) => (a.year ?? Number.POSITIVE_INFINITY) - (b.year ?? Number.POSITIVE_INFINITY) ||
+    Number(b.current) - Number(a.current) || a.person.id - b.person.id);
+}
 export function expectedHeirFor(world: World, c: Country, leader: Person): Person | null {
   if (!hasFixedHeir(c)) return null;
   return successionOrder(world, c, leader)[0] ?? null;
@@ -22,9 +51,10 @@ export function candidateAllowed(
   old = c.ruler,
   partnerExempt = false,
   allowCurrentLeader = false,
+  memberExempt = false,
 ): boolean {
   const foreignDynast = c.government !== 'republic' && c.dynastyClaims.includes(p.familyId);
-  if (!p.alive || (!isMember(c, p) && !partnerExempt && !foreignDynast)) return false;
+  if (!p.alive || (!isMember(c, p) && !partnerExempt && !memberExempt && !foreignDynast)) return false;
   if (!allowCurrentLeader && rulers(world, c).some((leader) => leader.id === p.id && leader.id !== old.id)) return false;
   const coRule = c.coRulerIds.includes(p.id);
   const adult = c.government === 'republic' || c.modifiers.includes('meritocracy') ||
@@ -48,7 +78,14 @@ export function candidateAllowed(
   }
   return true;
 }
-export function candidateWeight(world: World, c: Country, p: Person, old = c.ruler): number {
+export function candidateWeight(
+  world: World,
+  c: Country,
+  p: Person,
+  old = c.ruler,
+  republicanPornocracyPartner = false,
+  peopleById?: ReadonlyMap<number, Person>,
+): number {
   const d = demography(world, c);
   let weight = p.age >= 20 && p.age <= 28 ? 0.5 : 1;
   if (c.government === 'tribal') {
@@ -71,7 +108,8 @@ export function candidateWeight(world: World, c: Country, p: Person, old = c.rul
     }
   }
   if (c.modifiers.includes('oligarchy') && c.government === 'republic' &&
-      p.parents.some((id) => person(world, id)?.formerRulerOf.includes(c.id))) weight *= 2;
+      isChildOfFormerRuler(world, c, p, peopleById)) weight *= 2;
+  if (c.government === 'republic' && c.modifiers.includes('pornocracy') && republicanPornocracyPartner) weight *= 2;
   return weight;
 }
 function communistPool(c: Country, list: Person[]): Person[] {
@@ -80,8 +118,184 @@ function communistPool(c: Country, list: Person[]): Person[] {
   if (both.length) return both;
   return list.filter((p) => p.religionId === null || p.traits.includes('Космополит'));
 }
+
+export interface CountryCandidate {
+  person: Person;
+  kind: 'succession' | 'election';
+  basis: string[];
+  advantages: string[];
+  expectedHeir: boolean;
+  weight: number | null;
+}
+
+function partnerCandidateIds(anchors: Person[], candidates: Person[]): Set<number> {
+  const anchorIds = new Set(anchors.map((p) => p.id));
+  const candidateIds = new Set(candidates.map((p) => p.id));
+  const result = new Set<number>();
+  for (const anchor of anchors) {
+    for (const id of [...anchor.spouseIds, ...anchor.loverIds]) {
+      if (candidateIds.has(id)) result.add(id);
+    }
+  }
+  for (const candidate of candidates) {
+    if ([...candidate.spouseIds, ...candidate.loverIds].some((id) => anchorIds.has(id))) {
+      result.add(candidate.id);
+    }
+  }
+  return result;
+}
+
+function isChildOfFormerRuler(
+  world: World,
+  c: Country,
+  p: Person,
+  peopleById?: ReadonlyMap<number, Person>,
+): boolean {
+  return p.parents.some((id) => {
+    const parent = peopleById ? peopleById.get(id) : person(world, id);
+    return parent?.formerRulerOf.includes(c.id) ?? false;
+  });
+}
+
+function candidateWeightNotes(
+  world: World,
+  c: Country,
+  p: Person,
+  old: Person,
+  republicanPartner: boolean,
+  peopleById?: ReadonlyMap<number, Person>,
+): string[] {
+  const notes: string[] = [];
+  if (p.age >= 20 && p.age <= 28) notes.push('Возраст 20–28 лет: вес ×0,5.');
+  if (c.government === 'tribal' && c.modifiers.includes('ethnic')) {
+    const d = demography(world, c);
+    if (p.cultureId === d.culture) notes.push('Ведущая культура страны: вес ×4.');
+    if (p.cultureId === old.cultureId) notes.push('Культура прежнего вождя: вес ×2.');
+  }
+  if (c.government === 'tribal' && c.modifiers.includes('theocracy')) {
+    const d = demography(world, c);
+    const byFaith = new Map<number | null, number>();
+    for (const pair of d.pairs) {
+      if (pair.cultureId === old.cultureId) byFaith.set(pair.religionId, (byFaith.get(pair.religionId) ?? 0) + pair.weight);
+    }
+    const leadingFaith = [...byFaith].sort((a, b) => b[1] - a[1])[0]?.[0];
+    if (p.religionId === leadingFaith) notes.push('Ведущая вера в культуре прежнего вождя: вес ×2.');
+    if (p.religionId === old.religionId) notes.push('Вера прежнего вождя: вес ×2.');
+  }
+  if (c.government === 'tyranny') {
+    for (const [group, label] of [
+      [world.cultures[p.cultureId], 'Культура'],
+      [p.religionId === null ? null : world.religions[p.religionId], 'Вера'],
+    ] as const) {
+      if (group?.traits?.includes('warlike')) notes.push(`${label} воинственная: вес ×2.`);
+      if (group?.traits?.includes('peaceful')) notes.push(`${label} мирная: вес ÷2.`);
+    }
+  }
+  if (c.government === 'republic' && c.modifiers.includes('oligarchy') &&
+      isChildOfFormerRuler(world, c, p, peopleById)) {
+    notes.push('Олигархия: ребёнок прежнего правителя, вес выбора ×2.');
+  }
+  if (c.government === 'republic' && c.modifiers.includes('pornocracy') && republicanPartner) {
+    notes.push('Порнократия: партнёр правителя или допущенного кандидата, вес выбора ×2; права наследования нет.');
+  }
+  return notes;
+}
+
+/** Eligible existing candidates, with chance advantages kept separate from succession rights. */
+export function countryCandidates(world: World, c: Country): CountryCandidate[] {
+  const old = c.ruler;
+  const peopleById = new Map(world.people.map((p) => [p.id, p]));
+  if (c.government === 'republic') {
+    let eligible = world.people.filter((p) => p.countryId === c.id && candidateAllowed(world, c, p, old));
+    eligible = communistPool(c, eligible);
+    const anchors = [old, ...eligible];
+    const partners = c.modifiers.includes('pornocracy')
+      ? partnerCandidateIds(anchors, eligible)
+      : new Set<number>();
+    return eligible.map((p) => {
+      const advantages = candidateWeightNotes(world, c, p, old, partners.has(p.id), peopleById);
+      const basis = ['Живой житель страны, прошедший возрастные, половые, культурные, религиозные и избирательные ограничения.'];
+      if (c.modifiers.includes('communist')) {
+        basis.push('Коммунистический фильтр: допущены атеисты и/или космополиты.');
+      }
+      if (c.modifiers.includes('termLimit')) {
+        basis.push(`Использовано сроков: ${c.termCounts[p.id] ?? 0} из ${c.maxTerms}.`);
+      }
+      return {
+        person: p,
+        kind: 'election',
+        basis,
+        advantages,
+        expectedHeir: false,
+        weight: candidateWeight(world, c, p, old, partners.has(p.id), peopleById),
+      };
+    });
+  }
+
+  const ordered = successionOrder(world, c, old);
+  const successionPartners = c.modifiers.includes('pornocracy')
+    ? partnerCandidateIds([old, ...ordered], ordered)
+    : new Set<number>();
+  const fixedHeir = hasFixedHeir(c);
+  const eligibleChildren = world.people.filter((p) =>
+    p.parents.includes(old.id) && candidateAllowed(world, c, p, old));
+  const previousLeaders = new Set([...c.previousRulerIds, old.id]);
+  const candidates = ordered.map((p, index): CountryCandidate => {
+    const basis: string[] = [];
+    const advantages: string[] = [];
+    if (c.government === 'tribal') {
+      basis.push('Живой ребёнок нынешнего или прежнего вождя: возможный кандидат, не гарантированное наследование.');
+    } else if (c.government === 'tyranny' && old.spouseIds.includes(p.id) &&
+        !eligibleChildren.some((child) => child.id === p.id)) {
+      basis.push('Супруг(а) правителя: допускается при отсутствии подходящего ребёнка для преемства.');
+    } else if (c.modifiers.includes('pornocracy') && successionPartners.has(p.id)) {
+      basis.push('Порнократия: партнёр правителя или кандидата включён в линию наследования.');
+    } else if (c.government === 'tyranny' && eligibleChildren.length > 0) {
+      basis.push(p.parents.includes(old.id)
+        ? 'Ребёнок правителя; при тирании дети рассматриваются прежде других родственников.'
+        : 'Кандидат из родни; дети правителя имеют приоритет.');
+    } else if (p.parents.some((parentId) => previousLeaders.has(parentId)) && c.modifiers.includes('oligarchy') && c.government === 'hereditary') {
+      basis.push('Кандидат из правящей династии при олигархии.');
+    } else {
+      basis.push('Живой допустимый член наследственной линии или семьи правителя.');
+    }
+    if (c.modifiers.includes('seniority')) advantages.push('Порядок сеньората: старший подходящий член династии.');
+    if (c.modifiers.includes('minority')) advantages.push('Порядок минората: младший подходящий член династии.');
+    if (c.modifiers.includes('primogeniture')) advantages.push('Порядок первородства: старшая подходящая ветвь первой.');
+    if (c.modifiers.includes('oligarchy') && c.government !== 'republic') {
+      advantages.push('Олигархия: выбор наследника случаен среди допустимых членов династии.');
+    }
+    if (c.modifiers.includes('partition')) {
+      advantages.push('Разделение влияет на распределение страны между подходящими наследниками, а не гарантирует вступление во власть.');
+    }
+    if (c.modifiers.includes('pornocracy') && successionPartners.has(p.id)) {
+      advantages.push('Партнёры стоят в линии перед связанным с ними правителем или кандидатом.');
+    }
+    if (c.modifiers.includes('communist')) {
+      basis.push('Коммунистический фильтр: член семьи должен быть атеистом и/или космополитом.');
+    }
+    if (c.modifiers.includes('coRule') && p.age < 20) {
+      basis.push('Соправительство допускает кандидата от 12 лет.');
+    }
+    if (fixedHeir && index === 0) {
+      basis.push('Ожидаемый наследник по действующему закону; это порядок преемства, а не бонус к выборному весу.');
+    }
+    advantages.push(...candidateWeightNotes(world, c, p, old, false, peopleById));
+    return {
+      person: p,
+      kind: 'succession',
+      basis,
+      advantages,
+      expectedHeir: fixedHeir && index === 0,
+      weight: fixedHeir ? null : candidateWeight(world, c, p, old, false, peopleById),
+    };
+  });
+  return candidates;
+}
+
 export function successionOrder(world: World, c: Country, old = c.ruler): Person[] {
   if (c.government === 'republic') return [];
+  const peopleById = new Map(world.people.map((p) => [p.id, p]));
   const former = new Set([...c.previousRulerIds, old.id]);
   let family = world.people.filter((p) => p.id !== old.id && c.dynastyClaims.includes(p.familyId) && isMember(c, p));
   if (c.government === 'tribal') family = family.filter((p) => p.parents.some((id) => former.has(id)));
@@ -116,23 +330,30 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
     const preferred = [...siblingPool, ...childPool];
     pool = [...preferred, ...pool.filter((p) => !preferred.some((x) => x.id === p.id))];
   }
-  if (c.government === 'tyranny' && !pool.some((p) => candidateAllowed(world, c, p, old))) {
-    pool.push(...old.spouseIds.map((id) => person(world, id)).filter((p): p is Person => !!p));
+  const tyrantSpouses = c.government === 'tyranny' && !children.some((p) => candidateAllowed(world, c, p, old))
+    ? old.spouseIds.map((id) => person(world, id)).filter((p): p is Person => !!p)
+    : [];
+  if (tyrantSpouses.length) pool = [...pool, ...tyrantSpouses];
+  const tyrantSpouseIds = new Set(tyrantSpouses.map((p) => p.id));
+  if (tyrantSpouseIds.size) {
+    pool = pool.filter((p) => candidateAllowed(world, c, p, old, false, false, tyrantSpouseIds.has(p.id)));
   }
   const partnerIds = new Set<number>();
   if (c.modifiers.includes('pornocracy')) {
-    const partners = (p: Person) => [...p.spouseIds, ...p.loverIds].map((id) => person(world, id)).filter((x): x is Person => !!x);
+    const partners = (p: Person) => [...p.spouseIds, ...p.loverIds]
+      .map((id) => peopleById.get(id)).filter((x): x is Person => !!x);
     const oldPartners = partners(old);
     const expanded = pool.flatMap((p) => [...partners(p), p]);
     for (const p of [...oldPartners, ...expanded.filter((p) => !pool.includes(p))]) partnerIds.add(p.id);
     pool = [...oldPartners, ...expanded];
   }
-  pool = pool.filter((p, i) => pool.findIndex((x) => x.id === p.id) === i && candidateAllowed(world, c, p, old, partnerIds.has(p.id)));
+  pool = pool.filter((p, i) => pool.findIndex((x) => x.id === p.id) === i &&
+    candidateAllowed(world, c, p, old, partnerIds.has(p.id), false, tyrantSpouseIds.has(p.id)));
   return communistPool(c, pool);
 }
 export function hasFixedHeir(c: Country): boolean {
-  return c.government !== 'republic' && !c.modifiers.includes('oligarchy') &&
-    (c.government === 'hereditary' || c.modifiers.some((id) => ['seniority', 'minority', 'primogeniture'].includes(id)));
+  return c.government === 'hereditary' && !c.modifiers.includes('oligarchy') &&
+    c.modifiers.some((id) => ['seniority', 'minority', 'primogeniture'].includes(id));
 }
 export function refreshHeirs(world: World, year?: number): void {
   for (const c of world.countries) {
@@ -177,6 +398,11 @@ export function leadershipOptions(
   const distinctFamily = unique(family).filter((p) =>
     !restrictForeignDynasties || p.familyId === old.familyId);
   const fallback = () => restrictForeignDynasties ? dynastic() : fresh();
+  const republicanPartners = c.government === 'republic' && c.modifiers.includes('pornocracy')
+    ? new Set(countryCandidates(world, c).filter((candidate) =>
+      candidate.advantages.some((reason) => reason.startsWith('Порнократия:')))
+      .map((candidate) => candidate.person.id))
+    : new Set<number>();
   const eligibleFamily = distinctFamily.filter((p) => candidateAllowed(world, c, p, old) ||
     (c.modifiers.includes('pornocracy') && !isMember(c, p)));
   const ensurePair = (first: Person | null, second: Person | null, fallback: () => Person): Person[] => {
@@ -218,7 +444,10 @@ export function leadershipOptions(
     const matching = communistPool(c, world.people.filter((p) => isMember(c, p) &&
       p.cultureId === proposal.cultureId && p.religionId === proposal.religionId &&
       (!restrictForeignDynasties || p.familyId === old.familyId) && candidateAllowed(world, c, p, old)));
-    if (matching.length && Math.random() < 0.5) return weighted(matching.map((p) => ({ value: p, weight: candidateWeight(world, c, p, old) })))!;
+    if (matching.length && Math.random() < 0.5) return weighted(matching.map((p) => ({
+      value: p,
+      weight: candidateWeight(world, c, p, old, republicanPartners.has(p.id)),
+    })))!;
     return proposal;
   };
   const incumbent = c.modifiers.includes('continuous') && candidateAllowed(world, c, old, old) ? old : null;

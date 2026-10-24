@@ -174,7 +174,6 @@ export function reformCandidates(world: World, c: Country, year: number, violent
         w *= c.government === 'tribal' ? 2 : 1;
         break;
       case 'pornocracy':
-        if (c.government === 'republic') return 0;
         if (age >= 12 && age <= 19 || age >= 29 && age <= 45 || trait(c.ruler, 'Плодовитый')) w *= 2;
         if (c.modifiers.includes('patriarchal') || c.modifiers.includes('matriarchal')) w *= 2;
         if (c.government === 'tyranny') w *= 2;
@@ -266,7 +265,7 @@ export function applyReform(c: PoliticalState, proposal: ReformProposal): void {
     const kept = c.modifiers.filter((m) => {
       if (old === 'tribal' && m === 'oligarchy') return false;
       if (old === 'hereditary' && m === 'primogeniture') return false;
-      if (proposal.government === 'republic' && ['primogeniture', 'seniority', 'minority', 'partition', 'pornocracy', 'coRule', 'meritocracy', 'term', 'termLimit', 'continuous'].includes(m)) return false;
+      if (proposal.government === 'republic' && ['primogeniture', 'seniority', 'minority', 'partition', 'coRule', 'meritocracy', 'term', 'termLimit', 'continuous'].includes(m)) return false;
       if (proposal.government === 'hereditary' && m === 'communist') return false;
       if (proposal.government === 'tyranny' && ['oligarchy', 'partition', 'liberal'].includes(m)) return false;
       if (proposal.government === 'tyranny' && ['federation', 'confederation'].includes(m) && !c.modifiers.includes('communist')) return false;

@@ -132,7 +132,7 @@ export const MODIFIERS: Record<GovernmentModifierId, Modifier> = {
   primogeniture: { id: 'primogeniture', name: 'Первородство', effect: 'Старший ребёнок, затем потомки покойных детей по ветвям. С миноратом — младшая ветвь.', excludes: ['seniority'], forms: ['tribal', 'hereditary', 'tyranny'] },
   oligarchy: { id: 'oligarchy', name: 'Олигархия', effect: 'Кандидат выбирается случайно из правящей семьи; в республике дети прежних правителей получают приоритет.', excludes: ['seniority', 'minority'], forms: ['tribal', 'hereditary', 'republic'] },
   partition: { id: 'partition', name: 'Разделение', effect: 'При смерти правителя с несколькими подходящими родными детьми страна делится кистью: обычно поровну, а с другими законами наследования основной наследник получает половину, остаток делят остальные претенденты. Участки той же культуры или веры получают приоритет ×2, совпадение обеих — ×4.', excludes: ['coRule'], forms: ['tribal', 'hereditary'] },
-  pornocracy: { id: 'pornocracy', name: 'Порнократия', effect: 'Партнёры прежнего лидера — первые; партнёр наследника стоит перед ним и освобождён от ограничения пола.', forms: ['tribal', 'hereditary', 'tyranny'] },
+  pornocracy: { id: 'pornocracy', name: 'Порнократия', effect: 'Наследственные формы: партнёры правителя и наследников входят в линию перед ними, без ограничения пола. Республика: партнёры правителя и допущенных кандидатов получают вес выбора ×2, но не наследуют.', forms: ['tribal', 'hereditary', 'tyranny', 'republic'] },
   term: { id: 'term', name: 'Срок правления', effect: 'Республиканский лидер переизбирается по окончании срока.', forms: ['republic'] },
   termLimit: { id: 'termLimit', name: 'Ограничение сроков', effect: 'Один лидер может занимать пост ограниченное число раз.', forms: ['republic'] },
   continuous: { id: 'continuous', name: 'Непрерывное правление', effect: 'Действующий лидер может быть переизбран; доступно при нескольких сроках.', forms: ['republic'] },
@@ -309,7 +309,7 @@ export function availableModifiers(form: GovernmentId, current: GovernmentModifi
     if (id === 'oligarchy' && form === 'tyranny') return false;
     if (id === 'consulate' && (form === 'tyranny' || current.includes('coRule'))) return false;
     if (id === 'coRule' && (form === 'republic' || current.includes('consulate'))) return false;
-    if ((id === 'partition' || id === 'pornocracy' || id === 'seniority' || id === 'minority' || id === 'primogeniture' || id === 'meritocracy') && form === 'republic') return false;
+    if ((id === 'partition' || id === 'seniority' || id === 'minority' || id === 'primogeniture' || id === 'meritocracy') && form === 'republic') return false;
     if (id === 'continuous' && (!current.includes('termLimit') || form !== 'republic')) return false;
     if (id === 'termLimit' && (!current.includes('term') || form !== 'republic')) return false;
     if (id === 'term' && form !== 'republic') return false;

@@ -36,6 +36,8 @@ export default function RootLayout() {
           <Stack.Screen name="index" />
           <Stack.Screen name="play" options={{ gestureEnabled: false }} />
           <Stack.Screen name="country/[id]" />
+          <Stack.Screen name="country/[id]/candidates" />
+          <Stack.Screen name="country/[id]/rulers" />
           <Stack.Screen name="city/[id]" />
           <Stack.Screen name="culture/[id]" />
           <Stack.Screen name="religion/[id]" />
