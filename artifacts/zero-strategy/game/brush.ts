@@ -81,10 +81,12 @@ export interface Rect {
   y1: number;
 }
 
-// Shared scratch buffers (one card is painted at a time).
-const cardMask = new Uint8Array(MAP_PIXELS);
-const strokeMask = new Uint8Array(MAP_PIXELS);
-const dabMask = new Uint8Array(MAP_PIXELS);
+export interface CardPainterState {
+  /** Pixels already applied by this card, including repeated applications in changed. */
+  cardTouched: Int32Array;
+  changed: Int32Array;
+  colonistsMoved: number;
+}
 
 const isCurrent = (type: CardType) => type === 'warmCurrent' || type === 'coldCurrent';
 const isWind = (type: CardType) => type === 'warmWind' || type === 'coldWind';
@@ -235,6 +237,9 @@ export function finalizeSplitCities(world: World, destinationCountryId: number):
 export class CardPainter {
   /** Pixels changed by this card (for automatic play and logs). */
   readonly changed: number[] = [];
+  private readonly cardMask = new Uint8Array(MAP_PIXELS);
+  private readonly strokeMask = new Uint8Array(MAP_PIXELS);
+  private readonly dabMask = new Uint8Array(MAP_PIXELS);
   /** Total population moved by a colonization card. */
   colonistsMoved = 0;
   private readonly cardTouched: number[] = [];
@@ -261,6 +266,7 @@ export class CardPainter {
     private readonly world: World,
     readonly card: Card,
     public mode: BrushMode,
+    state?: CardPainterState | null,
   ) {
     const working = this.workingCountryId();
     if (card.type === 'nomadExpand' && card.targetNomadId !== null && card.targetNomadId !== undefined) {
@@ -301,6 +307,24 @@ export class CardPainter {
     if (country && isWind(card.type)) world.forEachCountryPixel(country, (p) => world.seasOfPixel(p, this.seas));
     this.religionForNewLand =
       country && country.religionId !== null ? world.religionTable.single(country.religionId, 60) : 0;
+    if (state) {
+      for (const pixel of state.cardTouched) {
+        if (pixel >= 0 && pixel < MAP_PIXELS && !this.cardMask[pixel]) {
+          this.cardMask[pixel] = 1;
+          this.cardTouched.push(pixel);
+        }
+      }
+      for (const pixel of state.changed) this.changed.push(pixel);
+      this.colonistsMoved = state.colonistsMoved;
+    }
+  }
+
+  snapshotState(): CardPainterState {
+    return {
+      cardTouched: Int32Array.from(this.cardTouched),
+      changed: Int32Array.from(this.changed),
+      colonistsMoved: this.colonistsMoved,
+    };
   }
 
   /** Country whose territory grows: the new state for create/split, the owner for expand. */
@@ -316,7 +340,7 @@ export class CardPainter {
   }
 
   endStroke(): void {
-    for (const p of this.strokeTouched) strokeMask[p] = 0;
+    for (const p of this.strokeTouched) this.strokeMask[p] = 0;
     this.strokeTouched = [];
     this.strokeClimateChanges = [];
     this.strokeChangedStart = this.changed.length;
@@ -331,12 +355,12 @@ export class CardPainter {
     for (const change of this.strokeClimateChanges) {
       this.world.temperature[change.p] = change.value;
       this.card.ink += change.cost;
-      cardMask[change.p] = change.wasInCard ? 1 : 0;
+      this.cardMask[change.p] = change.wasInCard ? 1 : 0;
       const x = change.p % MAP_WIDTH, y = Math.floor(change.p / MAP_WIDTH);
       this.markDirty(x - 1, y - 1, x + 1, y + 1);
     }
     this.changed.length = this.strokeChangedStart;
-    for (const p of this.strokeTouched) strokeMask[p] = 0;
+    for (const p of this.strokeTouched) this.strokeMask[p] = 0;
     this.strokeTouched = [];
     this.strokeClimateChanges = [];
     this.message = 'Ветер можно закончить только на суше своей страны. Проведите мазок от своего берега к своему берегу.';
@@ -345,17 +369,17 @@ export class CardPainter {
   /** Clears scratch buffers; call once the card is finished. */
   dispose(): void {
     this.endStroke();
-    for (const p of this.cardTouched) cardMask[p] = 0;
+    for (const p of this.cardTouched) this.cardMask[p] = 0;
     this.cardTouched.length = 0;
   }
 
   private touch(p: number): void {
-    if (!strokeMask[p]) {
-      strokeMask[p] = 1;
+    if (!this.strokeMask[p]) {
+      this.strokeMask[p] = 1;
       this.strokeTouched.push(p);
     }
-    if (!cardMask[p]) {
-      cardMask[p] = 1;
+    if (!this.cardMask[p]) {
+      this.cardMask[p] = 1;
       this.cardTouched.push(p);
     }
   }
@@ -507,7 +531,7 @@ export class CardPainter {
     if (card.type !== 'split' && card.type !== 'colonization' && this.mode === 'repeat') {
       for (const p of pixels) {
         if (card.ink <= 0) break;
-        if (world.owner[p] !== tag || strokeMask[p]) continue;
+        if (world.owner[p] !== tag || this.strokeMask[p]) continue;
         const { cost, strength } = this.brushScaling(p);
         applyDensityGrowth(world, p, strength, this.cityInfluence?.citiesAt(p));
         card.ink = Math.max(0, card.ink - cost);
@@ -516,7 +540,7 @@ export class CardPainter {
     }
 
     // Grow only from existing territory (by land, or by any coast of a sea the country already touches).
-    for (const p of pixels) dabMask[p] = 1;
+    for (const p of pixels) this.dabMask[p] = 1;
     const queue: number[] = [];
     const queued = new Set<number>();
     const enqueue = (p: number) => {
@@ -582,7 +606,7 @@ export class CardPainter {
         this.changed.push(p);
         this.markDirtyPixel(donor);
         forEachNeighbour(p, (n) => {
-          if (dabMask[n] && canTake(n)) enqueue(n);
+          if (this.dabMask[n] && canTake(n)) enqueue(n);
         });
         continue;
       }
@@ -602,10 +626,10 @@ export class CardPainter {
       this.changed.push(p);
       if (card.type !== 'split' && world.water.coastsOf.length > 0) world.seasOfPixel(p, this.seas);
       forEachNeighbour(p, (n) => {
-        if (dabMask[n] && canTake(n)) enqueue(n);
+        if (this.dabMask[n] && canTake(n)) enqueue(n);
       });
     }
-    for (const p of pixels) dabMask[p] = 0;
+    for (const p of pixels) this.dabMask[p] = 0;
     if (card.type === 'split' && world.countries[card.targetCountryId as number].pixels <= 1) {
       this.message = 'Исходная страна должна сохранить хотя бы часть земель.';
     }
@@ -624,8 +648,8 @@ export class CardPainter {
     let changed = false;
     for (const pixel of pixels) {
       if (this.card.ink <= 0) break;
-      if (!world.land[pixel] || strokeMask[pixel] ||
-        (this.mode === 'respect' && cardMask[pixel])) continue;
+      if (!world.land[pixel] || this.strokeMask[pixel] ||
+        (this.mode === 'respect' && this.cardMask[pixel])) continue;
       if (this.nomadMode === 'range') {
         if (this.nomadRange.has(pixel)) continue;
         nomad.range.push(pixel);
@@ -680,7 +704,7 @@ export class CardPainter {
     let outside = 0;
     for (const p of pixels) {
       if (card.ink <= 0) break;
-      if (strokeMask[p] || (this.mode === 'respect' && cardMask[p])) continue;
+      if (this.strokeMask[p] || (this.mode === 'respect' && this.cardMask[p])) continue;
       const onLand = world.land[p] === 1;
       if (isWind(card.type)) {
         if (onLand && world.owner[p] !== targetTag) { outside += 1; continue; }
@@ -706,7 +730,7 @@ export class CardPainter {
           : Math.max(0, value - CLIMATE_DELTA);
         if (next === value) continue;
         const cost = isWind(card.type) && !onLand ? 0.5 : 1;
-        if (isWind(card.type)) this.strokeClimateChanges.push({ p, value, cost, wasInCard: cardMask[p] === 1 });
+        if (isWind(card.type)) this.strokeClimateChanges.push({ p, value, cost, wasInCard: this.cardMask[p] === 1 });
         world.temperature[p] = next;
         card.ink -= cost;
         this.touch(p);

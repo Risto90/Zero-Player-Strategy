@@ -1,7 +1,7 @@
 import { autoPaint } from './autoPaint';
 import type { PaintActions } from './autoPaint';
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
-  type BrushMode, type BrushOption, type Card, type CardChoice, type CharacterEvent } from './brush';
+  type BrushMode, type BrushOption, type Card, type CardChoice, type CardPainterState, type CharacterEvent } from './brush';
 import { drawCountryCard, drawNomadCard, drawWorldCard, firstCreateCard } from './cards';
 import { BIOMES, BRUSH_SIZES, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
 import { forEachNeighbour, type MapKind } from './geography';
@@ -134,6 +134,7 @@ interface SavedGame {
   turn: number;
   focusCountryId: number | null;
   card: Card | null;
+  painterState?: CardPainterState | null;
   queue: Slot[];
   brushMode: BrushMode;
   brushSize: BrushSize;
@@ -283,7 +284,7 @@ export class Game {
     game.brushMode = saved.brushMode;
     game.brushSize = saved.brushSize;
     game.log = saved.log;
-    if (saved.card) game.startCard(saved.card);
+    if (saved.card) game.startCard(saved.card, saved.painterState);
     game.mapMode = saved.mapMode;
     game.renderer.setView(game.mapMode, null, game.mapMode === 'colonization' ? game.painter?.colonizationMask ?? null : null);
     return game;
@@ -804,10 +805,10 @@ export class Game {
     return false;
   }
 
-  private startCard(card: Card): void {
+  private startCard(card: Card, painterState?: CardPainterState | null): void {
     this.card = card;
     if (card.developmentOnly) this.brushMode = 'repeat';
-    this.painter = new CardPainter(this.world, card, this.brushMode);
+    this.painter = new CardPainter(this.world, card, this.brushMode, painterState);
     this.secondsLeft = TURN_SECONDS;
     this.paused = false;
     this.message = card.detail;
@@ -1653,6 +1654,7 @@ export class Game {
       turn: this.turn,
       focusCountryId: this.focusCountryId,
       card: this.card ? { ...this.card } : null,
+      painterState: this.painter?.snapshotState() ?? null,
       queue: this.queue.map((slot) => ({ ...slot })),
       brushMode: this.brushMode,
       brushSize: this.brushSize,
