@@ -4,9 +4,12 @@ import {
   decodeEarthLand,
   forEachNeighbour,
   generateClimate,
+  generateClimateCooperative,
   generateRivers,
   labelWater,
+  labelWaterCooperative,
   makeRandomLand,
+  makeRandomLandCooperative,
   type MapKind,
   type WaterInfo,
   WORLD_SEED,
@@ -126,20 +129,33 @@ export class World {
     readonly seed: number,
     land: Uint8Array,
     climate: { humidity: Uint8Array; temperature: Uint8Array; drainage: Uint8Array } | null,
+    prepared?: {
+      water: WaterInfo;
+      rivers: Uint8Array;
+      landIndex: Int32Array;
+      riverPixelCount: number;
+      majorRiverPixelCount: number;
+    },
   ) {
     this.land = land;
-    this.water = labelWater(land);
-    this.rivers = generateRivers(land, seed, mapKind);
-    let riverPixelCount = 0, majorRiverPixelCount = 0;
-    for (const strength of this.rivers) {
-      if (strength > 0) riverPixelCount += 1;
-      if (strength >= 2) majorRiverPixelCount += 1;
+    this.water = prepared?.water ?? labelWater(land);
+    this.rivers = prepared?.rivers ?? generateRivers(land, seed, mapKind);
+    let riverPixelCount = prepared?.riverPixelCount ?? 0;
+    let majorRiverPixelCount = prepared?.majorRiverPixelCount ?? 0;
+    if (!prepared) {
+      for (const strength of this.rivers) {
+        if (strength > 0) riverPixelCount += 1;
+        if (strength >= 2) majorRiverPixelCount += 1;
+      }
     }
     this.riverPixelCount = riverPixelCount;
     this.majorRiverPixelCount = majorRiverPixelCount;
-    const index: number[] = [];
-    for (let p = 0; p < MAP_PIXELS; p += 1) if (land[p]) index.push(p);
-    this.landIndex = Int32Array.from(index);
+    if (prepared) this.landIndex = prepared.landIndex;
+    else {
+      const index: number[] = [];
+      for (let p = 0; p < MAP_PIXELS; p += 1) if (land[p]) index.push(p);
+      this.landIndex = Int32Array.from(index);
+    }
     const generated = climate ?? generateClimate(land, seed);
     this.humidity = generated.humidity;
     this.temperature = generated.temperature;
@@ -150,6 +166,47 @@ export class World {
     const actualSeed = mapKind === 'world' ? WORLD_SEED : (seed ?? Math.floor(Math.random() * 2 ** 31));
     const land = mapKind === 'world' ? decodeEarthLand() : makeRandomLand(actualSeed);
     return new World(mapKind, actualSeed, land, null);
+  }
+
+  static async createCooperative(
+    mapKind: MapKind,
+    seed?: number,
+    onProgress?: (stage: string) => void,
+  ): Promise<World> {
+    if (mapKind !== 'world' && mapKind !== 'random') throw new Error('Неизвестный тип карты.');
+    const actualSeed = mapKind === 'world' ? WORLD_SEED : (seed ?? Math.floor(Math.random() * 2 ** 31));
+    onProgress?.('Создаём сушу');
+    const land = mapKind === 'world' ? decodeEarthLand() : await makeRandomLandCooperative(actualSeed);
+    onProgress?.('Размечаем моря');
+    const water = await labelWaterCooperative(land);
+    onProgress?.('Строим реки');
+    const rivers = generateRivers(land, actualSeed, mapKind);
+    onProgress?.('Рассчитываем климат');
+    const climate = await generateClimateCooperative(land, actualSeed);
+    onProgress?.('Индексируем сушу и реки');
+    let landCount = 0;
+    let riverPixelCount = 0;
+    let majorRiverPixelCount = 0;
+    for (let p = 0; p < MAP_PIXELS; p += 1) {
+      if (land[p]) landCount += 1;
+      if (rivers[p] > 0) riverPixelCount += 1;
+      if (rivers[p] >= 2) majorRiverPixelCount += 1;
+      if (p % 16_384 === 16_383) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    const landIndex = new Int32Array(landCount);
+    let index = 0;
+    for (let p = 0; p < MAP_PIXELS; p += 1) {
+      if (land[p]) landIndex[index++] = p;
+      if (p % 16_384 === 16_383) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    onProgress?.('Готовим игровой экран');
+    return new World(mapKind, actualSeed, land, climate, {
+      water,
+      rivers,
+      landIndex,
+      riverPixelCount,
+      majorRiverPixelCount,
+    });
   }
 
   biomeAt(p: number): number {

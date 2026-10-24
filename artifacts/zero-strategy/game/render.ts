@@ -110,22 +110,41 @@ export class MapRenderer {
   private readonly base = new Uint32Array(MAP_PIXELS);
   private readonly nb = new Uint8Array(MAP_PIXELS);
 
-  constructor(private readonly world: World) {
-    const land = world.land;
+  constructor(private readonly world: World, deferPreparation = false) {
+    if (!deferPreparation) this.prepareSync();
+  }
+
+  private preparePixel(p: number, land: Uint8Array, ocean: number, shallow: number): void {
+    const x = p % MAP_WIDTH;
+    let bits = 0;
+    if (x > 0 && land[p - 1]) bits |= LEFT;
+    if (x < MAP_WIDTH - 1 && land[p + 1]) bits |= RIGHT;
+    if (p >= MAP_WIDTH && land[p - MAP_WIDTH]) bits |= UP;
+    if (p < MAP_PIXELS - MAP_WIDTH && land[p + MAP_WIDTH]) bits |= DOWN;
+    const neighbours = (x > 0 ? 1 : 0) + (x < MAP_WIDTH - 1 ? 1 : 0) + (p >= MAP_WIDTH ? 1 : 0) + (p < MAP_PIXELS - MAP_WIDTH ? 1 : 0);
+    const landNeighbours = (bits & 1) + ((bits >> 1) & 1) + ((bits >> 2) & 1) + ((bits >> 3) & 1);
+    if (landNeighbours < neighbours) bits |= COAST;
+    this.nb[p] = bits;
+    if (!land[p]) this.base[p] = bits & (LEFT | RIGHT | UP | DOWN) ? shallow : ocean;
+  }
+
+  private prepareSync(): void {
+    const land = this.world.land;
     const ocean = pack(hexToRgb(PALETTE.ocean));
     const shallow = pack(mix(hexToRgb(PALETTE.ocean), [255, 255, 255], 0.25));
     for (let p = 0; p < MAP_PIXELS; p += 1) {
-      const x = p % MAP_WIDTH;
-      let bits = 0;
-      if (x > 0 && land[p - 1]) bits |= LEFT;
-      if (x < MAP_WIDTH - 1 && land[p + 1]) bits |= RIGHT;
-      if (p >= MAP_WIDTH && land[p - MAP_WIDTH]) bits |= UP;
-      if (p < MAP_PIXELS - MAP_WIDTH && land[p + MAP_WIDTH]) bits |= DOWN;
-      const neighbours = (x > 0 ? 1 : 0) + (x < MAP_WIDTH - 1 ? 1 : 0) + (p >= MAP_WIDTH ? 1 : 0) + (p < MAP_PIXELS - MAP_WIDTH ? 1 : 0);
-      const landNeighbours = (bits & 1) + ((bits >> 1) & 1) + ((bits >> 2) & 1) + ((bits >> 3) & 1);
-      if (landNeighbours < neighbours) bits |= COAST;
-      this.nb[p] = bits;
-      if (!land[p]) this.base[p] = bits & (LEFT | RIGHT | UP | DOWN) ? shallow : ocean;
+      this.preparePixel(p, land, ocean, shallow);
+    }
+  }
+
+  async prepareCooperative(): Promise<void> {
+    const land = this.world.land;
+    const ocean = pack(hexToRgb(PALETTE.ocean));
+    const shallow = pack(mix(hexToRgb(PALETTE.ocean), [255, 255, 255], 0.25));
+    for (let start = 0; start < MAP_PIXELS; start += 16_384) {
+      const end = Math.min(MAP_PIXELS, start + 16_384);
+      for (let p = start; p < end; p += 1) this.preparePixel(p, land, ocean, shallow);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
   }
 

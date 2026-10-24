@@ -205,12 +205,13 @@ export class Game {
   private constructor(
     readonly world: World,
     role: PlayerRole,
+    deferMapPreparation = false,
   ) {
     this.role = role;
-    this.renderer = new MapRenderer(world);
+    this.renderer = new MapRenderer(world, deferMapPreparation);
     // The newest game owns the save file; older (discarded) games may no longer write it.
-    Game.saveOwner = this;
-    this.redrawAll();
+    if (!deferMapPreparation) Game.saveOwner = this;
+    if (!deferMapPreparation) this.redrawAll();
   }
 
   /** Repaints the whole map (e.g. for a newly opened map view); the timer waits until it is shown. */
@@ -222,6 +223,26 @@ export class Game {
 
   static create(mapKind: MapKind, role: PlayerRole): Game {
     const game = new Game(World.create(mapKind), role);
+    return Game.initializeNewGame(game, role);
+  }
+
+  static async createCooperative(
+    mapKind: MapKind,
+    role: PlayerRole,
+    seed?: number,
+    onProgress?: (stage: string) => void,
+  ): Promise<Game> {
+    const world = await World.createCooperative(mapKind, seed, onProgress);
+    const game = new Game(world, role, true);
+    await game.renderer.prepareCooperative();
+    game.redrawAll();
+    onProgress?.('Создаём первую карточку');
+    const initialized = Game.initializeNewGame(game, role);
+    Game.saveOwner = game;
+    return initialized;
+  }
+
+  private static initializeNewGame(game: Game, role: PlayerRole): Game {
     game.addLog('Мир создан.');
     const first = firstCreateCard(game.world, game.year);
     if (!first) {

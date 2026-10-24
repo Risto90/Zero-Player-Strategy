@@ -1,13 +1,13 @@
 import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Loading } from '@/components/Loading';
 import colors, { fonts } from '@/constants/colors';
 import type { PlayerRole } from '@/game/game';
 import type { MapKind } from '@/game/geography';
-import { deleteSavedGame, hasSavedGame, startNewGame } from '@/game/session';
+import { deleteSavedGame, hasSavedGame, startNewGameCooperative } from '@/game/session';
 
 const c = colors.light;
 
@@ -28,6 +28,9 @@ export default function HomeScreen() {
   const [map, setMap] = useState<MapKind>('world');
   const [role, setRole] = useState<PlayerRole>('all');
   const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState('');
+  const [startStage, setStartStage] = useState('');
+  const startingRef = useRef(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useFocusEffect(
@@ -42,12 +45,31 @@ export default function HomeScreen() {
   );
 
   const start = () => {
+    if (startingRef.current) return;
+    startingRef.current = true;
+    setStartError('');
     setStarting(true);
-    // Let the loading screen paint before the world is generated.
+    setStartStage('Подготавливаем карту');
+    // Allow React Native to paint the progress screen before cooperative generation begins.
     setTimeout(() => {
-      startNewGame(map, role);
-      router.push('/play');
+      void startNewGameCooperative(map, role, setStartStage)
+        .then(() => router.push('/play'))
+        .catch((error: unknown) => {
+          console.error('Не удалось создать игровой мир:', error);
+          startingRef.current = false;
+          setStarting(false);
+          setStartError('Не удалось подготовить карту. Повторите запуск или вернитесь к выбору карты.');
+        })
+        .finally(() => {
+          startingRef.current = false;
+        });
     }, 60);
+  };
+
+  const returnToSelection = () => {
+    startingRef.current = false;
+    setStartError('');
+    setStarting(false);
   };
 
   const remove = async () => {
@@ -56,7 +78,17 @@ export default function HomeScreen() {
     setHasSave(false);
   };
 
-  if (starting) return <Loading text="Мир сотворяется…" />;
+  if (starting) return <Loading text={`Мир сотворяется… ${startStage}`} />;
+  if (startError) {
+    return (
+      <Loading
+        text="Не удалось создать мир"
+        error={startError}
+        onRetry={start}
+        onBack={returnToSelection}
+      />
+    );
+  }
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingTop: insets.top + 28, paddingBottom: insets.bottom + 40 }]}>

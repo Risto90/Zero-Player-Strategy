@@ -59,6 +59,60 @@ export function decodeEarthLand(): Uint8Array {
   return land;
 }
 
+type Progress = (stage: string) => void;
+
+async function yieldToUi(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+/** Cooperative equivalents keep Android's JS thread available while preserving loop order. */
+async function fractalFieldCooperative(
+  width: number,
+  height: number,
+  seed: number,
+  baseCells: number,
+  octaves: number,
+): Promise<Float32Array> {
+  const step = 4;
+  const gw = Math.ceil(width / step) + 2;
+  const gh = Math.ceil(height / step) + 2;
+  const grid = new Float32Array(gw * gh);
+  for (let gy = 0; gy < gh; gy += 1) {
+    for (let gx = 0; gx < gw; gx += 1) {
+      let amplitude = 1;
+      let frequency = baseCells / width;
+      let sum = 0;
+      let norm = 0;
+      for (let o = 0; o < octaves; o += 1) {
+        const wrap = Math.max(1, Math.round(width * frequency));
+        sum += amplitude * valueNoise(gx * step * frequency, gy * step * frequency, seed + o * 101, wrap);
+        norm += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2;
+      }
+      grid[gy * gw + gx] = sum / norm;
+    }
+    if (gy % 32 === 31) await yieldToUi();
+  }
+  const out = new Float32Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    const fy = y / step;
+    const y0 = Math.floor(fy);
+    const ty = fy - y0;
+    for (let x = 0; x < width; x += 1) {
+      const fx = x / step;
+      const x0 = Math.floor(fx);
+      const tx = fx - x0;
+      const i = y0 * gw + x0;
+      const top = grid[i] + (grid[i + 1] - grid[i]) * tx;
+      const bottom = grid[i + gw] + (grid[i + gw + 1] - grid[i + gw]) * tx;
+      out[y * width + x] = top + (bottom - top) * ty;
+    }
+    if (y % 16 === 15) await yieldToUi();
+  }
+  return out;
+}
+
 /** Fractal continents for a "new world"; the seed is stored with the game. */
 export function makeRandomLand(seed: number): Uint8Array {
   const rng = mulberry32(seed);
@@ -90,6 +144,43 @@ export function makeRandomLand(seed: number): Uint8Array {
   const sample = Array.from({ length: 4000 }, () => score[Math.floor(rng() * MAP_PIXELS)]).sort((a, b) => b - a);
   const threshold = sample[Math.floor(sample.length * 0.3)];
   for (let i = 0; i < MAP_PIXELS; i += 1) land[i] = score[i] >= threshold ? 1 : 0;
+  return land;
+}
+
+export async function makeRandomLandCooperative(seed: number): Promise<Uint8Array> {
+  const rng = mulberry32(seed);
+  const field = await fractalFieldCooperative(MAP_WIDTH, MAP_HEIGHT, seed, 5, 6);
+  const centres = Array.from({ length: 5 + Math.floor(rng() * 3) }, () => ({
+    x: 0.08 + rng() * 0.84,
+    y: 0.2 + rng() * 0.6,
+    r: 0.12 + rng() * 0.16,
+  }));
+  const land = new Uint8Array(MAP_PIXELS);
+  const score = new Float32Array(MAP_PIXELS);
+  for (let y = 0; y < MAP_HEIGHT; y += 1) {
+    const ny = y / MAP_HEIGHT;
+    const edge = Math.min(1, ny / 0.08, (1 - ny) / 0.08);
+    for (let x = 0; x < MAP_WIDTH; x += 1) {
+      const nx = x / MAP_WIDTH;
+      let bump = 0;
+      for (const c of centres) {
+        const dx = (nx - c.x) * 2.4;
+        const dy = ny - c.y;
+        const d = Math.sqrt(dx * dx + dy * dy) / c.r;
+        bump = Math.max(bump, 1 - d);
+      }
+      const i = y * MAP_WIDTH + x;
+      score[i] = (field[i] * 0.9 + bump * 0.55) * edge;
+    }
+    if (y % 8 === 7) await yieldToUi();
+  }
+  const sample = Array.from({ length: 4000 }, () => score[Math.floor(rng() * MAP_PIXELS)]).sort((a, b) => b - a);
+  const threshold = sample[Math.floor(sample.length * 0.3)];
+  for (let start = 0; start < MAP_PIXELS; start += 16_384) {
+    const end = Math.min(MAP_PIXELS, start + 16_384);
+    for (let i = start; i < end; i += 1) land[i] = score[i] >= threshold ? 1 : 0;
+    await yieldToUi();
+  }
   return land;
 }
 
@@ -141,6 +232,53 @@ export function labelWater(land: Uint8Array): WaterInfo {
   return { bodyOf, bodyCount, coastsOf: lists.map((list) => Int32Array.from(list)) };
 }
 
+export async function labelWaterCooperative(land: Uint8Array): Promise<WaterInfo> {
+  const bodyOf = new Int32Array(MAP_PIXELS).fill(-1);
+  const stack = new Int32Array(MAP_PIXELS);
+  let bodyCount = 0;
+  let work = 0;
+  for (let start = 0; start < MAP_PIXELS; start += 1) {
+    if (start % 16_384 === 16_383) await yieldToUi();
+    if (land[start] || bodyOf[start] !== -1) continue;
+    let top = 0;
+    stack[top++] = start;
+    bodyOf[start] = bodyCount;
+    while (top > 0) {
+      const p = stack[--top];
+      const x = p % MAP_WIDTH;
+      const y = (p - x) / MAP_WIDTH;
+      const left = x > 0 ? p - 1 : p + MAP_WIDTH - 1;
+      const right = x < MAP_WIDTH - 1 ? p + 1 : p - MAP_WIDTH + 1;
+      const neighbours = [left, right, y > 0 ? p - MAP_WIDTH : -1, y < MAP_HEIGHT - 1 ? p + MAP_WIDTH : -1];
+      for (const n of neighbours) {
+        if (n < 0 || land[n] || bodyOf[n] !== -1) continue;
+        bodyOf[n] = bodyCount;
+        stack[top++] = n;
+      }
+      work += 1;
+      if (work >= 8192) {
+        work = 0;
+        await yieldToUi();
+      }
+    }
+    bodyCount += 1;
+  }
+  const lists: number[][] = Array.from({ length: bodyCount }, () => []);
+  for (let p = 0; p < MAP_PIXELS; p += 1) {
+    if (p % 16_384 === 16_383) await yieldToUi();
+    if (!land[p]) continue;
+    const seen: number[] = [];
+    forEachNeighbour(p, (n) => {
+      const body = bodyOf[n];
+      if (body >= 0 && !seen.includes(body)) {
+        seen.push(body);
+        lists[body].push(p);
+      }
+    });
+  }
+  return { bodyOf, bodyCount, coastsOf: lists.map((list) => Int32Array.from(list)) };
+}
+
 export function forEachNeighbour(p: number, visit: (n: number) => void): void {
   const x = p % MAP_WIDTH;
   if (x > 0) visit(p - 1);
@@ -171,6 +309,39 @@ function coastDistance(land: Uint8Array): Uint16Array {
         queue[tail++] = n;
       }
     });
+  }
+  return dist;
+}
+
+async function coastDistanceCooperative(land: Uint8Array): Promise<Uint16Array> {
+  const dist = new Uint16Array(MAP_PIXELS).fill(65535);
+  const queue = new Int32Array(MAP_PIXELS);
+  let head = 0;
+  let tail = 0;
+  for (let p = 0; p < MAP_PIXELS; p += 1) {
+    if (!land[p]) {
+      dist[p] = 0;
+      queue[tail++] = p;
+    }
+    if (p % 16_384 === 16_383) await yieldToUi();
+  }
+  let work = 0;
+  while (head < tail) {
+    const p = queue[head++];
+    const next = dist[p] + 1;
+    if (next <= 400) {
+      forEachNeighbour(p, (n) => {
+        if (dist[n] > next) {
+          dist[n] = next;
+          queue[tail++] = n;
+        }
+      });
+    }
+    work += 1;
+    if (work >= 8192) {
+      work = 0;
+      await yieldToUi();
+    }
   }
   return dist;
 }
@@ -374,6 +545,35 @@ export function generateClimate(land: Uint8Array, seed: number): Climate {
       humidity[p] = quantize(baseWet * (1 - inland * 0.55 * tropical) + (wetNoise[p] - 0.5) * 40);
       drainage[p] = quantize(8 + drainNoise[p] * 92);
     }
+  }
+  return { humidity, temperature, drainage };
+}
+
+export async function generateClimateCooperative(land: Uint8Array, seed: number): Promise<Climate> {
+  const humidity = new Uint8Array(MAP_PIXELS);
+  const temperature = new Uint8Array(MAP_PIXELS);
+  const drainage = new Uint8Array(MAP_PIXELS);
+  const tempNoise = await fractalFieldCooperative(MAP_WIDTH, MAP_HEIGHT, seed + 11, 9, 4);
+  const wetNoise = await fractalFieldCooperative(MAP_WIDTH, MAP_HEIGHT, seed + 23, 12, 5);
+  const drainNoise = await fractalFieldCooperative(MAP_WIDTH, MAP_HEIGHT, seed + 37, 18, 5);
+  const distance = await coastDistanceCooperative(land);
+  for (let y = 0; y < MAP_HEIGHT; y += 1) {
+    const lat = Math.abs(latitudeOfRow(y));
+    const baseTemp = 96 - lat * 1.22;
+    const baseWet = interpolate(HUMIDITY_BY_LAT, lat);
+    const tropical = lat < 14 ? 0.3 : 1;
+    for (let x = 0; x < MAP_WIDTH; x += 1) {
+      const p = y * MAP_WIDTH + x;
+      if (!land[p]) {
+        temperature[p] = quantize(baseTemp + (tempNoise[p] - 0.5) * 16 - 8);
+        continue;
+      }
+      const inland = Math.min(1, distance[p] / 160);
+      temperature[p] = quantize(baseTemp + (tempNoise[p] - 0.5) * 22 - inland * 4);
+      humidity[p] = quantize(baseWet * (1 - inland * 0.55 * tropical) + (wetNoise[p] - 0.5) * 40);
+      drainage[p] = quantize(8 + drainNoise[p] * 92);
+    }
+    if (y % 8 === 7) await yieldToUi();
   }
   return { humidity, temperature, drainage };
 }

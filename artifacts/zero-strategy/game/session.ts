@@ -15,6 +15,18 @@ export function startNewGame(mapKind: MapKind, role: PlayerRole): Game {
   return current;
 }
 
+export async function startNewGameCooperative(
+  mapKind: MapKind,
+  role: PlayerRole,
+  onProgress?: (stage: string) => void,
+): Promise<Game> {
+  const next = await Game.createCooperative(mapKind, role, undefined, onProgress);
+  current?.discard();
+  current = next;
+  current.start();
+  return current;
+}
+
 /** Loads the saved game from this device. Returns null if there is none. */
 export async function continueSavedGame(): Promise<Game | null> {
   if (current) {
