@@ -13,7 +13,7 @@ import { RAMPS } from '@/game/render';
 import { expectedHeirFor, rulers } from '@/game/succession';
 import { cityComposition, cityRankName } from '@/game/settlements';
 import { cityIconIndex, cityIconSource } from '@/components/map/cityIcons';
-import { nomadProfileRoute } from '@/game/profileRoutes';
+import { cityProfileRoute, countryProfileRoute, cultureProfileRoute, nomadProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
 
 const c = colors.light;
 
@@ -127,33 +127,40 @@ export function LegendPanel({ game, snap, onCityPress }: { game: Game; snap: Gam
     body = (
       <ScrollView nestedScrollEnabled>
         {game.world.cities.length ? game.world.cities.map((city) => (
-          <Pressable
-            key={city.id}
-            onPress={() => onCityPress?.(city.pixel)}
-            disabled={!onCityPress}
-            accessibilityRole="button"
-            accessibilityLabel={`Показать ${city.name ?? cityRankName(city.rank)} на карте`}
-            style={styles.countryCard}
-            testID={`button-city-${city.id}`}
-          >
-            <View style={styles.row}>
-              <Image
-                source={cityIconSource(cityIconIndex(city, game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0))}
-                style={styles.cityIcon}
-                resizeMode="contain"
-                accessibilityLabel={`${city.capital ? 'Столица' : game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0 ? 'Порт' : 'Город'}, ${cityRankName(city.rank)}`}
-              />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rowName}>{city.name ?? cityRankName(city.rank)}</Text>
-                <Text style={styles.rowDetail}>
-                  {game.world.countries[city.countryId]?.name ?? 'Страна распущена'} · город {fmt(Math.round(city.population))} чел. · сельская плотность {fmt(Math.round(game.world.density[city.pixel]))}
-                </Text>
+          <View key={city.id} style={styles.countryCard} testID={`button-city-${city.id}`}>
+            <Pressable
+              onPress={() => onCityPress?.(city.pixel)}
+              disabled={!onCityPress}
+              accessibilityRole="button"
+              accessibilityLabel={`Показать ${city.name ?? cityRankName(city.rank)} на карте`}
+            >
+              <View style={styles.row}>
+                <Image
+                  source={cityIconSource(cityIconIndex(city, game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0))}
+                  style={styles.cityIcon}
+                  resizeMode="contain"
+                  accessibilityLabel={`${city.capital ? 'Столица' : game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0 ? 'Порт' : 'Город'}, ${cityRankName(city.rank)}`}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowName}>{city.name ?? cityRankName(city.rank)}</Text>
+                  <Text style={styles.rowDetail}>
+                    {game.world.countries[city.countryId]?.name ?? 'Страна распущена'} · город {fmt(Math.round(city.population))} чел. · сельская плотность {fmt(Math.round(game.world.density[city.pixel]))}
+                  </Text>
+                </View>
+                <Text style={styles.rowValue}>{cityRankName(city.rank)}</Text>
+                {onCityPress && <Feather name="chevron-right" size={16} color={c.mutedForeground} />}
               </View>
-              <Text style={styles.rowValue}>{cityRankName(city.rank)}</Text>
-              {onCityPress && <Feather name="chevron-right" size={16} color={c.mutedForeground} />}
+              <CityCompositionRows world={game.world} city={city} />
+            </Pressable>
+            <View style={styles.cityProfileActions}>
+              <Pressable onPress={() => router.push(cityProfileRoute(city.id))} accessibilityRole="link">
+                <Text style={styles.familyLink}>Карточка города</Text>
+              </Pressable>
+              <Pressable onPress={() => router.push(countryProfileRoute(city.countryId))} accessibilityRole="link">
+                <Text style={styles.familyLink}>{game.world.countries[city.countryId]?.name ?? 'Страна распущена'}</Text>
+              </Pressable>
             </View>
-            <CityCompositionRows world={game.world} city={city} />
-          </Pressable>
+          </View>
         )) : <Empty text="Пока нет городов." />}
       </ScrollView>
     );
@@ -246,6 +253,9 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
                 <Text style={styles.countryInfo}>Площадь · {fmt(country.pixels)} земель</Text>
                 <Text style={styles.countryInfo}>Население · {fmt(row.value)} чел.</Text>
                 <Text style={styles.countryInfo}>Форма правления · {GOVERNMENTS[governmentOf(country.government).id].name}</Text>
+                <Pressable onPress={() => router.push(countryProfileRoute(country.id))} accessibilityRole="link">
+                  <Text style={styles.familyLink}>Карточка страны</Text>
+                </Pressable>
                 {country.modifiers.map((modifier) => (
                   <Text style={styles.countryModifier} key={modifier}>
                     · {modifier === 'consulate' ? `Консулат ${country.consulCount}` : MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}
@@ -255,12 +265,12 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
                 {countryCities.map((city) => {
                   const hasPort = game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0;
                   return (
-                    <View key={city.id} style={styles.countryCityRow}>
+                    <Pressable key={city.id} style={styles.countryCityRow} onPress={() => router.push(cityProfileRoute(city.id))} accessibilityRole="link">
                       <Image source={cityIconSource(cityIconIndex(city, hasPort))} style={styles.countryCityIcon} resizeMode="contain" />
-                      <Text style={styles.countryInfo}>
+                      <Text style={[styles.countryInfo, styles.familyLink]}>
                         {city.capital ? 'Столица · ' : ''}{city.name ?? cityRankName(city.rank)} · {cityRankName(city.rank)} · город {fmt(Math.round(city.population))} чел. · сельская плотность {fmt(Math.round(game.world.density[city.pixel]))} чел./участок
                       </Text>
-                    </View>
+                    </Pressable>
                   );
                 })}
                 <CountryCompositionBlock game={game} countryId={country.id} />
@@ -376,16 +386,30 @@ function CountryCompositionBlock({ game, countryId }: { game: Game; countryId: n
   return (
     <View style={styles.composition}>
       <Text style={styles.countrySection}>ЭТНИЧЕСКИЙ СОСТАВ</Text>
-      {composition.cultures.map((group) => (
-        <Text key={group.id} style={styles.compositionRow}>
+      {composition.cultures.map((group) => {
+        if (group.id === null) {
+          return <Text key="unknown-culture" style={styles.compositionRow}>
+            <Text style={{ color: group.color }}>■ </Text>{group.name} · {pct(group.percent)}
+          </Text>;
+        }
+        const cultureId = group.id;
+        return <Text key={cultureId} onPress={() => router.push(cultureProfileRoute(cultureId))}
+          accessibilityRole="link" style={[styles.compositionRow, styles.familyLink]}>
           <Text style={{ color: group.color }}>■ </Text>{group.name} · {pct(group.percent)}
-        </Text>
-      ))}
+        </Text>;
+      })}
       <Text style={styles.countrySection}>РЕЛИГИОЗНЫЙ СОСТАВ</Text>
       {composition.religions.map((group) => (
-        <Text key={group.id ?? 'atheists'} style={styles.compositionRow}>
-          <Text style={{ color: group.color }}>■ </Text>{group.name} · {pct(group.percent)}
-        </Text>
+        group.id === null ? (
+          <Text key="atheists" style={styles.compositionRow}>
+            <Text style={{ color: group.color }}>■ </Text>{group.name} · {pct(group.percent)}
+          </Text>
+        ) : (
+          <Text key={group.id} onPress={() => router.push(religionProfileRoute(group.id!))}
+            accessibilityRole="link" style={[styles.compositionRow, styles.familyLink]}>
+            <Text style={{ color: group.color }}>■ </Text>{group.name} · {pct(group.percent)}
+          </Text>
+        )
       ))}
     </View>
   );
@@ -420,6 +444,7 @@ const styles = StyleSheet.create({
   cityIcon: { width: 34, height: 34, marginRight: 6 },
   countryCityRow: { flexDirection: 'row', alignItems: 'center', minHeight: 28, gap: 5 },
   countryCityIcon: { width: 22, height: 22 },
+  cityProfileActions: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 7, borderTopWidth: 1, borderColor: c.border },
   cityComposition: { gap: 2, paddingHorizontal: 12, paddingBottom: 8 },
   cityCompositionText: { fontFamily: fonts.sans, fontSize: 10, color: c.mutedForeground },
   countryModifier: { fontFamily: fonts.sans, fontSize: 10, lineHeight: 14, color: c.mutedForeground },

@@ -107,6 +107,7 @@ try {
   await clearSaveBytes();
   const fixture = makeFixture();
   const uninterrupted = new Game(fixture.world, 'all');
+  uninterrupted.addLog('Связь с объектом сохранена', [{ type: 'country', id: fixture.country.id }]);
   const card = makeCard('rain', { targetCountryId: fixture.country.id, hint: fixture.pixels[16] });
   uninterrupted.card = card;
   uninterrupted.startCard(card);
@@ -118,6 +119,11 @@ try {
   const resumed = await saveAndLoad(uninterrupted);
   assert.equal(resumed.getSnapshot().card.ink, savedInk, 'remaining ink is restored');
   assert.equal(resumed.getSnapshot().card.selectedChoice, 0, 'the current choice is restored');
+  assert.deepEqual(resumed.getSnapshot().chronicle[0], {
+    year: 1000,
+    text: 'Связь с объектом сохранена',
+    objects: [{ type: 'country', id: fixture.country.id }],
+  }, 'object links in new chronicle entries survive save/load');
   const resumePixel = fixture.pixels[16];
   resumed.dispatchAction({
     type: 'dab', x: resumePixel % MAP_WIDTH, y: Math.floor(resumePixel / MAP_WIDTH), radius: 0,
@@ -128,8 +134,26 @@ try {
   uninterrupted.dispatchAction({ type: 'completeCard' });
   resumed.dispatchAction({ type: 'completeCard' });
   sameResult(uninterrupted, resumed, 'painted climate card');
+  assert.match(uninterrupted.getSnapshot().chronicle[0].text, /Ливни/u, 'the painted weather event is recorded');
+  assert.deepEqual(uninterrupted.getSnapshot().chronicle[0].objects, [{ type: 'country', id: fixture.country.id }],
+    'events explicitly link to the affected country');
   uninterrupted.discard();
   resumed.discard();
+
+  const globalFixture = makeFixture();
+  const globalWeather = new Game(globalFixture.world, 'all');
+  const globalPixel = globalFixture.pixels[16];
+  const globalCard = makeCard('rain', { hint: globalPixel });
+  globalWeather.card = globalCard;
+  globalWeather.startCard(globalCard);
+  globalWeather.dispatchAction({
+    type: 'dab', x: globalPixel % MAP_WIDTH, y: Math.floor(globalPixel / MAP_WIDTH), radius: 0,
+  });
+  globalWeather.dispatchAction({ type: 'completeCard' });
+  assert.deepEqual(globalWeather.getSnapshot().chronicle[0].objects, [
+    { type: 'country', id: globalFixture.country.id },
+  ], 'a world-area event links to the country that owned the changed land');
+  globalWeather.discard();
 
   // Colonization logging depends on counts that are not reconstructible from the raster.
   await clearSaveBytes();

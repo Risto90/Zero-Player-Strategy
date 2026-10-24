@@ -16,6 +16,7 @@ import colors, { fonts } from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import type { Game, PixelInfo } from '@/game/game';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
+import { cityProfileRoute, countryProfileRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
 import { useGameSnapshot } from '@/game/useGame';
 
 const c = colors.light;
@@ -104,7 +105,11 @@ function GameScreen({ game }: { game: Game }) {
       {tool === 'hand' && inspect && (
         <InspectCard info={selectedInfo} world={game.world} onClose={() => setInspect(null)}
           onPersonPress={(id) => router.push({ pathname: '/person/[id]', params: { id: String(id) } })}
-          onDynastyPress={(familyId) => router.push({ pathname: '/dynasty/[id]', params: { id: String(familyId) } })} />
+          onDynastyPress={(familyId) => router.push({ pathname: '/dynasty/[id]', params: { id: String(familyId) } })}
+          onCountryPress={(id) => router.push(countryProfileRoute(id))}
+          onCityPress={(id) => router.push(cityProfileRoute(id))}
+          onCulturePress={(id) => router.push(cultureProfileRoute(id))}
+          onReligionPress={(id) => router.push(religionProfileRoute(id))} />
       )}
       {tool === 'hand' && !inspect && (
         <View style={styles.tapHint} pointerEvents="none">

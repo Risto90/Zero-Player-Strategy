@@ -23,7 +23,7 @@ function Bar({ label, value }: { label: string; value: number }) {
 
 type ShareRow = { id: number; name: string; color: string; share: number };
 
-function Shares({ title, rows, extra }: { title: string; rows: ShareRow[]; extra?: { name: string; share: number } }) {
+function Shares({ title, rows, extra, onPress }: { title: string; rows: ShareRow[]; extra?: { name: string; share: number }; onPress?: (id: number) => void }) {
   return (
     <View>
       <Text style={styles.sharesTitle}>{title}</Text>
@@ -33,11 +33,11 @@ function Shares({ title, rows, extra }: { title: string; rows: ShareRow[]; extra
         ))}
       </View>
       {rows.map((r) => (
-        <View key={r.id} style={styles.shareRow}>
+        <Pressable key={r.id} onPress={() => onPress?.(r.id)} disabled={!onPress} accessibilityRole={onPress ? 'link' : undefined} style={styles.shareRow}>
           <View style={[styles.dot, { backgroundColor: r.color }]} />
-          <Text style={styles.shareName} numberOfLines={1}>{r.name}</Text>
+          <Text style={[styles.shareName, onPress && styles.personLink]} numberOfLines={1}>{r.name}</Text>
           <Text style={styles.shareValue}>{r.share}%</Text>
-        </View>
+        </Pressable>
       ))}
       {extra && (
         <View style={styles.shareRow}>
@@ -54,12 +54,16 @@ function fmtDensity(value: number): string {
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value);
 }
 
-export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPress }: {
+export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPress, onCountryPress, onCityPress, onCulturePress, onReligionPress }: {
   info: PixelInfo | null;
   world: World;
   onClose: () => void;
   onPersonPress?: (id: number) => void;
   onDynastyPress?: (familyId: number) => void;
+  onCountryPress?: (id: number) => void;
+  onCityPress?: (id: number) => void;
+  onCulturePress?: (id: number) => void;
+  onReligionPress?: (id: number) => void;
 }) {
   const personLink = (person: Person, detail: string) => (
     <View key={person.id} style={styles.personRow}>
@@ -92,16 +96,22 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
             <View style={{ paddingRight: 32 }}>
               <View style={styles.nameRow}>
                 {info.country && <View style={[styles.swatch, { backgroundColor: info.country.color }]} />}
-                <Text style={styles.name} testID="text-inspect-country">{info.country ? info.country.name : 'Ничья земля'}</Text>
+                {info.country ? (
+                  <Pressable onPress={() => onCountryPress?.(info.country!.id)} disabled={!onCountryPress} accessibilityRole={onCountryPress ? 'link' : undefined}>
+                    <Text style={[styles.name, onCountryPress && styles.personLink]} testID="text-inspect-country">{info.country.name}</Text>
+                  </Pressable>
+                ) : <Text style={styles.name} testID="text-inspect-country">Ничья земля</Text>}
               </View>
               <Text style={styles.muted}>
                 {info.country ? `${info.country.rank} · ` : ''}
                 {info.biome} · x {info.x}, y {info.y}
               </Text>
               {info.city && (
-                <Text style={styles.cityLine}>
+                <Pressable onPress={() => onCityPress?.(info.city!.id)} disabled={!onCityPress} accessibilityRole={onCityPress ? 'link' : undefined}>
+                <Text style={[styles.cityLine, onCityPress && styles.personLink]}>
                   {info.city.capital ? 'Столица · ' : ''}{info.city.name ?? 'Город'} · {['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][info.city.rank - 1]} · {fmt(info.city.population)} чел.
                 </Text>
+                </Pressable>
               )}
               {info.country && (
                 <View style={styles.countryDetails}>
@@ -179,8 +189,8 @@ export function InspectCard({ info, world, onClose, onPersonPress, onDynastyPres
             </View>
             {info.country ? (
               <>
-                <Shares title="НАРОДЫ" rows={info.cultures} />
-                <Shares title="ВЕРЫ" rows={info.religions} extra={{ name: 'Атеисты', share: info.nonBelievers }} />
+                <Shares title="НАРОДЫ" rows={info.cultures} onPress={onCulturePress} />
+                <Shares title="ВЕРЫ" rows={info.religions} onPress={onReligionPress} extra={{ name: 'Атеисты', share: info.nonBelievers }} />
               </>
             ) : (
               <Text style={[styles.muted, { fontStyle: 'italic' }]}>Здесь никто не живёт.</Text>
