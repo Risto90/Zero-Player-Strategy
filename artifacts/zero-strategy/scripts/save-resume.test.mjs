@@ -6,6 +6,7 @@ import { World } from '../game/world.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { availableNomadCitySites, dissolveCountryIntoNomadicCountries, settleNomadAsCountry } from '../game/nomads.ts';
 import { newCitizen, registerPerson } from '../game/characters.ts';
+import { filterChronicle, chronicleReference } from '../game/chronicle.ts';
 
 function makeFixture() {
   const world = World.create('random', 7721);
@@ -268,19 +269,29 @@ try {
   nomadGame.discard();
   nomadResumed.discard();
 
-  // The global archive has no rolling cap, including through a persisted save.
+  // Thousands of archived entries, including old important profile history, survive persistence.
   await clearSaveBytes();
   const archiveFixture = makeFixture();
   const archiveGame = new Game(archiveFixture.world, 'all');
-  for (let index = 0; index < 140; index += 1) {
-    archiveGame.addLog(`Архивная запись ${index}`, [{ type: 'country', id: archiveFixture.country.id }], index === 0);
+  const archiveSize = 3000;
+  for (let index = 0; index < archiveSize; index += 1) {
+    archiveGame.addLog(
+      `Архивная запись ${index}`,
+      [{ type: 'country', id: archiveFixture.country.id }],
+      index === 0,
+    );
   }
   await archiveGame.saveNow();
   const archiveResumed = await Game.load();
   assert.ok(archiveResumed, 'the full chronicle archive can be loaded');
-  assert.equal(archiveResumed.getSnapshot().chronicle.length, 140, 'saving preserves entries beyond the old rolling cap');
-  assert.equal(archiveResumed.getSnapshot().chronicle.at(-1).important, true,
-    'an old important entry remains marked after saving and loading');
+  const restoredChronicle = archiveResumed.getSnapshot().chronicle;
+  assert.equal(restoredChronicle.length, archiveSize, 'saving and loading preserves thousands of chronicle entries');
+  assert.equal(restoredChronicle.at(-1).important, true, 'the oldest important event remains marked after loading');
+  assert.equal(restoredChronicle.at(-1).text, 'Архивная запись 0',
+    'the oldest important event remains accessible at the end of the loaded archive');
+  assert.ok(filterChronicle(restoredChronicle, [chronicleReference('country', archiveFixture.country.id)])
+    .some(({ text, important }) => text === 'Архивная запись 0' && important),
+  'an old important event remains available in the country profile after loading');
   assert.equal(archiveResumed.getSnapshot().log.length, 120,
     'the compatibility log projection remains bounded independently of the archive');
   archiveGame.discard();

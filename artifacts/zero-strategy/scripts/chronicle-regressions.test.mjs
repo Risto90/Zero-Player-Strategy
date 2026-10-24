@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   CHRONICLE_OBJECT_HISTORY_LIMIT,
   CHRONICLE_PAGE_SIZE,
@@ -83,6 +84,33 @@ const archivePages = Array.from({ length: 61 }, (_, index) => ({
 assert.equal(chroniclePage(archivePages, 0).length, CHRONICLE_PAGE_SIZE, 'global archive initially exposes 25 records');
 assert.equal(chroniclePage(archivePages, 1)[0].text, 'Archive 25', 'the next page starts after the first 25');
 assert.equal(chroniclePage(archivePages, 2).length, 11, 'the last archive page contains only remaining records');
+
+const thousandsArchive = Array.from({ length: 3000 }, (_, index) => ({
+  year: 5000 - index,
+  text: `Thousands archive ${index}`,
+  objects: [{ type: 'country', id: 7 }],
+  important: index === 2999,
+}));
+const thousandsObjectHistory = filterChronicle(thousandsArchive, [{ type: 'country', id: 7 }]);
+assert.equal(thousandsObjectHistory.length, CHRONICLE_OBJECT_HISTORY_LIMIT + 1,
+  'country profiles keep the newest history and important records from thousands of entries');
+assert.equal(thousandsObjectHistory.at(-1).text, 'Thousands archive 2999',
+  'the oldest important record remains available from a profile history selection');
+const thousandsSearch = searchChronicle(thousandsArchive, { reference: { type: 'country', id: 7 } });
+assert.equal(thousandsSearch.length, thousandsArchive.length, 'archive search reaches all thousands of linked records');
+assert.equal(chroniclePage(thousandsSearch, 0).length, CHRONICLE_PAGE_SIZE,
+  'the first global chronicle page stays bounded in a large archive');
+assert.ok(chroniclePage(thousandsSearch, Math.floor((thousandsSearch.length - 1) / CHRONICLE_PAGE_SIZE))
+  .some(({ text, important }) => text === 'Thousands archive 2999' && important),
+'later chronicle pages still expose old important records');
+
+const logPanelSource = readFileSync('components/game/LogPanel.tsx', 'utf8');
+assert.match(logPanelSource, /const visibleEntries = chroniclePage\(matchingEntries, 0, visibleCount\)/u,
+  'the chronicle panel limits displayed data to the requested page');
+assert.match(logPanelSource, /<FlatList[\s\S]*?data=\{visibleEntries\}/u,
+  'the global chronicle renders only the paged records through FlatList');
+assert.doesNotMatch(logPanelSource, /data=\{matchingEntries\}/u,
+  'the global chronicle never passes the full matching archive directly to the list');
 
 const countryArchive = migrateChronicle([
   { year: 100, text: 'Country and city', important: false, objects: [{ type: 'country', id: 3 }, { type: 'city', id: 4 }] },
