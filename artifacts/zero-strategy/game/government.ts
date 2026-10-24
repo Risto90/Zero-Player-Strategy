@@ -66,6 +66,8 @@ export interface Person {
   familyCultureId?: number;
   cultureId: number;
   religionId: number | null;
+  /** Current nomadic home; countryId is -1 while this is set. */
+  nomadId?: number | null;
   countryId: number;
   bornAt: number;
   deathYear: number | null;
@@ -279,7 +281,7 @@ export function createPerson(
   const familyName = nameContext.familyName ?? familyNameForId(familyId, familyCultureId, nameContext.surnameAffix);
   const givenName = pick(GIVEN[gender]);
   return { id, givenName, name: formatPersonName(givenName, familyName, gender, nameContext), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName, familyCultureId, cultureId, religionId,
-    countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
+    nomadId: null, countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
     loverIds: [], friendIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
 }
 export function createFamilyId(): number { return nextPersonId++; }

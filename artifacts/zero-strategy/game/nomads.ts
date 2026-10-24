@@ -174,6 +174,10 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
     if (target < 0 && created.length) target = 0;
     if (target >= 0 && !created[target].personIds.includes(resident.id)) {
       created[target].personIds.push(resident.id);
+      if (resident.alive) {
+        resident.countryId = -1;
+        resident.nomadId = created[target].id;
+      }
     }
   }
 
@@ -252,6 +256,7 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
   );
   country.ruler.formerRulerOf = [...new Set([...country.ruler.formerRulerOf, country.id])];
   country.ruler.countryId = country.id;
+  country.ruler.nomadId = null;
   if (!country.dynastyClaims.includes(country.ruler.familyId)) country.dynastyClaims.push(country.ruler.familyId);
   world.people = world.people.filter((person) => person.id !== generatedRulerId);
 
@@ -318,8 +323,34 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
   }
 
   const nomadIndex = world.nomads.indexOf(nomad);
+  for (const personId of nomad.personIds) {
+    const resident = world.people.find((person) => person.id === personId);
+    if (!resident) continue;
+    if (resident.id === country.ruler.id || resident.id === country.heir?.id) {
+      resident.countryId = country.id;
+      resident.nomadId = null;
+      continue;
+    }
+    if (resident.nomadId !== nomad.id) continue;
+    const belongsElsewhere = world.nomads.find((other) => other !== nomad &&
+      (other.ruler.id === personId || other.coRulerIds.includes(personId) || other.personIds.includes(personId)));
+    if (belongsElsewhere) {
+      resident.countryId = -1;
+      resident.nomadId = belongsElsewhere.id;
+    } else {
+      resident.countryId = country.id;
+      resident.nomadId = null;
+    }
+  }
   if (nomadIndex >= 0) world.nomads.splice(nomadIndex, 1);
-  world.nomads.forEach((item, index) => { item.id = index; });
+  if (nomadIndex >= 0) {
+    for (const resident of world.people) {
+      if (resident.nomadId !== undefined && resident.nomadId !== null && resident.nomadId > nomadIndex) {
+        resident.nomadId -= 1;
+      }
+    }
+    world.nomads.forEach((item, index) => { item.id = index; });
+  }
   const transferredOffices = new Set([country.ruler.id, ...country.coRulerIds]);
   for (const other of world.nomads) {
     for (const leaderId of [other.ruler.id, ...other.coRulerIds]) {
@@ -332,13 +363,6 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
   }
   const city = addCityAndConcentrate(world, country.id, cityPixel, true);
   if (!city) throw new Error('Validated nomad city site became unavailable during settlement.');
-  for (const personId of nomad.personIds) {
-    const resident = world.people.find((person) => person.id === personId);
-    if (!resident) continue;
-    const belongsElsewhere = world.nomads.some((other) => other !== nomad &&
-      (other.ruler.id === personId || other.personIds.includes(personId)));
-    if (!belongsElsewhere) resident.countryId = country.id;
-  }
   world.recountCountries();
   world.nomadVersion += 1;
   world.version += 1;

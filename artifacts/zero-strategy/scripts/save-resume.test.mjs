@@ -4,6 +4,8 @@ import { MAP_WIDTH } from '../game/config.ts';
 import { mulberry32 } from '../game/random.ts';
 import { World } from '../game/world.ts';
 import { clearSaveBytes } from '../game/storage.ts';
+import { dissolveCountryIntoNomads } from '../game/nomads.ts';
+import { newCitizen, registerPerson } from '../game/characters.ts';
 
 function makeFixture() {
   const world = World.create('random', 7721);
@@ -211,6 +213,26 @@ try {
   sameResult(cityGame, cityResumed, 'pending city placement');
   cityGame.discard();
   cityResumed.discard();
+
+  // Nomadic residents keep their current home through the persisted save/load path.
+  await clearSaveBytes();
+  const nomadFixture = makeFixture();
+  const [nomad] = dissolveCountryIntoNomads(nomadFixture.world, nomadFixture.country);
+  assert.ok(nomad, 'the fixture country becomes a nomad group');
+  const resident = registerPerson(nomadFixture.world, nomad, newCitizen(nomadFixture.world, nomad, 1001));
+  const nomadGame = new Game(nomadFixture.world, 'all');
+  await nomadGame.saveNow();
+  const nomadResumed = await Game.load();
+  assert.ok(nomadResumed, 'the saved nomadic world can be loaded');
+  const restoredResident = nomadResumed.world.people.find((person) => person.id === resident.id);
+  assert.equal(restoredResident?.countryId, -1, 'a loaded nomadic resident does not return to the source country');
+  assert.equal(restoredResident?.nomadId, 0, 'a loaded nomadic resident keeps the current nomad ID');
+  assert.ok(nomadResumed.world.nomads[0].personIds.includes(resident.id),
+    'a loaded nomadic resident remains in the group registry');
+  assert.equal(nomadResumed.world.nomads[0].sourceCountryId, nomadFixture.country.id,
+    'the source country remains available as historical metadata');
+  nomadGame.discard();
+  nomadResumed.discard();
 } finally {
   await clearSaveBytes();
   Game.persist = previousPersist;

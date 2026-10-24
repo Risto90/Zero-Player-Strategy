@@ -21,9 +21,13 @@ export function registerPerson(world: World, country: Polity, p: Person): Person
   const registered = existing ?? p;
   if (!existing) world.people.push(p);
   if (isNomad(country)) {
-    registered.countryId = country.sourceCountryId ?? -1;
+    registered.countryId = -1;
+    registered.nomadId = country.id;
     if (!country.personIds.includes(registered.id)) country.personIds.push(registered.id);
-  } else registered.countryId = country.id;
+  } else {
+    registered.countryId = country.id;
+    registered.nomadId = null;
+  }
   return registered;
 }
 export function newCitizen(world: World, country: Polity, year: number): Person {
@@ -40,7 +44,13 @@ export function newCitizen(world: World, country: Polity, year: number): Person 
   if (country.modifiers.includes('patriarchal')) p.gender = 'male';
   if (country.modifiers.includes('matriarchal')) p.gender = 'female';
   p.name = formatPersonName(p.givenName, p.familyName, p.gender, { style });
-  p.countryId = country.id;
+  if (isNomad(country)) {
+    p.countryId = -1;
+    p.nomadId = country.id;
+  } else {
+    p.countryId = country.id;
+    p.nomadId = null;
+  }
   return p;
 }
 function givenNameOf(p: Person): string {
@@ -57,7 +67,7 @@ function parentNamingContext(world: World, child: Pick<Person, 'parents'>, style
     maternalSurname: mother?.familyName,
   };
 }
-function normalizePerson(raw: Person, c: Country, year: number, world: World): Person {
+function normalizePerson(raw: Person, c: Polity, year: number, world: World): Person {
   const rawCultureId = Number.isFinite(raw.cultureId) ? raw.cultureId : c.cultureId;
   const style = world.cultures[rawCultureId]?.nameStyleId ?? legacyNameStyleForCulture(rawCultureId);
   const rawFamilyCultureId = Number.isFinite(raw.familyCultureId) ? raw.familyCultureId : undefined;
@@ -81,13 +91,71 @@ function normalizePerson(raw: Person, c: Country, year: number, world: World): P
   p.traits = Array.isArray(raw.traits) ? [...raw.traits] : [];
   p.formerRulerOf = Array.isArray(raw.formerRulerOf) ? [...raw.formerRulerOf] : [];
   reservePersonId(p.id); reservePersonId(p.familyId);
-  p.countryId = Number.isFinite(raw.countryId) && raw.countryId >= 0 ? raw.countryId : c.id;
+  const rawNomadId = Number.isInteger(raw.nomadId) && raw.nomadId! >= 0 ? raw.nomadId! : null;
+  p.nomadId = rawNomadId ?? (isNomad(c) ? c.id : null);
+  const rawCountryId = Number.isFinite(raw.countryId) && raw.countryId >= 0 ? raw.countryId : null;
+  const rawCountry = rawCountryId === null ? undefined : world.countries[rawCountryId];
+  p.countryId = p.nomadId !== null
+    ? -1
+    : rawCountry?.pixels
+      ? rawCountryId!
+      : isNomad(c)
+        ? -1
+        : c.pixels > 0
+          ? c.id
+          : -1;
   p.name = formatPersonName(p.givenName, p.familyName, p.gender, parentNamingContext(world, p, style));
   return p;
 }
 
+/** Restore explicit nomad memberships and safely migrate legacy country-only residents. */
+export function migrateNomadHomes(world: World): void {
+  for (const nomad of world.nomads) {
+    nomad.personIds ??= [];
+    nomad.coRulerIds ??= [];
+    for (const officeHolder of [nomad.ruler, nomad.heir].filter((p): p is Person => !!p)) {
+      if (!world.people.some((p) => p.id === officeHolder.id)) world.people.push(officeHolder);
+    }
+    if (!nomad.personIds.length && nomad.sourceCountryId !== null &&
+        world.countries[nomad.sourceCountryId]?.pixels === 0) {
+      nomad.personIds = world.people
+        .filter((candidate) => candidate.alive &&
+          candidate.countryId === nomad.sourceCountryId &&
+          candidate.cultureId === nomad.cultureId &&
+          (nomad.religionId === null || candidate.religionId === nomad.religionId))
+        .map((candidate) => candidate.id);
+    }
+    for (const id of [nomad.ruler.id, ...(nomad.heir ? [nomad.heir.id] : []), ...nomad.coRulerIds]) {
+      if (!nomad.personIds.includes(id)) nomad.personIds.push(id);
+    }
+  }
+
+  const memberships = new Map<number, NomadGroup[]>();
+  for (const nomad of world.nomads) {
+    for (const id of nomad.personIds) {
+      const groups = memberships.get(id) ?? [];
+      groups.push(nomad);
+      memberships.set(id, groups);
+    }
+  }
+  for (const p of world.people) {
+    if (p.nomadId != null && !world.nomads[p.nomadId]) p.nomadId = null;
+    const groups = memberships.get(p.id) ?? [];
+    if (!groups.length) continue;
+    const activeCountry = Number.isInteger(p.countryId) ? world.countries[p.countryId] : undefined;
+    if ((activeCountry?.pixels ?? 0) > 0 || p.nomadId != null) continue;
+    const home = groups.find((nomad) =>
+      nomad.cultureId === p.cultureId &&
+      (nomad.religionId === null || nomad.religionId === p.religionId),
+    ) ?? groups[0];
+    p.countryId = -1;
+    p.nomadId = home.id;
+  }
+}
+
 /** Additive migration: keep legacy rulers/heirs and map the old empire/monarchy identifiers. */
 export function normalizePolitics(world: World, year: number): void {
+  migrateNomadHomes(world);
   for (const culture of world.cultures) {
     culture.nameStyleId ??= legacyNameStyleForCulture(culture.id);
     culture.surnameAffix ??= legacySurnameAffixForCulture(culture.id);
@@ -108,7 +176,7 @@ export function normalizePolitics(world: World, year: number): void {
       normalized.set(p.id, p);
       return p;
     };
-    for (const p of world.people.filter((p) => p.countryId === c.id)) link(p);
+    for (const p of world.people.filter((p) => p.countryId === c.id && c.pixels > 0)) link(p);
     c.ruler = link(c.ruler ?? createPerson(year, 30, createFamilyId(), [], c.cultureId, c.religionId, {
       style: world.cultures[c.cultureId]?.nameStyleId ?? legacyNameStyleForCulture(c.cultureId),
       familyCultureId: c.cultureId,
@@ -127,7 +195,7 @@ export function normalizePolitics(world: World, year: number): void {
         c.heir.familyCultureId = c.ruler.familyCultureId ?? c.ruler.cultureId;
         c.heir.name = formatPersonName(c.heir.givenName, c.heir.familyName, c.heir.gender,
           parentNamingContext(world, c.heir, world.cultures[c.heir.cultureId]?.nameStyleId ?? legacyNameStyleForCulture(c.heir.cultureId)));
-        if (c.heir.countryId < 0) c.heir.countryId = c.id;
+        if (c.heir.countryId < 0 && c.pixels > 0 && c.heir.nomadId == null) c.heir.countryId = c.id;
         if (!c.dynastyClaims.includes(c.heir.familyId)) c.dynastyClaims.push(c.heir.familyId);
       }
     }
@@ -137,7 +205,6 @@ export function normalizePolitics(world: World, year: number): void {
     c.seatSince[c.ruler.id] ??= c.rulerSince;
     c.termCounts[c.ruler.id] ??= 1;
   }
-  world.people = [...normalized.values()];
   for (const nomad of world.nomads) {
     nomad.personIds ??= [];
     nomad.coRulerIds ??= [];
@@ -155,6 +222,26 @@ export function normalizePolitics(world: World, year: number): void {
     if (!nomad.dynastyClaims.includes(nomad.ruler.familyId)) nomad.dynastyClaims.push(nomad.ruler.familyId);
     nomad.rulerSince ??= year;
   }
+  const fallback = world.countries.find((country) => country.pixels > 0) ??
+    world.countries[0] ?? world.nomads[0];
+  for (const raw of world.people) {
+    if (normalized.has(raw.id) || !fallback) continue;
+    const home = raw.nomadId == null
+      ? world.nomads.find((nomad) => nomad.personIds.includes(raw.id))
+      : world.nomads[raw.nomadId];
+    const country = raw.countryId >= 0 && world.countries[raw.countryId]?.pixels
+      ? world.countries[raw.countryId]
+      : undefined;
+    const sourceCountry = home?.sourceCountryId == null
+      ? undefined
+      : world.countries[home.sourceCountryId];
+    normalized.set(raw.id, normalizePerson(raw, home ?? country ?? sourceCountry ?? fallback, year, world));
+  }
+  for (const nomad of world.nomads) {
+    nomad.ruler = normalized.get(nomad.ruler.id) ?? nomad.ruler;
+    nomad.heir = nomad.heir ? normalized.get(nomad.heir.id) ?? nomad.heir : null;
+  }
+  world.people = [...normalized.values()];
   // The old simulator stored both parents on each real birth but did not always
   // persist the relationship itself. Reconstruct a mutual love bond when needed.
   const byId = new Map(world.people.map((p) => [p.id, p]));
@@ -287,21 +374,26 @@ export function arePartners(a: Person, b: Person): boolean {
     (a.loverIds.includes(b.id) && b.loverIds.includes(a.id));
 }
 export function marry(world: World, c: Polity, a: Person, b: Person, betrothal = false): void {
-  const spouse = registerPerson(world, c, b);
-  if (betrothal) { a.betrothedId = spouse.id; spouse.betrothedId = a.id; return; }
-  if (!a.spouseIds.includes(spouse.id)) a.spouseIds.push(spouse.id);
-  if (!spouse.spouseIds.includes(a.id)) spouse.spouseIds.push(a.id);
+  const existing = person(world, b.id);
+  const spouse = existing ?? b;
+  if (!existing) world.people.push(spouse);
   const isForeignLeader = world.countries.some((other) => (isNomad(c) || other.id !== c.id) && other.pixels > 0 &&
     (other.ruler.id === spouse.id || other.coRulerIds.includes(spouse.id))) ||
     world.nomads.some((other) => other !== c &&
       (other.ruler.id === spouse.id || other.coRulerIds.includes(spouse.id)));
-  // Keep a foreign state's active ruler attached to that state until an actual
-  // succession transfers power; ordinary spouses join the household.
   if (!isForeignLeader) {
-    if (isNomad(c)) spouse.countryId = c.sourceCountryId ?? -1;
-    else spouse.countryId = c.id;
-    if (isNomad(c) && !c.personIds.includes(spouse.id)) c.personIds.push(spouse.id);
+    if (isNomad(c)) {
+      spouse.countryId = -1;
+      spouse.nomadId = c.id;
+      if (!c.personIds.includes(spouse.id)) c.personIds.push(spouse.id);
+    } else {
+      spouse.countryId = c.id;
+      spouse.nomadId = null;
+    }
   }
+  if (betrothal) { a.betrothedId = spouse.id; spouse.betrothedId = a.id; return; }
+  if (!a.spouseIds.includes(spouse.id)) a.spouseIds.push(spouse.id);
+  if (!spouse.spouseIds.includes(a.id)) spouse.spouseIds.push(a.id);
   a.betrothedId = null; spouse.betrothedId = null;
 }
 export function birth(world: World, c: Polity, mother: Person, father: Person, year: number): Person | null {

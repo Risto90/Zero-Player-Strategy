@@ -5,6 +5,7 @@ import { fillRings, rasterizeScalar, runSteps, traceCompositionSteps, traceScala
 import { World, type City, type Country, type Culture, type NomadGroup, type Religion } from './world';
 import { generateCityIdentity } from './cityNames';
 import { ensureCityPopulationGroups } from './settlements';
+import { migrateNomadHomes } from './characters';
 
 /**
  * Saved map: every layer is stored as closed-curve zones, never as per-pixel values.
@@ -169,15 +170,6 @@ export function deserializeWorld(saved: SavedWorld): World {
     if (city.pixel >= 0 && city.pixel < MAP_PIXELS) world.cityIdAt[city.pixel] = city.id;
   }
   world.people = saved.people ?? [];
-  for (const nomad of world.nomads) {
-    if (nomad.personIds.length || nomad.sourceCountryId === null) continue;
-    nomad.personIds = world.people
-      .filter((person) => person.countryId === nomad.sourceCountryId &&
-        person.cultureId === nomad.cultureId &&
-        (nomad.religionId === null || person.religionId === nomad.religionId))
-      .map((person) => person.id);
-    if (!nomad.personIds.includes(nomad.ruler.id)) nomad.personIds.push(nomad.ruler.id);
-  }
   world.cultures = saved.cultures.map((c) => ({ ...c }));
   world.religions = saved.religions.map((r) => ({ ...r }));
   rasterizeScalar(layers.political, world.owner);
@@ -200,6 +192,7 @@ export function deserializeWorld(saved: SavedWorld): World {
     if (!city.name) Object.assign(city, generateCityIdentity(world, city.pixel));
   }
   world.recountCountries();
+  migrateNomadHomes(world);
   // A version-2 save from before the family system has rulers/heirs but no person registry.
   // Game.load supplies its saved year for migration after the map has been reconstructed.
   return world;

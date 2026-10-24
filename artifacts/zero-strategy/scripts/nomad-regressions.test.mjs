@@ -6,6 +6,7 @@ import { CardPainter } from '../game/brush.ts';
 import { INK, MAP_WIDTH } from '../game/config.ts';
 import { forEachNeighbour } from '../game/geography.ts';
 import { advancePeople, birth, marry, newCitizen, registerPerson } from '../game/characters.ts';
+import { createPerson } from '../game/government.ts';
 import { leadershipOptions } from '../game/succession.ts';
 import { applyReform, marriageCandidates, reformCandidates } from '../game/politics.ts';
 import { demography } from '../game/demography.ts';
@@ -13,6 +14,7 @@ import { cityInfluenceRadius } from '../game/settlements.ts';
 import { hexToRgb, MapRenderer } from '../game/render.ts';
 import { nomadProfileRoute } from '../game/profileRoutes.ts';
 import { World } from '../game/world.ts';
+import { deserializeWorld, serializeWorld } from '../game/persistence.ts';
 
 function makeCountry(modifiers = []) {
   const world = World.create('random', 91421);
@@ -90,6 +92,24 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   assert.ok(nomads.every((nomad) => cultureIds(nomad, fixture.world).size === 1),
     'ordinary nomads do not contain multiple cultures');
   assertPopulationAndFaithPreserved(nomads, fixture.world, [fixture.firstReligion.id, fixture.secondReligion.id]);
+}
+
+// Residents keep their current nomadic home, while the dissolved state remains only a historical source.
+{
+  const fixture = makeCountry();
+  const secondResident = createPerson(0, 24, undefined, [], fixture.secondCulture.id, fixture.secondReligion.id);
+  secondResident.countryId = fixture.country.id;
+  fixture.world.people.push(secondResident);
+  const nomads = dissolveCountryIntoNomads(fixture.world, fixture.country);
+  const rulerHome = nomads.find((nomad) => nomad.id === fixture.country.ruler.nomadId);
+  const secondHome = nomads.find((nomad) => nomad.id === secondResident.nomadId);
+  assert.equal(fixture.country.ruler.countryId, -1, 'the dissolved ruler no longer points at the empty source state');
+  assert.ok(rulerHome?.personIds.includes(fixture.country.ruler.id), 'the ruler remains registered in a nomadic home');
+  assert.equal(secondResident.countryId, -1, 'a former country resident has no stale country home');
+  assert.equal(secondHome?.cultureId, fixture.secondCulture.id, 'the resident is assigned to the matching cultural nomad');
+  assert.ok(secondHome?.personIds.includes(secondResident.id), 'the resident remains in the nomad register');
+  assert.ok(nomads.every((nomad) => nomad.sourceCountryId === fixture.country.id),
+    'the original country remains as historical source metadata');
 }
 
 // Ethnic separation takes precedence over communism.
@@ -301,6 +321,8 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   assert.equal(spouses.length, 2, 'a nomad can receive two marriage candidates');
 
   const mother = newCitizen(fixture.world, nomad, 0);
+  assert.equal(mother.countryId, -1, 'a new nomadic resident does not reuse the nomad ID as a country ID');
+  assert.equal(mother.nomadId, nomad.id, 'a new nomadic resident records the current nomad home');
   mother.gender = 'female'; mother.age = 25; mother.bornAt = -25;
   registerPerson(fixture.world, nomad, mother);
   const father = newCitizen(fixture.world, nomad, 0);
@@ -313,6 +335,23 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   assert.ok(child, 'a nomad couple can have a child');
   assert.deepEqual(child.parents, [mother.id, father.id], 'nomad child keeps both married parents');
   assert.ok(nomad.personIds.includes(child.id), 'the newborn joins the nomad family registry');
+  assert.equal(child.countryId, -1, 'a nomadic newborn has no stale country home');
+  assert.equal(child.nomadId, nomad.id, 'a nomadic newborn records its current nomadic home');
+  const foreignCountry = fixture.world.newCountry({
+    rank: 'тест',
+    cultureId: fixture.firstCulture.id,
+    religionId: fixture.firstReligion.id,
+    density: 10,
+    foundedYear: 1,
+    parentId: null,
+  });
+  const foreignPixel = [...fixture.world.landIndex].find((pixel) => fixture.world.owner[pixel] === 0);
+  fixture.world.setOwner(foreignPixel, foreignCountry.id + 1);
+  marry(fixture.world, nomad, mother, foreignCountry.ruler);
+  assert.equal(foreignCountry.ruler.countryId, foreignCountry.id,
+    'a foreign active ruler keeps their country as their current home after marriage');
+  assert.equal(foreignCountry.ruler.nomadId, null, 'marrying into a nomad group does not assign a foreign ruler there');
+  assert.ok(!nomad.personIds.includes(foreignCountry.ruler.id), 'foreign rulers are not added as nomad residents');
   const ageBefore = mother.age;
   advancePeople(fixture.world, 10, () => 1);
   assert.ok(mother.age > ageBefore, 'nomad residents age during annual simulation');
@@ -335,8 +374,12 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
 // Founding a city converts one nomad into a country and conserves its whole population.
 {
   const fixture = makeCountry();
+  const otherResident = createPerson(0, 24, undefined, [], fixture.secondCulture.id, fixture.secondReligion.id);
+  otherResident.countryId = fixture.country.id;
+  fixture.world.people.push(otherResident);
   const nomads = dissolveCountryIntoNomads(fixture.world, fixture.country);
   const nomad = nomads[0];
+  const otherNomad = nomads[1];
   const totalBefore = nomads.reduce((sum, group) =>
     sum + group.cells.reduce((cellSum, cell) => cellSum + cell.population, 0), 0);
   const cityPixel = nomad.range[0];
@@ -345,11 +388,38 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   assert.equal(fixture.world.owner[cityPixel], settled.id + 1, 'the city point becomes country territory');
   assert.ok(fixture.world.cityAt(cityPixel)?.capital, 'the founded city is the new country capital');
   assert.ok(!fixture.world.nomads.includes(nomad), 'the settled nomad is removed');
+  assert.equal(fixture.country.ruler.countryId, settled.id, 'the shared ruler remains attached to the founded country');
+  assert.equal(fixture.country.ruler.nomadId, null, 'the shared ruler no longer uses a nomadic home after settling');
+  assert.equal(otherResident.countryId, -1, 'a resident of the other nomad is not moved into the founded country');
+  assert.equal(otherResident.nomadId, 0, 'remaining nomad residents follow the group ID after reindexing');
+  assert.ok(fixture.world.nomads[0].personIds.includes(otherResident.id), 'the other nomad retains its resident');
+  assert.equal(settled.parentId, fixture.country.id, 'the source remains recorded as the new country parent');
   const totalAfter = fixture.world.nomads.reduce((sum, group) =>
     sum + group.cells.reduce((cellSum, cell) => cellSum + cell.population, 0), 0) +
     demography(fixture.world, settled).population;
   assert.ok(Math.abs(totalAfter - totalBefore) < 1e-5,
     `settlement preserves the total population (${totalBefore} → ${totalAfter})`);
+}
+
+// Old saves with only source-country residence data migrate only from an empty source state.
+{
+  const fixture = makeCountry();
+  const oldResident = createPerson(0, 24, undefined, [], fixture.secondCulture.id, fixture.secondReligion.id);
+  oldResident.countryId = fixture.country.id;
+  fixture.world.people.push(oldResident);
+  dissolveCountryIntoNomads(fixture.world, fixture.country);
+  const legacy = structuredClone(serializeWorld(fixture.world));
+  for (const nomad of legacy.nomads) nomad.personIds = [];
+  for (const resident of legacy.people) {
+    delete resident.nomadId;
+    if (resident.alive) resident.countryId = fixture.country.id;
+  }
+  const loaded = deserializeWorld(legacy);
+  const recovered = loaded.people.find((resident) => resident.id === oldResident.id);
+  assert.equal(recovered.countryId, -1, 'legacy residence is not restored to the dissolved country');
+  assert.ok(Number.isInteger(recovered.nomadId), 'legacy residence migrates to an available nomadic home');
+  assert.ok(loaded.nomads[recovered.nomadId].personIds.includes(recovered.id),
+    'legacy migration restores the resident registry as well as the home ID');
 }
 
 // Both legend/profile links use the shared typed route; no duplicate nomad screen remains.
@@ -360,9 +430,13 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   });
   const countryPage = readFileSync(resolve(process.cwd(), 'app/country/[id].tsx'), 'utf8');
   const legend = readFileSync(resolve(process.cwd(), 'components/game/LegendPanel.tsx'), 'utf8');
+  const personPage = readFileSync(resolve(process.cwd(), 'app/person/[id].tsx'), 'utf8');
   assert.match(countryPage, /entityType === 'nomad'/u, 'the shared profile distinguishes nomads from countries');
   assert.match(countryPage, /nomadProfileRoute\(nomad\.id\)/u, 'country profile links use the nomad entity route');
   assert.match(legend, /nomadProfileRoute\(nomad\.id\)/u, 'legend links use the nomad entity route');
+  assert.match(personPage, /world\.nomads\[person\.nomadId\]/u, 'person profiles resolve the current nomadic home');
+  assert.match(personPage, /текущая родина/u, 'person profiles label the nomad as the current home');
+  assert.match(personPage, /sourceCountryId/u, 'person profiles keep the original country link visible');
   assert.ok(!existsSync(resolve(process.cwd(), 'app/nomad/[id].tsx')), 'the separate nomad route is deleted');
 }
 
