@@ -4,7 +4,7 @@ import { MAP_WIDTH } from '../game/config.ts';
 import { mulberry32 } from '../game/random.ts';
 import { World } from '../game/world.ts';
 import { clearSaveBytes } from '../game/storage.ts';
-import { dissolveCountryIntoNomadicCountries } from '../game/nomads.ts';
+import { availableNomadCitySites, dissolveCountryIntoNomadicCountries, settleNomadAsCountry } from '../game/nomads.ts';
 import { newCitizen, registerPerson } from '../game/characters.ts';
 
 function makeFixture() {
@@ -121,6 +121,7 @@ try {
     year: 1000,
     text: 'Связь с объектом сохранена',
     objects: [{ type: 'country', id: fixture.country.id }],
+    important: false,
   }, 'object links in new chronicle entries survive save/load');
   const resumePixel = fixture.pixels[16];
   resumed.dispatchAction({
@@ -243,6 +244,7 @@ try {
   assert.ok(nomad, 'the fixture country becomes a nomadic country');
   const resident = registerPerson(nomadFixture.world, nomad, newCitizen(nomadFixture.world, nomad, 1001));
   const nomadGame = new Game(nomadFixture.world, 'all');
+  nomadGame.addLog('История кочевой страны', [{ type: 'country', id: nomad.id }], true);
   await nomadGame.saveNow();
   const nomadResumed = await Game.load();
   assert.ok(nomadResumed, 'the saved nomadic world can be loaded');
@@ -252,8 +254,94 @@ try {
   assert.equal(nomadResumed.world.countries[nomad.id].type, 'nomadic');
   assert.equal(nomadResumed.world.countries[nomad.id].sourceCountryId, nomadFixture.country.id,
     'the source country remains available as historical metadata');
+  const nomadicHistory = nomadResumed.getSnapshot().chronicle.find(({ text }) => text === 'История кочевой страны');
+  assert.equal(nomadicHistory.important, true, 'nomadic country history saves its importance marker');
+  assert.deepEqual(nomadicHistory.objects, [{ type: 'country', id: nomad.id }],
+    'nomadic country history keeps its typed link after loading');
+  const settlementSite = availableNomadCitySites(nomadGame.world, nomad)[0];
+  assert.notEqual(settlementSite, undefined, 'the nomad has a valid settlement site');
+  const settledNomad = settleNomadAsCountry(nomadGame.world, nomad, settlementSite, 1002);
+  assert.equal(settledNomad?.id, nomad.id, 'settlement converts the existing country object');
+  assert.equal(nomadGame.log[0].important, true, 'settling keeps the original history importance');
+  assert.deepEqual(nomadGame.log[0].objects, [{ type: 'country', id: nomad.id }],
+    'settling keeps the historical country link on the same successor ID');
   nomadGame.discard();
   nomadResumed.discard();
+
+  // The global archive has no rolling cap, including through a persisted save.
+  await clearSaveBytes();
+  const archiveFixture = makeFixture();
+  const archiveGame = new Game(archiveFixture.world, 'all');
+  for (let index = 0; index < 140; index += 1) {
+    archiveGame.addLog(`Архивная запись ${index}`, [{ type: 'country', id: archiveFixture.country.id }], index === 0);
+  }
+  await archiveGame.saveNow();
+  const archiveResumed = await Game.load();
+  assert.ok(archiveResumed, 'the full chronicle archive can be loaded');
+  assert.equal(archiveResumed.getSnapshot().chronicle.length, 140, 'saving preserves entries beyond the old rolling cap');
+  assert.equal(archiveResumed.getSnapshot().chronicle.at(-1).important, true,
+    'an old important entry remains marked after saving and loading');
+  assert.equal(archiveResumed.getSnapshot().log.length, 120,
+    'the compatibility log projection remains bounded independently of the archive');
+  archiveGame.discard();
+  archiveResumed.discard();
+
+  // Annexation moves all source-country links to the surviving country.
+  const mergeFixture = makeFixture();
+  const absorbed = mergeFixture.world.newCountry({
+    rank: 'тест',
+    cultureId: mergeFixture.country.cultureId,
+    religionId: null,
+    density: 80,
+    foundedYear: 1000,
+    parentId: mergeFixture.country.id,
+  });
+  for (const pixel of mergeFixture.pixels.slice(20)) mergeFixture.world.setOwner(pixel, absorbed.id + 1);
+  mergeFixture.world.recountCountries();
+  const mergeGame = new Game(mergeFixture.world, 'all');
+  mergeGame.addLog('Старая летопись присоединённой страны', [
+    { type: 'country', id: absorbed.id },
+    { type: 'city', id: mergeFixture.world.cities[0].id },
+  ], true);
+  mergeGame.mergeCountries(mergeFixture.country, absorbed);
+  const annexedHistory = mergeGame.log.find(({ text }) => text === 'Старая летопись присоединённой страны');
+  assert.equal(annexedHistory.important, true, 'annexation preserves the importance marker');
+  assert.ok(annexedHistory.objects.some(({ type, id }) => type === 'country' && id === mergeFixture.country.id),
+    'the surviving country inherits the predecessor record');
+  assert.ok(!annexedHistory.objects.some(({ type, id }) => type === 'country' && id === absorbed.id),
+    'annexed history no longer points at the absorbed country');
+  assert.ok(annexedHistory.objects.some(({ type, id }) => type === 'city' && id === mergeFixture.world.cities[0].id),
+    'annexation leaves links to other affected objects unchanged');
+  mergeGame.discard();
+
+  // Dissolution into nomadic successors retains the global entry and replaces its country link.
+  const collapseFixture = makeFixture();
+  collapseFixture.world.cities = [];
+  const collapseGame = new Game(collapseFixture.world, 'all');
+  collapseGame.addLog('История распавшейся страны', [
+    { type: 'country', id: collapseFixture.country.id },
+    { type: 'culture', id: collapseFixture.country.cultureId },
+  ], true);
+  collapseGame.finish({
+    card: makeCard('rain'),
+    changed: [],
+    colonistsMoved: 0,
+    dispose() {},
+  });
+  const nomadicSuccessors = collapseFixture.world.countries.filter((country) => country.type === 'nomadic');
+  assert.ok(nomadicSuccessors.length > 0, 'the test country actually dissolves into nomadic successors');
+  const dissolvedHistory = collapseGame.log.find(({ text }) => text === 'История распавшейся страны');
+  assert.equal(dissolvedHistory.important, true, 'dissolution keeps the important entry');
+  assert.ok(!dissolvedHistory.objects.some(({ type, id }) => type === 'country' && id === collapseFixture.country.id),
+    'dissolution removes the obsolete source-country link');
+  assert.deepEqual(
+    dissolvedHistory.objects.filter(({ type }) => type === 'country').map(({ id }) => id).sort((a, b) => a - b),
+    nomadicSuccessors.map(({ id }) => id).sort((a, b) => a - b),
+    'every nomadic successor inherits the source country record',
+  );
+  assert.ok(dissolvedHistory.objects.some(({ type, id }) => type === 'culture' && id === collapseFixture.country.cultureId),
+    'dissolution preserves the separate culture reference');
+  collapseGame.discard();
 } finally {
   await clearSaveBytes();
   Game.persist = previousPersist;

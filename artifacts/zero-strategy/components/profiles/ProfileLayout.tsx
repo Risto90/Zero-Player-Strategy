@@ -56,7 +56,10 @@ export function ProfileLayout({
           {chronicle.length ? chronicle.map((entry, index) => (
             <View key={`${entry.year}-${index}-${entry.text}`} style={styles.chronicleRow}>
               <Text style={styles.year}>{entry.year || '—'}</Text>
-              <Text style={styles.chronicleText}>{entry.text}</Text>
+              <View style={styles.chronicleEntry}>
+                <Text style={styles.chronicleText}>{entry.text}</Text>
+                {entry.important && <Text style={styles.important}>Важное событие</Text>}
+              </View>
             </View>
           )) : <Text style={styles.empty}>Связанных записей пока нет.</Text>}
         </ScrollView>
@@ -132,7 +135,9 @@ const styles = StyleSheet.create({
   listContent: { paddingVertical: 3 },
   chronicleRow: { flexDirection: 'row', gap: 10, paddingVertical: 4, borderBottomWidth: 1, borderColor: c.border },
   year: { minWidth: 42, fontFamily: fonts.mono, fontSize: 12, color: c.primary },
+  chronicleEntry: { flex: 1, gap: 2 },
   chronicleText: { flex: 1, fontFamily: fonts.sans, fontSize: 13, lineHeight: 19, color: c.foreground },
+  important: { alignSelf: 'flex-start', paddingHorizontal: 5, paddingVertical: 1, fontFamily: fonts.sansSemiBold, fontSize: 9, color: c.primaryForeground, backgroundColor: c.primary },
   empty: { fontFamily: fonts.displayItalic, fontSize: 14, color: c.mutedForeground },
   missing: { alignItems: 'center', justifyContent: 'center', gap: 16 },
 });

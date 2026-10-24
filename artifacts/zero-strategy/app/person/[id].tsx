@@ -1,5 +1,6 @@
 import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
+import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import colors, { fonts } from '@/constants/colors';
@@ -8,6 +9,7 @@ import { countryProfileRoute } from '@/game/profileRoutes';
 import { useGameSnapshot } from '@/game/useGame';
 import type { Game } from '@/game/game';
 import { currentGame } from '@/game/session';
+import { chronicleReference, filterChronicle } from '@/game/chronicle';
 
 const c = colors.light;
 
@@ -37,7 +39,8 @@ export default function PersonPage() {
 }
 
 function PersonProfile({ game, person }: { game: Game; person: Person }) {
-  useGameSnapshot(game);
+  const snapshot = useGameSnapshot(game);
+  const [showChronicle, setShowChronicle] = useState(false);
   const insets = useSafeAreaInsets();
   const world = game.world;
   const homeCountry = person.countryId < 0 ? undefined : world.countries[person.countryId];
@@ -51,6 +54,7 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
   ].filter((entry): entry is { person: Person; kind: string } => !!entry.person);
   const children = world.people.filter((item) => item.parents.includes(person.id))
     .sort((a, b) => a.bornAt - b.bornAt);
+  const personChronicle = filterChronicle(snapshot.chronicle, [chronicleReference('person', person.id)]);
   const siblings = person.parents.length
     ? world.people.filter((item) => item.id !== person.id && item.parents.some((parentId) => person.parents.includes(parentId)))
       .sort((a, b) => a.bornAt - b.bornAt)
@@ -65,6 +69,31 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
         </Pressable>
         <Text style={styles.eyebrow}>ЛЕТОПИСЬ ПЕРСОНАЖА</Text>
       </View>
+      <View style={styles.tabs}>
+        <Pressable onPress={() => setShowChronicle(false)} style={[styles.tab, !showChronicle && styles.activeTab]}>
+          <Text style={[styles.tabText, !showChronicle && styles.activeTabText]}>Сведения</Text>
+        </Pressable>
+        <Pressable onPress={() => setShowChronicle(true)} style={[styles.tab, showChronicle && styles.activeTab]}>
+          <Text style={[styles.tabText, showChronicle && styles.activeTabText]}>
+            Летопись · {personChronicle.length}
+          </Text>
+        </Pressable>
+      </View>
+      {showChronicle ? (
+        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+          {personChronicle.length
+            ? personChronicle.map((entry, index) => (
+              <View key={`${entry.year}-${index}-${entry.text}`} style={styles.chronicleRow}>
+                <Text style={styles.year}>{entry.year || '—'}</Text>
+                <View style={styles.chronicleEntry}>
+                  <Text style={styles.fact}>{entry.text}</Text>
+                  {entry.important && <Text style={styles.important}>Важное событие</Text>}
+                </View>
+              </View>
+            ))
+            : <Text style={styles.note}>Связанных записей пока нет.</Text>}
+        </ScrollView>
+      ) : (
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
         <Text style={styles.title}>{person.name}</Text>
         <Text style={styles.subtitle}>
@@ -120,6 +149,7 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
         </View>
         {person.deathReason && <Text style={styles.note}>Причина смерти · {person.deathReason}</Text>}
       </ScrollView>
+      )}
     </View>
   );
 }
@@ -128,6 +158,11 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: c.background },
   center: { alignItems: 'center', justifyContent: 'center', gap: 16 },
   header: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, borderBottomWidth: 2, borderColor: c.foreground },
+  tabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingVertical: 10 },
+  tab: { paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: c.border, backgroundColor: c.card },
+  activeTab: { backgroundColor: c.primary, borderColor: c.primary },
+  tabText: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.foreground },
+  activeTabText: { color: c.primaryForeground },
   back: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8 },
   backText: { fontFamily: fonts.sansMedium, fontSize: 13, color: c.foreground },
   eyebrow: { marginLeft: 'auto', fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.6, color: c.primary },
@@ -141,6 +176,10 @@ const styles = StyleSheet.create({
   factFamily: { fontFamily: fonts.sans, fontSize: 13, color: c.accent, textDecorationLine: 'underline' },
   section: { paddingTop: 8, gap: 4, borderTopWidth: 1, borderColor: c.border },
   sectionTitle: { marginBottom: 3, fontFamily: fonts.sansSemiBold, fontSize: 11, letterSpacing: 1.4, color: c.primary },
+  chronicleRow: { flexDirection: 'row', gap: 10, paddingVertical: 4, borderBottomWidth: 1, borderColor: c.border },
+  chronicleEntry: { flex: 1, gap: 2 },
+  year: { minWidth: 42, fontFamily: fonts.mono, fontSize: 12, color: c.primary },
+  important: { alignSelf: 'flex-start', paddingHorizontal: 5, paddingVertical: 1, fontFamily: fonts.sansSemiBold, fontSize: 9, color: c.primaryForeground, backgroundColor: c.primary },
   relative: { paddingVertical: 6, borderBottomWidth: 1, borderColor: c.border },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 14, color: c.accent, textDecorationLine: 'underline' },
   note: { fontFamily: fonts.sans, fontSize: 12, color: c.mutedForeground },

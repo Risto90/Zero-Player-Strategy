@@ -73,11 +73,21 @@ function checkPartition({ childrenCount, incumbentCount, cityCount, expectedPart
 
   const game = new Game(world, 'country');
   game.focusCountryId = country.id;
+  game.addLog('Давняя запись до наследственного разделения', [
+    { type: 'country', id: country.id },
+  ], true);
   game.partitionCountry(country, deceased, children[0]);
 
   const states = world.countries.filter((state) => state.id === country.id || state.parentId === country.id);
   assert.equal(states.length, expectedParts,
     `the formula selects the expected number of countries: ${JSON.stringify({ childrenCount, incumbentCount, cityCount, expectedParts, log: game.getSnapshot().log })}`);
+  const predecessorEntry = game.log.find(({ text }) => text === 'Давняя запись до наследственного разделения');
+  assert.equal(predecessorEntry.important, true, 'inheritance partition keeps the importance marker');
+  assert.deepEqual(
+    predecessorEntry.objects.filter(({ type }) => type === 'country').map(({ id }) => id).sort((a, b) => a - b),
+    [country.id],
+    'the predecessor keeps its history while the player is still painting the pending split',
+  );
   const pending = game.pendingInheritanceSplit;
   assert.equal(pending.destinationIds.length, expectedParts - 1);
   assert.ok(pending.quotas.every((quota) => quota === Math.floor(pixels.length / expectedParts) ||
@@ -111,6 +121,34 @@ checkPartition({ childrenCount: 5, incumbentCount: 1, cityCount: 5, expectedPart
 checkPartition({ childrenCount: 5, incumbentCount: 2, cityCount: 5, expectedParts: 3, expectedSeatedChildren: 5 });
 checkPartition({ childrenCount: 6, incumbentCount: 1, cityCount: 5, expectedParts: 3, expectedSeatedChildren: 6 });
 checkPartition({ childrenCount: 5, incumbentCount: 2, cityCount: 2, expectedParts: 2, expectedSeatedChildren: 4 });
+
+// An automatically completed inheritance split transfers the archive to each heir state.
+{
+  const { world, country } = makeFixture(5, 8611);
+  country.modifiers = ['consulate', 'partition'];
+  country.consulCount = 3;
+  const deceased = country.ruler;
+  const children = Array.from({ length: 5 }, (_, index) => addChild(world, country, deceased, index));
+  const incumbent = addIncumbent(world, country, 1);
+  deceased.alive = false;
+  country.ruler = children[0];
+  country.coRulerIds = [incumbent.id];
+  children[0].formerRulerOf.push(country.id);
+
+  const game = new Game(world, 'observer');
+  game.addLog('Давняя запись до наследственного разделения', [{ type: 'country', id: country.id }], true);
+  game.partitionCountry(country, deceased, children[0]);
+  const states = world.countries.filter((state) => state.id === country.id || state.parentId === country.id);
+  assert.ok(states.length > 1, 'the automatic split creates successor states');
+  const predecessorEntry = game.log.find(({ text }) => text === 'Давняя запись до наследственного разделения');
+  assert.deepEqual(
+    predecessorEntry.objects.filter(({ type }) => type === 'country').map(({ id }) => id).sort((a, b) => a - b),
+    states.map(({ id }) => id).sort((a, b) => a - b),
+    'every completed heir state receives the source archive',
+  );
+  assert.equal(predecessorEntry.important, true, 'the automatic split preserves event importance');
+  game.discard();
+}
 
 // Expected heirs are resolved separately for each active consul's family line.
 {

@@ -158,6 +158,13 @@ try {
   assert.equal(ruler.alive, false, 'succession preserves the ruler death');
   assert.equal(personDeathStatus(ruler), `умер${ruler.gender === 'female' ? 'ла' : ''} в 1000 году`,
     'the deceased ruler biography retains the year');
+  const deathEntry = deathGame.log.find(({ text }) => text.includes(ruler.name) && text.includes('умер'));
+  assert.ok(deathEntry, 'the ruler death is present in the chronicle');
+  assert.equal(deathEntry.important, true, 'a death record is explicitly important');
+  assert.ok(deathEntry.objects.some(({ type, id }) => type === 'person' && id === ruler.id),
+    'a death record links to the typed person profile');
+  assert.ok(deathEntry.objects.some(({ type, id }) => type === 'person' && id === heir.id),
+    'a succession record links to the new office holder');
 
   // A dead co-ruler is replaced while the living primary ruler remains in office.
   const coFixture = makeFixture();

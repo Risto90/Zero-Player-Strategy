@@ -41,12 +41,6 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
   const snapshot = useGameSnapshot(game);
   const composition = useMemo(() => game.countryComposition(country.id), [game, country.id, game.world.version]);
   const cities = useMemo(() => game.world.cities.filter((city) => city.countryId === country.id), [game, country.id, game.world.version]);
-  const references = [
-    chronicleReference('country', country.id),
-    ...cities.map((city) => chronicleReference('city', city.id)),
-    ...composition.cultures.flatMap(({ id }) => id === null ? [] : [chronicleReference('culture', id)]),
-    ...composition.religions.flatMap(({ id }) => id === null ? [] : [chronicleReference('religion', id)]),
-  ];
 
   const personLink = (personId: number, name: string, note?: string) => (
     <ProfileLink key={`${personId}-${name}`} title={name} note={note}
@@ -127,7 +121,7 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
   return (
     <ProfileLayout eyebrow="КАРТОЧКА СТРАНЫ" title={country.name}
       subtitle={`${country.rank} · основана в ${country.foundedYear} году`}
-      details={details} chronicle={filterChronicle(snapshot.chronicle, references)} />
+      details={details} chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('country', country.id)])} />
   );
 }
 

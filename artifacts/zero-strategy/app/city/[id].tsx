@@ -20,12 +20,6 @@ export default function CityPage() {
   if (!city) return <MissingProfile title="Город не найден" />;
   const country = game.world.countries[city.countryId];
   const composition = useMemo(() => cityComposition(game.world, city), [game, city, game.world.version]);
-  const references = [
-    chronicleReference('city', city.id),
-    chronicleReference('country', city.countryId),
-    ...composition.cultures.map(({ id: cultureId }) => chronicleReference('culture', cultureId)),
-    ...composition.religions.flatMap(({ id: religionId }) => religionId === null ? [] : [chronicleReference('religion', religionId)]),
-  ];
   const details = (
     <>
       <View style={styles.facts}>
@@ -62,7 +56,7 @@ export default function CityPage() {
   );
   return <ProfileLayout eyebrow="КАРТОЧКА ГОРОДА" title={city.name ?? 'Город'}
     subtitle={`${cityRankName(city.rank)}${city.capital ? ' · столица' : ''}`}
-    details={details} chronicle={filterChronicle(snapshot.chronicle, references)} />;
+    details={details} chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('city', city.id)])} />;
 }
 
 const styles = {

@@ -24,13 +24,6 @@ export default function ReligionPage() {
     cities: game.world.cities.filter((city) => cityComposition(game.world, city).religions.some((group) => group.id === id)),
     branches: game.world.religions.filter((child) => child.parentId === id),
   }), [game, id, game.world.version]);
-  const references = [
-    chronicleReference('religion', id),
-    ...(religion.parentId === null ? [] : [chronicleReference('religion', religion.parentId)]),
-    ...branches.map((child) => chronicleReference('religion', child.id)),
-    ...countries.map((country) => chronicleReference('country', country.id)),
-    ...cities.map((city) => chronicleReference('city', city.id)),
-  ];
   const population = snapshot.legend.religions.find((row) => row.id === id)?.value ?? 0;
   const details = (
     <>
@@ -69,7 +62,8 @@ export default function ReligionPage() {
     </>
   );
   return <ProfileLayout eyebrow="КАРТОЧКА РЕЛИГИИ" title={religion.name}
-    subtitle="Религия" details={details} chronicle={filterChronicle(snapshot.chronicle, references)} />;
+    subtitle="Религия" details={details}
+    chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('religion', religion.id)])} />;
 }
 
 const styles = {

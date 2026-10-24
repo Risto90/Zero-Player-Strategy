@@ -141,7 +141,7 @@ function GameScreen({ game }: { game: Game }) {
     }, 3000);
   }, [snap.log]);
 
-  const log = useMemo(() => <LogPanel log={snap.log} transparent />, [snap.log]);
+  const log = useMemo(() => <LogPanel log={snap.chronicle} transparent />, [snap.chronicle]);
   const canOpenEvent = hasPlayerActionCard(snap);
   const nextLabel = snap.queuedCards > 0
     ? 'Готово'

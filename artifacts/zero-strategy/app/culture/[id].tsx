@@ -24,13 +24,6 @@ export default function CulturePage() {
     cities: game.world.cities.filter((city) => cityComposition(game.world, city).cultures.some((group) => group.id === id)),
     branches: game.world.cultures.filter((child) => child.parentId === id),
   }), [game, id, game.world.version]);
-  const references = [
-    chronicleReference('culture', id),
-    ...(culture.parentId === null ? [] : [chronicleReference('culture', culture.parentId)]),
-    ...branches.map((child) => chronicleReference('culture', child.id)),
-    ...countries.map((country) => chronicleReference('country', country.id)),
-    ...cities.map((city) => chronicleReference('city', city.id)),
-  ];
   const population = snapshot.legend.cultures.find((row) => row.id === id)?.value ?? 0;
   const details = (
     <>
@@ -69,7 +62,8 @@ export default function CulturePage() {
     </>
   );
   return <ProfileLayout eyebrow="КАРТОЧКА ЭТНОСА" title={culture.name}
-    subtitle="Этнос" details={details} chronicle={filterChronicle(snapshot.chronicle, references)} />;
+    subtitle="Этнос" details={details}
+    chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('culture', culture.id)])} />;
 }
 
 const styles = {

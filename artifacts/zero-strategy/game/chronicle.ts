@@ -1,4 +1,4 @@
-export type ChronicleObjectType = 'country' | 'city' | 'culture' | 'religion';
+export type ChronicleObjectType = 'country' | 'city' | 'person' | 'culture' | 'religion';
 
 export interface ChronicleReference {
   type: ChronicleObjectType;
@@ -9,9 +9,12 @@ export interface ChronicleEntry {
   year: number;
   text: string;
   objects: ChronicleReference[];
+  important: boolean;
 }
 
-const OBJECT_TYPES = new Set<ChronicleObjectType>(['country', 'city', 'culture', 'religion']);
+export const CHRONICLE_OBJECT_HISTORY_LIMIT = 100;
+export const CHRONICLE_PAGE_SIZE = 25;
+const OBJECT_TYPES = new Set<ChronicleObjectType>(['country', 'city', 'person', 'culture', 'religion']);
 
 export function chronicleReference(type: ChronicleObjectType, id: number): ChronicleReference {
   return { type, id };
@@ -27,6 +30,7 @@ export function migrateChronicle(value: unknown, legacyNomadIds: ReadonlyMap<num
         year: match ? Number(match[1]) : 0,
         text: match ? match[2] : item,
         objects: [],
+        important: false,
       }];
     }
     if (!item || typeof item !== 'object') return [];
@@ -44,14 +48,49 @@ export function migrateChronicle(value: unknown, legacyNomadIds: ReadonlyMap<num
       if (typeof reference.type !== 'string' || !OBJECT_TYPES.has(reference.type as ChronicleObjectType)) return [];
       return [{ type: reference.type as ChronicleObjectType, id }];
     }) : [];
-    return [{ year: candidate.year as number, text: candidate.text, objects }];
+    return [{
+      year: candidate.year as number,
+      text: candidate.text,
+      objects,
+      important: candidate.important === true,
+    }];
   });
 }
 
 export function filterChronicle(entries: ChronicleEntry[], references: ChronicleReference[]): ChronicleEntry[] {
   const keys = new Set(references.map(({ type, id }) => `${type}:${id}`));
   if (!keys.size) return [];
-  return entries.filter((entry) => entry.objects.some(({ type, id }) => keys.has(`${type}:${id}`)));
+  const linked = entries.filter((entry) => entry.objects.some(({ type, id }) => keys.has(`${type}:${id}`)));
+  const recent = new Set(linked.slice(0, CHRONICLE_OBJECT_HISTORY_LIMIT));
+  return linked.filter((entry) => recent.has(entry) || entry.important);
+}
+
+/** Select one page from the newest-first global archive without copying the whole list. */
+export function chroniclePage(entries: ChronicleEntry[], page: number, pageSize = CHRONICLE_PAGE_SIZE): ChronicleEntry[] {
+  const start = Math.max(0, Math.floor(page)) * Math.max(1, Math.floor(pageSize));
+  return entries.slice(start, start + Math.max(1, Math.floor(pageSize)));
+}
+
+/**
+ * Give a successor the source country's archived history. A dissolved source loses
+ * its country link; surviving partition sources retain theirs.
+ */
+export function transferCountryChronicle(
+  entries: ChronicleEntry[],
+  sourceId: number,
+  successorIds: number[],
+  removeSource = false,
+): ChronicleEntry[] {
+  const successors = [...new Set(successorIds.filter((id) => Number.isInteger(id) && id >= 0 && id !== sourceId))];
+  if (!successors.length && !removeSource) return entries;
+  return entries.map((entry) => {
+    if (!entry.objects.some(({ type, id }) => type === 'country' && id === sourceId)) return entry;
+    const retained = entry.objects.filter((reference) =>
+      !(removeSource && reference.type === 'country' && reference.id === sourceId));
+    const links = new Map(retained.map((reference) => [`${reference.type}:${reference.id}`, reference]));
+    for (const id of successors) links.set(`country:${id}`, chronicleReference('country', id));
+    return { ...entry, objects: [...links.values()] };
+  });
 }
 
 /** Drop deleted index-based entities and shift surviving references with their entity arrays. */
