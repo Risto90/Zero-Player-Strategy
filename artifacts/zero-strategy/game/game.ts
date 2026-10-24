@@ -1152,7 +1152,7 @@ export class Game {
       }
       case 'expand':
         if (used > 0 && target) this.addLog(`${target.name} расширяется на ${used} земель.`,
-          [chronicleReference('country', target.id)], true);
+          [chronicleReference('country', target.id)]);
         break;
       case 'colonization':
         if (colonizedPixels > 0 && target) this.addLog(`${target.name} колонизирует ${colonizedPixels} участков: переселено ${fmt(colonistsMoved)} человек, столько же местных жителей удалено.`, [chronicleReference('country', target.id)], true);

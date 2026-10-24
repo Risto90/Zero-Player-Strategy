@@ -16,6 +16,10 @@ export const CHRONICLE_OBJECT_HISTORY_LIMIT = 100;
 export const CHRONICLE_PAGE_SIZE = 25;
 const OBJECT_TYPES = new Set<ChronicleObjectType>(['country', 'city', 'person', 'culture', 'religion']);
 
+function isRoutineExpansion(text: string): boolean {
+  return /(?:расширяется на|кочевой ареал расширен на)\s+\d+\s+земель/iu.test(text);
+}
+
 export function chronicleReference(type: ChronicleObjectType, id: number): ChronicleReference {
   return { type, id };
 }
@@ -52,7 +56,7 @@ export function migrateChronicle(value: unknown, legacyNomadIds: ReadonlyMap<num
       year: candidate.year as number,
       text: candidate.text,
       objects,
-      important: candidate.important === true,
+      important: candidate.important === true && !isRoutineExpansion(candidate.text),
     }];
   });
 }

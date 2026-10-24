@@ -30,6 +30,13 @@ assert.deepEqual(filterChronicle(entries, [{ type: 'country', id: 3 }]).map(({ t
   ['Country event'], 'a country does not inherit unrelated country records');
 assert.equal(entries[3].objects.length, 0, 'unknown object kinds and invalid IDs are rejected');
 
+const routineExpansion = migrateChronicle([
+  { year: 1008, text: 'Лирдора расширяется на 4000 земель.', important: true, objects: [{ type: 'country', id: 3 }] },
+  { year: 1007, text: 'Кочевье: кочевой ареал расширен на 260 земель.', important: true, objects: [{ type: 'country', id: 3 }] },
+]);
+assert.equal(routineExpansion[0].important, false, 'routine country expansion is not an important event');
+assert.equal(routineExpansion[1].important, false, 'routine nomad expansion is not an important event');
+
 const historical = migrateChronicle([
   { year: 1, text: 'Person event', objects: [{ type: 'person', id: 41 }] },
   { year: 2, text: 'Important event', important: true, objects: [{ type: 'country', id: 3 }] },
