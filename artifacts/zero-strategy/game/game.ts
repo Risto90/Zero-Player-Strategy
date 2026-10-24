@@ -417,8 +417,8 @@ export class Game {
 
   private tick(): void {
     if (this.paused || this.busy || this.drawing) return;
-    this.secondsLeft -= 1;
-    if (this.secondsLeft <= 0) void this.nextTurn();
+    this.secondsLeft = Math.max(0, this.secondsLeft - 1);
+    if (this.secondsLeft <= 0) void this.nextTurn(true);
     else this.emit();
   }
 
@@ -769,8 +769,18 @@ export class Game {
   // ---------- turns ----------
 
   /** Ends the player's card and plays the rest of the year in slices, showing progress. */
-  async nextTurn(): Promise<void> {
+  async nextTurn(automaticallyCompleteCard = false): Promise<void> {
     if (this.busy) return;
+    if (automaticallyCompleteCard && this.card) {
+      const activeCard = this.card;
+      const previousResolutionState = this.resolvingAutomatically;
+      this.resolvingAutomatically = true;
+      try {
+        this.resolveAutomaticCard(activeCard, true, false);
+      } finally {
+        this.resolvingAutomatically = previousResolutionState;
+      }
+    }
     if (this.card && this.needsCityPlacement()) {
       this.message = 'Сначала выберите на карте точку для города.';
       this.emit();
@@ -996,19 +1006,21 @@ export class Game {
     }
   }
 
-  private resolveAutomaticCard(card: Card): void {
-    this.card = card;
-    if (card.choices && card.choices.length > 1) {
+  private resolveAutomaticCard(card: Card, reuseActiveCard = false, complete = true): void {
+    if (!reuseActiveCard) this.card = card;
+    if (!reuseActiveCard && card.choices && card.choices.length > 1) {
       this.dispatchAction({ type: 'selectChoice', index: Math.floor(Math.random() * card.choices.length) });
     }
-    this.startCard(card, undefined, false);
+    if (!reuseActiveCard) this.startCard(card, undefined, false);
     const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split' || card.type === 'colonization' || card.type === 'nomadExpand';
     const painter = this.painter;
     if (!painter) return;
-    this.dispatchAction({
-      type: 'setPainterMode',
-      mode: card.developmentOnly || (!territorial && Math.random() < 0.3) ? 'repeat' : 'respect',
-    });
+    if (!reuseActiveCard) {
+      this.dispatchAction({
+        type: 'setPainterMode',
+        mode: card.developmentOnly || (!territorial && Math.random() < 0.3) ? 'repeat' : 'respect',
+      });
+    }
     const actions: PaintActions = {
       beginStroke: (x, y) => this.dispatchAction({ type: 'beginStroke', x, y }),
       dab: (x, y, radius) => this.dispatchAction({ type: 'dab', x, y, radius }) as number,
@@ -1039,7 +1051,7 @@ export class Game {
         }
       }
     }
-    this.dispatchAction({ type: 'completeCard' });
+    if (complete) this.dispatchAction({ type: 'completeCard' });
   }
 
   private completeCard(): void {

@@ -40,7 +40,7 @@ for (const type of cardTypes) {
   assert.ok(completedTypes.has(type), `card type "${type}" must complete through the shared card resolver`);
 }
 
-const automaticBody = methodBody(game, 'private resolveAutomaticCard(card: Card): void');
+const automaticBody = methodBody(game, 'private resolveAutomaticCard(');
 assert.match(automaticBody, /dispatchAction\(\{\s*type: 'selectChoice'/);
 assert.match(automaticBody, /autoPaint\(painter, actions\)/);
 assert.match(automaticBody, /dispatchAction\(\{\s*type: 'placeCity'/);

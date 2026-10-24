@@ -89,6 +89,7 @@ function cloneFixture(source) {
   });
   Object.assign(clone, entities);
   clone.version = source.world.version;
+  clone.nextCityChronicleId = source.world.nextCityChronicleId;
   for (const city of clone.cities) clone.cityIdAt[city.pixel] = city.id;
   clone.recountCountries();
   return {
@@ -192,6 +193,18 @@ function sameWorld(first, second, message) {
     assert.deepEqual(left.rasters[name], right.rasters[name], `${message}: ${name} raster`);
   }
   assert.deepEqual({ ...left, rasters: undefined }, { ...right, rasters: undefined }, `${message}: entities and counters`);
+}
+
+function normalizedLog(game, world) {
+  const personIds = new Map(world.people.map((person, index) => [person.id, `person-${index}`]));
+  const normalizeReferences = (references) => references.map((reference) => reference.type === 'person'
+    ? { ...reference, id: personIds.get(reference.id) ?? 'missing-person' }
+    : reference);
+  return game.log.map((entry) => ({
+    ...entry,
+    objects: normalizeReferences(entry.objects),
+    importantObjects: normalizeReferences(entry.importantObjects),
+  }));
 }
 
 function recordAutomaticActions(game, card, randomSeed) {
@@ -490,7 +503,11 @@ for (const [index, testCase] of cases.entries()) {
     const trace = recordAutomaticActions(automatic, testCase.card, seed);
     replayAsPlayer(manual, testCase.mirrorCard, trace, seed);
     sameWorld(testCase.first.world, testCase.second.world, testCase.name);
-    assert.deepEqual(automatic.log, manual.log, `${testCase.name}: event log`);
+    assert.deepEqual(
+      normalizedLog(automatic, testCase.first.world),
+      normalizedLog(manual, testCase.second.world),
+      `${testCase.name}: event log`,
+    );
     assert.equal(testCase.card.ink, testCase.mirrorCard.ink, `${testCase.name}: ink spent`);
     assert.equal(testCase.card.selectedChoice, testCase.mirrorCard.selectedChoice,
       `${testCase.name}: selected option`);

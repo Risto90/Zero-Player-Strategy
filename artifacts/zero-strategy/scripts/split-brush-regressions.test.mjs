@@ -144,6 +144,45 @@ function assertConnected(world, countryId) {
   game.discard();
 }
 
+// Player auto-completion continues from the active split painter, while an
+// unpaintable invalid split remains blocked by the shared territory validator.
+for (const completeAutomatically of [true, false]) {
+  const { world, country, cities } = patchWorld(80, 50, [
+    { column: 5, rank: 1 },
+    { column: 1700, rank: 2 },
+    { column: 3800, rank: 4 },
+  ]);
+  const card = drawSplitCard(world, country, 1000);
+  assert.equal(card?.type, 'split');
+  const game = new Game(world, 'all');
+  game.startCard(card);
+  const year = game.getSnapshot().year;
+  if (completeAutomatically) {
+    game.dispatchAction({
+      type: 'dab',
+      x: (card.hint % MAP_WIDTH) + 0.5,
+      y: Math.floor(card.hint / MAP_WIDTH) + 0.5,
+      radius: 1,
+    });
+    game.dispatchAction({ type: 'endStroke' });
+    await game.nextTurn(true);
+    const destination = world.countries[card.newCountryId];
+    assert.equal(game.getSnapshot().year, year + 1, 'a partially painted split completes through auto-turn');
+    assert.equal(world.owner[cities[0].pixel], country.id + 1, 'auto-turn keeps the original capital');
+    assert.equal(validateSplitTerritory(world, country.id, destination.id).valid, true,
+      'the shared split validator accepts the automatically finished territory');
+    assertConnected(world, destination.id);
+  } else {
+    card.hint = -1;
+    await game.nextTurn(true);
+    assert.equal(game.getSnapshot().year, year, 'auto-turn cannot advance an invalid empty split');
+    assert.equal(game.card, card, 'an invalid split card remains active for the player');
+    assert.match(game.getSnapshot().message, /территорию|город/i,
+      'the blocked split explains which territory requirement remains');
+  }
+  game.discard();
+}
+
 function makePartitionFixture(role) {
   const fixture = patchWorld(60, 1, [
     { column: 5, rank: 1 },

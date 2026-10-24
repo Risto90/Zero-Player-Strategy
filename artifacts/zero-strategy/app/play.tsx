@@ -17,6 +17,7 @@ import colors, { fonts } from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { fmt } from '@/game/format';
 import { hasPlayerActionCard, type Game, type GameSnapshot, type PixelInfo } from '@/game/game';
+import { AUTO_TURN_HOLD_MS } from '@/game/holdConfirmation';
 import { hasMapObjectList } from '@/game/mapModeCapabilities';
 import { scheduleMapLegend } from '@/game/mapLegendTimer';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
@@ -100,13 +101,15 @@ function GameScreen({ game }: { game: Game }) {
   const [logPreview, setLogPreview] = useState(false);
   const [zoomVisible, setZoomVisible] = useState(false);
   const [legendVisible, setLegendVisible] = useState(true);
+  const [holdingNext, setHoldingNext] = useState(false);
+  const longPressFired = useRef(false);
 
   const canBrush = snap.canPaint && !snap.busy;
   const canPlaceCity = snap.cityPlacementAvailable && !snap.busy;
   const showTools = 1 + Number(canBrush) + Number(canPlaceCity) >= 2;
   const webTopInset = Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top;
   const webBottomInset = Platform.OS === 'web' ? Math.max(insets.bottom, 34) : insets.bottom;
-  const mapHeight = Math.max(160, height - webTopInset - webBottomInset - 46);
+  const mapHeight = Math.max(160, height - webTopInset - webBottomInset - 72);
   const overlayHeight = Math.max(140, Math.min(620, mapHeight - 56));
 
   const onCityPress = useCallback((pixel: number) => {
@@ -192,6 +195,9 @@ function GameScreen({ game }: { game: Game }) {
 
   return (
     <View style={[styles.screen, { paddingTop: webTopInset, paddingBottom: webBottomInset }]}>
+      <View style={styles.titleRow}>
+        <Text style={styles.brand} numberOfLines={1}>Zero Strategy</Text>
+      </View>
       <View style={styles.topBar}>
         <Pressable onPress={goHome} style={styles.homeButton} hitSlop={8} testID="link-home" accessibilityLabel="Меню">
           <Feather name="chevron-left" size={17} color={c.secondaryForeground} />
@@ -202,7 +208,6 @@ function GameScreen({ game }: { game: Game }) {
           <Text style={styles.year}>{snap.year}</Text>
           <Text style={styles.yearCaption}>ГОД</Text>
         </View>
-        <Text style={styles.brand} numberOfLines={1}>Zero Strategy</Text>
         <View style={styles.actions}>
           <Text style={[styles.timer, (!snap.drawing && (snap.paused || snap.secondsLeft <= 10)) && styles.timerHot]} testID="text-timer">
             {snap.drawing ? '…' : `${String(Math.max(0, snap.secondsLeft)).padStart(2, '0')}с`}
@@ -217,11 +222,31 @@ function GameScreen({ game }: { game: Game }) {
             <Feather name={snap.paused ? 'play' : 'pause'} size={16} color={c.foreground} />
           </Pressable>
           <Pressable
-            onPress={() => void game.nextTurn()}
+            onPress={() => {
+              if (longPressFired.current) {
+                longPressFired.current = false;
+                return;
+              }
+              if (!snap.card) void game.nextTurn();
+            }}
+            onPressIn={() => {
+              longPressFired.current = false;
+              setHoldingNext(true);
+            }}
+            // React Native Web keeps a touch responder through mobile contextmenu
+            // only when onLongPress is configured.
+            onLongPress={snap.card && !snap.busy ? () => {
+              longPressFired.current = true;
+              setHoldingNext(false);
+              void game.nextTurn(true);
+            } : undefined}
+            delayLongPress={AUTO_TURN_HOLD_MS}
+            onPressOut={() => setHoldingNext(false)}
             disabled={snap.busy}
             style={({ pressed }) => [styles.next, (snap.busy || pressed) && styles.disabled]}
             testID="button-next"
             accessibilityLabel={nextLabel}
+            accessibilityHint={snap.card ? 'Удерживайте 3 секунды, чтобы автоматически завершить карточку.' : undefined}
           >
             <Feather name="skip-forward" size={15} color={c.primaryForeground} />
           </Pressable>
@@ -237,6 +262,11 @@ function GameScreen({ game }: { game: Game }) {
           onInspect={(info) => setInspect({ info })}
           onMapActivity={showZoomForAWhile}
         />
+        {holdingNext && snap.card && (
+          <View style={styles.holdHint} pointerEvents="none" testID="hint-hold-next">
+            <Text style={styles.holdHintText}>Удерживайте 3 секунды для автохода</Text>
+          </View>
+        )}
         <MapControls
           game={game}
           snap={snap}
@@ -405,13 +435,14 @@ function GameScreen({ game }: { game: Game }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: c.background },
+  titleRow: { minHeight: 26, justifyContent: 'center', paddingHorizontal: 10, backgroundColor: c.secondary },
   topBar: { minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 5, backgroundColor: c.secondary, zIndex: 20 },
   homeButton: { height: 38, flexDirection: 'row', alignItems: 'center', gap: 1, paddingHorizontal: 3 },
   homeText: { fontFamily: fonts.sans, fontSize: 11, color: c.secondaryForeground },
   yearBlock: { flexDirection: 'row', alignItems: 'baseline', gap: 3, paddingHorizontal: 4 },
   year: { fontFamily: fonts.display, fontSize: 18, color: c.secondaryForeground },
   yearCaption: { fontFamily: fonts.sansMedium, fontSize: 8, letterSpacing: 0.6, color: c.secondaryForeground, opacity: 0.65 },
-  brand: { flex: 1, minWidth: 42, marginLeft: 2, fontFamily: fonts.displayItalic, fontSize: 12, color: c.secondaryForeground },
+  brand: { fontFamily: fonts.displayItalic, fontSize: 13, color: c.secondaryForeground },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   timer: { minWidth: 33, textAlign: 'center', fontFamily: fonts.mono, fontSize: 11, color: c.secondaryForeground },
   timerHot: { color: c.primaryForeground, backgroundColor: c.primary, borderRadius: 3, overflow: 'hidden' },
@@ -419,6 +450,8 @@ const styles = StyleSheet.create({
   next: { width: 38, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 4, backgroundColor: c.primary },
   disabled: { opacity: 0.55 },
   mapArea: { flex: 1, minHeight: 120, position: 'relative', overflow: 'hidden', backgroundColor: c.mapBackdrop },
+  holdHint: { position: 'absolute', top: 48, alignSelf: 'center', zIndex: 30, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.72)' },
+  holdHintText: { fontFamily: fonts.sansMedium, fontSize: 11, color: c.primaryForeground },
   eventBadge: { position: 'absolute', top: 8, alignSelf: 'center', maxWidth: '55%', minHeight: 34, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, borderWidth: 1, borderColor: c.foreground, borderRadius: 5, backgroundColor: c.primary, shadowColor: c.foreground, shadowOpacity: 0.2, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
   eventBadgeText: { flexShrink: 1, fontFamily: fonts.sansSemiBold, fontSize: 11, color: c.primaryForeground },
   queueCount: { fontFamily: fonts.mono, fontSize: 10, color: c.primaryForeground },
