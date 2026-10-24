@@ -37,6 +37,22 @@ function ColorKeys({ rows }: { rows: LegendRow[] }) {
   );
 }
 
+function BiomeTable({ rows }: { rows: LegendRow[] }) {
+  return (
+    <View style={styles.biomeTable} testID="biome-legend-table">
+      {rows.map((row) => (
+        <View key={row.id} style={styles.biomeCell}>
+          <View
+            style={[styles.biomeSwatch, { backgroundColor: row.color }]}
+            accessibilityLabel={`Цвет: ${row.name}`}
+          />
+          <Text style={styles.biomeLabel}>{row.name}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
   switch (snap.mapMode) {
     case 'political':
@@ -46,7 +62,7 @@ function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
     case 'religions':
       return <ColorKeys rows={snap.legend.religions} />;
     case 'biomes':
-      return <ColorKeys rows={snap.legend.biomes} />;
+      return <BiomeTable rows={snap.legend.biomes} />;
     case 'humidity':
     case 'temperature':
     case 'drainage':
@@ -119,7 +135,7 @@ const styles = StyleSheet.create({
   panel: {
     position: 'absolute',
     left: 8,
-    right: 56,
+    right: 8,
     bottom: 52,
     alignSelf: 'center',
     maxWidth: 620,
@@ -129,20 +145,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 5,
     borderWidth: 1,
-    borderColor: 'rgba(44,30,23,0.45)',
+    borderColor: 'rgba(255,255,255,0.28)',
     borderRadius: 5,
-    backgroundColor: 'rgba(250,248,244,0.9)',
+    backgroundColor: 'rgba(0,0,0,0.78)',
     elevation: 3,
   },
-  title: { fontFamily: fonts.sansSemiBold, fontSize: 9, lineHeight: 11, color: c.foreground },
+  title: { fontFamily: fonts.sansSemiBold, fontSize: 9, lineHeight: 11, color: c.secondaryForeground },
   keys: { alignItems: 'center', gap: 12 },
   fixedKeys: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   key: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: 180 },
-  keyText: { flexShrink: 1, fontFamily: fonts.sans, fontSize: 9, color: c.foreground },
+  keyText: { flexShrink: 1, fontFamily: fonts.sans, fontSize: 9, color: c.secondaryForeground },
   swatch: { width: 10, height: 10, borderWidth: 1, borderColor: 'rgba(44,30,23,0.5)', borderRadius: 2 },
+  biomeTable: { width: '100%', flexDirection: 'row', alignItems: 'stretch' },
+  biomeCell: { flex: 1, minWidth: 0, alignItems: 'center', gap: 2 },
+  biomeSwatch: { width: '100%', height: 9, borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)' },
+  biomeLabel: {
+    alignSelf: 'stretch',
+    flexShrink: 1,
+    fontFamily: fonts.sans,
+    fontSize: 7,
+    lineHeight: 8,
+    textAlign: 'center',
+    color: c.secondaryForeground,
+  },
   rampContents: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   ramp: { flex: 1, height: 8, borderWidth: 1, borderColor: 'rgba(44,30,23,0.35)', borderRadius: 2 },
-  scaleLabel: { fontFamily: fonts.sans, fontSize: 8, color: c.foreground },
+  scaleLabel: { fontFamily: fonts.sans, fontSize: 8, color: c.secondaryForeground },
   riverSwatch: { width: 16, height: 3, borderRadius: 2 },
-  description: { fontFamily: fonts.sans, fontSize: 9, color: c.foreground },
+  description: { fontFamily: fonts.sans, fontSize: 9, color: c.secondaryForeground },
 });

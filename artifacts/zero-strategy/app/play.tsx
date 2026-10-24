@@ -17,6 +17,7 @@ import colors, { fonts } from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { fmt } from '@/game/format';
 import { hasPlayerActionCard, type Game, type GameSnapshot, type PixelInfo } from '@/game/game';
+import { hasMapObjectList } from '@/game/mapModeCapabilities';
 import { scheduleMapLegend } from '@/game/mapLegendTimer';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
@@ -131,6 +132,10 @@ function GameScreen({ game }: { game: Game }) {
   }, [snap.mapMode]);
 
   useEffect(() => {
+    if (hasMapObjectList(snap.mapMode)) {
+      setLegendVisible(false);
+      return;
+    }
     return scheduleMapLegend(setLegendVisible);
   }, [snap.mapMode]);
 
@@ -272,30 +277,30 @@ function GameScreen({ game }: { game: Game }) {
           </Pressable>
         )}
 
-        <Pressable
-          onPress={() => setListMode((mode) => {
-            if (mode) return null;
-            setCardOpen(false);
-            setLogOpen(false);
-            return snap.mapMode;
-          })}
-          style={styles.listButton}
-          testID="button-open-map-list"
-          accessibilityRole="button"
-          accessibilityLabel={currentListCount === null
-            ? 'Открыть список объектов'
-            : `Открыть список объектов: ${fmt(currentListCount)}`}
-        >
-          <Feather name="list" size={15} color={c.foreground} />
-          <Text style={styles.listButtonText}>Список</Text>
-          {currentListCount !== null && (
-            <View style={styles.listCountBadge} testID={`map-list-count-${snap.mapMode}`}>
-              <Text style={styles.listCountText}>{fmt(currentListCount)}</Text>
-            </View>
-          )}
-        </Pressable>
+        {hasMapObjectList(snap.mapMode) && (
+          <Pressable
+            onPress={() => setListMode((mode) => {
+              if (mode) return null;
+              setCardOpen(false);
+              setLogOpen(false);
+              return snap.mapMode;
+            })}
+            style={styles.listButton}
+            testID="button-open-map-list"
+            accessibilityRole="button"
+            accessibilityLabel={`Открыть список объектов: ${fmt(currentListCount ?? 0)}`}
+          >
+            <Feather name="list" size={15} color={c.foreground} />
+            <Text style={styles.listButtonText}>Список</Text>
+            {currentListCount !== null && (
+              <View style={styles.listCountBadge} testID={`map-list-count-${snap.mapMode}`}>
+                <Text style={styles.listCountText}>{fmt(currentListCount)}</Text>
+              </View>
+            )}
+          </Pressable>
+        )}
 
-        {legendVisible && !cardOpen && !listMode && !logOpen && (
+        {legendVisible && !hasMapObjectList(snap.mapMode) && !cardOpen && !listMode && !logOpen && (
           <MapLegend game={game} snap={snap} />
         )}
 
@@ -307,7 +312,7 @@ function GameScreen({ game }: { game: Game }) {
             onCityPress={(id) => router.push(cityProfileRoute(id))}
           />
         )}
-        {tool === 'hand' && !inspect && !legendVisible && (
+        {tool === 'hand' && !inspect && !hasMapObjectList(snap.mapMode) && !legendVisible && (
           <View style={styles.tapHint} pointerEvents="none">
             <Text style={styles.tapHintText}>Коснитесь точки, чтобы её изучить</Text>
           </View>
