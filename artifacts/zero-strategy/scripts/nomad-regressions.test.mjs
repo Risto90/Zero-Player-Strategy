@@ -5,7 +5,7 @@ import { dissolveCountryIntoNomads, settleNomadAsCountry } from '../game/nomads.
 import { CardPainter } from '../game/brush.ts';
 import { INK, MAP_WIDTH } from '../game/config.ts';
 import { forEachNeighbour } from '../game/geography.ts';
-import { advancePeople, birth, marry, newCitizen, registerPerson } from '../game/characters.ts';
+import { advancePeople, birth, marry, newCitizen, registerPerson, setPersonHome } from '../game/characters.ts';
 import { createPerson } from '../game/government.ts';
 import { leadershipOptions } from '../game/succession.ts';
 import { applyReform, marriageCandidates, reformCandidates } from '../game/politics.ts';
@@ -84,6 +84,33 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   assert.ok(Math.abs(atheists - 40) < 1e-6, `atheist population is retained without becoming a religion: ${atheists}`);
 }
 
+// Switching a current home always updates both residence fields without rewriting history.
+{
+  const fixture = makeCountry();
+  const nomad = dissolveCountryIntoNomads(fixture.world, fixture.country)[0];
+  const resident = fixture.world.people.find((person) => person.id === fixture.country.ruler.id);
+  const formerRulerOf = [...resident.formerRulerOf];
+  const sourceCountryId = nomad.sourceCountryId;
+  const destination = fixture.world.newCountry({
+    rank: 'тест',
+    cultureId: fixture.firstCulture.id,
+    religionId: fixture.firstReligion.id,
+    density: 10,
+    foundedYear: 1,
+    parentId: null,
+  });
+
+  setPersonHome(resident, destination);
+  assert.equal(resident.countryId, destination.id, 'country residence sets the country ID');
+  assert.equal(resident.nomadId, null, 'country residence clears the nomad ID');
+  setPersonHome(resident, nomad);
+  assert.equal(resident.countryId, -1, 'nomad residence clears the country ID');
+  assert.equal(resident.nomadId, nomad.id, 'nomad residence sets the nomad ID');
+  assert.deepEqual(resident.formerRulerOf, formerRulerOf, 'changing residence does not rewrite ruler history');
+  assert.equal(nomad.sourceCountryId, sourceCountryId, 'changing residence does not rewrite the nomad source country');
+  assert.equal(nomad.sourceCountryId, fixture.country.id, 'the dissolved country remains historical source metadata');
+}
+
 // With no modifier authorizing mixed ethnicity, each national group becomes its own nomad.
 {
   const fixture = makeCountry();
@@ -104,6 +131,7 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   const rulerHome = nomads.find((nomad) => nomad.id === fixture.country.ruler.nomadId);
   const secondHome = nomads.find((nomad) => nomad.id === secondResident.nomadId);
   assert.equal(fixture.country.ruler.countryId, -1, 'the dissolved ruler no longer points at the empty source state');
+  assert.equal(fixture.country.ruler.nomadId, rulerHome.id, 'the dissolved ruler has one consistent nomad home');
   assert.ok(rulerHome?.personIds.includes(fixture.country.ruler.id), 'the ruler remains registered in a nomadic home');
   assert.equal(secondResident.countryId, -1, 'a former country resident has no stale country home');
   assert.equal(secondHome?.cultureId, fixture.secondCulture.id, 'the resident is assigned to the matching cultural nomad');
@@ -391,6 +419,7 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   assert.ok(!fixture.world.nomads.includes(nomad), 'the settled nomad is removed');
   assert.equal(fixture.country.ruler.countryId, settled.id, 'the shared ruler remains attached to the founded country');
   assert.equal(fixture.country.ruler.nomadId, null, 'the shared ruler no longer uses a nomadic home after settling');
+  assert.equal(settled.parentId, fixture.country.id, 'the source remains recorded as the new country parent');
   assert.equal(otherResident.countryId, -1, 'a resident of the other nomad is not moved into the founded country');
   assert.equal(otherResident.nomadId, 0, 'remaining nomad residents follow the group ID after reindexing');
   assert.equal(fixture.world.cardMultipliers['nomad:0:marriage:person-1'], undefined,
@@ -398,7 +427,6 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   assert.equal(fixture.world.cardMultipliers['nomad:0:death:person-2'], 1.331,
     'the remaining nomad keeps its accumulated card odds when its ID shifts');
   assert.ok(fixture.world.nomads[0].personIds.includes(otherResident.id), 'the other nomad retains its resident');
-  assert.equal(settled.parentId, fixture.country.id, 'the source remains recorded as the new country parent');
   const totalAfter = fixture.world.nomads.reduce((sum, group) =>
     sum + group.cells.reduce((cellSum, cell) => cellSum + cell.population, 0), 0) +
     demography(fixture.world, settled).population;

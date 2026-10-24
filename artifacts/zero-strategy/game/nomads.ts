@@ -5,7 +5,7 @@ import type { Country, NomadCell, NomadGroup, World } from './world';
 import { forEachNeighbour } from './geography';
 import { addCityAndConcentrate, cityInfluenceRadius } from './settlements';
 import { appoint, successionOrder } from './succession';
-import { newCitizen } from './characters';
+import { newCitizen, setPersonHome } from './characters';
 
 type Cohort = { cultureId: number; religionId: number | null; population: number; pixel: number };
 type SplitGroup = { cultures: Set<number>; religions: Set<number | null> };
@@ -174,8 +174,7 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
     if (target >= 0 && !created[target].personIds.includes(resident.id)) {
       created[target].personIds.push(resident.id);
       if (resident.alive) {
-        resident.countryId = -1;
-        resident.nomadId = created[target].id;
+        setPersonHome(resident, created[target]);
       }
     }
   }
@@ -268,8 +267,7 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
     Object.entries(nomad.pressures).map(([key, pressure]) => [key, { ...pressure }]),
   );
   country.ruler.formerRulerOf = [...new Set([...country.ruler.formerRulerOf, country.id])];
-  country.ruler.countryId = country.id;
-  country.ruler.nomadId = null;
+  setPersonHome(country.ruler, country);
   if (!country.dynastyClaims.includes(country.ruler.familyId)) country.dynastyClaims.push(country.ruler.familyId);
   world.people = world.people.filter((person) => person.id !== generatedRulerId);
 
@@ -341,19 +339,16 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
     const resident = world.people.find((person) => person.id === personId);
     if (!resident) continue;
     if (resident.id === country.ruler.id || resident.id === country.heir?.id) {
-      resident.countryId = country.id;
-      resident.nomadId = null;
+      setPersonHome(resident, country);
       continue;
     }
     if (resident.nomadId !== nomad.id) continue;
     const belongsElsewhere = world.nomads.find((other) => other !== nomad &&
       (other.ruler.id === personId || other.coRulerIds.includes(personId) || other.personIds.includes(personId)));
     if (belongsElsewhere) {
-      resident.countryId = -1;
-      resident.nomadId = belongsElsewhere.id;
+      setPersonHome(resident, belongsElsewhere);
     } else {
-      resident.countryId = country.id;
-      resident.nomadId = null;
+      setPersonHome(resident, country);
     }
   }
   if (nomadIndex >= 0) world.nomads.splice(nomadIndex, 1);

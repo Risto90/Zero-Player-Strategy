@@ -215,13 +215,7 @@ export function leadershipOptions(world: World, c: Polity, year: number, old = c
 export function appoint(world: World, c: Polity, p: Person, year: number, seatId = c.ruler.id): void {
   const old = person(world, seatId) ?? c.ruler;
   const chosen = registerPerson(world, c, p);
-  if (isNomad(c)) {
-    chosen.countryId = -1;
-    chosen.nomadId = c.id;
-  }
-  else {
-    chosen.countryId = c.id;
-    chosen.nomadId = null;
+  if (!isNomad(c)) {
     if (!chosen.formerRulerOf.includes(c.id)) chosen.formerRulerOf.push(c.id);
   }
   if (!c.previousRulerIds.includes(old.id)) c.previousRulerIds.push(old.id);
