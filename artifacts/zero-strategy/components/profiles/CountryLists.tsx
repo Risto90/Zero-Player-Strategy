@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ReactNode } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { FlatList, Pressable, ScrollView, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { countryCharacters } from '@/game/characters';
 import { ageStage, personDeathStatus } from '@/game/government';
@@ -17,16 +17,28 @@ function openPerson(id: number) {
   router.push({ pathname: '/person/[id]', params: { id: String(id) } });
 }
 
-export function CountryResidentsList({ game, country }: { game: Game; country: Country }) {
-  const residents = countryCharacters(game.world, country);
+export function CountryResidentsList({
+  residents,
+}: {
+  residents: ReturnType<typeof countryCharacters>;
+}) {
   return (
-    <ProfileSection title={`ЖИВЫЕ ЖИТЕЛИ · ${residents.length}`}>
-      {residents.length ? residents.map((resident) => (
-        <ProfileLink key={resident.id} title={resident.name}
+    <FlatList
+      data={residents}
+      keyExtractor={(resident) => String(resident.id)}
+      renderItem={({ item: resident }) => (
+        <ProfileLink title={resident.name}
           note={`${resident.age} лет · ${ageStage(resident.age)} · ${resident.familyName}`}
           onPress={() => openPerson(resident.id)} />
-      )) : <ProfileFact>Живых персонажей с этой страной проживания нет.</ProfileFact>}
-    </ProfileSection>
+      )}
+      ListHeaderComponent={<ProfileSection title={`ЖИВЫЕ ЖИТЕЛИ · ${residents.length}`} />}
+      ListEmptyComponent={<ProfileFact>Живых персонажей с этой страной проживания нет.</ProfileFact>}
+      contentContainerStyle={styles.virtualizedContent}
+      initialNumToRender={18}
+      maxToRenderPerBatch={18}
+      windowSize={7}
+      updateCellsBatchingPeriod={40}
+    />
   );
 }
 
@@ -39,9 +51,12 @@ export function CountryCandidatesList({ game, country, candidates: suppliedCandi
   if (!candidates.length) {
     return <ProfileFact>Сейчас нет живых персонажей, подходящих на роль кандидата с учётом законов и ограничений страны.</ProfileFact>;
   }
+  const weightedCandidates = candidates.some(({ weight }) => weight !== null);
   return (
-    <ProfileSection title={`КАНДИДАТЫ · ${candidates.length}`}>
-      {candidates.map(({ person, basis, advantages, expectedHeir, weight }) => (
+    <FlatList
+      data={candidates}
+      keyExtractor={({ person }) => String(person.id)}
+      renderItem={({ item: { person, basis, advantages, expectedHeir, weight } }) => (
         <View key={person.id} style={styles.candidate}>
           <ProfileLink title={`${person.name}${expectedHeir ? ' · ожидаемый наследник по закону' : ''}`}
             note={`${person.age} лет · ${ageStage(person.age)}${personDeathStatus(person) ? ` · ${personDeathStatus(person)}` : ''}`}
@@ -50,10 +65,17 @@ export function CountryCandidatesList({ game, country, candidates: suppliedCandi
           {advantages.map((reason, index) => <Text key={`advantage-${index}`} style={styles.advantage}>{reason}</Text>)}
           {weight !== null && <Text style={styles.weight}>Относительный вес выбора · ×{Number(weight.toFixed(2))}</Text>}
         </View>
-      ))}
-      {candidates.some(({ weight }) => weight !== null) &&
-        <ProfileFact>Вес показывает сравнительный шанс среди доступных вариантов, а не гарантию назначения.</ProfileFact>}
-    </ProfileSection>
+      )}
+      ListHeaderComponent={<ProfileSection title={`КАНДИДАТЫ · ${candidates.length}`} />}
+      ListFooterComponent={weightedCandidates
+        ? <ProfileFact>Вес показывает сравнительный шанс среди доступных вариантов, а не гарантию назначения.</ProfileFact>
+        : undefined}
+      contentContainerStyle={styles.virtualizedContent}
+      initialNumToRender={14}
+      maxToRenderPerBatch={12}
+      windowSize={7}
+      updateCellsBatchingPeriod={40}
+    />
   );
 }
 
@@ -103,6 +125,7 @@ export function CountryDirectoryPage({
 
 const styles = {
   candidate: { gap: 3, paddingVertical: 5, borderBottomWidth: 1, borderColor: c.border } as const,
+  virtualizedContent: { padding: 18, paddingTop: 8, paddingBottom: 24 } as const,
   reason: { paddingHorizontal: 5, fontFamily: fonts.sans, fontSize: 12, lineHeight: 17, color: c.foreground } as const,
   advantage: { paddingHorizontal: 5, fontFamily: fonts.sansMedium, fontSize: 12, lineHeight: 17, color: c.primary } as const,
   weight: { paddingHorizontal: 5, fontFamily: fonts.mono, fontSize: 11, color: c.mutedForeground } as const,

@@ -2,7 +2,7 @@ import type { Person } from './government';
 import { formatPersonName, legacyNameStyleForCulture } from './government';
 import type { Country, World } from './world';
 import { person, newCitizen, registerPerson } from './characters';
-import { demography, weighted } from './demography';
+import { demography, weighted, type Demography } from './demography';
 
 function isMember(c: Country, p: Person): boolean {
   return p.countryId === c.id || c.ruler.id === p.id || c.coRulerIds.includes(p.id);
@@ -102,10 +102,41 @@ export function candidateAllowed(
   partnerExempt = false,
   allowCurrentLeader = false,
   memberExempt = false,
+  context?: CandidateEligibilityContext,
+): boolean {
+  return candidateAllowedWithContext(world, c, p, old, partnerExempt, allowCurrentLeader, memberExempt, context);
+}
+
+interface CandidateEligibilityContext {
+  otherRulerIds: Set<number>;
+  demographics?: Demography;
+}
+
+function candidateEligibilityContext(world: World, c: Country, old: Person): CandidateEligibilityContext {
+  const context: CandidateEligibilityContext = {
+    otherRulerIds: new Set(rulers(world, c).filter((leader) => leader.id !== old.id).map((leader) => leader.id)),
+  };
+  if (c.government !== 'tribal' &&
+      (c.modifiers.includes('theocracy') || c.modifiers.includes('ethnic'))) {
+    context.demographics = demography(world, c);
+  }
+  return context;
+}
+
+function candidateAllowedWithContext(
+  world: World,
+  c: Country,
+  p: Person,
+  old: Person,
+  partnerExempt: boolean,
+  allowCurrentLeader: boolean,
+  memberExempt: boolean,
+  context?: CandidateEligibilityContext,
 ): boolean {
   const foreignDynast = c.government !== 'republic' && c.dynastyClaims.includes(p.familyId);
   if (!p.alive || (!isMember(c, p) && !partnerExempt && !memberExempt && !foreignDynast)) return false;
-  if (!allowCurrentLeader && rulers(world, c).some((leader) => leader.id === p.id && leader.id !== old.id)) return false;
+  if (!allowCurrentLeader && (context?.otherRulerIds ??
+      new Set(rulers(world, c).filter((leader) => leader.id !== old.id).map((leader) => leader.id))).has(p.id)) return false;
   const coRule = c.coRulerIds.includes(p.id);
   const adult = c.government === 'republic' || c.modifiers.includes('meritocracy') ||
     (c.government === 'tyranny' && c.modifiers.includes('communist'));
@@ -116,7 +147,7 @@ export function candidateAllowed(
     if (c.modifiers.includes('matriarchal') && p.gender !== 'female') return false;
   }
   if (c.government !== 'tribal') {
-    const d = demography(world, c);
+    const d = context?.demographics ?? demography(world, c);
     if (c.modifiers.includes('theocracy') && p.religionId !== (c.government === 'republic' ? d.religion : old.religionId)) return false;
     if (c.modifiers.includes('ethnic') && p.cultureId !== (c.government === 'republic' ? d.culture : old.cultureId)) return false;
   }
@@ -135,10 +166,12 @@ export function candidateWeight(
   old = c.ruler,
   republicanPornocracyPartner = false,
   peopleById?: ReadonlyMap<number, Person>,
+  demographics?: Demography,
 ): number {
-  const d = demography(world, c);
   let weight = p.age >= 20 && p.age <= 28 ? 0.5 : 1;
-  if (c.government === 'tribal') {
+  if (c.government === 'tribal' &&
+      (c.modifiers.includes('ethnic') || c.modifiers.includes('theocracy'))) {
+    const d = demographics ?? demography(world, c);
     if (c.modifiers.includes('ethnic')) {
       if (p.cultureId === d.culture) weight *= 4;
       if (p.cultureId === old.cultureId) weight *= 2;
@@ -214,16 +247,17 @@ function candidateWeightNotes(
   old: Person,
   republicanPartner: boolean,
   peopleById?: ReadonlyMap<number, Person>,
+  demographics?: Demography,
 ): string[] {
   const notes: string[] = [];
   if (p.age >= 20 && p.age <= 28) notes.push('Возраст 20–28 лет: вес ×0,5.');
   if (c.government === 'tribal' && c.modifiers.includes('ethnic')) {
-    const d = demography(world, c);
+    const d = demographics ?? demography(world, c);
     if (p.cultureId === d.culture) notes.push('Ведущая культура страны: вес ×4.');
     if (p.cultureId === old.cultureId) notes.push('Культура прежнего вождя: вес ×2.');
   }
   if (c.government === 'tribal' && c.modifiers.includes('theocracy')) {
-    const d = demography(world, c);
+    const d = demographics ?? demography(world, c);
     const byFaith = new Map<number | null, number>();
     for (const pair of d.pairs) {
       if (pair.cultureId === old.cultureId) byFaith.set(pair.religionId, (byFaith.get(pair.religionId) ?? 0) + pair.weight);
@@ -255,15 +289,18 @@ function candidateWeightNotes(
 export function countryCandidates(world: World, c: Country): CountryCandidate[] {
   const old = c.ruler;
   const peopleById = new Map(world.people.map((p) => [p.id, p]));
+  const eligibility = candidateEligibilityContext(world, c, old);
+  const demographics = eligibility.demographics;
   if (c.government === 'republic') {
-    let eligible = world.people.filter((p) => p.countryId === c.id && candidateAllowed(world, c, p, old));
+    let eligible = world.people.filter((p) => p.countryId === c.id &&
+      candidateAllowedWithContext(world, c, p, old, false, false, false, eligibility));
     eligible = communistPool(c, eligible);
     const anchors = [old, ...eligible];
     const partners = c.modifiers.includes('pornocracy')
       ? partnerCandidateIds(anchors, eligible)
       : new Set<number>();
     return eligible.map((p) => {
-      const advantages = candidateWeightNotes(world, c, p, old, partners.has(p.id), peopleById);
+      const advantages = candidateWeightNotes(world, c, p, old, partners.has(p.id), peopleById, demographics);
       const basis = ['Живой житель страны, прошедший возрастные, половые, культурные, религиозные и избирательные ограничения.'];
       if (c.modifiers.includes('communist')) {
         basis.push('Коммунистический фильтр: допущены атеисты и/или космополиты.');
@@ -277,7 +314,7 @@ export function countryCandidates(world: World, c: Country): CountryCandidate[] 
         basis,
         advantages,
         expectedHeir: false,
-        weight: candidateWeight(world, c, p, old, partners.has(p.id), peopleById),
+        weight: candidateWeight(world, c, p, old, partners.has(p.id), peopleById, demographics),
       };
     });
   }
@@ -288,7 +325,8 @@ export function countryCandidates(world: World, c: Country): CountryCandidate[] 
     : new Set<number>();
   const fixedHeir = hasFixedHeir(c);
   const eligibleChildren = world.people.filter((p) =>
-    p.parents.includes(old.id) && candidateAllowed(world, c, p, old));
+    p.parents.includes(old.id) && candidateAllowedWithContext(world, c, p, old, false, false, false, eligibility));
+  const eligibleChildIds = new Set(eligibleChildren.map((child) => child.id));
   const previousLeaders = new Set([...c.previousRulerIds, old.id]);
   const candidates = ordered.map((p, index): CountryCandidate => {
     const basis: string[] = [];
@@ -296,7 +334,7 @@ export function countryCandidates(world: World, c: Country): CountryCandidate[] 
     if (c.government === 'tribal') {
       basis.push('Живой ребёнок нынешнего или прежнего вождя: возможный кандидат, не гарантированное наследование.');
     } else if (c.government === 'tyranny' && old.spouseIds.includes(p.id) &&
-        !eligibleChildren.some((child) => child.id === p.id)) {
+        !eligibleChildIds.has(p.id)) {
       basis.push('Супруг(а) правителя: допускается при отсутствии подходящего ребёнка для преемства.');
     } else if (c.modifiers.includes('pornocracy') && successionPartners.has(p.id)) {
       basis.push('Порнократия: партнёр правителя или кандидата включён в линию наследования.');
@@ -330,14 +368,14 @@ export function countryCandidates(world: World, c: Country): CountryCandidate[] 
     if (fixedHeir && index === 0) {
       basis.push('Ожидаемый наследник по действующему закону; это порядок преемства, а не бонус к выборному весу.');
     }
-    advantages.push(...candidateWeightNotes(world, c, p, old, false, peopleById));
+    advantages.push(...candidateWeightNotes(world, c, p, old, false, peopleById, demographics));
     return {
       person: p,
       kind: 'succession',
       basis,
       advantages,
       expectedHeir: fixedHeir && index === 0,
-      weight: fixedHeir ? null : candidateWeight(world, c, p, old, false, peopleById),
+      weight: fixedHeir ? null : candidateWeight(world, c, p, old, false, peopleById, demographics),
     };
   });
   return candidates;
@@ -346,6 +384,7 @@ export function countryCandidates(world: World, c: Country): CountryCandidate[] 
 export function successionOrder(world: World, c: Country, old = c.ruler): Person[] {
   if (c.government === 'republic') return [];
   const peopleById = new Map(world.people.map((p) => [p.id, p]));
+  const eligibility = candidateEligibilityContext(world, c, old);
   const former = new Set([...c.previousRulerIds, old.id]);
   let family = world.people.filter((p) => p.id !== old.id && c.dynastyClaims.includes(p.familyId) && isMember(c, p));
   if (c.government === 'tribal') family = family.filter((p) => p.parents.some((id) => former.has(id)));
@@ -355,16 +394,48 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
   const ageOrder = (a: Person, b: Person) => (youngest ? b.bornAt - a.bornAt : a.bornAt - b.bornAt) || a.id - b.id;
   if (c.modifiers.includes('primogeniture') && !c.modifiers.includes('oligarchy')) {
     const seen = new Set<number>();
+    const childrenByParent = new Map<number, Person[]>();
+    for (const p of world.people) {
+      for (const parentId of p.parents) {
+        const childrenForParent = childrenByParent.get(parentId);
+        if (childrenForParent) childrenForParent.push(p);
+        else childrenByParent.set(parentId, [p]);
+      }
+    }
     const branch = (parent: Person): Person[] => {
       if (seen.has(parent.id)) return [];
       seen.add(parent.id);
-      const kids = world.people.filter((p) => p.parents.includes(parent.id)).sort(ageOrder);
-      return kids.flatMap((p) => p.alive && candidateAllowed(world, c, p, old) ? [p] : branch(p));
+      const result: Person[] = [];
+      const firstChildren = childrenByParent.get(parent.id);
+      if (!firstChildren) return result;
+      firstChildren.sort(ageOrder);
+      const stack: { children: Person[]; index: number }[] = [{ children: firstChildren, index: 0 }];
+      while (stack.length) {
+        const frame = stack[stack.length - 1];
+        if (frame.index >= frame.children.length) {
+          stack.pop();
+          continue;
+        }
+        const child = frame.children[frame.index++];
+        if (child.alive &&
+            candidateAllowedWithContext(world, c, child, old, false, false, false, eligibility)) {
+          result.push(child);
+          continue;
+        }
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        const descendants = childrenByParent.get(child.id);
+        if (descendants) {
+          descendants.sort(ageOrder);
+          stack.push({ children: descendants, index: 0 });
+        }
+      }
+      return result;
     };
     pool = [...branch(old), ...family.sort(ageOrder)];
   } else if (!c.modifiers.includes('seniority') && !youngest &&
       (c.government === 'tyranny' || (c.modifiers.includes('primogeniture') && c.modifiers.includes('oligarchy')))) {
-    const direct = children.filter((p) => candidateAllowed(world, c, p, old));
+    const direct = children.filter((p) => candidateAllowedWithContext(world, c, p, old, false, false, false, eligibility));
     pool = direct.length ? direct : family;
   } else pool = [...family].sort(ageOrder);
   if (c.modifiers.includes('consulate') && c.modifiers.includes('partition')) {
@@ -372,16 +443,18 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
       old.parents.some((parentId) => p.parents.includes(parentId)));
     const siblingIds = new Set(siblings.map((p) => p.id));
     const siblingPool = pool.filter((p) => siblingIds.has(p.id));
-    const sittingConsuls = rulers(world, c).filter((p) => p.alive);
+    const sittingConsulIds = new Set(rulers(world, c).filter((p) => p.alive).map((p) => p.id));
     const consulChildren = world.people.filter((p) => p.alive &&
-      sittingConsuls.some((leader) => p.parents.includes(leader.id)));
+      p.parents.some((parentId) => sittingConsulIds.has(parentId)));
     const consulChildIds = new Set(consulChildren.map((p) => p.id));
     const childPool = pool.filter((p) => consulChildIds.has(p.id) && !siblingIds.has(p.id));
     const preferred = [...siblingPool, ...childPool];
-    pool = [...preferred, ...pool.filter((p) => !preferred.some((x) => x.id === p.id))];
+    const preferredIds = new Set(preferred.map((p) => p.id));
+    pool = [...preferred, ...pool.filter((p) => !preferredIds.has(p.id))];
   }
-  const tyrantSpouses = c.government === 'tyranny' && !children.some((p) => candidateAllowed(world, c, p, old))
-    ? old.spouseIds.map((id) => person(world, id)).filter((p): p is Person => !!p)
+  const tyrantSpouses = c.government === 'tyranny' && !children.some((p) =>
+    candidateAllowedWithContext(world, c, p, old, false, false, false, eligibility))
+    ? old.spouseIds.map((id) => peopleById.get(id) ?? null).filter((p): p is Person => !!p)
     : [];
   if (tyrantSpouses.length) pool = [...pool, ...tyrantSpouses];
   const tyrantSpouseIds = new Set(tyrantSpouses.map((p) => p.id));
@@ -394,11 +467,18 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
       .map((id) => peopleById.get(id)).filter((x): x is Person => !!x);
     const oldPartners = partners(old);
     const expanded = pool.flatMap((p) => [...partners(p), p]);
-    for (const p of [...oldPartners, ...expanded.filter((p) => !pool.includes(p))]) partnerIds.add(p.id);
+    const poolIds = new Set(pool.map((p) => p.id));
+    for (const p of [...oldPartners, ...expanded.filter((p) => !poolIds.has(p.id))]) partnerIds.add(p.id);
     pool = [...oldPartners, ...expanded];
   }
-  pool = pool.filter((p, i) => pool.findIndex((x) => x.id === p.id) === i &&
-    candidateAllowed(world, c, p, old, partnerIds.has(p.id), false, tyrantSpouseIds.has(p.id)));
+  const uniquePool = new Set<number>();
+  pool = pool.filter((p) => {
+    if (uniquePool.has(p.id)) return false;
+    uniquePool.add(p.id);
+    return candidateAllowedWithContext(
+      world, c, p, old, partnerIds.has(p.id), false, tyrantSpouseIds.has(p.id), eligibility,
+    );
+  });
   return communistPool(c, pool);
 }
 export function hasFixedHeir(c: Country): boolean {

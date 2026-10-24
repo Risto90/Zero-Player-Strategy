@@ -47,7 +47,10 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
   );
   const composition = useMemo(() => game.countryComposition(country.id), [game, country.id, game.world.version]);
   const cities = useMemo(() => game.world.cities.filter((city) => city.countryId === country.id), [game, country.id, game.world.version]);
-  const residents = countryCharacters(game.world, country);
+  const residents = useMemo(
+    () => countryCharacters(game.world, country),
+    [game, country.id, game.world.version],
+  );
   const candidates = useMemo(
     () => countryCandidates(game.world, country),
     [game, country.id, game.world.version],
@@ -139,7 +142,7 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
       subtitle={`${country.rank} · основана в ${country.foundedYear} году`}
       details={details}
       extraTabs={[
-        { key: 'residents', label: `Жители · ${residents.length}`, content: <CountryResidentsList game={game} country={country} /> },
+        { key: 'residents', label: `Жители · ${residents.length}`, content: <CountryResidentsList residents={residents} /> },
         ...(candidates.length ? [{
           key: 'candidates',
           label: `Кандидаты · ${candidates.length}`,

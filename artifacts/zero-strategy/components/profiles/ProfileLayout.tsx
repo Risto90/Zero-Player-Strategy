@@ -84,10 +84,9 @@ export function ProfileLayout({
           />
         </View>
       ) : selectedExtraTab ? (
-        <ScrollView style={styles.pageScroll} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
-          nestedScrollEnabled>
+        <View style={[styles.pageScroll, styles.extraTabContent, { paddingBottom: insets.bottom }]}>
           {selectedExtraTab.content}
-        </ScrollView>
+        </View>
       ) : (
         <ScrollView style={styles.pageScroll} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
           nestedScrollEnabled>
@@ -98,7 +97,7 @@ export function ProfileLayout({
   );
 }
 
-export function ProfileSection({ title, children }: { title: string; children: ReactNode }) {
+export function ProfileSection({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -154,6 +153,7 @@ const styles = StyleSheet.create({
   tabText: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.foreground },
   activeTabText: { color: c.primaryForeground },
   pageScroll: { flex: 1 },
+  extraTabContent: { minHeight: 0 },
   chroniclePanel: { maxHeight: 560, overflow: 'hidden', backgroundColor: c.secondary },
   content: { padding: 18, paddingTop: 8, gap: 14 },
   section: { paddingTop: 8, gap: 5, borderTopWidth: 1, borderColor: c.border },
