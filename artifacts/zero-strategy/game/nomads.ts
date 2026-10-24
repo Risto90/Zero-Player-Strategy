@@ -4,7 +4,7 @@ import { quantizeShares } from './composition';
 import type { Country, NomadCell, World } from './world';
 import { forEachNeighbour } from './geography';
 import { addCityAndConcentrate, cityInfluenceRadius } from './settlements';
-import { appoint, successionOrder } from './succession';
+import { appoint, closeRulerTerms, successionOrder } from './succession';
 import { newCitizen, registerPerson, setPersonHome } from './characters';
 
 type Cohort = { cultureId: number; religionId: number | null; population: number; pixel: number };
@@ -173,10 +173,15 @@ export function dissolveCountryIntoNomadicCountries(
       modifiers: [...new Set([...GOVERNMENTS.tribal.modifiers, ...validModifiers])],
       ruler: oldState.ruler,
       heir: oldState.heir,
-      rulerSince: oldState.rulerSince,
+      rulerSince: year,
       previousRulerIds: [...oldState.previousRulerIds],
       dynastyClaims: [...oldState.dynastyClaims],
       coRulerIds: [...oldState.coRulerIds],
+      rulerTerms: [
+        { personId: oldState.ruler.id, startYear: year, endYear: null, office: 'ruler' },
+        ...oldState.coRulerIds.filter((id) => id !== oldState.ruler.id)
+          .map((personId) => ({ personId, startYear: year, endYear: null, office: 'coRuler' as const })),
+      ],
       termYears: oldState.termYears,
       maxTerms: oldState.maxTerms,
       consulCount: oldState.consulCount,
@@ -185,6 +190,8 @@ export function dissolveCountryIntoNomadicCountries(
       barredRulerIds: [...oldState.barredRulerIds],
       pressures: { ...oldState.pressures },
     });
+    nomad.seatSince[nomad.ruler.id] = year;
+    for (const id of nomad.coRulerIds) nomad.seatSince[id] = year;
     world.people = world.people.filter((person) => person.id !== generatedRulerId);
     created.push(nomad);
     createdGroups.push(group);
@@ -204,6 +211,9 @@ export function dissolveCountryIntoNomadicCountries(
     nomadicCountry.ruler = ruler;
     nomadicCountry.heir = null;
     nomadicCountry.coRulerIds = [];
+    nomadicCountry.rulerTerms = [{ personId: ruler.id, startYear: year, endYear: null, office: 'ruler' }];
+    nomadicCountry.rulerSince = year;
+    nomadicCountry.seatSince[ruler.id] = year;
     nomadicCountry.dynastyClaims = [ruler.familyId];
   }
 
@@ -214,6 +224,7 @@ export function dissolveCountryIntoNomadicCountries(
     world.religion[pixel] = 0;
   }
   country.pixels = 0;
+  closeRulerTerms(country, year);
   country.box = [MAP_WIDTH, 0, Math.floor(world.land.length / MAP_WIDTH), 0];
   world.recountCountries();
   world.version += 1;

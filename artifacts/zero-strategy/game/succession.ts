@@ -13,32 +13,82 @@ export function rulers(world: World, c: Country): Person[] {
 }
 export interface RulerHistoryEntry {
   person: Person;
-  year: number | null;
+  startYear: number | null;
+  endYear: number | null;
+  office: 'ruler' | 'coRuler';
   current: boolean;
   currentCoRuler: boolean;
 }
-/** Appointment years are limited to the per-person seatSince fields currently stored in saves. */
+/** Reconcile open terms when offices are adjusted outside a direct appointment. */
+export function syncRulerTerms(c: Country, year: number): void {
+  c.rulerTerms ??= [];
+  const active = new Map<number, 'ruler' | 'coRuler'>([[c.ruler.id, 'ruler']]);
+  for (const id of c.coRulerIds) if (!active.has(id)) active.set(id, 'coRuler');
+  for (const term of c.rulerTerms) {
+    if (term.endYear !== null) continue;
+    if (active.get(term.personId) !== term.office) term.endYear = year;
+  }
+  for (const [personId, office] of active) {
+    const alreadyOpen = c.rulerTerms.some((term) => term.personId === personId &&
+      term.office === office && term.endYear === null);
+    if (!alreadyOpen) c.rulerTerms.push({ personId, office, startYear: c.seatSince[personId] ?? (office === 'ruler' ? c.rulerSince : null), endYear: null });
+  }
+}
+
+export function closeRulerTerms(c: Country, year: number): void {
+  c.rulerTerms ??= [];
+  for (const term of c.rulerTerms) if (term.endYear === null) term.endYear = year;
+}
+
+function closeRulerTerm(c: Country, personId: number, office: 'ruler' | 'coRuler', year: number): void {
+  const term = [...(c.rulerTerms ?? [])].reverse().find((entry) =>
+    entry.personId === personId && entry.office === office && entry.endYear === null);
+  if (term) term.endYear = year;
+}
+
+/** Returns one chronologically sorted row for every recorded appointment. */
 export function countryRulerHistory(world: World, c: Country): RulerHistoryEntry[] {
   const activeIds = new Set([c.ruler.id, ...c.coRulerIds]);
   const ids = new Set([
-    ...c.previousRulerIds,
     ...world.people.filter((p) => p.formerRulerOf.includes(c.id)).map((p) => p.id),
     ...activeIds,
   ]);
   const byId = new Map(world.people.map((p) => [p.id, p]));
   byId.set(c.ruler.id, c.ruler);
-  return [...ids].flatMap((id) => {
-    const p = byId.get(id);
-    if (!p) return [];
+  for (const p of rulers(world, c)) byId.set(p.id, p);
+
+  const terms = (c.rulerTerms ?? []).map((term) => ({ ...term }));
+  const represented = new Set(terms.map((term) => term.personId));
+  for (const id of ids) {
+    if (represented.has(id)) continue;
+    const office = c.coRulerIds.includes(id) ? 'coRuler' : 'ruler';
     const year = c.seatSince[id] ?? (id === c.ruler.id ? c.rulerSince : null);
+    terms.push({ personId: id, startYear: Number.isFinite(year) ? year : null, endYear: null, office });
+  }
+  for (const id of activeIds) {
+    const office = c.coRulerIds.includes(id) ? 'coRuler' : 'ruler';
+    if (!terms.some((term) => term.personId === id && term.office === office && term.endYear === null)) {
+      const year = c.seatSince[id] ?? (office === 'ruler' ? c.rulerSince : null);
+      terms.push({ personId: id, startYear: Number.isFinite(year) ? year : null, endYear: null, office });
+    }
+  }
+  return terms.flatMap((term) => {
+    const p = byId.get(term.personId);
+    if (!p) return [];
+    const current = activeIds.has(term.personId) &&
+      (term.office === 'coRuler' ? c.coRulerIds.includes(term.personId) : c.ruler.id === term.personId) &&
+      term.endYear === null;
     return [{
       person: p,
-      year: Number.isFinite(year) ? year : null,
-      current: activeIds.has(id),
-      currentCoRuler: c.coRulerIds.includes(id),
+      startYear: Number.isFinite(term.startYear) ? term.startYear : null,
+      endYear: Number.isFinite(term.endYear) ? term.endYear : null,
+      office: term.office,
+      current,
+      currentCoRuler: current && term.office === 'coRuler',
     }];
-  }).sort((a, b) => (a.year ?? Number.POSITIVE_INFINITY) - (b.year ?? Number.POSITIVE_INFINITY) ||
-    Number(b.current) - Number(a.current) || a.person.id - b.person.id);
+  }).sort((a, b) => (a.startYear ?? Number.POSITIVE_INFINITY) - (b.startYear ?? Number.POSITIVE_INFINITY) ||
+    (a.endYear ?? Number.POSITIVE_INFINITY) - (b.endYear ?? Number.POSITIVE_INFINITY) ||
+    a.person.id - b.person.id);
 }
 export function expectedHeirFor(world: World, c: Country, leader: Person): Person | null {
   if (!hasFixedHeir(c)) return null;
@@ -458,6 +508,8 @@ export function leadershipOptions(
 }
 export function appoint(world: World, c: Country, p: Person, year: number, seatId = c.ruler.id): void {
   const old = person(world, seatId) ?? c.ruler;
+  const oldOffice = seatId === c.ruler.id ? 'ruler' : 'coRuler';
+  closeRulerTerm(c, old.id, oldOffice, year);
   const chosen = registerPerson(world, c, p);
   if (!chosen.formerRulerOf.includes(c.id)) chosen.formerRulerOf.push(c.id);
   if (!c.previousRulerIds.includes(old.id)) c.previousRulerIds.push(old.id);
@@ -468,6 +520,9 @@ export function appoint(world: World, c: Country, p: Person, year: number, seatI
   if (seatId === c.ruler.id) { c.ruler = chosen; c.rulerSince = year; }
   else c.coRulerIds = c.coRulerIds.map((id) => id === seatId ? chosen.id : id);
   c.coRulerIds = [...new Set(c.coRulerIds)].filter((id) => id !== c.ruler.id);
+  c.rulerTerms ??= [];
+  c.rulerTerms.push({ personId: chosen.id, startYear: year, endYear: null, office: chosen.id === c.ruler.id ? 'ruler' : 'coRuler' });
+  syncRulerTerms(c, year);
 }
 /**
  * Repairs legacy or inconsistent active offices without changing living leaders.
@@ -524,4 +579,5 @@ export function ensureOffices(world: World, c: Country, year: number): void {
       c.dynastyClaims.push(next.familyId);
     }
   }
+  syncRulerTerms(c, year);
 }

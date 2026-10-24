@@ -78,6 +78,13 @@ export interface Person {
   lastBirthYear: number | null;
 }
 
+export interface RulerTerm {
+  personId: number;
+  startYear: number | null;
+  endYear: number | null;
+  office: 'ruler' | 'coRuler';
+}
+
 export interface PoliticalState {
   government: GovernmentId;
   modifiers: GovernmentModifierId[];
@@ -87,6 +94,8 @@ export interface PoliticalState {
   previousRulerIds: number[];
   dynastyClaims: number[];
   coRulerIds: number[];
+  /** One record per time a person held the ruler or co-ruler office. */
+  rulerTerms: RulerTerm[];
   termYears: number;
   maxTerms: number;
   consulCount: number;
@@ -294,8 +303,10 @@ export function governmentOf(value: string | undefined | null): Government {
 }
 export function initialGovernment(year: number, cultureId = 0, religionId: number | null = null, nameStyle?: NameStyleId, surnameAffix?: SurnameAffix) {
   const familyId = createFamilyId();
-  return { government: 'tribal' as GovernmentId, ruler: createPerson(year, 29 + Math.floor(Math.random() * 17), familyId, [], cultureId, religionId, { style: nameStyle, familyCultureId: cultureId, surnameAffix }), heir: null as Person | null, rulerSince: year, modifiers: ['oligarchy'] as GovernmentModifierId[],
+  const ruler = createPerson(year, 29 + Math.floor(Math.random() * 17), familyId, [], cultureId, religionId, { style: nameStyle, familyCultureId: cultureId, surnameAffix });
+  return { government: 'tribal' as GovernmentId, ruler, heir: null as Person | null, rulerSince: year, modifiers: ['oligarchy'] as GovernmentModifierId[],
     previousRulerIds: [], dynastyClaims: [familyId], coRulerIds: [], termYears: 4, maxTerms: 1, consulCount: 2,
+    rulerTerms: [{ personId: ruler.id, startYear: year, endYear: null, office: 'ruler' as const }],
     seatSince: {}, termCounts: {}, barredRulerIds: [], pressures: {} };
 }
 export function availableModifiers(form: GovernmentId, current: GovernmentModifierId[]): GovernmentModifierId[] {

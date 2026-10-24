@@ -14,7 +14,7 @@ import { World, isActiveCountry, type City, type Country } from './world';
 import { GOVERNMENTS, reservePersonId, type Person } from './government';
 import { advancePeople, arePartners, birth, countryCharacters, ensureUniqueDynastySurnames, killPerson, marry, newCitizen, normalizePolitics, person, registerPerson } from './characters';
 import { applyReform } from './politics';
-import { appoint, candidateAllowed, ensureOffices, refreshHeirs, repairDeadOfficeHolders, successionOrder } from './succession';
+import { appoint, candidateAllowed, closeRulerTerms, ensureOffices, refreshHeirs, repairDeadOfficeHolders, successionOrder, syncRulerTerms } from './succession';
 import { randomItem } from './random';
 import { demography } from './demography';
 import {
@@ -1327,6 +1327,7 @@ export class Game {
       if (!main.previousRulerIds.includes(incoming.ruler.id)) main.previousRulerIds.push(incoming.ruler.id);
       if (!incoming.ruler.formerRulerOf.includes(main.id)) incoming.ruler.formerRulerOf.push(main.id);
     }
+    closeRulerTerms(incoming, this.year);
     main.dynastyClaims = [...new Set([...main.dynastyClaims, ...incoming.dynastyClaims])];
     main.previousRulerIds = [...new Set([...main.previousRulerIds, ...incoming.previousRulerIds])];
     for (const p of w.people) if (p.countryId === incoming.id) p.countryId = main.id;
@@ -1418,6 +1419,7 @@ export class Game {
           ], true);
         } else this.addLog(`${country.name}: ${deceased.name} умер${deceased.gender === 'female' ? 'ла' : ''}; правит ${next.name}.`,
           [polityChronicleReference(country), ...personChronicleReferences(deceased, next)], true);
+        syncRulerTerms(country, this.year);
         if (country.type === 'settled' && country.modifiers.includes('partition') && country.government !== 'republic' && country.government !== 'tyranny') {
           this.partitionCountry(country, deceased, choice?.ruler ?? next);
         }
@@ -1587,6 +1589,7 @@ export class Game {
         foundedYear: this.year, parentId: originalId, government: source.government });
       w.people = w.people.filter((p) => p.id !== state.ruler.id);
       state.ruler = heir; heir.countryId = state.id;
+      state.rulerTerms = [{ personId: heir.id, startYear: this.year, endYear: null, office: 'ruler' }];
       if (!heir.formerRulerOf.includes(state.id)) heir.formerRulerOf.push(state.id);
       state.modifiers = [...source.modifiers]; state.previousRulerIds = [...source.previousRulerIds];
       state.dynastyClaims = [...source.dynastyClaims];
@@ -1594,6 +1597,7 @@ export class Game {
       state.coRulerIds = [];
       state.termYears = source.termYears; state.maxTerms = source.maxTerms; state.consulCount = source.consulCount;
       state.seatSince = { ...source.seatSince }; state.termCounts = { ...source.termCounts };
+      state.seatSince[heir.id] = this.year;
       state.rulerSince = this.year;
       const homes = w.countries.filter((other) => other.id !== state.id && other.id !== source.id &&
         other.pixels > 0 && (other.ruler.id === heir.id ||
@@ -1625,7 +1629,7 @@ export class Game {
         if (!state) break;
         state.coRulerIds.push(leader.id);
         leader.countryId = state.id;
-        if (state.seatSince[leader.id] === undefined) state.seatSince[leader.id] = this.year;
+        state.seatSince[leader.id] = this.year;
       }
     }
     const quotas = new Array<number>(partitionCount).fill(0);

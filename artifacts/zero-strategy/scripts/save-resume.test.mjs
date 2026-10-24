@@ -7,6 +7,7 @@ import { clearSaveBytes } from '../game/storage.ts';
 import { availableNomadCitySites, dissolveCountryIntoNomadicCountries, settleNomadAsCountry } from '../game/nomads.ts';
 import { newCitizen, registerPerson } from '../game/characters.ts';
 import { filterChronicle, chronicleReference } from '../game/chronicle.ts';
+import { appoint, countryRulerHistory } from '../game/succession.ts';
 
 function makeFixture() {
   const world = World.create('random', 7721);
@@ -102,6 +103,26 @@ const previousPause = Game.pause;
 Game.persist = true;
 Game.pause = async () => {};
 try {
+  // Repeated ruler appointments survive the actual game save/load path.
+  await clearSaveBytes();
+  const tenureFixture = makeFixture();
+  const firstRuler = tenureFixture.country.ruler;
+  const secondRuler = newCitizen(tenureFixture.world, tenureFixture.country, 1005);
+  appoint(tenureFixture.world, tenureFixture.country, secondRuler, 1005);
+  appoint(tenureFixture.world, tenureFixture.country, firstRuler, 1010);
+  const tenureGame = new Game(tenureFixture.world, 'all');
+  await tenureGame.saveNow();
+  const tenureResumed = await Game.load();
+  assert.ok(tenureResumed, 'a world with recorded ruler terms can be loaded');
+  assert.deepEqual(countryRulerHistory(tenureResumed.world, tenureResumed.world.countries[tenureFixture.country.id])
+    .map(({ person, startYear, endYear }) => [person.id, startYear, endYear]), [
+    [firstRuler.id, 1000, 1005],
+    [secondRuler.id, 1005, 1010],
+    [firstRuler.id, 1010, null],
+  ], 'all separate appointments and their end years survive save/load');
+  tenureGame.discard();
+  tenureResumed.discard();
+
   // A completed brush stroke must remain protected from a second application.
   await clearSaveBytes();
   const fixture = makeFixture();
@@ -243,6 +264,8 @@ try {
   const nomadFixture = makeFixture();
   const [nomad] = dissolveCountryIntoNomadicCountries(nomadFixture.world, nomadFixture.country, 1001);
   assert.ok(nomad, 'the fixture country becomes a nomadic country');
+  assert.equal(nomad.rulerTerms[0].startYear, 1001, 'the new nomadic country begins its ruler timeline on the conversion year');
+  assert.equal(nomadFixture.country.rulerTerms[0].endYear, 1001, 'the former settled country closes its ruler term on the conversion year');
   const resident = registerPerson(nomadFixture.world, nomad, newCitizen(nomadFixture.world, nomad, 1001));
   const nomadGame = new Game(nomadFixture.world, 'all');
   nomadGame.addLog('История кочевой страны', [{ type: 'country', id: nomad.id }], true);

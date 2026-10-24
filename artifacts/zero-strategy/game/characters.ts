@@ -1,4 +1,4 @@
-import { createFamilyId, createPerson, familyNameForId, formatPersonName, legacyNameStyleForCulture, legacySurnameAffixForCulture, governmentOf, GOVERNMENTS, reservePersonId, type Person, type PersonNameContext, type SurnameAffix } from './government';
+import { createFamilyId, createPerson, familyNameForId, formatPersonName, legacyNameStyleForCulture, legacySurnameAffixForCulture, governmentOf, GOVERNMENTS, reservePersonId, type Person, type PersonNameContext, type RulerTerm, type SurnameAffix } from './government';
 import { isActiveCountry, type Country, type World } from './world';
 import { sampleDemographic } from './demography';
 
@@ -151,6 +151,54 @@ export function normalizePolitics(world: World, year: number): void {
     normalized.set(raw.id, normalizePerson(raw, currentCountry ?? country ?? fallback, year, world));
   }
   world.people = [...normalized.values()];
+  for (const c of world.countries) {
+    const rawTerms = (c as Country & { rulerTerms?: unknown }).rulerTerms;
+    const terms: RulerTerm[] = Array.isArray(rawTerms) ? rawTerms.flatMap((raw): RulerTerm[] => {
+      if (!raw || typeof raw !== 'object') return [];
+      const term = raw as Partial<RulerTerm>;
+      if (!Number.isFinite(term.personId) ||
+        (term.office !== 'ruler' && term.office !== 'coRuler') ||
+        (term.startYear !== null && !Number.isFinite(term.startYear)) ||
+        (term.endYear !== null && !Number.isFinite(term.endYear))) return [];
+      return [{
+        personId: term.personId!,
+        startYear: term.startYear ?? null,
+        endYear: term.endYear ?? null,
+        office: term.office,
+      }];
+    }) : [];
+    const active = new Map<number, 'ruler' | 'coRuler'>([[c.ruler.id, 'ruler']]);
+    for (const id of c.coRulerIds) if (!active.has(id)) active.set(id, 'coRuler');
+    const known = new Set([
+      ...(Array.isArray(rawTerms) ? [] : c.previousRulerIds),
+      ...world.people.filter((p) => p.formerRulerOf.includes(c.id)).map((p) => p.id),
+      ...active.keys(),
+    ]);
+    const represented = new Set(terms.map((term) => term.personId));
+    for (const id of known) {
+      if (represented.has(id)) continue;
+      const office = active.get(id) ?? 'ruler';
+      const savedYear = c.seatSince[id] ?? (id === c.ruler.id ? c.rulerSince : null);
+      terms.push({
+        personId: id,
+        startYear: Number.isFinite(savedYear) ? savedYear : null,
+        endYear: null,
+        office,
+      });
+      represented.add(id);
+    }
+    for (const [id, office] of active) {
+      if (terms.some((term) => term.personId === id && term.office === office && term.endYear === null)) continue;
+      const savedYear = c.seatSince[id] ?? (office === 'ruler' ? c.rulerSince : null);
+      terms.push({
+        personId: id,
+        startYear: Number.isFinite(savedYear) ? savedYear : null,
+        endYear: null,
+        office,
+      });
+    }
+    c.rulerTerms = terms;
+  }
   // The old simulator stored both parents on each real birth but did not always
   // persist the relationship itself. Reconstruct a mutual love bond when needed.
   const byId = new Map(world.people.map((p) => [p.id, p]));

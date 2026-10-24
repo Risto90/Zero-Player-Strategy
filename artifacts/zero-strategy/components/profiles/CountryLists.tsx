@@ -61,12 +61,12 @@ export function CountryRulerHistoryList({ game, country }: { game: Game; country
   const history = countryRulerHistory(game.world, country);
   return (
     <ProfileSection title={`ПРАВИТЕЛИ ПО ГОДАМ · ${history.length}`}>
-      {history.length ? history.map(({ person, year, current, currentCoRuler }) => (
-        <ProfileLink key={person.id} title={`${year === null ? 'Год не указан' : `${year} год`} · ${person.name}${current ? ' · сейчас у власти' : ''}`}
-          note={currentCoRuler ? 'Соправитель' : person.alive ? 'Жив(а)' : personDeathStatus(person) ?? undefined}
+      {history.length ? history.map(({ person, startYear, endYear, office, current }, index) => (
+        <ProfileLink key={`${person.id}-${index}`} title={`${startYear === null ? 'Год не указан' : endYear === null ? current ? `с ${startYear} года` : `с ${startYear} года, конец не указан` : `${startYear}–${endYear} годы`} · ${person.name}${current ? ' · сейчас у власти' : ''}`}
+          note={`${office === 'coRuler' ? 'Соправитель' : 'Правитель'}${person.alive ? '' : ` · ${personDeathStatus(person) ?? 'умер(ла)'}`}`}
           onPress={() => openPerson(person.id)} />
       )) : <ProfileFact>Записи о правителях не найдены.</ProfileFact>}
-      <Text style={styles.historyNote}>Для каждого человека сохраняется последний известный год назначения; повторные назначения отдельно не записываются.</Text>
+      <Text style={styles.historyNote}>Каждое назначение показано отдельным сроком. Неизвестные даты окончания не восстанавливаются по догадке.</Text>
     </ProfileSection>
   );
 }

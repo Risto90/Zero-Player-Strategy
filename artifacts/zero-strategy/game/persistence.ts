@@ -58,6 +58,7 @@ interface LegacyNomadSave {
   previousRulerIds: number[];
   dynastyClaims: number[];
   coRulerIds: number[];
+  rulerTerms?: Country['rulerTerms'];
   termYears: number;
   maxTerms: number;
   consulCount: number;
@@ -120,6 +121,7 @@ export function copyWorld(world: World): WorldCopy {
       box: [...c.box] as Country['box'],
       ...(c.range ? { range: [...c.range] } : {}),
       ...(c.cells ? { cells: c.cells.map((cell) => ({ ...cell })) } : {}),
+      rulerTerms: c.rulerTerms.map((term) => ({ ...term })),
       ruler: { ...c.ruler, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], friendIds: [...c.ruler.friendIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
       heir: c.heir ? { ...c.heir, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], friendIds: [...c.heir.friendIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
     })),

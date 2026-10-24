@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { countryCharacters } from '../game/characters.ts';
+import { countryCharacters, normalizePolitics } from '../game/characters.ts';
 import { availableModifiers, createFamilyId, createPerson, MODIFIERS } from '../game/government.ts';
 import { applyReform, reformCandidates } from '../game/politics.ts';
-import { candidateAllowed, candidateWeight, countryCandidates, countryRulerHistory, hasFixedHeir, successionOrder } from '../game/succession.ts';
+import { appoint, candidateAllowed, candidateWeight, countryCandidates, countryRulerHistory, ensureOffices, hasFixedHeir, successionOrder } from '../game/succession.ts';
 import { World } from '../game/world.ts';
 
 function fixture(seed = 10201) {
@@ -260,7 +260,50 @@ function addChild(world, country, parent, options = {}) {
   const history = countryRulerHistory(world, country);
   assert.deepEqual(history.map(({ person }) => person.id), [former.id, coRuler.id, current.id]);
   assert.equal(history[1].currentCoRuler, true, 'the current co-ruler appears in office history');
-  assert.equal(history[1].year, 1012);
+  assert.equal(history[1].startYear, 1012);
+}
+
+// Reappointments create separate, bounded terms for rulers and co-rulers.
+{
+  const { world, country } = fixture(10220);
+  const firstRuler = country.ruler;
+  const secondRuler = addPerson(world, country);
+  appoint(world, country, secondRuler, 1005);
+  appoint(world, country, firstRuler, 1010);
+  const coRuler = addPerson(world, country);
+  country.heir = coRuler;
+  country.modifiers.push('coRule');
+  ensureOffices(world, country, 1020);
+  const replacementCoRuler = addPerson(world, country);
+  appoint(world, country, replacementCoRuler, 1025, coRuler.id);
+
+  const terms = countryRulerHistory(world, country);
+  assert.deepEqual(terms.map(({ person, startYear, endYear, office }) =>
+    [person.id, startYear, endYear, office]), [
+    [firstRuler.id, 1000, 1005, 'ruler'],
+    [secondRuler.id, 1005, 1010, 'ruler'],
+    [firstRuler.id, 1010, null, 'ruler'],
+    [coRuler.id, 1020, 1025, 'coRuler'],
+    [replacementCoRuler.id, 1025, null, 'coRuler'],
+  ]);
+}
+
+// Legacy saves migrate their known former and current office records.
+{
+  const { world, country } = fixture(10221);
+  const currentRulerId = country.ruler.id;
+  const former = addPerson(world, country);
+  former.formerRulerOf = [country.id];
+  country.previousRulerIds = [former.id];
+  country.seatSince[former.id] = 1001;
+  country.rulerSince = 1020;
+  country.seatSince[currentRulerId] = 1020;
+  delete country.rulerTerms;
+  normalizePolitics(world, 1020);
+
+  assert.equal(country.ruler.id, currentRulerId, 'migration keeps the current ruler');
+  assert.deepEqual(countryRulerHistory(world, country).map(({ person, startYear }) =>
+    [person.id, startYear]), [[former.id, 1001], [currentRulerId, 1020]]);
 }
 
 console.log('Country character, candidate, succession, and ruler-history regressions passed.');

@@ -343,6 +343,7 @@ export class World {
     this.countries.push(country);
     country.ruler.countryId = country.id;
     country.ruler.formerRulerOf = [country.id];
+    country.rulerTerms = [{ personId: country.ruler.id, startYear: fields.foundedYear, endYear: null, office: 'ruler' }];
     country.seatSince[country.ruler.id] = fields.foundedYear;
     country.termCounts[country.ruler.id] = 1;
     this.people.push(country.ruler);
