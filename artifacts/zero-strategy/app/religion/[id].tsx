@@ -6,7 +6,7 @@ import { currentGame } from '@/game/session';
 import { filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt } from '@/game/format';
 import { cityComposition } from '@/game/settlements';
-import { cityProfileRoute, countryProfileRoute, nomadProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
+import { cityProfileRoute, countryProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
 import { MissingProfile, ProfileFact, ProfileLayout, ProfileLink, ProfileSection, ProfileScrollList } from '@/components/profiles/ProfileLayout';
 
 export default function ReligionPage() {
@@ -17,12 +17,11 @@ export default function ReligionPage() {
   const snapshot = useGameSnapshot(game);
   const religion = game.world.religions[id];
   if (!religion) return <MissingProfile title="Религия не найдена" />;
-  const { countries, cities, nomads, branches } = useMemo(() => ({
+  const { countries, cities, branches } = useMemo(() => ({
     countries: game.world.countries.filter((country) =>
-      country.pixels > 0 && game.countryComposition(country.id).religions.some((group) => group.id === id)),
+      (country.pixels > 0 || (country.type === 'nomadic' && !!country.range?.length)) &&
+      game.countryComposition(country.id).religions.some((group) => group.id === id)),
     cities: game.world.cities.filter((city) => cityComposition(game.world, city).religions.some((group) => group.id === id)),
-    nomads: game.world.nomads.filter((nomad) =>
-      nomad.cells.some((cell) => game.world.religionTable.shareOf(cell.religionMix, id) > 0)),
     branches: game.world.religions.filter((child) => child.parentId === id),
   }), [game, id, game.world.version]);
   const references = [
@@ -31,7 +30,6 @@ export default function ReligionPage() {
     ...branches.map((child) => chronicleReference('religion', child.id)),
     ...countries.map((country) => chronicleReference('country', country.id)),
     ...cities.map((city) => chronicleReference('city', city.id)),
-    ...nomads.map((nomad) => chronicleReference('nomad', nomad.id)),
   ];
   const population = snapshot.legend.religions.find((row) => row.id === id)?.value ?? 0;
   const details = (
@@ -66,14 +64,6 @@ export default function ReligionPage() {
               note={game.world.countries[city.countryId]?.name ?? 'Страна распущена'}
               onPress={() => router.push(cityProfileRoute(city.id))} />
           )) : <ProfileFact>Городов нет.</ProfileFact>}
-        </ProfileScrollList>
-      </ProfileSection>
-      <ProfileSection title={`КОЧЕВЬЯ · ${nomads.length}`}>
-        <ProfileScrollList>
-          {nomads.length ? nomads.map((nomad) => (
-            <ProfileLink key={nomad.id} title={nomad.name}
-              onPress={() => router.push(nomadProfileRoute(nomad.id))} />
-          )) : <ProfileFact>Сейчас вера не входит в состав кочевий.</ProfileFact>}
         </ProfileScrollList>
       </ProfileSection>
     </>

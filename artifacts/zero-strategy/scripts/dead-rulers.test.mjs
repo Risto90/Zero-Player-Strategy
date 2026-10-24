@@ -105,29 +105,33 @@ try {
   oldNomadRuler.countryId = staleFixture.country.id;
   staleFixture.world.people.push(oldNomadRuler);
   const nomadHeir = addChild(staleFixture.world, staleFixture.country, oldNomadRuler);
-  const nomad = {
-    ...staleFixture.country,
-    id: 0,
-    name: 'Тестовое кочевье',
-    government: 'tribal',
-    modifiers: ['oligarchy'],
-    ruler: oldNomadRuler,
-    heir: null,
-    previousRulerIds: [],
-    dynastyClaims: [oldNomadRuler.familyId],
-    coRulerIds: [],
-    cells: [{
-      pixel: staleFixture.pixels[1],
-      population: 80,
-      cultureMix: staleFixture.world.cultureTable.single(staleFixture.country.cultureId, 100),
-      religionMix: 0,
-    }],
-    range: [staleFixture.pixels[1]],
-    personIds: [oldNomadRuler.id, nomadHeir.id],
-    sourceCountryId: staleFixture.country.id,
-    pixels: 1,
-  };
-  staleFixture.world.nomads.push(nomad);
+  const nomad = staleFixture.world.newCountry({
+    rank: 'кочевье',
+    cultureId: staleFixture.country.cultureId,
+    religionId: null,
+    density: 80,
+    foundedYear: 1000,
+    parentId: staleFixture.country.id,
+  });
+  nomad.type = 'nomadic';
+  nomad.government = 'tribal';
+  nomad.modifiers = ['oligarchy'];
+  nomad.ruler = oldNomadRuler;
+  nomad.heir = null;
+  nomad.previousRulerIds = [];
+  nomad.dynastyClaims = [oldNomadRuler.familyId];
+  nomad.coRulerIds = [];
+  nomad.cells = [{
+    pixel: staleFixture.pixels[1],
+    population: 80,
+    cultureMix: staleFixture.world.cultureTable.single(staleFixture.country.cultureId, 100),
+    religionMix: 0,
+  }];
+  nomad.range = [staleFixture.pixels[1]];
+  nomad.sourceCountryId = staleFixture.country.id;
+  nomad.pixels = 0;
+  oldNomadRuler.countryId = nomad.id;
+  nomadHeir.countryId = nomad.id;
   const expectedRuler = successionOrder(staleFixture.world, staleFixture.country, oldRuler)[0];
   const expectedCoRuler = successionOrder(staleFixture.world, staleFixture.country, oldCoRuler)[0];
   oldRuler.alive = false;
@@ -146,7 +150,7 @@ try {
   assert.ok(expectedCoRuler, 'the fixture has an eligible successor for the co-ruler');
   assert.equal(restoredCountry.ruler.id, expectedRuler.id, 'load restores the main ruler using succession');
   assert.equal(restoredCountry.coRulerIds[0], expectedCoRuler.id, 'load restores the co-ruler using succession');
-  assert.equal(restored.world.nomads[0].ruler.id, nomadHeir.id, 'load restores a dead nomad ruler using succession');
+  assert.equal(restored.world.countries[nomad.id].ruler.id, nomadHeir.id, 'load restores a dead nomadic-country ruler using succession');
   const restoredDead = restored.world.people.find((person) => person.id === oldRuler.id);
   assert.equal(restoredDead.alive, false, 'load does not revive the deceased ruler');
   assert.equal(restoredDead.deathYear, 997, 'load preserves the death year');

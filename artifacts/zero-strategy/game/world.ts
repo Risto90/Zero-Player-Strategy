@@ -20,6 +20,7 @@ import { generateCityIdentity } from './cityNames';
 
 export interface Country extends PoliticalState {
   id: number;
+  type: 'settled' | 'nomadic';
   name: string;
   color: string;
   rank: string;
@@ -33,6 +34,16 @@ export interface Country extends PoliticalState {
   pixels: number;
   /** Bounding box that contains all of the country's pixels (may be larger after losses). */
   box: [number, number, number, number];
+  /** Overlapping land range and population cohorts for a nomadic country. */
+  range?: number[];
+  cells?: NomadCell[];
+  /** Historical origin retained for chronicle context, never used as current residence. */
+  sourceCountryId?: number | null;
+}
+
+export function isActiveCountry(country: Country | null | undefined): boolean {
+  if (!country) return false;
+  return country.type === 'nomadic' ? (country.range?.length ?? 0) > 0 : country.pixels > 0;
 }
 
 export type CityRank = 1 | 2 | 3 | 4 | 5 | 6;
@@ -64,23 +75,6 @@ export interface NomadCell {
   population: number;
   cultureMix: number;
   religionMix: number;
-}
-
-/** A mobile people with a spatial range, but no state-owned land. */
-export interface NomadGroup extends PoliticalState {
-  id: number;
-  name: string;
-  color: string;
-  /** Base density used when the nomad's expansion card claims new range. */
-  density: number;
-  cultureId: number;
-  religionId: number | null;
-  cells: NomadCell[];
-  range: number[];
-  /** People assigned to this nomadic group, including its ruling household. */
-  personIds: number[];
-  sourceCountryId: number | null;
-  pixels: number;
 }
 
 export interface Culture {
@@ -120,8 +114,6 @@ export class World {
   readonly religionTable = new CompositionTable();
   countries: Country[] = [];
   cities: City[] = [];
-  nomads: NomadGroup[] = [];
-  nomadVersion = 0;
   /** Persistent per-draw card probability multipliers, keyed by scope and card identity. */
   cardMultipliers: Record<string, number> = {};
   cultures: Culture[] = [];
@@ -339,6 +331,7 @@ export class World {
     const leaders = initialGovernment(fields.foundedYear, fields.cultureId, fields.religionId, culture?.nameStyleId, culture?.surnameAffix);
     const country: Country = {
       id: this.countries.length,
+      type: 'settled',
       name: uniqueName(() => `${randomItem(NAMES.countryStart)}${randomItem(NAMES.countryEnd)}`, used),
       color: pickUniqueColor(PALETTE.country, this.usedColors(this.countries)),
       ...leaders,

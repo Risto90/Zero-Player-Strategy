@@ -1,11 +1,11 @@
 import { GOVERNMENTS, MODIFIERS } from './government';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, RANKS } from './config';
 import { quantizeShares } from './composition';
-import type { Country, NomadCell, NomadGroup, World } from './world';
+import type { Country, NomadCell, World } from './world';
 import { forEachNeighbour } from './geography';
 import { addCityAndConcentrate, cityInfluenceRadius } from './settlements';
 import { appoint, successionOrder } from './succession';
-import { newCitizen, setPersonHome } from './characters';
+import { newCitizen, registerPerson, setPersonHome } from './characters';
 
 type Cohort = { cultureId: number; religionId: number | null; population: number; pixel: number };
 type SplitGroup = { cultures: Set<number>; religions: Set<number | null> };
@@ -30,8 +30,12 @@ function splitProbability(country: Country): number {
 }
 
 /** Converts an area-less country's population into overlapping nomadic people. */
-export function dissolveCountryIntoNomads(world: World, country: Country): NomadGroup[] {
-  if (!country.pixels || world.nomads.some((group) => group.sourceCountryId === country.id && group.cells.length)) return [];
+export function dissolveCountryIntoNomadicCountries(
+  world: World,
+  country: Country,
+  year = Math.floor(country.ruler.bornAt + country.ruler.age),
+): Country[] {
+  if (!country.pixels || country.type === 'nomadic') return [];
   const pixels: number[] = [];
   world.forEachCountryPixel(country, (pixel) => pixels.push(pixel));
   if (!pixels.length) return [];
@@ -69,24 +73,39 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
           new Set([...set].filter((id): id is number => id !== null)),
         );
   const theocratic = country.modifiers.includes('theocracy');
-  let faithSplits: Set<number | null>[];
-  if (!theocratic) faithSplits = [new Set(faithIds)];
-  else {
-    const actualReligions = faithIds.filter((id): id is number => id !== null);
-    faithSplits = actualReligions.length
-      ? memberships(actualReligions, probability, probability === 0)
-      : [new Set<number | null>()];
-    if (faithIds.includes(null)) {
-      const atheistGroup = faithSplits[0] ?? new Set<number | null>();
-      atheistGroup.add(null);
-      if (!faithSplits.length) faithSplits.push(atheistGroup);
-    }
-  }
   const groups: SplitGroup[] = [];
-  for (const cultures of cultureSplits) for (const religions of faithSplits) groups.push({ cultures, religions });
+  for (const cultures of cultureSplits) {
+    const cultureSet = new Set(cultures);
+    const religionsPresent = new Set<number | null>(cohorts
+      .filter((cohort) => cultureSet.has(cohort.cultureId))
+      .map((cohort) => cohort.religionId));
+    const actualReligions = [...religionsPresent].filter((id): id is number => id !== null);
+    let faithSplits: Set<number | null>[];
+    if (!theocratic || !actualReligions.length) faithSplits = [new Set(religionsPresent)];
+    else {
+      faithSplits = memberships(actualReligions, probability, probability === 0);
+      if (religionsPresent.has(null)) faithSplits[0].add(null);
+    }
+    for (const religions of faithSplits) groups.push({ cultures: cultureSet, religions });
+  }
 
-  const created: NomadGroup[] = [];
+  const created: Country[] = [];
   const createdGroups: SplitGroup[] = [];
+  const oldState = {
+    ruler: country.ruler,
+    heir: country.heir,
+    rulerSince: country.rulerSince,
+    previousRulerIds: [...country.previousRulerIds],
+    dynastyClaims: [...country.dynastyClaims],
+    coRulerIds: [...country.coRulerIds],
+    termYears: country.termYears,
+    maxTerms: country.maxTerms,
+    consulCount: country.consulCount,
+    seatSince: { ...country.seatSince },
+    termCounts: { ...country.termCounts },
+    barredRulerIds: [...country.barredRulerIds],
+    pressures: { ...country.pressures },
+  };
   for (const group of groups) {
     const perPixel = new Map<number, Cohort[]>();
     const groupCultures = new Map<number, number>();
@@ -133,35 +152,40 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
     const validModifiers = country.modifiers.filter((modifier) =>
       MODIFIERS[modifier].forms?.includes('tribal') ?? true,
     );
-    const nomad: NomadGroup = {
-      id: world.nomads.length,
-      name,
-      color: country.color,
-      density: country.density,
+    const nomad = world.newCountry({
+      rank: country.rank,
       cultureId: dominantCulture,
       religionId,
+      density: country.density,
+      foundedYear: country.foundedYear,
+      parentId: country.id,
+    });
+    const generatedRulerId = nomad.ruler.id;
+    Object.assign(nomad, {
+      type: 'nomadic' as const,
+      name,
       cells,
       range: [...pixels],
-      personIds: [],
       sourceCountryId: country.id,
-      pixels: pixels.length,
-      government: 'tribal',
+      pixels: 0,
+      box: [MAP_WIDTH, MAP_HEIGHT, -1, -1] as Country['box'],
+      government: 'tribal' as const,
       modifiers: [...new Set([...GOVERNMENTS.tribal.modifiers, ...validModifiers])],
-      ruler: country.ruler,
-      heir: country.heir,
-      rulerSince: country.rulerSince,
-      previousRulerIds: [...country.previousRulerIds],
-      dynastyClaims: [...country.dynastyClaims],
-      coRulerIds: [...country.coRulerIds],
-      termYears: country.termYears,
-      maxTerms: country.maxTerms,
-      consulCount: country.consulCount,
-      seatSince: { ...country.seatSince },
-      termCounts: { ...country.termCounts },
-      barredRulerIds: [...country.barredRulerIds],
-      pressures: { ...country.pressures },
-    };
-    world.nomads.push(nomad);
+      ruler: oldState.ruler,
+      heir: oldState.heir,
+      rulerSince: oldState.rulerSince,
+      previousRulerIds: [...oldState.previousRulerIds],
+      dynastyClaims: [...oldState.dynastyClaims],
+      coRulerIds: [...oldState.coRulerIds],
+      termYears: oldState.termYears,
+      maxTerms: oldState.maxTerms,
+      consulCount: oldState.consulCount,
+      seatSince: { ...oldState.seatSince },
+      termCounts: { ...oldState.termCounts },
+      barredRulerIds: [...oldState.barredRulerIds],
+      pressures: { ...oldState.pressures },
+    });
+    world.people = world.people.filter((person) => person.id !== generatedRulerId);
     created.push(nomad);
     createdGroups.push(group);
   }
@@ -171,12 +195,16 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
       group.cultures.has(resident.cultureId) && group.religions.has(resident.religionId));
     if (target < 0) target = createdGroups.findIndex((group) => group.cultures.has(resident.cultureId));
     if (target < 0 && created.length) target = 0;
-    if (target >= 0 && !created[target].personIds.includes(resident.id)) {
-      created[target].personIds.push(resident.id);
-      if (resident.alive) {
-        setPersonHome(resident, created[target]);
-      }
-    }
+    if (target >= 0 && resident.alive) setPersonHome(resident, created[target]);
+  }
+  for (let index = 1; index < created.length; index += 1) {
+    const nomadicCountry = created[index];
+    const ruler = newCitizen(world, nomadicCountry, year);
+    registerPerson(world, nomadicCountry, ruler);
+    nomadicCountry.ruler = ruler;
+    nomadicCountry.heir = null;
+    nomadicCountry.coRulerIds = [];
+    nomadicCountry.dynastyClaims = [ruler.familyId];
   }
 
   for (const pixel of pixels) {
@@ -188,34 +216,19 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
   country.pixels = 0;
   country.box = [MAP_WIDTH, 0, Math.floor(world.land.length / MAP_WIDTH), 0];
   world.recountCountries();
-  world.nomadVersion += 1;
   world.version += 1;
   return created;
 }
 
-export function availableNomadCitySites(world: World, nomad: NomadGroup): number[] {
-  return nomad.range.filter((pixel) =>
+export function availableNomadCitySites(world: World, nomad: Country): number[] {
+  return (nomad.range ?? []).filter((pixel) =>
     world.land[pixel] && world.owner[pixel] === 0 && !world.cityAt(pixel),
   );
 }
 
-function reindexNomadCardMultipliers(world: World, removedId: number): void {
-  const next: Record<string, number> = {};
-  for (const [key, multiplier] of Object.entries(world.cardMultipliers)) {
-    const match = /^nomad:(\d+):(.*)$/.exec(key);
-    if (!match) {
-      next[key] = multiplier;
-      continue;
-    }
-    const id = Number(match[1]);
-    if (id === removedId) continue;
-    next[`nomad:${id > removedId ? id - 1 : id}:${match[2]}`] = multiplier;
-  }
-  world.cardMultipliers = next;
-}
-
-/** Founding a town settles the nomad on the free portion of its influence sphere. */
-export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel: number, year: number): Country | null {
+/** Founding a town changes this same country from nomadic to settled. */
+export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: number, year: number): Country | null {
+  if (nomad.type !== 'nomadic') return null;
   if (!availableNomadCitySites(world, nomad).includes(cityPixel)) return null;
   const proposedCity = {
     id: -1,
@@ -228,7 +241,7 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
   const radius = cityInfluenceRadius(world, proposedCity);
   const cx = cityPixel % MAP_WIDTH, cy = Math.floor(cityPixel / MAP_WIDTH);
   const radiusSquared = radius * radius;
-  const territory = nomad.range.filter((pixel) => {
+  const territory = (nomad.range ?? []).filter((pixel) => {
     const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
     return world.land[pixel] && world.owner[pixel] === 0 && !world.cityAt(pixel) &&
       (x - cx) ** 2 + (y - cy) ** 2 <= radiusSquared;
@@ -236,42 +249,20 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
   if (!territory.includes(cityPixel)) return null;
 
   const rank = [...RANKS].reverse().find((candidate) => candidate.ink <= territory.length) ?? RANKS[0];
-  const country = world.newCountry({
-    rank: rank.name,
-    cultureId: nomad.cultureId,
-    religionId: nomad.religionId,
-    density: nomad.density,
-    foundedYear: year,
-    parentId: nomad.sourceCountryId,
-    government: 'tribal',
-  });
-  const generatedRulerId = country.ruler.id;
-  country.government = 'tribal';
-  country.modifiers = [...new Set([
+  const cells = nomad.cells ?? [];
+  const heir = successionOrder(world, nomad)[0] ?? null;
+  nomad.type = 'settled';
+  nomad.rank = rank.name;
+  nomad.foundedYear = year;
+  nomad.modifiers = [...new Set([
     ...GOVERNMENTS.tribal.modifiers,
     ...nomad.modifiers.filter((modifier) => MODIFIERS[modifier].forms?.includes('tribal') ?? true),
   ])];
-  country.ruler = nomad.ruler;
-  country.heir = successionOrder(world, nomad)[0] ?? null;
-  country.rulerSince = nomad.rulerSince;
-  country.previousRulerIds = [...nomad.previousRulerIds];
-  country.dynastyClaims = [...nomad.dynastyClaims];
-  country.coRulerIds = [...nomad.coRulerIds];
-  country.termYears = nomad.termYears;
-  country.maxTerms = nomad.maxTerms;
-  country.consulCount = nomad.consulCount;
-  country.seatSince = { ...nomad.seatSince };
-  country.termCounts = { ...nomad.termCounts };
-  country.barredRulerIds = [...nomad.barredRulerIds];
-  country.pressures = Object.fromEntries(
-    Object.entries(nomad.pressures).map(([key, pressure]) => [key, { ...pressure }]),
-  );
-  country.ruler.formerRulerOf = [...new Set([...country.ruler.formerRulerOf, country.id])];
-  setPersonHome(country.ruler, country);
-  if (!country.dynastyClaims.includes(country.ruler.familyId)) country.dynastyClaims.push(country.ruler.familyId);
-  world.people = world.people.filter((person) => person.id !== generatedRulerId);
-
-  for (const pixel of territory) world.setOwner(pixel, country.id + 1);
+  nomad.heir = heir;
+  delete nomad.range;
+  delete nomad.cells;
+  delete nomad.sourceCountryId;
+  for (const pixel of territory) world.setOwner(pixel, nomad.id + 1);
   const destinations = new Set(territory);
   const nearest = new Int32Array(MAP_PIXELS).fill(-1);
   const queue = new Int32Array(MAP_PIXELS);
@@ -301,7 +292,7 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
       totals.set(id, (totals.get(id) ?? 0) + population * entry.shares[index] / 100);
     }
   };
-  for (const cell of nomad.cells) {
+  for (const cell of cells) {
     if (cell.population <= 0) continue;
     const destination = destinations.has(cell.pixel) ? cell.pixel : nearest[cell.pixel];
     if (destination < 0) continue;
@@ -333,35 +324,9 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
     );
   }
 
-  const nomadIndex = world.nomads.indexOf(nomad);
-  if (nomadIndex >= 0) reindexNomadCardMultipliers(world, nomadIndex);
-  for (const personId of nomad.personIds) {
-    const resident = world.people.find((person) => person.id === personId);
-    if (!resident) continue;
-    if (resident.id === country.ruler.id || resident.id === country.heir?.id) {
-      setPersonHome(resident, country);
-      continue;
-    }
-    if (resident.nomadId !== nomad.id) continue;
-    const belongsElsewhere = world.nomads.find((other) => other !== nomad &&
-      (other.ruler.id === personId || other.coRulerIds.includes(personId) || other.personIds.includes(personId)));
-    if (belongsElsewhere) {
-      setPersonHome(resident, belongsElsewhere);
-    } else {
-      setPersonHome(resident, country);
-    }
-  }
-  if (nomadIndex >= 0) world.nomads.splice(nomadIndex, 1);
-  if (nomadIndex >= 0) {
-    for (const resident of world.people) {
-      if (resident.nomadId !== undefined && resident.nomadId !== null && resident.nomadId > nomadIndex) {
-        resident.nomadId -= 1;
-      }
-    }
-    world.nomads.forEach((item, index) => { item.id = index; });
-  }
-  const transferredOffices = new Set([country.ruler.id, ...country.coRulerIds]);
-  for (const other of world.nomads) {
+  for (const resident of world.people) if (resident.countryId === nomad.id) setPersonHome(resident, nomad);
+  const transferredOffices = new Set([nomad.ruler.id, ...nomad.coRulerIds]);
+  for (const other of world.countries.filter((item) => item.type === 'nomadic')) {
     for (const leaderId of [other.ruler.id, ...other.coRulerIds]) {
       if (!transferredOffices.has(leaderId)) continue;
       const successor = successionOrder(world, other).find((person) =>
@@ -370,25 +335,19 @@ export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel:
       appoint(world, other, successor, year, leaderId);
     }
   }
-  const city = addCityAndConcentrate(world, country.id, cityPixel, true);
+  const city = addCityAndConcentrate(world, nomad.id, cityPixel, true);
   if (!city) throw new Error('Validated nomad city site became unavailable during settlement.');
   world.recountCountries();
-  world.nomadVersion += 1;
   world.version += 1;
-  return country;
+  return nomad;
 }
 
-export function moveNomadCell(world: World, nomad: NomadGroup, pixel: number, amount: number): number {
-  const current = nomad.cells.find((cell) => cell.pixel === pixel);
+export function moveNomadCell(world: World, nomad: Country, pixel: number, amount: number): number {
+  const current = nomad.cells?.find((cell) => cell.pixel === pixel);
   if (!current || amount <= 0) return 0;
   const moved = Math.min(current.population, amount);
   current.population -= moved;
-  if (current.population <= 1e-9) nomad.cells = nomad.cells.filter((cell) => cell.population > 1e-9);
-  nomadVersion(world);
-  return moved;
-}
-
-export function nomadVersion(world: World): void {
-  world.nomadVersion += 1;
+  if (current.population <= 1e-9) nomad.cells = (nomad.cells ?? []).filter((cell) => cell.population > 1e-9);
   world.version += 1;
+  return moved;
 }

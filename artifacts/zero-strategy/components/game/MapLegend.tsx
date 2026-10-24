@@ -5,6 +5,7 @@ import { BIOMES } from '@/game/config';
 import { fmt } from '@/game/format';
 import type { Game, GameSnapshot } from '@/game/game';
 import { RAMPS } from '@/game/render';
+import { isActiveCountry } from '@/game/world';
 
 const c = colors.light;
 
@@ -50,13 +51,13 @@ export function MapLegend({ game, snap }: { game: Game; snap: GameSnapshot }) {
   else if (mode === 'cultures') summary = `${snap.legend.cultures.length} культур`;
   else if (mode === 'religions') summary = `${snap.legend.religions.length} вер · ${fmt(snap.legend.nonBelievers.value)} атеистов`;
   else if (mode === 'cities') summary = `${fmt(game.world.cities.length)} городов`;
-  else if (mode === 'nomads') summary = `${fmt(game.world.nomads.length)} народов · ареалы перекрываются`;
+  else if (mode === 'nomads') summary = `${fmt(game.world.countries.filter((country) => country.type === 'nomadic' && isActiveCountry(country)).length)} кочевых стран · ареалы перекрываются`;
   else if (mode === 'rivers') summary = 'Реки и притоки';
   else if (mode === 'colonization') summary = 'Доступные области';
 
   return (
     <View style={styles.summary} testID="compact-legend-summary">
-      <Text style={styles.title}>{mode === 'political' ? 'Страны' : mode === 'cultures' ? 'Культуры' : mode === 'religions' ? 'Религии' : mode === 'cities' ? 'Города' : mode === 'nomads' ? 'Кочевья' : mode === 'rivers' ? 'Реки' : 'Колонизация'}</Text>
+      <Text style={styles.title}>{mode === 'political' ? 'Страны' : mode === 'cultures' ? 'Культуры' : mode === 'religions' ? 'Религии' : mode === 'cities' ? 'Города' : mode === 'nomads' ? 'Кочевые страны' : mode === 'rivers' ? 'Реки' : 'Колонизация'}</Text>
       <Text style={styles.range} numberOfLines={1}>{summary}</Text>
     </View>
   );

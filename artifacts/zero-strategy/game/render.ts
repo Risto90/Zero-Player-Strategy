@@ -244,30 +244,30 @@ export class MapRenderer {
   private syncColors(): void {
     const w = this.world;
     // Entities may be discarded and recreated with new colours at the same id.
-    const key = `${w.countries.map((c) => c.color).join()}|${w.cultures.map((c) => c.color).join()}|${w.religions.map((c) => c.color).join()}|${w.nomads.map((c) => c.color).join()}`;
+    const key = `${w.countries.map((c) => c.color).join()}|${w.cultures.map((c) => c.color).join()}|${w.religions.map((c) => c.color).join()}`;
     if (key !== this.colorKey) {
       this.colorKey = key;
       this.countryColors = w.countries.map((c) => pack(hexToRgb(c.color)));
       this.cultureColors = w.cultures.map((c) => pack(hexToRgb(c.color)));
       this.religionColors = w.religions.map((c) => pack(hexToRgb(c.color)));
-      this.nomadColors = w.nomads.map((c) => pack(hexToRgb(c.color)));
       this.compCache.culture.fill(0);
       this.compCache.religion.fill(0);
       this.nomadRasterVersion = -1;
     }
-    if (this.nomadRasterVersion !== w.nomadVersion) {
+    if (this.nomadRasterVersion !== w.version) {
       this.nomadRaster.fill(0);
       this.nomadDensity.fill(0);
-      for (const nomad of w.nomads) {
-        const color = this.nomadColors[nomad.id] ?? pack(hexToRgb(nomad.color));
-        for (const p of nomad.range) {
+      for (const nomad of w.countries) {
+        if (nomad.type !== 'nomadic') continue;
+        const color = this.countryColors[nomad.id] ?? pack(hexToRgb(nomad.color));
+        for (const p of nomad.range ?? []) {
           if (p < 0 || p >= MAP_PIXELS || !w.land[p]) continue;
           const old = this.nomadRaster[p];
           this.nomadRaster[p] = old
             ? pack(mix([old & 255, (old >> 8) & 255, (old >> 16) & 255], [color & 255, (color >> 8) & 255, (color >> 16) & 255], 0.5))
             : color;
         }
-        for (const cell of nomad.cells) {
+        for (const cell of nomad.cells ?? []) {
           if (cell.pixel < 0 || cell.pixel >= MAP_PIXELS || !w.land[cell.pixel]) continue;
           this.nomadDensity[cell.pixel] += cell.population;
           const old = this.nomadRaster[cell.pixel];
@@ -276,7 +276,7 @@ export class MapRenderer {
             : color;
         }
       }
-      this.nomadRasterVersion = w.nomadVersion;
+      this.nomadRasterVersion = w.version;
     }
   }
 

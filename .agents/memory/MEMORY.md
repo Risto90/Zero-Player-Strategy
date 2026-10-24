@@ -3,7 +3,7 @@
 - [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
 - [Map redraw and timer](map-redraw-timer.md) — timer starts only after full redraw; every world mutation must mark its renderer area.
 - [Dynasty, lineage, and office rules](zero-strategy-dynasty-rules.md) — separate dynasty from residents; active offices stay with living leaders while biographies retain deaths.
-- [Nomad current homes](nomad-current-homes.md) — current nomad residence is separate from country origin; preserve it through conversion, ID reindexing, and save migration.
+- [Unified country residence](nomad-current-homes.md) — characters keep one current countryId; nomadic countries live in the shared country collection.
 - [Design-doc fidelity](design-doc-fidelity.md) — implement only mechanics specified for this game; clarify missing numerical rules instead of inventing them.
 - [Expo build port](zero-strategy-expo-build-port.md) — choose a free Metro port if Replit's preview service occupies 8081.
 - [Published Expo launch URLs](zero-strategy-published-launch.md) — resolve static manifest and bundle asset URLs against the active request origin, not the build hostname.

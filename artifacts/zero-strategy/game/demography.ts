@@ -1,4 +1,4 @@
-import type { Country, NomadGroup, World } from './world';
+import type { Country, World } from './world';
 import { ensureCityPopulationGroups } from './settlements';
 
 export interface DemographicPair { cultureId: number; religionId: number | null; weight: number }
@@ -21,10 +21,10 @@ export function weighted<T>(items: { value: T; weight: number }[], rng = Math.ra
   for (const x of items) { draw -= Math.max(0, x.weight); if (draw < 0) return x.value; }
   return items[items.length - 1]?.value ?? null;
 }
-export function demography(world: World, country: Country | NomadGroup): Demography {
+export function demography(world: World, country: Country): Demography {
   let entries = cache.get(world);
   if (!entries) { entries = new Map(); cache.set(world, entries); }
-  const key = 'cells' in country ? `nomad:${country.id}` : `country:${country.id}`;
+  const key = `country:${country.id}`;
   const cached = entries.get(key);
   if (cached?.version === world.version) return cached.data;
   const pairs = new Map<string, DemographicPair>();
@@ -42,8 +42,8 @@ export function demography(world: World, country: Country | NomadGroup): Demogra
     if (entry) entry.weight += amount;
     else pairs.set(key, { cultureId, religionId, weight: amount });
   };
-  if ('cells' in country) {
-    for (const cell of country.cells) {
+  if (country.type === 'nomadic') {
+    for (const cell of country.cells ?? []) {
       if (cell.population <= 0) continue;
       ruralPopulation += cell.population;
       const culture = world.cultureTable.entries[cell.cultureMix];
@@ -84,7 +84,7 @@ export function demography(world: World, country: Country | NomadGroup): Demogra
   const religion = leading(religions, country.religionId);
   const data: Demography = {
     pairs: [...pairs.values()], cultures, religions, population,
-    density: ruralPopulation / Math.max(1, 'cells' in country ? country.range.length : country.pixels),
+    density: ruralPopulation / Math.max(1, country.type === 'nomadic' ? country.range?.length ?? 0 : country.pixels),
     culture, religion,
     cultureFragmentation: cultures.size * (1 - (cultures.get(culture) ?? 0) / Math.max(1, population)),
     religionFragmentation: religions.size * (1 - (religions.get(religion) ?? 0) / Math.max(1, population)),
@@ -94,7 +94,7 @@ export function demography(world: World, country: Country | NomadGroup): Demogra
 }
 
 /** Draws only combinations that actually coexist on populated pixels, not independent country totals. */
-export function sampleDemographic(world: World, c: Country | NomadGroup): DemographicPair | null {
+export function sampleDemographic(world: World, c: Country): DemographicPair | null {
   const d = demography(world, c), mods = c.modifiers;
   let pairs = d.pairs;
   const requiredCulture = c.government === 'tribal' || (mods.includes('ethnic') && c.government === 'republic')

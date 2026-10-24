@@ -344,7 +344,7 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   assert.ok(removed.transferredPopulation > 0, 'half the removed city population is resettled');
 }
 
-// The single-city target is automatic; removing it converts all remaining people and land to nomads.
+// The single-city target is automatic; removing it converts the remaining population to nomadic countries.
 {
   const { world, country, cities } = makeNearbyCityFixture(1, Infinity, 100);
   const city = cities[0];
@@ -368,8 +368,8 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   assert.equal(country.pixels, 0, 'the city-less state loses its territory');
   assert.ok(world.landIndex.every((pixel) => world.owner[pixel] !== country.id + 1),
     'the former state territory becomes unclaimed');
-  const nomads = world.nomads.filter((nomad) => nomad.sourceCountryId === country.id);
-  const nomadPopulation = nomads.flatMap((nomad) => nomad.cells).reduce((sum, cell) => sum + cell.population, 0);
+  const nomadicCountries = world.countries.filter((item) => item.type === 'nomadic' && item.sourceCountryId === country.id);
+  const nomadPopulation = nomadicCountries.flatMap((item) => item.cells ?? []).reduce((sum, cell) => sum + cell.population, 0);
   assert.ok(Math.abs(nomadPopulation - expectedNomadPopulation) < 1e-3,
     'all population remaining after waning, including resettled urban residents, becomes nomadic');
 }
@@ -462,7 +462,6 @@ for (const cause of ['union', 'inheritance']) {
       ink: 0,
       inkTotal: 0,
       targetCountryId: main.id,
-      targetNomadId: null,
       newCountryId: incoming.id,
       newCultureId: null,
       newReligionId: null,

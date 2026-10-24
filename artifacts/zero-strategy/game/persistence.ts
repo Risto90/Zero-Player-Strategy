@@ -2,10 +2,9 @@ import { MAP_PIXELS } from './config';
 import type { MapKind } from './geography';
 import { decodeEarthLand, fillOceanTemperature } from './geography';
 import { fillRings, rasterizeScalar, runSteps, traceCompositionSteps, traceScalarSteps, type EntityZones, type Steps, type TableView, type Zone } from './zones';
-import { World, type City, type Country, type Culture, type NomadGroup, type Religion } from './world';
+import { World, type City, type Country, type Culture, type NomadCell, type Religion } from './world';
 import { generateCityIdentity } from './cityNames';
 import { ensureCityPopulationGroups } from './settlements';
-import { migrateNomadHomes } from './characters';
 
 /**
  * Saved map: every layer is stored as closed-curve zones, never as per-pixel values.
@@ -29,7 +28,8 @@ export interface SavedWorld {
   seed: number;
   countries: Country[];
   cities?: City[];
-  nomads?: NomadGroup[];
+  /** Read-only compatibility for pre-unification saves; never emitted by new saves. */
+  nomads?: LegacyNomadSave[];
   cultures: Culture[];
   religions: Religion[];
   people: World['people'];
@@ -37,6 +37,34 @@ export interface SavedWorld {
   /** Added when sea temperatures became part of climate layers. */
   climateWater?: boolean;
   layers: SavedLayers;
+}
+
+interface LegacyNomadSave {
+  id: number;
+  name: string;
+  color: string;
+  density?: number;
+  cultureId: number;
+  religionId: number | null;
+  cells?: NomadCell[];
+  range?: number[];
+  personIds?: number[];
+  sourceCountryId: number | null;
+  government: Country['government'];
+  modifiers: Country['modifiers'];
+  ruler: Country['ruler'];
+  heir: Country['heir'];
+  rulerSince: number;
+  previousRulerIds: number[];
+  dynastyClaims: number[];
+  coRulerIds: number[];
+  termYears: number;
+  maxTerms: number;
+  consulCount: number;
+  seatSince: Record<number, number>;
+  termCounts: Record<number, number>;
+  barredRulerIds: number[];
+  pressures: Country['pressures'];
 }
 
 /** Frozen copy of everything a save needs, so it can be traced in slices while the game goes on. */
@@ -55,7 +83,6 @@ export interface WorldCopy {
   religionTable: TableView;
   countries: Country[];
   cities: City[];
-  nomads: NomadGroup[];
   cultures: Culture[];
   religions: Religion[];
   people: World['people'];
@@ -91,19 +118,14 @@ export function copyWorld(world: World): WorldCopy {
     countries: world.countries.map((c) => ({
       ...c,
       box: [...c.box] as Country['box'],
+      ...(c.range ? { range: [...c.range] } : {}),
+      ...(c.cells ? { cells: c.cells.map((cell) => ({ ...cell })) } : {}),
       ruler: { ...c.ruler, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], friendIds: [...c.ruler.friendIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
       heir: c.heir ? { ...c.heir, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], friendIds: [...c.heir.friendIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
     })),
     cities: world.cities.map((city) => ({
       ...city,
       populationGroups: city.populationGroups?.map((group) => ({ ...group })),
-    })),
-    nomads: world.nomads.map((nomad) => ({
-      ...nomad,
-      range: [...nomad.range],
-      cells: nomad.cells.map((cell) => ({ ...cell })),
-      ruler: { ...nomad.ruler, parents: [...nomad.ruler.parents], spouseIds: [...nomad.ruler.spouseIds], loverIds: [...nomad.ruler.loverIds], friendIds: [...nomad.ruler.friendIds], traits: [...nomad.ruler.traits], formerRulerOf: [...nomad.ruler.formerRulerOf] },
-      heir: nomad.heir ? { ...nomad.heir, parents: [...nomad.heir.parents], spouseIds: [...nomad.heir.spouseIds], loverIds: [...nomad.heir.loverIds], friendIds: [...nomad.heir.friendIds], traits: [...nomad.heir.traits], formerRulerOf: [...nomad.heir.formerRulerOf] } : null,
     })),
     cultures: world.cultures.map((c) => ({ ...c })),
     religions: world.religions.map((r) => ({ ...r })),
@@ -130,7 +152,6 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     seed: copy.seed,
     countries: copy.countries,
     cities: copy.cities,
-    nomads: copy.nomads,
     cultures: copy.cultures,
     religions: copy.religions,
     people: copy.people,
@@ -160,21 +181,59 @@ export function deserializeWorld(saved: SavedWorld): World {
     temperature,
     drainage: rasterize(layers.drainage, new Uint8Array(MAP_PIXELS)),
   });
-  world.countries = saved.countries.map((c) => ({ ...c }));
-  world.cities = (saved.cities ?? []).map((city) => ({ ...city }));
-  world.nomads = (saved.nomads ?? []).map((nomad) => ({
-    ...nomad,
-    density: nomad.density ?? (nomad.cells ?? []).reduce((sum, cell) => sum + cell.population, 0) / Math.max(1, nomad.range?.length ?? 0),
-    range: nomad.range ?? [],
-    cells: nomad.cells ?? [],
-    personIds: nomad.personIds ?? [],
+  world.countries = saved.countries.map((c) => ({
+    ...c,
+    type: c.type ?? 'settled',
+    ...(c.range ? { range: [...c.range] } : {}),
+    ...(c.cells ? { cells: c.cells.map((cell) => ({ ...cell })) } : {}),
   }));
-  world.nomadVersion = world.nomads.length ? 1 : 0;
+  const legacyNomads = saved.nomads ?? [];
+  const legacyNomadIds = new Map<number, number>();
+  for (const legacy of legacyNomads) {
+    const id = world.countries.length;
+    legacyNomadIds.set(legacy.id, id);
+    const source = legacy.sourceCountryId === null ? undefined : world.countries[legacy.sourceCountryId];
+    world.countries.push({
+      ...legacy,
+      id,
+      type: 'nomadic',
+      rank: 'Кочевье',
+      foundedYear: source?.foundedYear ?? legacy.rulerSince ?? 1000,
+      parentId: legacy.sourceCountryId,
+      pixels: 0,
+      box: [MAP_PIXELS, MAP_PIXELS, -1, -1],
+      density: legacy.density ?? (legacy.cells ?? []).reduce((sum, cell) => sum + cell.population, 0) /
+        Math.max(1, legacy.range?.length ?? 0),
+      range: [...(legacy.range ?? [])],
+      cells: (legacy.cells ?? []).map((cell) => ({ ...cell })),
+      sourceCountryId: legacy.sourceCountryId,
+    } as Country);
+  }
+  world.cities = (saved.cities ?? []).map((city) => ({ ...city }));
   for (const city of world.cities) {
     if (city.pixel >= 0 && city.pixel < MAP_PIXELS) world.cityIdAt[city.pixel] = city.id;
   }
   world.people = saved.people ?? [];
-  world.cardMultipliers = saved.cardMultipliers ?? {};
+  for (const person of world.people) {
+    const legacyId = (person as typeof person & { nomadId?: number }).nomadId;
+    let currentCountryId = legacyId == null ? undefined : legacyNomadIds.get(legacyId);
+    if (currentCountryId === undefined && person.countryId < 0) {
+      const legacy = legacyNomads.find((group) => group.personIds?.includes(person.id) ||
+        group.ruler.id === person.id || group.heir?.id === person.id || group.coRulerIds.includes(person.id));
+      if (legacy) currentCountryId = legacyNomadIds.get(legacy.id);
+    }
+    if (currentCountryId !== undefined) person.countryId = currentCountryId;
+    delete (person as typeof person & { nomadId?: number }).nomadId;
+  }
+  const multipliers = { ...(saved.cardMultipliers ?? {}) };
+  for (const [key, value] of Object.entries(multipliers)) {
+    const match = /^nomad:(\d+):(.*)$/.exec(key);
+    if (!match) continue;
+    const countryId = legacyNomadIds.get(Number(match[1]));
+    delete multipliers[key];
+    if (countryId !== undefined) multipliers[`country:${countryId}:${match[2]}`] = value;
+  }
+  world.cardMultipliers = multipliers;
   world.cultures = saved.cultures.map((c) => ({ ...c }));
   world.religions = saved.religions.map((r) => ({ ...r }));
   rasterizeScalar(layers.political, world.owner);
@@ -197,7 +256,6 @@ export function deserializeWorld(saved: SavedWorld): World {
     if (!city.name) Object.assign(city, generateCityIdentity(world, city.pixel));
   }
   world.recountCountries();
-  migrateNomadHomes(world);
   // A version-2 save from before the family system has rulers/heirs but no person registry.
   // Game.load supplies its saved year for migration after the map has been reconstructed.
   return world;

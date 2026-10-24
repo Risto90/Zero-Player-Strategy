@@ -175,7 +175,6 @@ function deathCard(country, deceased, heir) {
     ink: 0,
     inkTotal: 0,
     targetCountryId: country.id,
-    targetNomadId: null,
     newCountryId: null,
     newCultureId: null,
     newReligionId: null,

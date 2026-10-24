@@ -1,4 +1,4 @@
-export type ChronicleObjectType = 'country' | 'nomad' | 'city' | 'culture' | 'religion';
+export type ChronicleObjectType = 'country' | 'city' | 'culture' | 'religion';
 
 export interface ChronicleReference {
   type: ChronicleObjectType;
@@ -11,14 +11,14 @@ export interface ChronicleEntry {
   objects: ChronicleReference[];
 }
 
-const OBJECT_TYPES = new Set<ChronicleObjectType>(['country', 'nomad', 'city', 'culture', 'religion']);
+const OBJECT_TYPES = new Set<ChronicleObjectType>(['country', 'city', 'culture', 'religion']);
 
 export function chronicleReference(type: ChronicleObjectType, id: number): ChronicleReference {
   return { type, id };
 }
 
 /** Old saves contain plain strings. Keep their wording and year, but never guess object links. */
-export function migrateChronicle(value: unknown): ChronicleEntry[] {
+export function migrateChronicle(value: unknown, legacyNomadIds: ReadonlyMap<number, number> = new Map()): ChronicleEntry[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item): ChronicleEntry[] => {
     if (typeof item === 'string') {
@@ -32,15 +32,18 @@ export function migrateChronicle(value: unknown): ChronicleEntry[] {
     if (!item || typeof item !== 'object') return [];
     const candidate = item as Partial<ChronicleEntry>;
     if (typeof candidate.text !== 'string' || !Number.isFinite(candidate.year)) return [];
-    const objects = Array.isArray(candidate.objects)
-      ? candidate.objects.filter((reference): reference is ChronicleReference =>
-          !!reference &&
-          typeof reference === 'object' &&
-          OBJECT_TYPES.has((reference as ChronicleReference).type) &&
-          Number.isInteger((reference as ChronicleReference).id) &&
-          (reference as ChronicleReference).id >= 0,
-        ).map(({ type, id }) => ({ type, id }))
-      : [];
+    const objects = Array.isArray(candidate.objects) ? candidate.objects.flatMap((raw) => {
+      if (!raw || typeof raw !== 'object') return [];
+      const reference = raw as { type?: unknown; id?: unknown };
+      if (!Number.isInteger(reference.id) || Number(reference.id) < 0) return [];
+      const id = Number(reference.id);
+      if (reference.type === 'nomad') {
+        const countryId = legacyNomadIds.get(id);
+        return countryId === undefined ? [] : [{ type: 'country' as const, id: countryId }];
+      }
+      if (typeof reference.type !== 'string' || !OBJECT_TYPES.has(reference.type as ChronicleObjectType)) return [];
+      return [{ type: reference.type as ChronicleObjectType, id }];
+    }) : [];
     return [{ year: candidate.year as number, text: candidate.text, objects }];
   });
 }
@@ -54,7 +57,7 @@ export function filterChronicle(entries: ChronicleEntry[], references: Chronicle
 /** Drop deleted index-based entities and shift surviving references with their entity arrays. */
 export function reindexChronicleObjects(
   entries: ChronicleEntry[],
-  type: 'nomad' | 'city',
+  type: 'city',
   removedId: number,
 ): ChronicleEntry[] {
   return entries.map((entry) => ({

@@ -4,7 +4,7 @@ import { MAP_WIDTH } from '../game/config.ts';
 import { mulberry32 } from '../game/random.ts';
 import { World } from '../game/world.ts';
 import { clearSaveBytes } from '../game/storage.ts';
-import { dissolveCountryIntoNomads } from '../game/nomads.ts';
+import { dissolveCountryIntoNomadicCountries } from '../game/nomads.ts';
 import { newCitizen, registerPerson } from '../game/characters.ts';
 
 function makeFixture() {
@@ -43,7 +43,6 @@ function makeCard(type, updates = {}) {
     ink: 12,
     inkTotal: 12,
     targetCountryId: null,
-    targetNomadId: null,
     newCountryId: null,
     newCultureId: null,
     newReligionId: null,
@@ -72,7 +71,6 @@ function worldState(world) {
     cultures: structuredClone(world.cultures),
     religions: structuredClone(world.religions),
     people: structuredClone(world.people),
-    nomads: structuredClone(world.nomads),
   };
 }
 
@@ -241,19 +239,18 @@ try {
   // Nomadic residents keep their current home through the persisted save/load path.
   await clearSaveBytes();
   const nomadFixture = makeFixture();
-  const [nomad] = dissolveCountryIntoNomads(nomadFixture.world, nomadFixture.country);
-  assert.ok(nomad, 'the fixture country becomes a nomad group');
+  const [nomad] = dissolveCountryIntoNomadicCountries(nomadFixture.world, nomadFixture.country, 1001);
+  assert.ok(nomad, 'the fixture country becomes a nomadic country');
   const resident = registerPerson(nomadFixture.world, nomad, newCitizen(nomadFixture.world, nomad, 1001));
   const nomadGame = new Game(nomadFixture.world, 'all');
   await nomadGame.saveNow();
   const nomadResumed = await Game.load();
   assert.ok(nomadResumed, 'the saved nomadic world can be loaded');
   const restoredResident = nomadResumed.world.people.find((person) => person.id === resident.id);
-  assert.equal(restoredResident?.countryId, -1, 'a loaded nomadic resident does not return to the source country');
-  assert.equal(restoredResident?.nomadId, 0, 'a loaded nomadic resident keeps the current nomad ID');
-  assert.ok(nomadResumed.world.nomads[0].personIds.includes(resident.id),
-    'a loaded nomadic resident remains in the group registry');
-  assert.equal(nomadResumed.world.nomads[0].sourceCountryId, nomadFixture.country.id,
+  assert.equal(restoredResident?.countryId, nomad.id, 'a loaded nomadic resident keeps the country ID');
+  assert.equal('nomadId' in restoredResident, false, 'the saved character has no separate nomad ID');
+  assert.equal(nomadResumed.world.countries[nomad.id].type, 'nomadic');
+  assert.equal(nomadResumed.world.countries[nomad.id].sourceCountryId, nomadFixture.country.id,
     'the source country remains available as historical metadata');
   nomadGame.discard();
   nomadResumed.discard();

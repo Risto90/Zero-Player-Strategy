@@ -13,7 +13,8 @@ import { RAMPS } from '@/game/render';
 import { expectedHeirFor, rulers } from '@/game/succession';
 import { cityComposition, cityRankName } from '@/game/settlements';
 import { cityIconIndex, cityIconSource } from '@/components/map/cityIcons';
-import { cityProfileRoute, countryProfileRoute, cultureProfileRoute, nomadProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
+import { cityProfileRoute, countryProfileRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
+import { isActiveCountry } from '@/game/world';
 
 const c = colors.light;
 
@@ -166,22 +167,23 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: { g
       </ScrollView>
     );
   } else if (mapMode === 'nomads') {
-    title = 'Кочевья';
-    sub = `${game.world.nomads.length} народов · ареалы перекрываются`;
+    const nomadicCountries = game.world.countries.filter((country) => country.type === 'nomadic' && isActiveCountry(country));
+    title = 'Кочевые страны';
+    sub = `${nomadicCountries.length} · ареалы перекрываются`;
     body = (
       <ScrollView nestedScrollEnabled>
-        {game.world.nomads.length ? game.world.nomads.map((nomad) => (
-          <Pressable key={nomad.id} onPress={() => router.push(nomadProfileRoute(nomad.id))} style={styles.row}>
-            <View style={[styles.swatch, { backgroundColor: nomad.color }]} />
+        {nomadicCountries.length ? nomadicCountries.map((country) => (
+          <Pressable key={country.id} onPress={() => router.push(countryProfileRoute(country.id))} style={styles.row}>
+            <View style={[styles.swatch, { backgroundColor: country.color }]} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowName}>{nomad.name}</Text>
+              <Text style={styles.rowName}>{country.name}</Text>
               <Text style={styles.rowDetail}>
-                {game.world.cultures[nomad.cultureId]?.name ?? 'народ'} · {fmt(nomad.cells.reduce((sum, cell) => sum + cell.population, 0))} чел. · {fmt(nomad.pixels)} земель ареала
+                {fmt(game.countryComposition(country.id).population)} чел. · {fmt(country.range?.length ?? 0)} земель ареала
               </Text>
             </View>
             <Feather name="chevron-right" size={16} color={c.mutedForeground} />
           </Pressable>
-        )) : <Empty text="Кочевий пока нет." />}
+        )) : <Empty text="Кочевых стран пока нет." />}
       </ScrollView>
     );
   } else {
@@ -226,11 +228,6 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
         const selected = selectedCountryId === country.id;
         const importantPeople = selected && showPeople ? game.importantPeople(country.id) : [];
         const countryCities = selected ? game.world.cities.filter((city) => city.countryId === country.id) : [];
-        const nomadsPresent = selected ? game.world.nomads.map((nomad) => {
-          let overlap = 0;
-          for (const p of nomad.range) if (game.world.owner[p] === country.id + 1) overlap += 1;
-          return { nomad, overlap };
-        }).filter(({ overlap }) => overlap > 0) : [];
         return (
           <View style={[styles.countryCard, selected && styles.countrySelected]}>
             <Pressable onPress={() => {
@@ -251,7 +248,8 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
             </Pressable>
             {selected && (
               <View style={styles.countryDetails}>
-                <Text style={styles.countryInfo}>Площадь · {fmt(country.pixels)} земель</Text>
+                <Text style={styles.countryInfo}>Тип · {country.type === 'nomadic' ? 'кочевая страна' : 'оседлая страна'}</Text>
+                <Text style={styles.countryInfo}>Площадь · {fmt(country.type === 'nomadic' ? country.range?.length ?? 0 : country.pixels)} земель</Text>
                 <Text style={styles.countryInfo}>Население · {fmt(row.value)} чел.</Text>
                 <Text style={styles.countryInfo}>Форма правления · {GOVERNMENTS[governmentOf(country.government).id].name}</Text>
                 <Pressable onPress={() => router.push(countryProfileRoute(country.id))} accessibilityRole="link">
@@ -275,13 +273,6 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
                   );
                 })}
                 <CountryCompositionBlock game={game} countryId={country.id} />
-                <Text style={styles.countrySection}>Кочевья на территории</Text>
-                {nomadsPresent.map(({ nomad, overlap }) => (
-                  <Pressable key={nomad.id} onPress={() => router.push(nomadProfileRoute(nomad.id))}>
-                    <Text style={styles.familyLink}>{nomad.name} · {overlap === nomad.range.length ? 'полностью' : 'частично'}</Text>
-                  </Pressable>
-                ))}
-                {!nomadsPresent.length && <Text style={styles.countryInfo}>Нет кочевий.</Text>}
                 {country.modifiers.includes('consulate') ? rulers(game.world, country).map((leader, index) => {
                   const heir = expectedHeirFor(game.world, country, leader);
                   return (

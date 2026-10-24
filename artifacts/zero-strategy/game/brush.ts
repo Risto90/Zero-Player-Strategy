@@ -1,6 +1,6 @@
 import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, RANKS } from './config';
 import { forEachNeighbour } from './geography';
-import { type NomadCell, type NomadGroup, type World } from './world';
+import { type Country, type NomadCell, type World } from './world';
 import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
 import { ColonizationDonorHeap, colonizationPlan, transferColonizationPopulation } from './colonization';
@@ -35,7 +35,6 @@ export interface Card {
   inkTotal: number;
   /** Country the card belongs to (country cards) or acts on. */
   targetCountryId: number | null;
-  targetNomadId?: number | null;
   /** Entities created by the card. */
   newCountryId: number | null;
   newCultureId: number | null;
@@ -269,11 +268,11 @@ export class CardPainter {
     state?: CardPainterState | null,
   ) {
     const working = this.workingCountryId();
-    if (card.type === 'nomadExpand' && card.targetNomadId !== null && card.targetNomadId !== undefined) {
-      const nomad = world.nomads[card.targetNomadId];
+    if (card.type === 'nomadExpand' && card.targetCountryId !== null) {
+      const nomad = world.countries[card.targetCountryId];
       if (nomad) {
-        for (const pixel of nomad.range) this.nomadRange.add(pixel);
-        for (const cell of nomad.cells) this.nomadCells.set(cell.pixel, cell);
+        for (const pixel of nomad.range ?? []) this.nomadRange.add(pixel);
+        for (const cell of nomad.cells ?? []) this.nomadCells.set(cell.pixel, cell);
       }
     }
     const colonizationCountry = card.type === 'colonization' && card.targetCountryId !== null
@@ -644,21 +643,23 @@ export class CardPainter {
 
   private paintNomad(pixels: number[]): void {
     const world = this.world;
-    const nomad = this.card.targetNomadId === null || this.card.targetNomadId === undefined
+    const nomad = this.card.targetCountryId === null
       ? null
-      : world.nomads[this.card.targetNomadId];
-    if (!nomad) return;
+      : world.countries[this.card.targetCountryId];
+    if (!nomad || nomad.type !== 'nomadic') return;
     if (this.nomadMode === 'inactive') {
       this.message = 'Для расширения кочевья выберите карту «Кочевья» или «Население».';
       return;
     }
     let changed = false;
+    const cells = nomad.cells ?? (nomad.cells = []);
+    const range = nomad.range ?? (nomad.range = []);
     const cultureMix = this.nomadCultureMix(nomad);
     const religionMix = this.nomadReligionMix(nomad);
-    const population = nomad.cells.reduce((sum, cell) => sum + cell.population, 0);
+    const population = cells.reduce((sum, cell) => sum + cell.population, 0);
     const baseDensity = Number.isFinite(nomad.density)
       ? nomad.density
-      : population / Math.max(1, nomad.range.length);
+      : population / Math.max(1, range.length);
     if (this.nomadMode === 'range') {
       const queue: number[] = [];
       const queued = new Set<number>();
@@ -678,14 +679,13 @@ export class CardPainter {
         if (!world.land[pixel] || this.nomadRange.has(pixel) || this.strokeMask[pixel] ||
           (this.mode === 'respect' && this.cardMask[pixel])) continue;
         const { cost, strength } = this.brushScaling(pixel);
-        nomad.range.push(pixel);
+        range.push(pixel);
         this.nomadRange.add(pixel);
-        nomad.pixels += 1;
         let cell = this.nomadCells.get(pixel);
         if (!cell) {
           cell = { pixel, population: 0, cultureMix, religionMix };
           this.nomadCells.set(pixel, cell);
-          nomad.cells.push(cell);
+          cells.push(cell);
         }
         cell.population += baseDensity * strength;
         this.card.ink = Math.max(0, this.card.ink - cost);
@@ -714,7 +714,7 @@ export class CardPainter {
             religionMix,
           };
           this.nomadCells.set(pixel, cell);
-          nomad.cells.push(cell);
+          cells.push(cell);
         }
         cell.population += strength;
         this.card.ink = Math.max(0, this.card.ink - cost);
@@ -725,16 +725,15 @@ export class CardPainter {
       }
     }
     if (changed) {
-      world.nomadVersion += 1;
       world.version += 1;
       this.message = this.nomadMode === 'range' ? 'Ареал кочевья расширен.' : 'Плотность кочевого населения увеличена.';
     }
   }
 
-  private nomadCultureMix(nomad: NomadGroup): number {
+  private nomadCultureMix(nomad: Country): number {
     const totals = new Map<number, number>();
     let population = 0;
-    for (const cell of nomad.cells) {
+    for (const cell of nomad.cells ?? []) {
       const entry = this.world.cultureTable.entries[cell.cultureMix];
       for (let index = 0; index < entry.ids.length; index += 1) {
         totals.set(entry.ids[index], (totals.get(entry.ids[index]) ?? 0) + cell.population * entry.shares[index] / 100);
@@ -747,10 +746,10 @@ export class CardPainter {
     );
   }
 
-  private nomadReligionMix(nomad: NomadGroup): number {
+  private nomadReligionMix(nomad: Country): number {
     const totals = new Map<number, number>();
     let population = 0;
-    for (const cell of nomad.cells) {
+    for (const cell of nomad.cells ?? []) {
       const entry = this.world.religionTable.entries[cell.religionMix];
       for (let index = 0; index < entry.ids.length; index += 1) {
         totals.set(entry.ids[index], (totals.get(entry.ids[index]) ?? 0) + cell.population * entry.shares[index] / 100);

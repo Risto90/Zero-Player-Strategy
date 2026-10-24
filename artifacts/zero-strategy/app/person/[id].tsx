@@ -4,7 +4,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import colors, { fonts } from '@/constants/colors';
 import { ageStage, personDeathStatus, type Person } from '@/game/government';
-import { nomadProfileRoute } from '@/game/profileRoutes';
+import { countryProfileRoute } from '@/game/profileRoutes';
 import { useGameSnapshot } from '@/game/useGame';
 import type { Game } from '@/game/game';
 import { currentGame } from '@/game/session';
@@ -40,11 +40,7 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
   useGameSnapshot(game);
   const insets = useSafeAreaInsets();
   const world = game.world;
-  const nomad = person.nomadId == null ? undefined : world.nomads[person.nomadId];
-  const country = person.nomadId == null ? world.countries[person.countryId] : undefined;
-  const sourceCountry = nomad?.sourceCountryId == null
-    ? undefined
-    : world.countries[nomad.sourceCountryId];
+  const homeCountry = person.countryId < 0 ? undefined : world.countries[person.countryId];
   const culture = world.cultures[person.cultureId]?.name ?? 'неизвестна';
   const religion = person.religionId === null ? 'атеист' : world.religions[person.religionId]?.name ?? 'неизвестна';
   const parents = person.parents.map((parentId) => world.people.find((item) => item.id === parentId)).filter((item) => !!item);
@@ -74,22 +70,10 @@ function PersonProfile({ game, person }: { game: Game; person: Person }) {
         <Text style={styles.subtitle}>
           {person.alive ? 'Жив(а)' : `${personDeathStatus(person)?.replace(/^./u, (letter) => letter.toLocaleUpperCase('ru-RU'))}`}
         </Text>
-        {nomad && (
-          <Pressable onPress={() => router.push(nomadProfileRoute(nomad.id))}
+        {homeCountry && (homeCountry.type === 'nomadic' || homeCountry.pixels > 0) && (
+          <Pressable onPress={() => router.push(countryProfileRoute(homeCountry.id))}
             accessibilityRole="link" style={styles.countryLink}>
-            <Text style={styles.link}>{nomad.name} · текущая родина</Text>
-          </Pressable>
-        )}
-        {sourceCountry && (
-          <Pressable onPress={() => router.push({ pathname: '/country/[id]', params: { id: String(sourceCountry.id) } })}
-            accessibilityRole="link" style={styles.countryLink}>
-            <Text style={styles.link}>{sourceCountry.name} · карточка страны</Text>
-          </Pressable>
-        )}
-        {country && (
-          <Pressable onPress={() => router.push({ pathname: '/country/[id]', params: { id: String(country.id) } })}
-            accessibilityRole="link" style={styles.countryLink}>
-            <Text style={styles.link}>{country.name} · текущая родина</Text>
+            <Text style={styles.link}>{homeCountry.name} · текущая родина</Text>
           </Pressable>
         )}
         <View style={styles.facts}>

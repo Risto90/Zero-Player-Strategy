@@ -1,6 +1,6 @@
 import { MAP_HEIGHT, MAP_WIDTH, RANKS } from './config';
 import { quantizeShares } from './composition';
-import { cityPopulationGroupsAtPixel, type City, type CityPopulationGroup, type CityRank, type NomadCell, type NomadGroup, type World } from './world';
+import { cityPopulationGroupsAtPixel, type City, type CityPopulationGroup, type CityRank, type NomadCell, type Country, type World } from './world';
 
 const CITY_CANONICAL_MODIFIERS = [1, 1, 1, 2, 3, 6];
 const RANK_AREA = RANKS.map((rank) => rank.ink);
@@ -702,14 +702,14 @@ export function movePopulationToCity(world: World, source: number, target: numbe
 export function concentrateCityPopulation(world: World, city: City): void {
   const radius = cityInfluenceRadius(world, city);
   const pixel = city.pixel;
-  const nomadCellsAtPixel = new Map<number, { nomad: NomadGroup; cell: NomadCell }[]>();
-  for (const nomad of world.nomads) for (const cell of nomad.cells) {
+  const nomadCellsAtPixel = new Map<number, { nomad: Country; cell: NomadCell }[]>();
+  for (const nomad of world.countries.filter((country) => country.type === 'nomadic')) for (const cell of nomad.cells ?? []) {
     const entries = nomadCellsAtPixel.get(cell.pixel) ?? [];
     entries.push({ nomad, cell });
     nomadCellsAtPixel.set(cell.pixel, entries);
   }
   const emptyNomadCells = new Set<NomadCell>();
-  const affectedNomads = new Set<NomadGroup>();
+  const affectedNomads = new Set<Country>();
   const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
   const x0 = Math.max(0, Math.floor(x - radius)), x1 = Math.min(MAP_WIDTH - 1, Math.ceil(x + radius));
   const y0 = Math.max(0, Math.floor(y - radius)), y1 = Math.min(MAP_HEIGHT - 1, Math.ceil(y + radius));
@@ -718,7 +718,7 @@ export function concentrateCityPopulation(world: World, city: City): void {
     for (let xx = x0; xx <= x1; xx += 1) {
       const source = yy * MAP_WIDTH + xx;
       if (source === pixel || !world.land[source] || (xx - x) ** 2 + (yy - y) ** 2 > r2) continue;
-      const pools: { cell: NomadCell | null; nomad: NomadGroup | null; population: number; cultureMix: number; religionMix: number; priority: number }[] = [];
+      const pools: { cell: NomadCell | null; nomad: Country | null; population: number; cultureMix: number; religionMix: number; priority: number }[] = [];
       const targetCulture = world.cultureTable.entries[world.culture[pixel]];
       const targetReligion = world.religionTable.entries[world.religion[pixel]];
       const scoreMix = (cultureMix: number, religionMix: number) => {
@@ -776,8 +776,7 @@ export function concentrateCityPopulation(world: World, city: City): void {
     }
   }
   if (affectedNomads.size) {
-    for (const nomad of affectedNomads) nomad.cells = nomad.cells.filter((cell) => !emptyNomadCells.has(cell));
-    world.nomadVersion += 1;
+    for (const nomad of affectedNomads) nomad.cells = (nomad.cells ?? []).filter((cell) => !emptyNomadCells.has(cell));
   }
   world.version += 1;
 }

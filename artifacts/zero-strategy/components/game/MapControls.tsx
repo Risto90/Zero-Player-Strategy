@@ -83,7 +83,7 @@ export function MapControls({
         )}
         {cityOn && snap.cityPlacementAvailable && (
           <Text style={styles.hint}>
-            {snap.card?.targetNomadId !== null && snap.card?.targetNomadId !== undefined
+            {snap.card && snap.card.targetCountryId !== null && game.world.countries[snap.card.targetCountryId]?.type === 'nomadic'
               ? 'Коснитесь свободной точки суши в ареале кочевья.'
               : 'Коснитесь незанятой точки своей страны для размещения города.'}
           </Text>

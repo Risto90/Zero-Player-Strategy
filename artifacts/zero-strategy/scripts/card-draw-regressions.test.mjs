@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Game } from '../game/game.ts';
 import { advancePeople } from '../game/characters.ts';
-import { drawCountryCard, drawNomadCard, drawWorldCard, normalizedCardProbabilities, updateCardDrawMultipliers } from '../game/cards.ts';
+import { drawCountryCard, drawWorldCard, normalizedCardProbabilities, updateCardDrawMultipliers } from '../game/cards.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
 
@@ -67,20 +67,21 @@ try {
   assert.deepEqual([world.countries.length, world.cultures.length, world.religions.length], preWorldCounts,
     'checking unselected world cards does not leave their entities behind');
 
-  const nomad = {
-    ...country,
-    id: 0,
-    name: 'Тестовое кочевье',
-    cells: [{ pixel: world.landIndex[0], population: 50, cultureMix: world.cultureTable.single(country.cultureId, 100), religionMix: 0 }],
-    range: [world.landIndex[0]],
-    personIds: [country.ruler.id],
-    sourceCountryId: country.id,
-    pixels: 1,
-  };
-  world.nomads.push(nomad);
-  world.cardMultipliers['nomad:0:nomadExpand'] = 1e100;
-  const nomadCard = drawNomadCard(world, nomad, 1000);
-  assert.equal(nomadCard?.type, 'nomadExpand', 'the nomad draw also returns one selected card');
+  const nomad = world.newCountry({
+    rank: 'кочевье',
+    cultureId: country.cultureId,
+    religionId: null,
+    density: 50,
+    foundedYear: 1000,
+    parentId: country.id,
+  });
+  nomad.type = 'nomadic';
+  nomad.cells = [{ pixel: world.landIndex[0], population: 50, cultureMix: world.cultureTable.single(country.cultureId, 100), religionMix: 0 }];
+  nomad.range = [world.landIndex[0]];
+  nomad.pixels = 0;
+  world.cardMultipliers[`country:${nomad.id}:nomadExpand`] = 1e100;
+  const nomadCard = drawCountryCard(world, nomad, 1000);
+  assert.equal(nomadCard?.type, 'nomadExpand', 'the shared country draw selects a nomadic-country card');
 
   const ruler = country.ruler;
   const other = world.newCountry({

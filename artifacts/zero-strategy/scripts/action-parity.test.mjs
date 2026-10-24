@@ -86,11 +86,9 @@ function cloneFixture(source) {
     cultures: source.world.cultures,
     religions: source.world.religions,
     people: source.world.people,
-    nomads: source.world.nomads,
   });
   Object.assign(clone, entities);
   clone.version = source.world.version;
-  clone.nomadVersion = source.world.nomadVersion;
   for (const city of clone.cities) clone.cityIdAt[city.pixel] = city.id;
   clone.recountCountries();
   return {
@@ -110,7 +108,6 @@ function card(type, updates = {}) {
     ink: 12,
     inkTotal: 12,
     targetCountryId: null,
-    targetNomadId: null,
     newCountryId: null,
     newCultureId: null,
     newReligionId: null,
@@ -184,9 +181,7 @@ function worldState(world) {
     cultures: world.cultures,
     religions: world.religions,
     people: world.people.map(normalizePerson),
-    nomads: world.nomads.map(normalizePolitical),
     version: world.version,
-    nomadVersion: world.nomadVersion,
   };
 }
 
@@ -366,17 +361,21 @@ const cases = [
     choices: [{ label: 'Новая столица', detail: 'Новая столица', cityId: cities[2].id }],
   })),
   scenario('nomadExpand', ({ world, country, pixels }) => {
-    world.nomads.push({
-      ...structuredClone(country),
-      id: 0,
-      name: 'Тестовое кочевье',
-      cells: [{ pixel: pixels[0], population: 80, cultureMix: world.culture[pixels[0]], religionMix: 0 }],
-      range: [pixels[0]],
-      sourceCountryId: country.id,
-      pixels: 1,
+    const nomadicCountry = world.newCountry({
+      rank: 'кочевье',
+      cultureId: country.cultureId,
+      religionId: null,
+      density: 80,
+      foundedYear: 1000,
+      parentId: country.id,
     });
+    nomadicCountry.type = 'nomadic';
+    nomadicCountry.cells = [{ pixel: pixels[0], population: 80, cultureMix: world.culture[pixels[0]], religionMix: 0 }];
+    nomadicCountry.range = [pixels[0]];
+    nomadicCountry.sourceCountryId = country.id;
+    nomadicCountry.pixels = 0;
     return card('nomadExpand', {
-      targetNomadId: 0,
+      targetCountryId: nomadicCountry.id,
       hint: -1,
       ink: 0,
       inkTotal: 0,

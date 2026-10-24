@@ -2,7 +2,7 @@ import type { Card, CardType } from './brush';
 import { BRUSH_SIZES, INK, MAP_PIXELS, MAP_WIDTH, MAX_COUNTRIES, RANKS } from './config';
 import { forEachNeighbour } from './geography';
 import { randomItem, weightedPick } from './random';
-import type { Country, World } from './world';
+import { isActiveCountry, type Country, type World } from './world';
 import { deathChance, personIdSequence, reservePersonId, restorePersonIdSequence, GOVERNMENTS, MODIFIERS, type GovernmentId, type GovernmentModifierId, type Person } from './government';
 import { lifeOpportunity, marriageCandidates, reformCandidates, type ReformProposal } from './politics';
 import { leadershipOptions } from './succession';
@@ -19,7 +19,7 @@ import {
   populationAtPixel,
   upgradeableCities,
 } from './settlements';
-import type { City, NomadGroup } from './world';
+import type { City } from './world';
 
 export const CARD_TITLES: Record<CardType, string> = {
   create: 'Создание государства',
@@ -62,7 +62,7 @@ for (let y = -STANDARD_EXPANSION_RADIUS; y <= STANDARD_EXPANSION_RADIUS; y += 1)
 // A town gathers 10% from its unmodified sphere; the reference equals five default-M brush dabs.
 const CITY_DENSITY_REFERENCE = 5 * standardExpansionPassPixels / (0.1 * RANKS[0].ink);
 
-type Polity = Country | NomadGroup;
+type Polity = Country;
 type CardDrawOption = {
   key: string;
   weight: number;
@@ -73,7 +73,6 @@ type ProbedCard = {
   card: Card;
   additions: {
     countries: World['countries'];
-    nomads: World['nomads'];
     cultures: World['cultures'];
     religions: World['religions'];
     people: World['people'];
@@ -111,8 +110,8 @@ export function updateCardDrawMultipliers(
   }
 }
 
-function isNomad(polity: Polity): polity is NomadGroup {
-  return 'cells' in polity;
+function isNomad(polity: Polity): boolean {
+  return polity.type === 'nomadic';
 }
 
 function makeCard(type: CardType, ink: number, target: Polity | null, detail: string, hint: number): Card {
@@ -122,8 +121,7 @@ function makeCard(type: CardType, ink: number, target: Polity | null, detail: st
     detail,
     ink,
     inkTotal: ink,
-    targetCountryId: target && !isNomad(target) ? target.id : null,
-    targetNomadId: target && isNomad(target) ? target.id : null,
+    targetCountryId: target?.id ?? null,
     newCountryId: null,
     newCultureId: null,
     newReligionId: null,
@@ -137,28 +135,28 @@ function makeCard(type: CardType, ink: number, target: Polity | null, detail: st
   };
 }
 
-export function drawNomadCard(world: World, nomad: NomadGroup, year: number): Card | null {
-  if (!nomad.range.length) return null;
-  const countryCount = world.countries.filter((country) => country.pixels > 0).length;
+function drawNomadicCountryCard(world: World, nomad: Country, year: number): Card | null {
+  if (!nomad.range?.length) return null;
+  const countryCount = world.countries.filter(isActiveCountry).length;
   const citySite = countryCount < MAX_COUNTRIES
     ? nomad.range.find((pixel) => world.land[pixel] && world.owner[pixel] === 0 && !world.cityAt(pixel))
     : undefined;
-  const population = nomad.cells.reduce((sum, cell) => sum + cell.population, 0);
+  const population = (nomad.cells ?? []).reduce((sum, cell) => sum + cell.population, 0);
   const density = population / Math.max(1, nomad.range.length);
   const cityWeight = citySite === undefined
     ? 0
-    : (1 + nomad.pixels / RANKS[2].ink) * (density / CITY_DENSITY_REFERENCE);
+     : (1 + nomad.range.length / RANKS[2].ink) * (density / CITY_DENSITY_REFERENCE);
   const consulateScale = nomad.modifiers.includes('consulate')
     ? 1 / Math.max(2, nomad.consulCount)
     : nomad.modifiers.includes('coRule') ? 0.5 : 1;
   const options: CardDrawOption[] = [
     ...lifeDrawOptions(world, nomad, year),
-    { key: 'nomadExpand', value: (_w, p) => drawNomadExpansionCard(_w, p as NomadGroup), weight: 4 * consulateScale },
+    { key: 'nomadExpand', value: (_w, p) => drawNomadExpansionCard(_w, p as Country), weight: 4 * consulateScale },
     { key: 'government', value: (_w, p) => drawGovernment(_w, p!, year), weight: 0.16 * consulateScale },
     { key: 'revolt', value: (_w, p) => drawGovernment(_w, p!, year, true), weight: 0.01 * consulateScale },
     { key: 'buildCity', value: (_w, p) => {
-      const candidate = p as NomadGroup;
-      const freeSite = candidate.range.find((pixel) => _w.land[pixel] && _w.owner[pixel] === 0 && !_w.cityAt(pixel));
+      const candidate = p as Country;
+      const freeSite = (candidate.range ?? []).find((pixel) => _w.land[pixel] && _w.owner[pixel] === 0 && !_w.cityAt(pixel));
       return freeSite === undefined ? null : makeCard(
       'buildCity',
       0,
@@ -168,18 +166,18 @@ export function drawNomadCard(world: World, nomad: NomadGroup, year: number): Ca
     );
     }, weight: cityWeight },
   ];
-  return drawFirstApplicable(world, `nomad:${nomad.id}`, nomad, options);
+  return drawFirstApplicable(world, `country:${nomad.id}`, nomad, options);
 }
 
-function drawNomadExpansionCard(world: World, nomad: NomadGroup): Card | null {
-  const range = new Set(nomad.range);
+function drawNomadExpansionCard(world: World, nomad: Country): Card | null {
+  const range = new Set(nomad.range ?? []);
   let hint = -1;
   for (let attempt = 0; attempt < 300; attempt += 1) {
     const pixel = world.landIndex[Math.floor(Math.random() * world.landIndex.length)];
     if (!range.has(pixel)) { hint = pixel; break; }
   }
   const densityOnly = hint < 0;
-  if (densityOnly) hint = nomad.range[0];
+  if (densityOnly) hint = nomad.range?.[0] ?? -1;
   const card = makeCard(
     'nomadExpand',
     INK.expand,
@@ -516,11 +514,8 @@ function personDetail(world: World, candidate: import('./government').Person): s
   return `${candidate.age} лет · ${candidate.trait || ageLabel(candidate.age)} · ${culture} · ${religion}`;
 }
 function lifeDrawOptions(world: World, polity: Polity, year: number): CardDrawOption[] {
-  const members = world.people.filter((candidate) => candidate.alive && (
-    isNomad(polity)
-      ? polity.personIds.includes(candidate.id) || candidate.id === polity.ruler.id || polity.coRulerIds.includes(candidate.id)
-      : candidate.countryId === polity.id || candidate.id === polity.ruler.id || polity.coRulerIds.includes(candidate.id)
-  ));
+  const members = world.people.filter((candidate) => candidate.alive &&
+    (candidate.countryId === polity.id || candidate.id === polity.ruler.id || polity.coRulerIds.includes(candidate.id)));
   return [
     ...members.map((candidate) => ({
       key: `death:${candidate.id}`,
@@ -843,12 +838,19 @@ function countryMainCulture(world: World, country: Country): number | null {
 
 function forkWorld(world: World, polity: Polity | null): World {
   const fork = Object.assign(Object.create(Object.getPrototypeOf(world)), world) as World;
-  fork.countries = [...world.countries];
-  fork.nomads = [...world.nomads];
+  fork.countries = world.countries.map((country) => ({
+    ...country,
+    box: [...country.box] as Country['box'],
+    range: country.range ? [...country.range] : undefined,
+    cells: country.cells?.map((cell) => ({ ...cell })),
+  }));
   fork.cities = world.cities;
   if (polity) {
-    if ('cells' in polity) fork.nomads[polity.id] = { ...polity };
-    else fork.countries[polity.id] = { ...polity, box: [...polity.box] as Country['box'] };
+    fork.countries[polity.id] = { ...fork.countries[polity.id], ...polity,
+      box: [...polity.box] as Country['box'],
+      range: polity.range ? [...polity.range] : undefined,
+      cells: polity.cells?.map((cell) => ({ ...cell })),
+    };
   }
   fork.people = [...world.people];
   fork.cultures = [...world.cultures];
@@ -861,7 +863,6 @@ function probeOption(fork: World, option: CardDrawOption, candidate: Polity | nu
   const originalRandom = Math.random;
   const personIds = personIdSequence();
   const countryCount = fork.countries.length;
-  const nomadCount = fork.nomads.length;
   const cultureCount = fork.cultures.length;
   const religionCount = fork.religions.length;
   const peopleCount = fork.people.length;
@@ -877,7 +878,6 @@ function probeOption(fork: World, option: CardDrawOption, candidate: Polity | nu
       card,
       additions: {
         countries: fork.countries.slice(countryCount),
-        nomads: fork.nomads.slice(nomadCount),
         cultures: fork.cultures.slice(cultureCount),
         religions: fork.religions.slice(religionCount),
         people: fork.people.slice(peopleCount),
@@ -888,7 +888,6 @@ function probeOption(fork: World, option: CardDrawOption, candidate: Polity | nu
     Math.random = originalRandom;
     restorePersonIdSequence(personIds);
     fork.countries.length = countryCount;
-    fork.nomads.length = nomadCount;
     fork.cultures.length = cultureCount;
     fork.religions.length = religionCount;
     fork.people.length = peopleCount;
@@ -897,7 +896,6 @@ function probeOption(fork: World, option: CardDrawOption, candidate: Polity | nu
 
 function commitProbedCard(world: World, prepared: ProbedCard): Card {
   world.countries.push(...prepared.additions.countries);
-  world.nomads.push(...prepared.additions.nomads);
   world.cultures.push(...prepared.additions.cultures);
   world.religions.push(...prepared.additions.religions);
   world.people.push(...prepared.additions.people);
@@ -909,9 +907,7 @@ function commitProbedCard(world: World, prepared: ProbedCard): Card {
 function drawFirstApplicable(world: World, scope: string, polity: Polity | null, options: CardDrawOption[]): Card | null {
   const climateOptions = availableClimateCards(world, polity, new Set(options.map((option) => option.key)));
   const probe = forkWorld(world, polity);
-  const probePolity = polity
-    ? ('cells' in polity ? probe.nomads[polity.id] : probe.countries[polity.id])
-    : null;
+  const probePolity = polity ? probe.countries[polity.id] : null;
   const available: (CardDrawOption & { prepared?: ProbedCard })[] = [];
   options.forEach((option, index) => {
     if (!(option.weight > 0)) return;
@@ -976,6 +972,7 @@ export function drawWorldCard(world: World, year: number): Card | null {
 }
 
 export function drawCountryCard(world: World, country: Country, year: number): Card | null {
+  if (country.type === 'nomadic') return drawNomadicCountryCard(world, country, year);
   const big = country.pixels >= 12000;
   const diversity = demography(world, country);
   const countryCities = world.cities.filter((city) => city.countryId === country.id);

@@ -1,9 +1,9 @@
 ---
-name: Nomad current homes
-description: Keep a character's present nomadic residence distinct from their historical source country.
+name: Unified country residence
+description: Characters have one current country ID, whether their country is settled or nomadic.
 ---
-For a person currently living in a nomad group, use `countryId = -1` and `nomadId` for the active group. Keep `sourceCountryId` on the nomad group as historical provenance, not as the person's current residence. When a nomad is removed and the remaining group IDs shift, remap each resident's `nomadId`. Reconstruct residents from a legacy source-country ID only when that source country has no territory.
+Every character has one active `countryId`. A nomadic country is a `Country` in the shared collection, distinguished by type and its range/population cells. Converting it to settled changes that same country's type and preserves its ID and residents. Historical source-country provenance, when retained, is not a current residence.
 
-**Why:** Treating the source-country ID as a current home causes profiles and saved worlds to assign nomadic residents to a state with no population; nominal IDs can also collide with valid country IDs.
+**Why:** Separate nomad IDs and residence fields create collisions and require duplicate profile, turn, and migration paths.
 
-**How to apply:** Update residence fields when registering or birthing nomad members, dissolving or settling a group, and migrating saves. Keep multi-group membership in `personIds` separate from a character's single primary home.
+**How to apply:** Migrate legacy group IDs into appended country IDs on load, then keep gameplay, profiles, and saves on the shared country ID. Do not add a separate nomad residence field or active collection.
