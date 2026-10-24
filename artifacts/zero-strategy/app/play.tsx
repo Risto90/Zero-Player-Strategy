@@ -14,7 +14,6 @@ import { Loading } from '@/components/Loading';
 import { MapView } from '@/components/map/MapView';
 import type { MapTool, MapViewHandle } from '@/components/map/types';
 import colors, { fonts } from '@/constants/colors';
-import { chronicleObjectOptions } from '@/game/chronicle';
 import { MAP_WIDTH } from '@/game/config';
 import { hasPlayerActionCard, type Game, type PixelInfo } from '@/game/game';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
@@ -87,11 +86,6 @@ function GameScreen({ game }: { game: Game }) {
   const webBottomInset = Platform.OS === 'web' ? Math.max(insets.bottom, 34) : insets.bottom;
   const mapHeight = Math.max(160, height - webTopInset - webBottomInset - 90);
   const overlayHeight = Math.max(140, Math.min(620, mapHeight - 56));
-  const logHeight = Math.max(140, Math.min(420, mapHeight * 0.47));
-  const historyObjectOptions = useMemo(
-    () => chronicleObjectOptions(game.world),
-    [game, game.world.version],
-  );
 
   const onCityPress = useCallback((pixel: number) => {
     const x = pixel % MAP_WIDTH;
@@ -146,9 +140,7 @@ function GameScreen({ game }: { game: Game }) {
     }, 3000);
   }, [snap.log]);
 
-  const log = useMemo(() => (
-    <LogPanel log={snap.chronicle} transparent objectOptions={historyObjectOptions} />
-  ), [historyObjectOptions, snap.chronicle]);
+  const log = useMemo(() => <LogPanel log={snap.chronicle} transparent minimal />, [snap.chronicle]);
   const canOpenEvent = hasPlayerActionCard(snap);
   const nextLabel = snap.queuedCards > 0
     ? 'Готово'
@@ -284,33 +276,33 @@ function GameScreen({ game }: { game: Game }) {
           </View>
         )}
 
-        <View style={styles.chronicleDock}>
-          {logPreview && !logOpen && !!latestText && (
-            <Pressable style={styles.latestEntry} onPress={() => {
-              setCardOpen(false);
-              setListMode(null);
-              setLogOpen(true);
-            }} testID="text-latest-log" accessibilityLabel="Последняя запись летописи">
-              <Text style={styles.latestText} numberOfLines={1}>{latestText}</Text>
-            </Pressable>
-          )}
-          <Pressable
-            onPress={() => setLogOpen((open) => {
-              const next = !open;
-              if (next) {
+        {!logOpen && (
+          <View style={styles.chronicleDock}>
+            {logPreview && !!latestText && (
+              <Pressable style={styles.latestEntry} onPress={() => {
                 setCardOpen(false);
                 setListMode(null);
-              }
-              return next;
-            })}
-            style={[styles.chatButton, logOpen && styles.chatButtonOpen]}
-            testID="button-toggle-log"
-            accessibilityLabel={logOpen ? 'Закрыть летопись' : 'Открыть летопись'}
-            accessibilityState={{ expanded: logOpen }}
-          >
-            <Feather name={logOpen ? 'x' : 'message-circle'} size={17} color={logOpen ? c.primaryForeground : c.foreground} />
-          </Pressable>
-        </View>
+                setLogOpen(true);
+              }} testID="text-latest-log" accessibilityLabel="Последняя запись летописи">
+                <Text style={styles.latestText} numberOfLines={1}>{latestText}</Text>
+              </Pressable>
+            )}
+            <Pressable
+              onPress={() => {
+                setCardOpen(false);
+                setListMode(null);
+                setLogOpen(true);
+              }}
+              style={styles.chatButton}
+              testID="button-toggle-log"
+              accessibilityRole="button"
+              accessibilityLabel="Открыть летопись"
+              accessibilityState={{ expanded: false }}
+            >
+              <Feather name="message-circle" size={17} color={c.foreground} />
+            </Pressable>
+          </View>
+        )}
 
         {cardOpen && canOpenEvent && (
           <View style={[styles.overlayPanel, styles.cardOverlay, { height: overlayHeight }]}>
@@ -349,14 +341,19 @@ function GameScreen({ game }: { game: Game }) {
         )}
 
         {logOpen && (
-          <View style={[styles.overlayPanel, styles.logOverlay, { height: logHeight }]} testID="overlay-chronicle">
-            <View style={styles.overlayHeader}>
-              <Text style={styles.overlayTitle}>Летопись</Text>
-              <Pressable onPress={() => setLogOpen(false)} style={styles.closeButton} hitSlop={8} testID="button-close-log">
-                <Feather name="x" size={18} color={c.secondaryForeground} />
-              </Pressable>
-            </View>
+          <View style={styles.logOverlay} testID="overlay-chronicle">
             <View style={{ flex: 1 }}>{log}</View>
+            <Pressable
+              onPress={() => setLogOpen(false)}
+              style={styles.logCloseButton}
+              hitSlop={4}
+              testID="button-close-log"
+              accessibilityRole="button"
+              accessibilityLabel="Закрыть летопись"
+              accessibilityState={{ expanded: true }}
+            >
+              <Feather name="x" size={16} color="#f5eee8" />
+            </Pressable>
           </View>
         )}
       </View>
@@ -414,7 +411,8 @@ const styles = StyleSheet.create({
   overlayPanel: { position: 'absolute', left: 8, right: 8, borderWidth: 1, borderColor: c.foreground, borderRadius: 6, overflow: 'hidden', shadowColor: c.foreground, shadowOpacity: 0.25, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
   cardOverlay: { top: 48, alignSelf: 'center', maxWidth: 580, backgroundColor: c.card },
   listOverlay: { top: 48, maxWidth: 560, alignSelf: 'center', backgroundColor: c.card },
-  logOverlay: { bottom: 8, maxWidth: 700, alignSelf: 'center', backgroundColor: 'rgba(59,43,33,0.94)' },
+  logOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 10, backgroundColor: 'rgba(17,21,27,0.9)' },
+  logCloseButton: { position: 'absolute', top: 6, right: 6, zIndex: 11, width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 22, borderWidth: 1, borderColor: 'rgba(245,238,232,0.4)', backgroundColor: 'rgba(17,21,27,0.96)' },
   overlayHeader: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingLeft: 11, borderBottomWidth: 1, borderBottomColor: c.border, backgroundColor: c.card },
   overlayTitle: { flex: 1, fontFamily: fonts.display, fontSize: 15, color: c.foreground },
   closeButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },

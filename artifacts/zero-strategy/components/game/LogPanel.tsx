@@ -20,12 +20,14 @@ export function LogPanel({
   objectOptions = [],
   initialReference = null,
   showHeading = true,
+  minimal = false,
 }: {
   log: ChronicleEntry[];
   transparent?: boolean;
   objectOptions?: ChronicleObjectOption[];
   initialReference?: ChronicleReference | null;
   showHeading?: boolean;
+  minimal?: boolean;
 }) {
   const [visibleCount, setVisibleCount] = useState(CHRONICLE_PAGE_SIZE);
   const [textQuery, setTextQuery] = useState('');
@@ -59,6 +61,29 @@ export function LogPanel({
     resetPaging();
   };
   const loadMore = () => setVisibleCount((count) => Math.min(matchingEntries.length, count + CHRONICLE_PAGE_SIZE));
+
+  if (minimal) {
+    return (
+      <View style={[styles.panel, transparent && styles.transparentPanel]} testID="panel-log">
+        <FlatList
+          style={styles.list}
+          contentContainerStyle={styles.minimalListContent}
+          data={log}
+          keyExtractor={(entry, index) => `${entry.year}-${index}-${entry.text}`}
+          nestedScrollEnabled
+          renderItem={({ item: entry, index }) => (
+            <View style={styles.minimalRow} testID={`text-log-${index}`}>
+              <Text style={styles.minimalYear}>{entry.year || '—'}</Text>
+              <View style={styles.entry}>
+                <Text style={[styles.minimalText, index > 0 && styles.minimalOlderText]}>{entry.text}</Text>
+                {entry.important && <Text style={styles.minimalImportant}>Важное событие</Text>}
+              </View>
+            </View>
+          )}
+        />
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.panel, transparent && styles.transparentPanel]} testID="panel-log">
@@ -193,12 +218,18 @@ const styles = StyleSheet.create({
   resultCount: { minHeight: 16, paddingHorizontal: 12, paddingTop: 2, fontFamily: fonts.mono, fontSize: 9, color: c.secondaryForeground, opacity: 0.65 },
   list: { flex: 1, minHeight: 0 },
   listContent: { paddingHorizontal: 12, paddingTop: 2, paddingBottom: 8, flexGrow: 1 },
+  minimalListContent: { paddingHorizontal: 16, paddingTop: 54, paddingBottom: 20 },
   empty: { paddingTop: 4, fontFamily: fonts.displayItalic, fontSize: 14, color: c.secondaryForeground, opacity: 0.7 },
   row: { flexDirection: 'row', gap: 8, paddingVertical: 2 },
+  minimalRow: { flexDirection: 'row', gap: 10, paddingVertical: 5 },
   year: { fontFamily: fonts.mono, fontSize: 11, lineHeight: 17, color: '#e9806f' },
+  minimalYear: { minWidth: 38, fontFamily: fonts.mono, fontSize: 12, lineHeight: 20, color: '#f08b79' },
   entry: { flex: 1, gap: 2 },
   text: { flex: 1, fontFamily: fonts.sans, fontSize: 12.5, lineHeight: 17, color: c.secondaryForeground },
+  minimalText: { flexShrink: 1, fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: '#f5eee8' },
+  minimalOlderText: { opacity: 0.82 },
   important: { alignSelf: 'flex-start', paddingHorizontal: 5, paddingVertical: 1, fontFamily: fonts.sansSemiBold, fontSize: 9, color: c.primaryForeground, backgroundColor: c.primary },
+  minimalImportant: { alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, fontFamily: fonts.sansSemiBold, fontSize: 10, color: '#fff7f0', backgroundColor: c.primary },
   loadMore: { alignSelf: 'center', marginTop: 10, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: c.secondaryForeground },
   loadMoreText: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.secondaryForeground },
 });

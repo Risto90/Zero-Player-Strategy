@@ -7,6 +7,7 @@ import { mulberry32 } from '../game/random.ts';
 const root = process.cwd();
 const screen = readFileSync(resolve(root, 'app/play.tsx'), 'utf8');
 const cardPanel = readFileSync(resolve(root, 'components/game/CardPanel.tsx'), 'utf8');
+const logPanel = readFileSync(resolve(root, 'components/game/LogPanel.tsx'), 'utf8');
 
 function makePauseGate() {
   let entered;
@@ -49,8 +50,22 @@ assert.match(screen, /cardOpen && canOpenEvent && \([\s\S]*?<CardPanel game=\{ga
   'the opened overlay still renders the active card and its actions');
 assert.match(cardPanel, /game\.selectChoice\(index\)/,
   'card choices still dispatch their existing game action');
-assert.match(screen, /onPress=\{\(\) => setLogOpen\(\(open\) => \{[\s\S]*?testID="button-toggle-log"/,
+assert.match(screen, /onPress=\{\(\) => \{[\s\S]*?setLogOpen\(true\);[\s\S]*?testID="button-toggle-log"/,
   'the chronicle keeps its independent toggle');
+assert.match(screen, /logOpen && \([\s\S]*?<View style=\{styles\.logOverlay\} testID="overlay-chronicle">/,
+  'the chronicle overlay fills the map area without covering the game header or footer');
+assert.match(screen, /<Pressable[\s\S]*?onPress=\{\(\) => setLogOpen\(false\)\}[\s\S]*?testID="button-close-log"/,
+  'the chronicle has an independent close button above its messages');
+assert.match(screen, /logOverlay: \{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0/,
+  'the chronicle overlay spans the whole map area');
+assert.match(screen, /logCloseButton: \{[^}]*width: 44, height: 44/,
+  'the close control has a mobile-sized touch target');
+assert.match(logPanel, /data=\{log\}/,
+  'the chronicle renders its complete archive in a scrollable list');
+const minimalLogPanel = logPanel.match(/if \(minimal\) \{([\s\S]*?)\n  \}\n\n  return \(/)?.[1];
+assert.ok(minimalLogPanel, 'the game can render a separate minimal chronicle mode');
+assert.doesNotMatch(minimalLogPanel, /TextInput|filters|Загрузить ещё|ЛЕТОПИСЬ|событий/,
+  'the in-game chronicle contains no heading, search, filters, counters, or paging controls');
 
 const pauseButton = screen.match(/<Pressable[\s\S]*?testID="button-pause"[\s\S]*?\/>/)?.[0];
 assert.ok(pauseButton, 'the pause button remains rendered during turn progress');
