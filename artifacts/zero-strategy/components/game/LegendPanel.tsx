@@ -3,7 +3,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import type { ReactElement } from 'react';
-import { FlatList, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { BIOME_NOTE } from '@/game/config';
 import { fmt, pct } from '@/game/format';
@@ -47,17 +47,58 @@ function Empty({ text }: { text: string }) {
   return <Text style={styles.empty}>{text}</Text>;
 }
 
+function normalizeSearchText(value: string) {
+  return value
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/ё/g, 'е')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function NameSearch({ value, placeholder, onChangeText }: { value: string; placeholder: string; onChangeText: (text: string) => void }) {
+  return (
+    <View style={styles.search}>
+      <Feather name="search" size={15} color={c.mutedForeground} />
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={c.mutedForeground}
+        autoCapitalize="none"
+        autoCorrect={false}
+        returnKeyType="search"
+        accessibilityLabel={placeholder}
+        style={styles.searchInput}
+        testID="input-legend-search"
+      />
+      {value.length > 0 && (
+        <Pressable onPress={() => onChangeText('')} hitSlop={8} accessibilityRole="button"
+          accessibilityLabel="Очистить поиск" testID="button-clear-legend-search">
+          <Feather name="x-circle" size={17} color={c.mutedForeground} />
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function NoSearchResults() {
+  return <Text style={styles.empty} testID="text-legend-no-results">Ничего не найдено. Измените запрос или очистите поиск.</Text>;
+}
+
 function Rows({ rows, unit, onPress, activeId, header, footer }: { rows: LegendRow[]; unit: string; onPress?: (row: LegendRow) => void; activeId?: number | null; header?: ReactElement | null; footer?: ReactElement | null }) {
   return (
     <FlatList
       data={rows}
       keyExtractor={(row) => String(row.id)}
       renderItem={({ item }) => <Row row={item} unit={unit} active={activeId === item.id} onPress={onPress ? () => onPress(item) : undefined} />}
+      style={styles.list}
       ListHeaderComponent={header ?? undefined}
       stickyHeaderIndices={header ? [0] : undefined}
       ListFooterComponent={footer ?? undefined}
       initialNumToRender={12}
       nestedScrollEnabled
+      keyboardShouldPersistTaps="handled"
     />
   );
 }
@@ -65,16 +106,29 @@ function Rows({ rows, unit, onPress, activeId, header, footer }: { rows: LegendR
 export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: { game: Game; snap: GameSnapshot; onCityPress?: (pixel: number) => void; mode?: GameSnapshot['mapMode'] }) {
   const { legend, layer } = snap;
   const mapMode = modeOverride ?? snap.mapMode;
+  const [searchByMode, setSearchByMode] = useState<Partial<Record<GameSnapshot['mapMode'], string>>>({});
+  const search = searchByMode[mapMode] ?? '';
+  const setSearch = (value: string) => setSearchByMode((current) => ({ ...current, [mapMode]: value }));
+  const query = normalizeSearchText(search);
   let body: ReactElement;
   let title = '';
   let sub = '';
   if (mapMode === 'political') {
     title = 'Страны';
     sub = `${legend.countries.length} · население ${fmt(legend.totalPopulation)}`;
-    body = legend.countries.length ? <CountryRows game={game} rows={legend.countries} selectedCountryId={snap.selectedCountryId} /> : <Empty text="Ни одного государства. Пока." />;
+    const filteredCountries = legend.countries.filter((row) => normalizeSearchText(row.name).includes(query));
+    body = legend.countries.length ? (
+      <View style={styles.listContent}>
+        <NameSearch value={search} placeholder="Найти страну" onChangeText={setSearch} />
+        {filteredCountries.length ? (
+          <CountryRows game={game} rows={filteredCountries} selectedCountryId={snap.selectedCountryId} />
+        ) : <NoSearchResults />}
+      </View>
+    ) : <Empty text="Ни одного государства. Пока." />;
   } else if (mapMode === 'cultures' || mapMode === 'religions') {
     const kind = mapMode === 'cultures' ? 'culture' : 'religion';
     const rows = mapMode === 'cultures' ? legend.cultures : legend.religions;
+    const filteredRows = rows.filter((row) => normalizeSearchText(row.name).includes(query));
     title = mapMode === 'cultures' ? 'Культуры' : 'Религии';
     const activeId = layer && layer.kind === kind ? layer.id : null;
     const single = activeId !== null ? rows.find((r) => r.id === activeId) : null;
@@ -90,7 +144,18 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: { g
       rows.length === 0 ? (
         <Empty text="Пока никого." />
       ) : (
-        <Rows rows={rows} unit="чел." activeId={activeId} header={back} footer={footer} onPress={(row) => game.showLayer({ kind, id: row.id })} />
+        <View style={styles.listContent}>
+          <NameSearch value={search} placeholder={mapMode === 'cultures' ? 'Найти культуру' : 'Найти веру'} onChangeText={setSearch} />
+          {filteredRows.length ? (
+            <Rows rows={filteredRows} unit="чел." activeId={activeId} header={back} footer={footer} onPress={(row) => game.showLayer({ kind, id: row.id })} />
+          ) : (
+            <View style={styles.list}>
+              {back}
+              <NoSearchResults />
+              {footer}
+            </View>
+          )}
+        </View>
       );
   } else if (mapMode === 'biomes') {
     title = 'Биомы';
@@ -168,24 +233,30 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: { g
     );
   } else if (mapMode === 'nomads') {
     const nomadicCountries = game.world.countries.filter((country) => country.type === 'nomadic' && isActiveCountry(country));
+    const filteredNomadicCountries = nomadicCountries.filter((country) => normalizeSearchText(country.name).includes(query));
     title = 'Кочевые страны';
     sub = `${nomadicCountries.length} · ареалы перекрываются`;
-    body = (
-      <ScrollView nestedScrollEnabled>
-        {nomadicCountries.length ? nomadicCountries.map((country) => (
-          <Pressable key={country.id} onPress={() => router.push(countryProfileRoute(country.id))} style={styles.row}>
-            <View style={[styles.swatch, { backgroundColor: country.color }]} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowName}>{country.name}</Text>
-              <Text style={styles.rowDetail}>
-                {fmt(game.countryComposition(country.id).population)} чел. · {fmt(country.range?.length ?? 0)} земель ареала
-              </Text>
-            </View>
-            <Feather name="chevron-right" size={16} color={c.mutedForeground} />
-          </Pressable>
-        )) : <Empty text="Кочевых стран пока нет." />}
-      </ScrollView>
-    );
+    body = nomadicCountries.length ? (
+      <View style={styles.listContent}>
+        <NameSearch value={search} placeholder="Найти кочевую страну" onChangeText={setSearch} />
+        {filteredNomadicCountries.length ? (
+          <ScrollView style={styles.list} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+            {filteredNomadicCountries.map((country) => (
+              <Pressable key={country.id} onPress={() => router.push(countryProfileRoute(country.id))} style={styles.row}>
+                <View style={[styles.swatch, { backgroundColor: country.color }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowName}>{country.name}</Text>
+                  <Text style={styles.rowDetail}>
+                    {fmt(game.countryComposition(country.id).population)} чел. · {fmt(country.range?.length ?? 0)} земель ареала
+                  </Text>
+                </View>
+                <Feather name="chevron-right" size={16} color={c.mutedForeground} />
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : <NoSearchResults />}
+      </View>
+    ) : <Empty text="Кочевых стран пока нет." />;
   } else {
     const valueMode = mapMode as keyof typeof RAMPS;
     const stops = RAMPS[valueMode];
@@ -222,6 +293,8 @@ function CountryRows({ game, rows, selectedCountryId }: { game: Game; rows: Lege
       data={rows}
       keyExtractor={(row) => String(row.id)}
       nestedScrollEnabled
+      style={styles.list}
+      keyboardShouldPersistTaps="handled"
       renderItem={({ item: row }) => {
         const country = game.world.countries[row.id];
         if (!country) return null;
@@ -425,6 +498,10 @@ function CityCompositionRows({ world, city }: { world: Game['world']; city: Game
 
 const styles = StyleSheet.create({
   panel: { flex: 1, backgroundColor: c.card },
+  listContent: { flex: 1, minHeight: 0 },
+  list: { flex: 1 },
+  search: { minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: 7, marginHorizontal: 8, marginTop: 6, marginBottom: 4, paddingHorizontal: 9, borderWidth: 1, borderColor: c.input, borderRadius: 4, backgroundColor: c.background },
+  searchInput: { flex: 1, minWidth: 0, paddingVertical: 5, fontFamily: fonts.sans, fontSize: 12, color: c.foreground },
   header: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingHorizontal: 8, paddingTop: 6, paddingBottom: 4 },
   title: { fontFamily: fonts.display, fontSize: 16, color: c.foreground },
   sub: { flexShrink: 1, fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
