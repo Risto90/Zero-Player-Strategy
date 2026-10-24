@@ -1,6 +1,7 @@
 import { createFamilyId, createPerson, familyNameForId, formatPersonName, legacyNameStyleForCulture, legacySurnameAffixForCulture, governmentOf, GOVERNMENTS, reservePersonId, type Person, type PersonNameContext, type RulerTerm, type SurnameAffix } from './government';
 import { isActiveCountry, type Country, type World } from './world';
-import { sampleDemographic } from './demography';
+import { demography, sampleDemographic } from './demography';
+import { inheritHumanOrigins, normalizeHumanOriginMix } from './human';
 
 /** Every polity, settled or nomadic, is a country with one current ID. */
 export function setPersonHome(p: Person, home: Country | null): void {
@@ -23,11 +24,13 @@ export function registerPerson(world: World, country: Country, p: Person): Perso
 }
 export function newCitizen(world: World, country: Country, year: number): Person {
   const pair = sampleDemographic(world, country);
+  const origin = demography(world, country).humanOrigin;
   const cultureId = pair?.cultureId ?? country.cultureId;
   const style = world.cultures[cultureId]?.nameStyleId ?? legacyNameStyleForCulture(cultureId);
   const p = createPerson(year, 29 + Math.floor(Math.random() * 17), createFamilyId(), [], cultureId, pair?.religionId ?? null, {
     style, familyCultureId: cultureId, surnameAffix: world.cultures[cultureId]?.surnameAffix ?? legacySurnameAffixForCulture(cultureId),
   });
+  p.humanOrigin = origin;
   if (country.modifiers.includes('communist') && Math.random() < 0.5) {
     if (!p.traits.includes('Космополит')) p.traits.push('Космополит');
     p.trait = p.traits.join(', ');
@@ -69,6 +72,7 @@ function normalizePerson(raw: Person, c: Country, year: number, world: World): P
     : template.familyName;
   p.givenName = raw.givenName || (raw.name || template.name).trim().split(/\s+/)[0] || template.givenName;
   p.cultureId = rawCultureId;
+  p.humanOrigin = normalizeHumanOriginMix(raw.humanOrigin);
   p.parents = Array.isArray(raw.parents) ? [...raw.parents] : [];
   p.spouseIds = Array.isArray(raw.spouseIds) ? [...raw.spouseIds] : [];
   p.loverIds = Array.isArray(raw.loverIds) ? [...raw.loverIds] : [];
@@ -350,6 +354,10 @@ export function birth(world: World, c: Country, mother: Person, father: Person, 
     Math.random() < 0.5 ? mother.religionId : father.religionId,
     { style, familyName: lineagePerson.familyName, familyCultureId: lineagePerson.familyCultureId ?? lineagePerson.cultureId,
       fatherGivenName: givenNameOf(father), paternalSurname: father.familyName, maternalSurname: mother.familyName });
+  p.humanOrigin = inheritHumanOrigins(
+    mother.humanOrigin ?? normalizeHumanOriginMix(null),
+    father.humanOrigin ?? normalizeHumanOriginMix(null),
+  );
   p.bornAt = year - Math.random(); p.age = 0; p.trait = ''; p.traits = [];
   mother.lastBirthYear = year;
   return registerPerson(world, c, p);

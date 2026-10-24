@@ -21,6 +21,8 @@ export interface SavedLayers {
   drainage: Zone[];
   cultures: EntityZones[];
   religions: EntityZones[];
+  /** Added with human-origin composition; omitted by older saves. */
+  humanOrigins?: EntityZones[];
 }
 
 export interface SavedWorld {
@@ -33,6 +35,8 @@ export interface SavedWorld {
   nomads?: LegacyNomadSave[];
   cultures: Culture[];
   religions: Religion[];
+  /** Stable composition indices used by city and nomad population groups. */
+  humanOriginTable?: { ids: number[]; shares: number[] }[];
   people: World['people'];
   cardMultipliers?: Record<string, number>;
   /** Added when sea temperatures became part of climate layers. */
@@ -81,8 +85,10 @@ export interface WorldCopy {
   drainage: Uint8Array;
   culture: Uint16Array;
   religion: Uint16Array;
+  humanOrigins: Uint16Array;
   cultureTable: TableView;
   religionTable: TableView;
+  humanOriginTable: TableView;
   countries: Country[];
   cities: City[];
   nextCityChronicleId: number;
@@ -116,16 +122,18 @@ export function copyWorld(world: World): WorldCopy {
     drainage: world.drainage.slice(),
     culture: world.culture.slice(),
     religion: world.religion.slice(),
+    humanOrigins: world.humanOrigins.slice(),
     cultureTable: freezeTable(world.cultureTable),
     religionTable: freezeTable(world.religionTable),
+    humanOriginTable: freezeTable(world.humanOriginTable),
     countries: world.countries.map((c) => ({
       ...c,
       box: [...c.box] as Country['box'],
       ...(c.range ? { range: [...c.range] } : {}),
       ...(c.cells ? { cells: c.cells.map((cell) => ({ ...cell })) } : {}),
       rulerTerms: c.rulerTerms.map((term) => ({ ...term })),
-      ruler: { ...c.ruler, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], friendIds: [...c.ruler.friendIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
-      heir: c.heir ? { ...c.heir, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], friendIds: [...c.heir.friendIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
+      ruler: { ...c.ruler, humanOrigin: c.ruler.humanOrigin ? { ids: [...c.ruler.humanOrigin.ids], shares: [...c.ruler.humanOrigin.shares] } : undefined, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], friendIds: [...c.ruler.friendIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
+      heir: c.heir ? { ...c.heir, humanOrigin: c.heir.humanOrigin ? { ids: [...c.heir.humanOrigin.ids], shares: [...c.heir.humanOrigin.shares] } : undefined, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], friendIds: [...c.heir.friendIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
     })),
     cities: world.cities.map((city) => ({
       ...city,
@@ -134,7 +142,7 @@ export function copyWorld(world: World): WorldCopy {
     nextCityChronicleId: world.nextCityChronicleId,
     cultures: world.cultures.map((c) => ({ ...c })),
     religions: world.religions.map((r) => ({ ...r })),
-    people: world.people.map((p) => ({ ...p, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], friendIds: [...p.friendIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
+    people: world.people.map((p) => ({ ...p, humanOrigin: p.humanOrigin ? { ids: [...p.humanOrigin.ids], shares: [...p.humanOrigin.shares] } : undefined, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], friendIds: [...p.friendIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
     cardMultipliers: { ...world.cardMultipliers },
   };
 }
@@ -152,6 +160,7 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
   const drainage = yield* traceScalarSteps(copy.drainage, copy.land, null);
   const cultures = yield* traceCompositionSteps(copy.culture, copy.cultureTable);
   const religions = yield* traceCompositionSteps(copy.religion, copy.religionTable);
+  const humanOrigins = yield* traceCompositionSteps(copy.humanOrigins, copy.humanOriginTable);
   return {
     mapKind: copy.mapKind,
     seed: copy.seed,
@@ -163,7 +172,11 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     people: copy.people,
     cardMultipliers: copy.cardMultipliers,
     climateWater: true,
-    layers: { land, political, density, humidity, temperature, drainage, cultures, religions },
+    layers: { land, political, density, humidity, temperature, drainage, cultures, religions, humanOrigins },
+    humanOriginTable: copy.humanOriginTable.entries.map((entry) => ({
+      ids: [...entry.ids],
+      shares: [...entry.shares],
+    })),
   };
 }
 
@@ -187,11 +200,21 @@ export function deserializeWorld(saved: SavedWorld): World {
     temperature,
     drainage: rasterize(layers.drainage, new Uint8Array(MAP_PIXELS)),
   });
+  if (saved.humanOriginTable) {
+    for (const entry of saved.humanOriginTable.slice(1)) {
+      world.humanOriginTable.intern(new Map(entry.ids.map((id, index) => [id, entry.shares[index] ?? 0])));
+    }
+  } else {
+    world.humanOriginTable.single(0, 100);
+  }
   world.countries = saved.countries.map((c) => ({
     ...c,
     type: c.type ?? 'settled',
     ...(c.range ? { range: [...c.range] } : {}),
-    ...(c.cells ? { cells: c.cells.map((cell) => ({ ...cell })) } : {}),
+    ...(c.cells ? { cells: c.cells.map((cell) => ({
+      ...cell,
+      humanOriginMix: Number.isFinite(cell.humanOriginMix) ? cell.humanOriginMix : world.humanOriginTable.single(0, 100),
+    })) } : {}),
   }));
   const legacyNomads = saved.nomads ?? [];
   const legacyNomadIds = new Map<number, number>();
@@ -211,7 +234,10 @@ export function deserializeWorld(saved: SavedWorld): World {
       density: legacy.density ?? (legacy.cells ?? []).reduce((sum, cell) => sum + cell.population, 0) /
         Math.max(1, legacy.range?.length ?? 0),
       range: [...(legacy.range ?? [])],
-      cells: (legacy.cells ?? []).map((cell) => ({ ...cell })),
+      cells: (legacy.cells ?? []).map((cell) => ({
+        ...cell,
+        humanOriginMix: Number.isFinite(cell.humanOriginMix) ? cell.humanOriginMix : world.humanOriginTable.single(0, 100),
+      })),
       sourceCountryId: legacy.sourceCountryId,
     } as Country);
   }
@@ -256,6 +282,19 @@ export function deserializeWorld(saved: SavedWorld): World {
   for (const layer of layers.religions) {
     for (const zone of layer.zones) {
       fillRings(zone.rings, (p) => (world.religion[p] = world.religionTable.withEntry(world.religion[p], layer.entity, zone.value)));
+    }
+  }
+  if (layers.humanOrigins) {
+    for (const layer of layers.humanOrigins) {
+      for (const zone of layer.zones) {
+        fillRings(zone.rings, (p) => (world.humanOrigins[p] =
+          world.humanOriginTable.withEntry(world.humanOrigins[p], layer.entity, zone.value)));
+      }
+    }
+  } else {
+    const legacyOrigin = world.humanOriginTable.single(0, 100);
+    for (let pixel = 0; pixel < MAP_PIXELS; pixel += 1) {
+      if (world.owner[pixel] > 0 && world.density[pixel] > 0) world.humanOrigins[pixel] = legacyOrigin;
     }
   }
   for (const city of world.cities) {

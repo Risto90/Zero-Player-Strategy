@@ -1,4 +1,5 @@
 import { randomItem } from './random';
+import { defaultHumanOriginMix, humanAgeStage, type HumanOriginMix } from './human';
 
 export type GovernmentId = 'tribal' | 'hereditary' | 'tyranny' | 'republic';
 export type GovernmentModifierId =
@@ -65,6 +66,8 @@ export interface Person {
   /** Cultural origin of the family name; descendants inherit this even if their culture differs. */
   familyCultureId?: number;
   cultureId: number;
+  /** Independent origin composition; cultural and religious identities remain separate. */
+  humanOrigin?: HumanOriginMix;
   religionId: number | null;
   countryId: number;
   bornAt: number;
@@ -199,14 +202,7 @@ export function personIdSequence(): number { return nextPersonId; }
 export function restorePersonIdSequence(id: number): void { nextPersonId = id; }
 const pick = <T,>(items: T[]): T => randomItem(items);
 export function ageStage(age: number): string {
-  if (age < 3) return 'младенец';
-  if (age <= 7) return 'ребёнок';
-  if (age <= 11) return 'отрок';
-  if (age <= 19) return 'подросток';
-  if (age <= 28) return 'молодой';
-  if (age <= 45) return 'зрелый';
-  if (age <= 65) return 'пожилой';
-  return 'старик';
+  return humanAgeStage(age);
 }
 export function personDeathStatus(person: Pick<Person, 'alive' | 'gender' | 'deathYear'>): string | null {
   if (person.alive) return null;
@@ -289,7 +285,7 @@ export function createPerson(
   const familyName = nameContext.familyName ?? familyNameForId(familyId, familyCultureId, nameContext.surnameAffix);
   const givenName = pick(GIVEN[gender]);
   return { id, givenName, name: formatPersonName(givenName, familyName, gender, nameContext), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName, familyCultureId, cultureId, religionId,
-    countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
+    humanOrigin: defaultHumanOriginMix(), countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
     loverIds: [], friendIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
 }
 export function createFamilyId(): number { return nextPersonId++; }

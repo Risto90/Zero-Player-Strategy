@@ -1,5 +1,6 @@
 import { MAP_HEIGHT, MAP_WIDTH, RANKS } from './config';
 import { quantizeShares } from './composition';
+import { combineHumanOriginTableMixes, humanOriginMixToTable, expectedOriginsForPopulation, humanOriginMixFromTable, defaultHumanOriginMix } from './human';
 import { cityPopulationGroupsAtPixel, type City, type CityPopulationGroup, type CityRank, type NomadCell, type Country, type World } from './world';
 
 const CITY_CANONICAL_MODIFIERS = [1, 1, 1, 2, 3, 6];
@@ -275,7 +276,7 @@ export class CityInfluenceIndex {
   }
 }
 
-type Pair = { culture: number; religion: number | null; population: number };
+type Pair = { culture: number; religion: number | null; population: number; humanOriginMix: number };
 
 /** Initializes old/incomplete city records from their founding pixel and keeps group totals aligned. */
 export function ensureCityPopulationGroups(world: World, city: City): CityPopulationGroup[] {
@@ -284,6 +285,14 @@ export function ensureCityPopulationGroups(world: World, city: City): CityPopula
     groups = cityPopulationGroupsAtPixel(world, city.pixel, city.population);
   }
   groups ??= [];
+  const legacyOriginMix = world.humanOrigins[city.pixel] || world.humanOriginTable.single(0, 100);
+  groups = groups.map((group) => ({
+    ...group,
+    humanOriginMix: Number.isInteger(group.humanOriginMix) &&
+      world.humanOriginTable.entries[group.humanOriginMix]?.total === 100
+      ? group.humanOriginMix
+      : legacyOriginMix,
+  }));
   const total = groups.reduce((sum, group) => sum + group.population, 0);
   if (city.population <= 0) groups = [];
   else if (total <= 0) groups = cityPopulationGroupsAtPixel(world, city.pixel, city.population);
@@ -320,13 +329,22 @@ export function changeCityPopulation(
   const combined = new Map<string, CityPopulationGroup>();
   for (const group of groups) {
     const population = group.population * scale;
-    if (population > 1e-9) combined.set(`${group.cultureId}/${group.religionId ?? -1}`, { ...group, population });
+    const humanOriginMix = Number.isInteger(group.humanOriginMix) &&
+      world.humanOriginTable.entries[group.humanOriginMix]?.total === 100
+      ? group.humanOriginMix
+      : world.humanOriginTable.single(0, 100);
+    const key = `${group.cultureId}/${group.religionId ?? -1}/${humanOriginMix}`;
+    if (population > 1e-9) combined.set(key, { ...group, humanOriginMix, population });
   }
   for (const group of additions) {
-    const key = `${group.cultureId}/${group.religionId ?? -1}`;
+    const humanOriginMix = Number.isInteger(group.humanOriginMix) &&
+      world.humanOriginTable.entries[group.humanOriginMix]?.total === 100
+      ? group.humanOriginMix
+      : world.humanOriginTable.single(0, 100);
+    const key = `${group.cultureId}/${group.religionId ?? -1}/${humanOriginMix}`;
     const current = combined.get(key);
     if (current) current.population += group.population;
-    else if (group.population > 1e-9) combined.set(key, { ...group });
+    else if (group.population > 1e-9) combined.set(key, { ...group, humanOriginMix });
   }
   city.populationGroups = [...combined.values()];
   city.population = city.populationGroups.reduce((sum, group) => sum + group.population, 0);
@@ -359,6 +377,10 @@ function addGroupsToPixel(world: World, pixel: number, additions: CityPopulation
   world.culture[pixel] = world.cultureTable.intern(quantizeShares(cultures, 100));
   world.religion[pixel] = world.religionTable.intern(
     quantizeShares(religions, total > 0 ? faithful / total * 100 : 0),
+  );
+  world.humanOrigins[pixel] = combineHumanOriginTableMixes(
+    world.humanOriginTable,
+    groups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
   );
 }
 
@@ -433,7 +455,14 @@ export function applyDensityGrowth(world: World, pixel: number, amount: number, 
   }
   const distributed = [...shares.values()].reduce((sum, share) => sum + share, 0);
   const local = Math.max(0, amount - distributed);
-  const sourceGroups = pixelGroups(world, pixel, amount);
+  const sourceGroups = pixelGroups(world, pixel, amount).map((group) => {
+    const entry = world.humanOriginTable.entries[group.humanOriginMix];
+    const mix = entry?.total === 100
+      ? humanOriginMixFromTable(entry.ids, entry.shares)
+      : defaultHumanOriginMix();
+    const expected = expectedOriginsForPopulation(mix, world.density[pixel]);
+    return { ...group, humanOriginMix: world.humanOriginTable.intern(humanOriginMixToTable(expected)) };
+  });
   for (const city of eligible) {
     const share = shares.get(city.id) ?? 0;
     if (share > 0) {
@@ -499,6 +528,10 @@ export function applyDensityLoss(world: World, pixel: number, requested: number)
   world.culture[pixel] = world.cultureTable.intern(quantizeShares(cultures, 100));
   world.religion[pixel] = world.religionTable.intern(
     quantizeShares(religions, total > 0 ? faithful / total * 100 : 0),
+  );
+  world.humanOrigins[pixel] = combineHumanOriginTableMixes(
+    world.humanOriginTable,
+    remainingGroups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
   );
   world.version += 1;
   return loss;
@@ -621,7 +654,12 @@ export function movePopulationToCity(world: World, source: number, target: numbe
   for (const [ci, cultureId] of sourceCulture.ids.entries()) {
     sourceFaithIds.forEach((religionId, ri) => {
       const population = world.density[source] * sourceCulture.shares[ci] / 100 * sourceFaithShares[ri] / 100;
-      if (population > 0) sourcePairs.push({ culture: cultureId, religion: religionId, population });
+      if (population > 0) sourcePairs.push({
+        culture: cultureId,
+        religion: religionId,
+        population,
+        humanOriginMix: world.humanOrigins[source] || world.humanOriginTable.single(0, 100),
+      });
     });
   }
   const targetCultures = new Map(targetCulture.ids.map((id, i) => [id, targetCulture.shares[i]]));
@@ -641,7 +679,7 @@ export function movePopulationToCity(world: World, source: number, target: numbe
   for (const group of sourcePairs) {
     if (remaining <= 0) break;
     const take = Math.min(group.population, remaining);
-    const key = `${group.culture}/${group.religion ?? -1}`;
+    const key = `${group.culture}/${group.religion ?? -1}/${group.humanOriginMix}`;
     const current = moved.get(key);
     if (current) current.population += take;
     else moved.set(key, { ...group, population: take });
@@ -664,6 +702,10 @@ export function movePopulationToCity(world: World, source: number, target: numbe
     world.culture[pixel] = world.cultureTable.intern(quantizeShares(cultures, 100));
     const faithMix = quantizeShares(religions, total > 0 ? (religiousTotal / total) * 100 : 0);
     world.religion[pixel] = world.religionTable.intern(faithMix);
+    world.humanOrigins[pixel] = combineHumanOriginTableMixes(
+      world.humanOriginTable,
+      groups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
+    );
   };
   const sourceTotal = world.density[source] - actual;
   const sourceRemain = sourcePairs.filter((group) => group.population > 1e-9);
@@ -677,7 +719,12 @@ export function movePopulationToCity(world: World, source: number, target: numbe
     changeCityPopulation(
       world,
       targetCity,
-      [...moved.values()].map((group) => ({ cultureId: group.culture, religionId: group.religion, population: group.population })),
+      [...moved.values()].map((group) => ({
+        cultureId: group.culture,
+        religionId: group.religion,
+        population: group.population,
+        humanOriginMix: group.humanOriginMix,
+      })),
     );
   } else {
     const targetTotal = world.density[target];
@@ -689,7 +736,12 @@ export function movePopulationToCity(world: World, source: number, target: numbe
     for (const [ci, cultureId] of targetCultureEntry.ids.entries()) {
       targetReligions.forEach((religionId, ri) => {
         const population = targetTotal * targetCultureEntry.shares[ci] / 100 * targetRelShares[ri] / 100;
-        if (population > 0) targetPairs.push({ culture: cultureId, religion: religionId, population });
+        if (population > 0) targetPairs.push({
+          culture: cultureId,
+          religion: religionId,
+          population,
+          humanOriginMix: world.humanOrigins[target] || world.humanOriginTable.single(0, 100),
+        });
       });
     }
     targetPairs.push(...moved.values());
@@ -760,18 +812,22 @@ export function concentrateCityPopulation(world: World, city: City): void {
         const countryDensity = world.density[source];
         const countryCulture = world.culture[source];
         const countryReligion = world.religion[source];
+        const countryHumanOrigins = world.humanOrigins[source];
         world.density[source] = pool.cell.population;
         world.culture[source] = pool.cell.cultureMix;
         world.religion[source] = pool.cell.religionMix;
+        world.humanOrigins[source] = pool.cell.humanOriginMix ?? world.humanOriginTable.single(0, 100);
         movePopulationToCity(world, source, pixel, amount, false);
         pool.cell.population = world.density[source];
         pool.cell.cultureMix = world.culture[source];
         pool.cell.religionMix = world.religion[source];
+        pool.cell.humanOriginMix = world.humanOrigins[source];
         if (pool.nomad) affectedNomads.add(pool.nomad);
         if (pool.cell.population <= 1e-9) emptyNomadCells.add(pool.cell);
         world.density[source] = countryDensity;
         world.culture[source] = countryCulture;
         world.religion[source] = countryReligion;
+        world.humanOrigins[source] = countryHumanOrigins;
       }
     }
   }

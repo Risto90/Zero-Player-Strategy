@@ -18,3 +18,4 @@
 - [City regression runtime](city-regression-runtime.md) — the full city regression suite may exceed short validation windows; keep UI checks targeted and handle performance separately.
 - [Point inspection demographics](point-inspection-demographics.md) — use the selected tile’s population layer and raster mixes; keep city population and composition in city profiles.
 - [Chronicle importance](chronicle-importance.md) — only user-specified event types are important; routine state and nomad expansion is not.
+- [Human-origin climate model](human-origin-climate-model.md) — habitat ranges reflect generations in a region, and shared-table references outside rasters need stable save mappings.

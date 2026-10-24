@@ -1,5 +1,6 @@
 import type { Country, World } from './world';
 import { ensureCityPopulationGroups } from './settlements';
+import { HUMAN_ORIGINS, canonicalizeHumanOrigins, humanOriginMixFromTable, type HumanOriginId, type HumanOriginMix } from './human';
 
 export interface DemographicPair { cultureId: number; religionId: number | null; weight: number }
 export interface Demography {
@@ -12,6 +13,7 @@ export interface Demography {
   religion: number | null;
   cultureFragmentation: number;
   religionFragmentation: number;
+  humanOrigin: HumanOriginMix;
 }
 const cache = new WeakMap<World, Map<string, { version: number; data: Demography }>>();
 export function weighted<T>(items: { value: T; weight: number }[], rng = Math.random): T | null {
@@ -30,9 +32,10 @@ export function demography(world: World, country: Country): Demography {
   const pairs = new Map<string, DemographicPair>();
   const cultures = new Map<number, number>();
   const religions = new Map<number | null, number>();
+  const humanOrigins = new Map<HumanOriginId, number>();
   let population = 0;
   let ruralPopulation = 0;
-  const addPopulationGroup = (cultureId: number, religionId: number | null, amount: number) => {
+  const addPopulationGroup = (cultureId: number, religionId: number | null, amount: number, originMixId: number) => {
     if (amount <= 0) return;
     population += amount;
     cultures.set(cultureId, (cultures.get(cultureId) ?? 0) + amount);
@@ -41,6 +44,13 @@ export function demography(world: World, country: Country): Demography {
     const entry = pairs.get(key);
     if (entry) entry.weight += amount;
     else pairs.set(key, { cultureId, religionId, weight: amount });
+    const originEntry = world.humanOriginTable.entries[originMixId];
+    const originMix = originEntry?.total === 100
+      ? humanOriginMixFromTable(originEntry.ids, originEntry.shares)
+      : { ids: [HUMAN_ORIGINS[0].id], shares: [100] };
+    originMix.ids.forEach((id, index) => {
+      humanOrigins.set(id, (humanOrigins.get(id) ?? 0) + amount * originMix.shares[index] / 100);
+    });
   };
   if (country.type === 'nomadic') {
     for (const cell of country.cells ?? []) {
@@ -53,7 +63,8 @@ export function demography(world: World, country: Country): Demography {
       culture.ids.forEach((cultureId, ci) => {
         religionIds.forEach((religionId, ri) => {
           addPopulationGroup(cultureId, religionId,
-            cell.population * culture.shares[ci] / 100 * religionShares[ri] / 100);
+            cell.population * culture.shares[ci] / 100 * religionShares[ri] / 100,
+            cell.humanOriginMix ?? world.humanOriginTable.single(0, 100));
         });
       });
     }
@@ -63,7 +74,7 @@ export function demography(world: World, country: Country): Demography {
       const city = world.cityAt(p);
       if (city) {
         for (const group of ensureCityPopulationGroups(world, city)) {
-          addPopulationGroup(group.cultureId, group.religionId, group.population);
+          addPopulationGroup(group.cultureId, group.religionId, group.population, group.humanOriginMix);
         }
         return;
       }
@@ -74,7 +85,12 @@ export function demography(world: World, country: Country): Demography {
       const religionShares = [...religion.shares, 100 - religion.total];
       culture.ids.forEach((cultureId, ci) => {
         religionIds.forEach((religionId, ri) => {
-          addPopulationGroup(cultureId, religionId, pixelPopulation * culture.shares[ci] / 100 * religionShares[ri] / 100);
+          addPopulationGroup(
+            cultureId,
+            religionId,
+            pixelPopulation * culture.shares[ci] / 100 * religionShares[ri] / 100,
+            world.humanOrigins[p] || world.humanOriginTable.single(0, 100),
+          );
         });
       });
     });
@@ -86,6 +102,7 @@ export function demography(world: World, country: Country): Demography {
     pairs: [...pairs.values()], cultures, religions, population,
     density: ruralPopulation / Math.max(1, country.type === 'nomadic' ? country.range?.length ?? 0 : country.pixels),
     culture, religion,
+    humanOrigin: canonicalizeHumanOrigins(humanOrigins),
     cultureFragmentation: cultures.size * (1 - (cultures.get(culture) ?? 0) / Math.max(1, population)),
     religionFragmentation: religions.size * (1 - (religions.get(religion) ?? 0) / Math.max(1, population)),
   };

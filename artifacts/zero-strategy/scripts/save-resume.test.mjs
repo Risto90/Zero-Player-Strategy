@@ -61,7 +61,7 @@ function makeCard(type, updates = {}) {
 
 function worldState(world) {
   const rasters = Object.fromEntries(
-    ['owner', 'density', 'humidity', 'temperature', 'drainage', 'culture', 'religion'].map((key) => {
+    ['owner', 'density', 'humidity', 'temperature', 'drainage', 'culture', 'religion', 'humanOrigins'].map((key) => {
       const raster = world[key];
       return [key, Buffer.from(raster.buffer, raster.byteOffset, raster.byteLength)];
     }),

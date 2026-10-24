@@ -1,13 +1,14 @@
 import { GOVERNMENTS, MODIFIERS } from './government';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, RANKS } from './config';
 import { quantizeShares } from './composition';
+import { combineHumanOriginTableMixes } from './human';
 import type { Country, NomadCell, World } from './world';
 import { forEachNeighbour } from './geography';
 import { addCityAndConcentrate, cityInfluenceRadius } from './settlements';
 import { appoint, closeRulerTerms, successionOrder } from './succession';
 import { newCitizen, registerPerson, setPersonHome } from './characters';
 
-type Cohort = { cultureId: number; religionId: number | null; population: number; pixel: number };
+type Cohort = { cultureId: number; religionId: number | null; population: number; pixel: number; humanOriginMix: number };
 type SplitGroup = { cultures: Set<number>; religions: Set<number | null> };
 
 function memberships(values: (number | null)[], probability: number, forceSplit: boolean): Set<number | null>[] {
@@ -54,7 +55,13 @@ export function dissolveCountryIntoNomadicCountries(
       faithIds.forEach((religionId, ri) => {
         const population = density * culture.shares[ci] / 100 * faithShares[ri] / 100;
         if (population <= 1e-9) return;
-        cohorts.push({ cultureId, religionId, population, pixel });
+        cohorts.push({
+          cultureId,
+          religionId,
+          population,
+          pixel,
+          humanOriginMix: world.humanOrigins[pixel] || world.humanOriginTable.single(0, 100),
+        });
         cultureTotals.set(cultureId, (cultureTotals.get(cultureId) ?? 0) + population);
         religionTotals.set(religionId, (religionTotals.get(religionId) ?? 0) + population);
       });
@@ -141,6 +148,10 @@ export function dissolveCountryIntoNomadicCountries(
         religionMix: world.religionTable.intern(
           new Map([...religionMix].map(([religionId, amount]) => [religionId, amount / cellTotal * 100])),
         ),
+        humanOriginMix: combineHumanOriginTableMixes(
+          world.humanOriginTable,
+          entries.map((entry) => ({ id: entry.humanOriginMix, weight: entry.population })),
+        ),
       });
     }
     const dominantCulture = [...groupCultures].sort((a, b) => b[1] - a[1])[0][0];
@@ -222,6 +233,7 @@ export function dissolveCountryIntoNomadicCountries(
     world.density[pixel] = 0;
     world.culture[pixel] = 0;
     world.religion[pixel] = 0;
+    world.humanOrigins[pixel] = 0;
   }
   country.pixels = 0;
   closeRulerTerms(country, year);
@@ -296,6 +308,7 @@ export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: nu
     population: number;
     cultures: Map<number, number>;
     religions: Map<number, number>;
+    humanOrigins: { id: number; weight: number }[];
   }>();
   const addMix = (totals: Map<number, number>, mixId: number, population: number, table: World['cultureTable']): void => {
     const entry = table.entries[mixId];
@@ -310,23 +323,33 @@ export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: nu
     if (destination < 0) continue;
     let addition = additions.get(destination);
     if (!addition) {
-      addition = { population: 0, cultures: new Map(), religions: new Map() };
+      addition = { population: 0, cultures: new Map(), religions: new Map(), humanOrigins: [] };
       additions.set(destination, addition);
     }
     addition.population += cell.population;
     addMix(addition.cultures, cell.cultureMix, cell.population, world.cultureTable);
     addMix(addition.religions, cell.religionMix, cell.population, world.religionTable as World['cultureTable']);
+    addition.humanOrigins.push({
+      id: cell.humanOriginMix ?? world.humanOriginTable.single(0, 100),
+      weight: cell.population,
+    });
   }
   for (const [pixel, addition] of additions) {
     const existing = world.density[pixel];
     const total = existing + addition.population;
     const cultures = new Map<number, number>(), religions = new Map<number, number>();
+    const humanOrigins: { id: number; weight: number }[] = [];
     if (existing > 0) {
       addMix(cultures, world.culture[pixel], existing, world.cultureTable);
       addMix(religions, world.religion[pixel], existing, world.religionTable as World['cultureTable']);
+      humanOrigins.push({
+        id: world.humanOrigins[pixel] || world.humanOriginTable.single(0, 100),
+        weight: existing,
+      });
     }
     for (const [id, amount] of addition.cultures) cultures.set(id, (cultures.get(id) ?? 0) + amount);
     for (const [id, amount] of addition.religions) religions.set(id, (religions.get(id) ?? 0) + amount);
+    humanOrigins.push(...addition.humanOrigins);
     world.density[pixel] = total;
     world.culture[pixel] = world.cultureTable.intern(
       new Map([...cultures].map(([id, amount]) => [id, amount * 100 / total])),
@@ -334,6 +357,7 @@ export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: nu
     world.religion[pixel] = world.religionTable.intern(
       new Map([...religions].map(([id, amount]) => [id, amount * 100 / total])),
     );
+    world.humanOrigins[pixel] = combineHumanOriginTableMixes(world.humanOriginTable, humanOrigins);
   }
 
   for (const resident of world.people) if (resident.countryId === nomad.id) setPersonHome(resident, nomad);

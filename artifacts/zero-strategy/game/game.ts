@@ -17,6 +17,7 @@ import { applyReform } from './politics';
 import { appoint, candidateAllowed, closeRulerTerms, ensureOffices, refreshHeirs, repairDeadOfficeHolders, successionOrder, syncRulerTerms } from './succession';
 import { randomItem } from './random';
 import { demography } from './demography';
+import { humanClimateSuitabilityAt } from './human';
 import {
   addCityAndConcentrate,
   applyCityWaning,
@@ -96,6 +97,7 @@ export interface PixelInfo {
   cultures: { id: number; name: string; color: string; share: number }[];
   religions: { id: number; name: string; color: string; share: number }[];
   nonBelievers: number;
+  humanClimateSuitability: number | null;
   city: City | null;
   family: Person[];
 }
@@ -752,6 +754,9 @@ export class Game {
       cultures: owner > 0 ? cultureEntry.ids.map((id, i) => ({ id, name: w.cultures[id].name, color: w.cultures[id].color, share: cultureEntry.shares[i] })) : [],
       religions: owner > 0 ? religionEntry.ids.map((id, i) => ({ id, name: w.religions[id].name, color: w.religions[id].color, share: religionEntry.shares[i] })) : [],
       nonBelievers: owner > 0 ? 100 - religionEntry.total : 0,
+      humanClimateSuitability: owner > 0 && w.density[p] > 0
+        ? humanClimateSuitabilityAt(w, p)
+        : null,
       city: w.cityAt(p),
       family: country ? w.people.filter((p) => p.countryId === country.id &&
         (p.familyId === country.ruler.familyId || country.coRulerIds.includes(p.id)))

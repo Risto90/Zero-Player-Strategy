@@ -5,6 +5,8 @@ import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
 import { ColonizationDonorHeap, colonizationPlan, transferColonizationPopulation } from './colonization';
 import { applyDensityGrowth, changeCityPopulation, CityInfluenceIndex } from './settlements';
+import { demography } from './demography';
+import { expectedOriginsForPopulation, humanOriginIndex, humanOriginMixToTable, originForHabitat } from './human';
 
 export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'waneCity' | 'moveCapital' | 'nomadExpand' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
 export interface CardChoice {
@@ -557,6 +559,7 @@ export class CardPainter {
       }
     };
     const first = card.type !== 'colonization' && working.pixels === 0;
+    const originSource = working.pixels > 0 ? demography(world, working) : null;
     for (const p of pixels) {
       if (!canTake(p)) continue;
       let linked = first;
@@ -625,6 +628,11 @@ export class CardPainter {
         world.density[p] = working.density * strength;
         world.culture[p] = world.cultureTable.single(working.cultureId, 100);
         world.religion[p] = this.religionForNewLand;
+        const originMix = originSource
+          ? expectedOriginsForPopulation(originSource.humanOrigin, originSource.population)
+          : { ids: [originForHabitat(world.temperature[p], world.humidity[p])], shares: [100] };
+        world.humanOrigins[p] = world.humanOriginTable.intern(humanOriginMixToTable(originMix));
+        if (working.pixels === 1) working.ruler.humanOrigin = originMix;
         card.ink = Math.max(0, card.ink - cost);
       } else {
         card.ink -= 1;
@@ -657,6 +665,9 @@ export class CardPainter {
     const range = nomad.range ?? (nomad.range = []);
     const cultureMix = this.nomadCultureMix(nomad);
     const religionMix = this.nomadReligionMix(nomad);
+    const humanOriginMix = world.humanOriginTable.intern(
+      humanOriginMixToTable(demography(world, nomad).humanOrigin),
+    );
     const population = cells.reduce((sum, cell) => sum + cell.population, 0);
     const baseDensity = Number.isFinite(nomad.density)
       ? nomad.density
@@ -684,7 +695,7 @@ export class CardPainter {
         this.nomadRange.add(pixel);
         let cell = this.nomadCells.get(pixel);
         if (!cell) {
-          cell = { pixel, population: 0, cultureMix, religionMix };
+          cell = { pixel, population: 0, cultureMix, religionMix, humanOriginMix };
           this.nomadCells.set(pixel, cell);
           cells.push(cell);
         }
@@ -713,6 +724,7 @@ export class CardPainter {
             population: 0,
             cultureMix,
             religionMix,
+            humanOriginMix,
           };
           this.nomadCells.set(pixel, cell);
           cells.push(cell);

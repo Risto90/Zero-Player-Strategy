@@ -1,5 +1,6 @@
 import { MAP_PIXELS, SHARE_STEP } from './config';
 import { quantizeShares } from './composition';
+import { combineHumanOriginTableMixes } from './human';
 import { demography } from './demography';
 import { forEachNeighbour } from './geography';
 import { resizeCityPopulation } from './settlements';
@@ -23,6 +24,7 @@ export interface PopulationGroup {
   cultureId: number;
   religionId: number | null;
   population: number;
+  humanOriginMix: number;
 }
 
 export interface ColonizationTransfer {
@@ -104,13 +106,21 @@ export function populationGroupsAt(world: World, pixel: number): PopulationGroup
   if (population <= EPSILON) return [];
   const culture = world.cultureTable.entries[world.culture[pixel]];
   const religion = world.religionTable.entries[world.religion[pixel]];
+  const humanOriginMix = world.humanOriginTable.entries[world.humanOrigins[pixel]]?.total === 100
+    ? world.humanOrigins[pixel]
+    : world.humanOriginTable.single(0, 100);
   const religionIds: (number | null)[] = [...religion.ids, null];
   const religionShares = [...religion.shares, 100 - religion.total];
   const groups: PopulationGroup[] = [];
   culture.ids.forEach((cultureId, ci) => {
     religionIds.forEach((religionId, ri) => {
       const share = culture.shares[ci] * religionShares[ri] / 100;
-      if (share > 0) groups.push({ cultureId, religionId, population: population * share / 100 });
+      if (share > 0) groups.push({
+        cultureId,
+        religionId,
+        population: population * share / 100,
+        humanOriginMix,
+      });
     });
   });
   return groups;
@@ -166,7 +176,7 @@ function splitGroups(
 function combineGroups(...sets: PopulationGroup[][]): PopulationGroup[] {
   const totals = new Map<string, PopulationGroup>();
   for (const group of sets.flat()) {
-    const key = cohortKey(group.cultureId, group.religionId);
+    const key = `${cohortKey(group.cultureId, group.religionId)}/${group.humanOriginMix}`;
     const current = totals.get(key);
     if (current) current.population += group.population;
     else totals.set(key, { ...group });
@@ -179,6 +189,7 @@ function setPixelComposition(world: World, pixel: number, groups: PopulationGrou
   if (total <= EPSILON) {
     world.culture[pixel] = 0;
     world.religion[pixel] = 0;
+    world.humanOrigins[pixel] = 0;
     return;
   }
   const cultures = new Map<number, number>();
@@ -194,6 +205,10 @@ function setPixelComposition(world: World, pixel: number, groups: PopulationGrou
   const faithfulShare = Math.round((faithful / total * 100) / SHARE_STEP) * SHARE_STEP;
   world.culture[pixel] = world.cultureTable.intern(quantizeShares(cultures, 100));
   world.religion[pixel] = world.religionTable.intern(quantizeShares(religions, faithfulShare));
+  world.humanOrigins[pixel] = combineHumanOriginTableMixes(
+    world.humanOriginTable,
+    groups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
+  );
 }
 
 /** Moves up to 10% of a densest donor into one target, displacing the same number of locals. */

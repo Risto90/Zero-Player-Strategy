@@ -70,6 +70,7 @@ export interface CityPopulationGroup {
   cultureId: number;
   religionId: number | null;
   population: number;
+  humanOriginMix: number;
 }
 
 export interface NomadCell {
@@ -77,6 +78,7 @@ export interface NomadCell {
   population: number;
   cultureMix: number;
   religionMix: number;
+  humanOriginMix: number;
 }
 
 export interface Culture {
@@ -112,8 +114,11 @@ export class World {
   drainage: Uint8Array;
   readonly culture = new Uint16Array(MAP_PIXELS);
   readonly religion = new Uint16Array(MAP_PIXELS);
+  /** Human-origin composition is independent of culture and religion. */
+  readonly humanOrigins = new Uint16Array(MAP_PIXELS);
   readonly cultureTable = new CompositionTable();
   readonly religionTable = new CompositionTable();
+  readonly humanOriginTable = new CompositionTable();
   countries: Country[] = [];
   cities: City[] = [];
   nextCityChronicleId = 0;
@@ -405,13 +410,17 @@ export function cityPopulationGroupsAtPixel(world: World, pixel: number, populat
   if (population <= 0) return [];
   const culture = world.cultureTable.entries[world.culture[pixel]];
   const religion = world.religionTable.entries[world.religion[pixel]];
+  let humanOriginMix = world.humanOrigins[pixel];
+  if (world.humanOriginTable.entries[humanOriginMix]?.total !== 100) {
+    humanOriginMix = world.humanOriginTable.single(0, 100);
+  }
   const religionIds: (number | null)[] = [...religion.ids, null];
   const religionShares = [...religion.shares, 100 - religion.total];
   const groups: CityPopulationGroup[] = [];
   culture.ids.forEach((cultureId, ci) => {
     religionIds.forEach((religionId, ri) => {
       const amount = population * culture.shares[ci] / 100 * religionShares[ri] / 100;
-      if (amount > 0) groups.push({ cultureId, religionId, population: amount });
+      if (amount > 0) groups.push({ cultureId, religionId, population: amount, humanOriginMix });
     });
   });
   return groups;
