@@ -28,6 +28,7 @@ export interface SavedWorld {
   seed: number;
   countries: Country[];
   cities?: City[];
+  nextCityChronicleId?: number;
   /** Read-only compatibility for pre-unification saves; never emitted by new saves. */
   nomads?: LegacyNomadSave[];
   cultures: Culture[];
@@ -84,6 +85,7 @@ export interface WorldCopy {
   religionTable: TableView;
   countries: Country[];
   cities: City[];
+  nextCityChronicleId: number;
   cultures: Culture[];
   religions: Religion[];
   people: World['people'];
@@ -129,6 +131,7 @@ export function copyWorld(world: World): WorldCopy {
       ...city,
       populationGroups: city.populationGroups?.map((group) => ({ ...group })),
     })),
+    nextCityChronicleId: world.nextCityChronicleId,
     cultures: world.cultures.map((c) => ({ ...c })),
     religions: world.religions.map((r) => ({ ...r })),
     people: world.people.map((p) => ({ ...p, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], friendIds: [...p.friendIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
@@ -154,6 +157,7 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     seed: copy.seed,
     countries: copy.countries,
     cities: copy.cities,
+    nextCityChronicleId: copy.nextCityChronicleId,
     cultures: copy.cultures,
     religions: copy.religions,
     people: copy.people,
@@ -211,7 +215,11 @@ export function deserializeWorld(saved: SavedWorld): World {
       sourceCountryId: legacy.sourceCountryId,
     } as Country);
   }
-  world.cities = (saved.cities ?? []).map((city) => ({ ...city }));
+  world.cities = (saved.cities ?? []).map((city, id) => ({ ...city, chronicleId: city.chronicleId ?? id }));
+  world.nextCityChronicleId = Math.max(
+    saved.nextCityChronicleId ?? 0,
+    ...world.cities.map((city) => city.chronicleId + 1),
+  );
   for (const city of world.cities) {
     if (city.pixel >= 0 && city.pixel < MAP_PIXELS) world.cityIdAt[city.pixel] = city.id;
   }

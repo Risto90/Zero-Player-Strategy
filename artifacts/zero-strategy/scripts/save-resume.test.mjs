@@ -6,7 +6,7 @@ import { World } from '../game/world.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { availableNomadCitySites, dissolveCountryIntoNomadicCountries, settleNomadAsCountry } from '../game/nomads.ts';
 import { newCitizen, registerPerson } from '../game/characters.ts';
-import { filterChronicle, chronicleReference } from '../game/chronicle.ts';
+import { filterChronicle, chronicleReference, isChronicleImportant } from '../game/chronicle.ts';
 import { appoint, countryRulerHistory } from '../game/succession.ts';
 
 function makeFixture() {
@@ -171,7 +171,7 @@ try {
     year: 1000,
     text: 'Связь с объектом сохранена',
     objects: [{ type: 'country', id: fixture.country.id }],
-    important: false,
+    importantObjects: [],
   }, 'object links in new chronicle entries survive save/load');
   const resumePixel = fixture.pixels[16];
   resumed.dispatchAction({
@@ -232,6 +232,8 @@ try {
   colonizationGame.dispatchAction({ type: 'completeCard' });
   colonizationResumed.dispatchAction({ type: 'completeCard' });
   sameResult(colonizationGame, colonizationResumed, 'colonization effects');
+  assert.deepEqual(colonizationGame.log[0].importantObjects, [],
+    'colonization records are not country-important');
   colonizationGame.discard();
   colonizationResumed.discard();
 
@@ -256,6 +258,7 @@ try {
   choiceGame.dispatchAction({ type: 'completeCard' });
   choiceResumed.dispatchAction({ type: 'completeCard' });
   sameResult(choiceGame, choiceResumed, 'selected government option');
+  assert.deepEqual(choiceGame.log[0].importantObjects, [], 'ordinary government reforms are not important events');
   choiceGame.discard();
   choiceResumed.discard();
 
@@ -284,8 +287,172 @@ try {
     cityResumed.dispatchAction({ type: 'completeCard' });
   });
   sameResult(cityGame, cityResumed, 'pending city placement');
+  const foundedCity = cityGame.world.cities.at(-1);
+  const cityCreation = cityGame.log[0];
+  assert.equal(isChronicleImportant(cityCreation, chronicleReference('city', foundedCity.chronicleId)), true,
+    'a newly founded city gets its own important event marker');
+  assert.equal(isChronicleImportant(cityCreation, chronicleReference('country', cityFixture.country.id)), false,
+    'building a city does not make the existing country event-important');
   cityGame.discard();
   cityResumed.discard();
+
+  // Creating a country also records the newly founded culture, but no unrelated profile.
+  const creationFixture = makeFixture();
+  const newCulture = creationFixture.world.newCulture(null, 1000);
+  const newCountry = creationFixture.world.newCountry({
+    rank: 'тестовая страна',
+    cultureId: newCulture.id,
+    religionId: null,
+    density: 80,
+    foundedYear: 1000,
+    parentId: null,
+  });
+  const foundingPixel = creationFixture.world.landIndex.find((pixel) =>
+    creationFixture.world.owner[pixel] === 0 && !creationFixture.world.cityAt(pixel));
+  assert.notEqual(foundingPixel, undefined, 'the fixture has unused land for a new country');
+  creationFixture.world.setOwner(foundingPixel, newCountry.id + 1);
+  creationFixture.world.density[foundingPixel] = 80;
+  creationFixture.world.culture[foundingPixel] = creationFixture.world.cultureTable.single(newCulture.id, 100);
+  creationFixture.world.recountCountries();
+  const foundingCity = creationFixture.world.addCity(newCountry.id, foundingPixel, 1, true);
+  assert.ok(foundingCity, 'the new country gets its founding city');
+  const countryCreationGame = new Game(creationFixture.world, 'all');
+  countryCreationGame.finish({
+    card: makeCard('create', { newCountryId: newCountry.id, newCultureId: newCulture.id }),
+    changed: [],
+    colonistsMoved: 0,
+    dispose() {},
+  });
+  const countryCreation = countryCreationGame.log[0];
+  assert.equal(isChronicleImportant(countryCreation, chronicleReference('country', newCountry.id)), true,
+    'country creation is marked in the country history');
+  assert.equal(isChronicleImportant(countryCreation, chronicleReference('culture', newCulture.id)), true,
+    'the new culture created with the country is marked in its own history');
+  assert.equal(isChronicleImportant(countryCreation, chronicleReference('city', foundingCity.chronicleId)), true,
+    'the founding city is marked in its own history');
+  assert.equal(isChronicleImportant(countryCreation, chronicleReference('country', creationFixture.country.id)), false,
+    'country creation does not mark an unrelated country');
+  countryCreationGame.discard();
+
+  const faithFixture = makeFixture();
+  const newReligion = faithFixture.world.newReligion(1000);
+  const faithGame = new Game(faithFixture.world, 'all');
+  faithGame.finish({
+    card: makeCard('faith', {
+      newReligionId: newReligion.id,
+      targetCountryId: faithFixture.country.id,
+      ink: 0,
+      inkTotal: 1,
+    }),
+    changed: [],
+    colonistsMoved: 0,
+    dispose() {},
+  });
+  const faithCreation = faithGame.log[0];
+  assert.equal(isChronicleImportant(faithCreation, chronicleReference('religion', newReligion.id)), true,
+    'new religion creation is important in its own history');
+  assert.equal(isChronicleImportant(faithCreation, chronicleReference('country', faithFixture.country.id)), false,
+    'new religion creation does not mark the affected country important');
+  faithGame.discard();
+
+  const cultureFixture = makeFixture();
+  const parentCulture = cultureFixture.world.cultures[cultureFixture.country.cultureId];
+  const splitCulture = cultureFixture.world.newCulture(parentCulture, 1000);
+  const cultureGame = new Game(cultureFixture.world, 'all');
+  cultureGame.finish({
+    card: makeCard('culture', {
+      newCultureId: splitCulture.id,
+      sourceCultureId: parentCulture.id,
+      targetCountryId: cultureFixture.country.id,
+      ink: 0,
+      inkTotal: 1,
+    }),
+    changed: [],
+    colonistsMoved: 0,
+    dispose() {},
+  });
+  const cultureSplit = cultureGame.log[0];
+  assert.equal(isChronicleImportant(cultureSplit, chronicleReference('culture', splitCulture.id)), true,
+    'culture split is important in the new culture history');
+  assert.equal(isChronicleImportant(cultureSplit, chronicleReference('culture', parentCulture.id)), true,
+    'culture split is important in the source culture history');
+  assert.equal(isChronicleImportant(cultureSplit, chronicleReference('country', cultureFixture.country.id)), false,
+    'culture split does not mark the affected country important');
+  cultureGame.discard();
+
+  // A city can wane or fall, and both marks stay scoped to that city's stable identity.
+  const waningFixture = makeFixture();
+  const waningCity = waningFixture.world.cities[1];
+  waningCity.rank = 2;
+  waningCity.population = 80;
+  const waningGame = new Game(waningFixture.world, 'all');
+  waningGame.finish({
+    card: makeCard('waneCity', {
+      targetCountryId: waningFixture.country.id,
+      choices: [{ label: 'Увядание', detail: 'Увядание', cityId: waningCity.id }],
+    }),
+    changed: [],
+    colonistsMoved: 0,
+    dispose() {},
+  });
+  const waningEvent = waningGame.log[0];
+  assert.match(waningEvent.text, /увял/u, 'the city waning action is recorded');
+  assert.equal(isChronicleImportant(waningEvent, chronicleReference('city', waningCity.chronicleId)), true,
+    'city waning is important in that city history');
+  assert.equal(isChronicleImportant(waningEvent, chronicleReference('country', waningFixture.country.id)), false,
+    'city waning is not country-important');
+  waningGame.discard();
+
+  const cityFallFixture = makeFixture();
+  const fallenByEvent = cityFallFixture.world.cities[1];
+  fallenByEvent.population = 80;
+  const cityFallGame = new Game(cityFallFixture.world, 'all');
+  cityFallGame.finish({
+    card: makeCard('waneCity', {
+      targetCountryId: cityFallFixture.country.id,
+      choices: [{ label: 'Падение', detail: 'Падение', cityId: fallenByEvent.id }],
+    }),
+    changed: [],
+    colonistsMoved: 0,
+    dispose() {},
+  });
+  const cityFallEvent = cityFallGame.log[0];
+  assert.match(cityFallEvent.text, /удалён/u, 'the city fall action is recorded');
+  assert.equal(isChronicleImportant(cityFallEvent, chronicleReference('city', fallenByEvent.chronicleId)), true,
+    'city fall remains important in the fallen city archive');
+  assert.equal(isChronicleImportant(cityFallEvent, chronicleReference('country', cityFallFixture.country.id)), false,
+    'city fall is not country-important');
+  cityFallGame.discard();
+
+  // A fallen city keeps its stable archive link after array-index IDs shift.
+  await clearSaveBytes();
+  const fallenCityFixture = makeFixture();
+  const fallenCity = fallenCityFixture.world.cities[1];
+  const shiftedCity = fallenCityFixture.world.cities[2];
+  const fallenChronicleId = fallenCity.chronicleId;
+  const shiftedChronicleId = shiftedCity.chronicleId;
+  const fallenCityGame = new Game(fallenCityFixture.world, 'all');
+  fallenCityGame.addLog('Падение города', [{ type: 'city', id: fallenChronicleId }],
+    [chronicleReference('city', fallenChronicleId)]);
+  fallenCityFixture.world.removeCity(fallenCity.id);
+  assert.equal(shiftedCity.id, fallenCity.id, 'removing a city still compacts current display indices');
+  assert.equal(shiftedCity.chronicleId, shiftedChronicleId, 'compacting display indices does not change archive identity');
+  assert.equal(filterChronicle(fallenCityGame.log, [chronicleReference('city', shiftedChronicleId)]).length, 0,
+    'a neighboring city does not inherit the fallen city event');
+  assert.equal(filterChronicle(fallenCityGame.log, [chronicleReference('city', fallenChronicleId)]).length, 1,
+    'the fallen city record remains linked to its own archive identity');
+  await fallenCityGame.saveNow();
+  const fallenCityResumed = await Game.load();
+  assert.ok(fallenCityResumed, 'the fallen city chronicle save loads');
+  assert.equal(isChronicleImportant(fallenCityResumed.getSnapshot().chronicle[0], chronicleReference('city', fallenChronicleId)), true,
+    'the fallen city importance survives save/load');
+  const addedAfterLoad = fallenCityResumed.world.addCity(
+    fallenCityFixture.country.id, fallenCityFixture.pixels[20], 1,
+  );
+  assert.ok(addedAfterLoad && addedAfterLoad.chronicleId > Math.max(fallenChronicleId, shiftedChronicleId),
+    'new cities do not reuse archived identities after loading');
+  fallenCityGame.discard();
+  fallenCityResumed.discard();
 
   // Nomadic residents keep their current home through the persisted save/load path.
   await clearSaveBytes();
@@ -296,7 +463,7 @@ try {
   assert.equal(nomadFixture.country.rulerTerms[0].endYear, 1001, 'the former settled country closes its ruler term on the conversion year');
   const resident = registerPerson(nomadFixture.world, nomad, newCitizen(nomadFixture.world, nomad, 1001));
   const nomadGame = new Game(nomadFixture.world, 'all');
-  nomadGame.addLog('История кочевой страны', [{ type: 'country', id: nomad.id }], true);
+  nomadGame.addLog('История кочевой страны', [{ type: 'country', id: nomad.id }], [chronicleReference('country', nomad.id)]);
   await nomadGame.saveNow();
   const nomadResumed = await Game.load();
   assert.ok(nomadResumed, 'the saved nomadic world can be loaded');
@@ -307,16 +474,35 @@ try {
   assert.equal(nomadResumed.world.countries[nomad.id].sourceCountryId, nomadFixture.country.id,
     'the source country remains available as historical metadata');
   const nomadicHistory = nomadResumed.getSnapshot().chronicle.find(({ text }) => text === 'История кочевой страны');
-  assert.equal(nomadicHistory.important, true, 'nomadic country history saves its importance marker');
+  assert.equal(isChronicleImportant(nomadicHistory, chronicleReference('country', nomad.id)), true,
+    'nomadic country history saves its object-specific importance marker');
   assert.deepEqual(nomadicHistory.objects, [{ type: 'country', id: nomad.id }],
     'nomadic country history keeps its typed link after loading');
   const settlementSite = availableNomadCitySites(nomadGame.world, nomad)[0];
   assert.notEqual(settlementSite, undefined, 'the nomad has a valid settlement site');
   const settledNomad = settleNomadAsCountry(nomadGame.world, nomad, settlementSite, 1002);
   assert.equal(settledNomad?.id, nomad.id, 'settlement converts the existing country object');
-  assert.equal(nomadGame.log[0].important, true, 'settling keeps the original history importance');
+  assert.equal(isChronicleImportant(nomadGame.log[0], chronicleReference('country', nomad.id)), true,
+    'settling keeps the original country importance');
   assert.deepEqual(nomadGame.log[0].objects, [{ type: 'country', id: nomad.id }],
     'settling keeps the historical country link on the same successor ID');
+  nomadGame.finish({
+    card: makeCard('buildCity', { newCountryId: nomad.id, cityPlaced: true }),
+    changed: [],
+    colonistsMoved: 0,
+    dispose() {},
+  });
+  const settlementEvent = nomadGame.log.find(({ text }) => text.includes('кочевье осело'));
+  const settlementCity = nomadGame.world.cities.find((city) => city.countryId === nomad.id);
+  assert.ok(settlementCity, 'the settled country has a founding city');
+  assert.equal(isChronicleImportant(settlementEvent, chronicleReference('country', nomad.id)), true,
+    'transition to settled form is important in the country history');
+  assert.equal(isChronicleImportant(settlementEvent,
+    chronicleReference('city', settlementCity.chronicleId)), true,
+  'the city founded during settlement is marked in its own history');
+  assert.equal(isChronicleImportant(settlementEvent,
+    chronicleReference('culture', settledNomad.cultureId)), false,
+  'country settlement does not make the culture history important');
   nomadGame.discard();
   nomadResumed.discard();
 
@@ -329,7 +515,7 @@ try {
     archiveGame.addLog(
       `Архивная запись ${index}`,
       [{ type: 'country', id: archiveFixture.country.id }],
-      index === 0,
+      index === 0 ? [chronicleReference('country', archiveFixture.country.id)] : [],
     );
   }
   await archiveGame.saveNow();
@@ -337,11 +523,13 @@ try {
   assert.ok(archiveResumed, 'the full chronicle archive can be loaded');
   const restoredChronicle = archiveResumed.getSnapshot().chronicle;
   assert.equal(restoredChronicle.length, archiveSize, 'saving and loading preserves thousands of chronicle entries');
-  assert.equal(restoredChronicle.at(-1).important, true, 'the oldest important event remains marked after loading');
+  assert.equal(isChronicleImportant(restoredChronicle.at(-1), chronicleReference('country', archiveFixture.country.id)), true,
+    'the oldest important event remains marked for its country after loading');
   assert.equal(restoredChronicle.at(-1).text, 'Архивная запись 0',
     'the oldest important event remains accessible at the end of the loaded archive');
   assert.ok(filterChronicle(restoredChronicle, [chronicleReference('country', archiveFixture.country.id)])
-    .some(({ text, important }) => text === 'Архивная запись 0' && important),
+    .some((entry) => entry.text === 'Архивная запись 0' &&
+      isChronicleImportant(entry, chronicleReference('country', archiveFixture.country.id))),
   'an old important event remains available in the country profile after loading');
   assert.equal(archiveResumed.getSnapshot().log.length, 120,
     'the compatibility log projection remains bounded independently of the archive');
@@ -363,17 +551,25 @@ try {
   const mergeGame = new Game(mergeFixture.world, 'all');
   mergeGame.addLog('Старая летопись присоединённой страны', [
     { type: 'country', id: absorbed.id },
-    { type: 'city', id: mergeFixture.world.cities[0].id },
-  ], true);
+    { type: 'city', id: mergeFixture.world.cities[0].chronicleId },
+  ], [chronicleReference('country', absorbed.id)]);
   mergeGame.mergeCountries(mergeFixture.country, absorbed);
   const annexedHistory = mergeGame.log.find(({ text }) => text === 'Старая летопись присоединённой страны');
-  assert.equal(annexedHistory.important, true, 'annexation preserves the importance marker');
+  assert.equal(isChronicleImportant(annexedHistory, chronicleReference('country', mergeFixture.country.id)), true,
+    'annexation transfers the source-country importance to the surviving country');
   assert.ok(annexedHistory.objects.some(({ type, id }) => type === 'country' && id === mergeFixture.country.id),
     'the surviving country inherits the predecessor record');
   assert.ok(!annexedHistory.objects.some(({ type, id }) => type === 'country' && id === absorbed.id),
     'annexed history no longer points at the absorbed country');
-  assert.ok(annexedHistory.objects.some(({ type, id }) => type === 'city' && id === mergeFixture.world.cities[0].id),
+  assert.ok(annexedHistory.objects.some(({ type, id }) => type === 'city' && id === mergeFixture.world.cities[0].chronicleId),
     'annexation leaves links to other affected objects unchanged');
+  const mergerEvent = mergeGame.log.find(({ text }) => text.includes('мирно объединилась'));
+  assert.equal(isChronicleImportant(mergerEvent, chronicleReference('country', mergeFixture.country.id)), true,
+    'the receiving country has an important absorption record');
+  assert.equal(isChronicleImportant(mergerEvent, chronicleReference('country', absorbed.id)), true,
+    'the absorbed country has an important absorption record');
+  assert.equal(isChronicleImportant(mergerEvent, chronicleReference('city', mergeFixture.world.cities[0].chronicleId)), false,
+    'country absorption does not mark merged cities important');
   mergeGame.discard();
 
   // Dissolution into nomadic successors retains the global entry and replaces its country link.
@@ -383,7 +579,7 @@ try {
   collapseGame.addLog('История распавшейся страны', [
     { type: 'country', id: collapseFixture.country.id },
     { type: 'culture', id: collapseFixture.country.cultureId },
-  ], true);
+  ], [chronicleReference('country', collapseFixture.country.id)]);
   collapseGame.finish({
     card: makeCard('rain'),
     changed: [],
@@ -392,8 +588,19 @@ try {
   });
   const nomadicSuccessors = collapseFixture.world.countries.filter((country) => country.type === 'nomadic');
   assert.ok(nomadicSuccessors.length > 0, 'the test country actually dissolves into nomadic successors');
+  const dissolutionEvent = collapseGame.log.find(({ text }) => text.includes('страна распущена'));
+  assert.equal(isChronicleImportant(dissolutionEvent,
+    chronicleReference('country', collapseFixture.country.id)), true,
+  'the dissolved source country keeps the transition in its own chronicle');
+  assert.ok(nomadicSuccessors.every(({ id }) => isChronicleImportant(dissolutionEvent, chronicleReference('country', id))),
+    'the move into nomadic form is important for every successor country');
+  assert.equal(isChronicleImportant(dissolutionEvent,
+    chronicleReference('culture', collapseFixture.country.cultureId)), false,
+  'a country transition does not make the culture history important');
   const dissolvedHistory = collapseGame.log.find(({ text }) => text === 'История распавшейся страны');
-  assert.equal(dissolvedHistory.important, true, 'dissolution keeps the important entry');
+  assert.ok(nomadicSuccessors.every(({ id }) =>
+    isChronicleImportant(dissolvedHistory, chronicleReference('country', id))),
+  'dissolution transfers country importance to each nomadic successor');
   assert.ok(!dissolvedHistory.objects.some(({ type, id }) => type === 'country' && id === collapseFixture.country.id),
     'dissolution removes the obsolete source-country link');
   assert.deepEqual(

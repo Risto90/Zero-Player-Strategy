@@ -7,6 +7,7 @@ import { reformCandidates } from '../game/politics.ts';
 import { ensureOffices, expectedHeirFor, rulers } from '../game/succession.ts';
 import { MAP_HEIGHT, MAP_WIDTH } from '../game/config.ts';
 import { World } from '../game/world.ts';
+import { chronicleReference, isChronicleImportant } from '../game/chronicle.ts';
 
 function makeFixture(cityCount, seed = 8516) {
   const world = World.create('random', seed);
@@ -75,14 +76,15 @@ function checkPartition({ childrenCount, incumbentCount, cityCount, expectedPart
   game.focusCountryId = country.id;
   game.addLog('Давняя запись до наследственного разделения', [
     { type: 'country', id: country.id },
-  ], true);
+  ], [chronicleReference('country', country.id)]);
   game.partitionCountry(country, deceased, children[0]);
 
   const states = world.countries.filter((state) => state.id === country.id || state.parentId === country.id);
   assert.equal(states.length, expectedParts,
     `the formula selects the expected number of countries: ${JSON.stringify({ childrenCount, incumbentCount, cityCount, expectedParts, log: game.getSnapshot().log })}`);
   const predecessorEntry = game.log.find(({ text }) => text === 'Давняя запись до наследственного разделения');
-  assert.equal(predecessorEntry.important, true, 'inheritance partition keeps the importance marker');
+  assert.equal(isChronicleImportant(predecessorEntry, chronicleReference('country', country.id)), true,
+    'the source country keeps its own importance marker during a pending split');
   assert.deepEqual(
     predecessorEntry.objects.filter(({ type }) => type === 'country').map(({ id }) => id).sort((a, b) => a - b),
     [country.id],
@@ -136,7 +138,8 @@ checkPartition({ childrenCount: 5, incumbentCount: 2, cityCount: 2, expectedPart
   children[0].formerRulerOf.push(country.id);
 
   const game = new Game(world, 'observer');
-  game.addLog('Давняя запись до наследственного разделения', [{ type: 'country', id: country.id }], true);
+  game.addLog('Давняя запись до наследственного разделения', [{ type: 'country', id: country.id }],
+    [chronicleReference('country', country.id)]);
   game.partitionCountry(country, deceased, children[0]);
   const states = world.countries.filter((state) => state.id === country.id || state.parentId === country.id);
   assert.ok(states.length > 1, 'the automatic split creates successor states');
@@ -146,7 +149,15 @@ checkPartition({ childrenCount: 5, incumbentCount: 2, cityCount: 2, expectedPart
     states.map(({ id }) => id).sort((a, b) => a - b),
     'every completed heir state receives the source archive',
   );
-  assert.equal(predecessorEntry.important, true, 'the automatic split preserves event importance');
+  assert.ok(states.every(({ id }) => isChronicleImportant(predecessorEntry, chronicleReference('country', id))),
+    'the split history keeps its importance in each successor country');
+  const splitEvent = game.log.find(({ text }) => text.includes('страна разделена'));
+  assert.ok(splitEvent, 'the completed split is recorded in the chronicle');
+  assert.ok(states.every(({ id }) => isChronicleImportant(splitEvent, chronicleReference('country', id))),
+    'country split is important in every resulting country history');
+  assert.ok(world.cities.filter((city) => states.some((state) => state.id === city.countryId))
+    .every((city) => !isChronicleImportant(splitEvent, chronicleReference('city', city.chronicleId))),
+  'country split does not mark related city histories important');
   game.discard();
 }
 

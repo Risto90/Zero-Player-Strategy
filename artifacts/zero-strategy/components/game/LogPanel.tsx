@@ -5,6 +5,7 @@ import colors, { fonts } from '@/constants/colors';
 import {
   CHRONICLE_PAGE_SIZE,
   chroniclePage,
+  isChronicleImportant,
   searchChronicle,
   type ChronicleEntry,
   type ChronicleObjectOption,
@@ -76,7 +77,6 @@ export function LogPanel({
               <Text style={styles.minimalYear}>{entry.year || '—'}</Text>
               <View style={styles.entry}>
                 <Text style={[styles.minimalText, index > 0 && styles.minimalOlderText]}>{entry.text}</Text>
-                {entry.important && <Text style={styles.minimalImportant}>Важное событие</Text>}
               </View>
             </View>
           )}
@@ -190,7 +190,7 @@ export function LogPanel({
             <Text style={styles.year}>{entry.year || '—'}</Text>
             <View style={styles.entry}>
               <Text style={[styles.text, index > 0 && { opacity: 0.72 }]}>{entry.text}</Text>
-              {entry.important && <Text style={styles.important}>Важное событие</Text>}
+              {isChronicleImportant(entry, selectedReference) && <Text style={styles.important}>Важное событие</Text>}
             </View>
           </View>
         )}
@@ -229,7 +229,6 @@ const styles = StyleSheet.create({
   minimalText: { flexShrink: 1, fontFamily: fonts.sans, fontSize: 14, lineHeight: 20, color: '#f5eee8' },
   minimalOlderText: { opacity: 0.82 },
   important: { alignSelf: 'flex-start', paddingHorizontal: 5, paddingVertical: 1, fontFamily: fonts.sansSemiBold, fontSize: 9, color: c.primaryForeground, backgroundColor: c.primary },
-  minimalImportant: { alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, fontFamily: fonts.sansSemiBold, fontSize: 10, color: '#fff7f0', backgroundColor: c.primary },
   loadMore: { alignSelf: 'center', marginTop: 10, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: c.secondaryForeground },
   loadMoreText: { fontFamily: fonts.sansSemiBold, fontSize: 12, color: c.secondaryForeground },
 });

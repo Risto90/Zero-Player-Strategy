@@ -50,6 +50,8 @@ export type CityRank = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface City {
   id: number;
+  /** Stable chronicle identity; unlike id, this does not change when another city is removed. */
+  chronicleId: number;
   countryId: number;
   pixel: number;
   rank: CityRank;
@@ -114,6 +116,7 @@ export class World {
   readonly religionTable = new CompositionTable();
   countries: Country[] = [];
   cities: City[] = [];
+  nextCityChronicleId = 0;
   /** Persistent per-draw card probability multipliers, keyed by scope and card identity. */
   cardMultipliers: Record<string, number> = {};
   cultures: Culture[] = [];
@@ -258,6 +261,7 @@ export class World {
     if (!country || pixel < 0 || pixel >= MAP_PIXELS || !this.land[pixel] || this.cityAt(pixel)) return null;
     const city: City = {
       id: this.cities.length,
+      chronicleId: this.nextCityChronicleId++,
       countryId,
       pixel,
       rank,

@@ -61,9 +61,9 @@ export default function CityPage() {
   return <ProfileLayout eyebrow="КАРТОЧКА ГОРОДА" title={city.name ?? 'Город'}
     subtitle={`${cityRankName(city.rank)}${city.capital ? ' · столица' : ''}`}
     details={details}
-    chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('city', city.id)])}
+    chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('city', city.chronicleId)])}
     archive={snapshot.chronicle}
-    initialReference={chronicleReference('city', city.id)}
+    initialReference={chronicleReference('city', city.chronicleId)}
     objectOptions={historyObjectOptions}
   />;
 }

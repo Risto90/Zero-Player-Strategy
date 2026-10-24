@@ -4,6 +4,7 @@ import { createFamilyId, createPerson, personDeathStatus } from '../game/governm
 import { leadershipOptions, successionOrder } from '../game/succession.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
+import { chronicleReference, isChronicleImportant } from '../game/chronicle.ts';
 
 function makeFixture() {
   const world = World.create('random', 7721);
@@ -160,7 +161,12 @@ try {
     'the deceased ruler biography retains the year');
   const deathEntry = deathGame.log.find(({ text }) => text.includes(ruler.name) && text.includes('умер'));
   assert.ok(deathEntry, 'the ruler death is present in the chronicle');
-  assert.equal(deathEntry.important, true, 'a death record is explicitly important');
+   assert.equal(isChronicleImportant(deathEntry, chronicleReference('person', ruler.id)), true,
+     'death is important in the deceased person profile');
+   assert.equal(isChronicleImportant(deathEntry, chronicleReference('person', heir.id)), true,
+     'the successor is marked important for taking the office');
+   assert.equal(isChronicleImportant(deathEntry, chronicleReference('country', deathFixture.country.id)), false,
+     'a person death is not marked important in the country profile');
   assert.ok(deathEntry.objects.some(({ type, id }) => type === 'person' && id === ruler.id),
     'a death record links to the typed person profile');
   assert.ok(deathEntry.objects.some(({ type, id }) => type === 'person' && id === heir.id),

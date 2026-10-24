@@ -243,6 +243,7 @@ export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: nu
   if (!availableNomadCitySites(world, nomad).includes(cityPixel)) return null;
   const proposedCity = {
     id: -1,
+    chronicleId: -1,
     countryId: -1,
     pixel: cityPixel,
     rank: 1 as const,

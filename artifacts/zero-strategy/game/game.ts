@@ -30,7 +30,6 @@ import { availableNomadCitySites, dissolveCountryIntoNomadicCountries, settleNom
 import {
   chronicleReference,
   migrateChronicle,
-  reindexChronicleObjects,
   transferCountryChronicle,
   type ChronicleEntry,
   type ChronicleReference,
@@ -336,6 +335,8 @@ export class Game {
     game.focusCountryId = saved.focusCountryId;
     const legacyNomadIds = new Map<number, number>();
     for (const legacy of saved.world.nomads ?? []) legacyNomadIds.set(legacy.id, saved.world.countries.length + legacy.id);
+    const legacyCityIds = new Map((saved.world.cities ?? []).map((city, id) =>
+      [id, city.chronicleId ?? id] as const));
     game.queue = (saved.queue as (Slot | { scope: 'nomad'; nomadId: number })[]).flatMap((slot) => {
       if (slot.scope !== 'nomad') return [slot];
       const countryId = legacyNomadIds.get(slot.nomadId);
@@ -343,7 +344,7 @@ export class Game {
     });
     game.brushMode = saved.brushMode;
     game.brushSize = saved.brushSize;
-    game.log = migrateChronicle(saved.log, legacyNomadIds);
+    game.log = migrateChronicle(saved.log, legacyNomadIds, legacyCityIds);
     if (saved.card) {
       const card = { ...saved.card };
       const legacyNomadId = (saved.card as Card & { targetNomadId?: number | null }).targetNomadId;
@@ -1090,12 +1091,18 @@ export class Game {
           w.discardLast('cultures', card.newCultureId as number);
         } else {
           const culture = w.cultures[card.newCultureId as number];
+          const city = w.cities.find((item) => item.countryId === country.id);
           const faith = country.religionId !== null ? `, вера «${w.religions[country.religionId].name}»` : '';
           this.addLog(`Основано: ${country.rank} ${country.name} (народ «${culture.name}»${faith}).`, [
             chronicleReference('country', country.id),
             chronicleReference('culture', culture.id),
             ...(country.religionId === null ? [] : [chronicleReference('religion', country.religionId)]),
-          ], true);
+            ...(city ? [chronicleReference('city', city.chronicleId)] : []),
+          ], [
+            chronicleReference('country', country.id),
+            chronicleReference('culture', culture.id),
+            ...(city ? [chronicleReference('city', city.chronicleId)] : []),
+          ]);
         }
         break;
       }
@@ -1104,8 +1111,8 @@ export class Game {
           const city = w.cities[w.cities.length - 1];
           this.addLog(`${target.name}: основан городок.`, [
             chronicleReference('country', target.id),
-            ...(city ? [chronicleReference('city', city.id)] : []),
-            ], true);
+            ...(city ? [chronicleReference('city', city.chronicleId)] : []),
+          ], city ? [chronicleReference('city', city.chronicleId)] : []);
         }
         else if (card.cityPlaced && card.newCountryId !== null) {
           const founded = w.countries[card.newCountryId];
@@ -1113,10 +1120,13 @@ export class Game {
             const city = w.cities.filter((item) => item.countryId === founded.id).at(-1);
             this.addLog(`${founded.name}: кочевье осело; основаны государство и городок.`, [
               chronicleReference('country', founded.id),
-              ...(city ? [chronicleReference('city', city.id)] : []),
+              ...(city ? [chronicleReference('city', city.chronicleId)] : []),
               chronicleReference('culture', founded.cultureId),
               ...(founded.religionId === null ? [] : [chronicleReference('religion', founded.religionId)]),
-            ], true);
+            ], [
+              chronicleReference('country', founded.id),
+              ...(city ? [chronicleReference('city', city.chronicleId)] : []),
+            ]);
           }
         }
         break;
@@ -1129,8 +1139,8 @@ export class Game {
           concentrateCityPopulation(w, city);
           this.markCityArea(city);
           this.addLog(`${target.name}: город повышен до ранга «${cityRankName(city.rank)}».`, [
-            chronicleReference('country', target.id), chronicleReference('city', city.id),
-          ], true);
+            chronicleReference('country', target.id), chronicleReference('city', city.chronicleId),
+          ], [chronicleReference('city', city.chronicleId)]);
         }
         break;
       }
@@ -1143,11 +1153,11 @@ export class Game {
         const result = isAllowedTarget && city ? applyCityWaning(w, city) : null;
         if (result && target && city) {
           this.renderer.markAll();
-          if (result.removed) this.log = reindexChronicleObjects(this.log, 'city', city.id);
           this.addLog(result.removed
             ? `${target.name}: городок ${city.name ?? 'без названия'} удалён; половина жителей расселена.`
             : `${target.name}: ${city.name ?? 'город'} увял; расселено ${fmt(Math.round(result.transferredPopulation))} жителей.`,
-          [chronicleReference('country', target.id), ...(result.removed ? [] : [chronicleReference('city', city.id)])], true);
+          [chronicleReference('country', target.id), chronicleReference('city', city.chronicleId)],
+          [chronicleReference('city', city.chronicleId)]);
         }
         break;
       }
@@ -1163,9 +1173,9 @@ export class Game {
           if (oldCapital) this.markCityArea(oldCapital);
           this.addLog(`${target.name}: столица перенесена.`, [
             chronicleReference('country', target.id),
-            chronicleReference('city', city.id),
-            ...(oldCapital ? [chronicleReference('city', oldCapital.id)] : []),
-          ], true);
+            chronicleReference('city', city.chronicleId),
+            ...(oldCapital ? [chronicleReference('city', oldCapital.chronicleId)] : []),
+          ]);
         }
         break;
       }
@@ -1179,7 +1189,7 @@ export class Game {
           [chronicleReference('country', target.id)]);
         break;
       case 'colonization':
-        if (colonizedPixels > 0 && target) this.addLog(`${target.name} колонизирует ${colonizedPixels} участков: переселено ${fmt(colonistsMoved)} человек, столько же местных жителей удалено.`, [chronicleReference('country', target.id)], true);
+        if (colonizedPixels > 0 && target) this.addLog(`${target.name} колонизирует ${colonizedPixels} участков: переселено ${fmt(colonistsMoved)} человек, столько же местных жителей удалено.`, [chronicleReference('country', target.id)]);
         break;
       case 'split': {
         const country = w.countries[card.newCountryId as number];
@@ -1188,10 +1198,10 @@ export class Game {
           finalizeSplitCities(w, country.id);
           this.addLog(`${country.name} откалывается от ${target.name}.`, [
             chronicleReference('country', country.id), chronicleReference('country', target.id),
-            ...w.cities.filter((city) => city.countryId === country.id).map((city) => chronicleReference('city', city.id)),
+            ...w.cities.filter((city) => city.countryId === country.id).map((city) => chronicleReference('city', city.chronicleId)),
             chronicleReference('culture', country.cultureId),
             ...(country.religionId === null ? [] : [chronicleReference('religion', country.religionId)]),
-          ], true);
+          ], [chronicleReference('country', country.id), chronicleReference('country', target.id)]);
           this.log = transferCountryChronicle(this.log, target.id, [country.id]);
           if (card.splitCultureId !== undefined) this.extendPressure(target, 'ethnic');
           if (card.splitReligionId !== undefined) this.extendPressure(target, 'faith');
@@ -1222,7 +1232,7 @@ export class Game {
           this.addLog(`Возникает вера «${religion.name}»${target ? ` в ${target.name}` : ''}.`, [
             chronicleReference('religion', religion.id),
             ...affectedCountries.map((country) => chronicleReference('country', country.id)),
-          ], true);
+          ], [chronicleReference('religion', religion.id)]);
           for (const country of affectedCountries) this.extendPressure(country, 'faith');
         }
         break;
@@ -1237,7 +1247,7 @@ export class Game {
             ...(target
               ? [chronicleReference('country', target.id)]
               : changedCountryIds.map((countryId) => chronicleReference('country', countryId))),
-          ], true);
+          ], [chronicleReference('culture', culture.id), chronicleReference('culture', card.sourceCultureId as number)]);
           if (target) this.extendPressure(target, 'ethnic');
         }
         break;
@@ -1256,10 +1266,12 @@ export class Game {
               pressure.until = Math.max(pressure.until, this.year + 8);
               pressure.strength = Math.max(1, pressure.strength * 2);
               polity.pressures.coup = pressure;
+              const previousLeader = polity.ruler;
               const ruler = registerPerson(w, polity, choice.ruler ?? newCitizen(w, polity, this.year));
               this.appointCountryLeader(polity, ruler, this.year);
               this.addLog(`${polity.name}: переворот. ${GOVERNMENTS[polity.government].name}, правитель ${polity.ruler.name}.`,
-                [polityChronicleReference(polity), ...personChronicleReferences(polity.ruler)], true);
+                [polityChronicleReference(polity), ...personChronicleReferences(polity.ruler, previousLeader)],
+                personChronicleReferences(polity.ruler, previousLeader));
             } else this.addLog(`${polity.name}: введено изменение «${choice.label}»; форма ${previous}.`, [polityChronicleReference(polity)]);
             ensureOffices(w, polity, this.year);
             refreshHeirs(w, this.year);
@@ -1281,7 +1293,8 @@ export class Game {
             refreshHeirs(w, this.year);
             const seatLabel = polity.modifiers.includes('consulate') ? 'консулом' : 'правителем';
             this.addLog(`${polity.name}: ${card.type === 'election' ? 'выбран' : 'власть передана'} ${ruler.name} вместо ${previousLeader.name}; теперь он ${seatLabel}.`,
-              [polityChronicleReference(polity), ...personChronicleReferences(ruler, previousLeader)], true);
+              [polityChronicleReference(polity), ...personChronicleReferences(ruler, previousLeader)],
+              personChronicleReferences(ruler, previousLeader));
           }
         }
         break;
@@ -1302,12 +1315,16 @@ export class Game {
     for (const country of [...w.countries]) {
       if (country.type !== 'settled' || country.pixels <= 0 || w.cities.some((city) => city.countryId === country.id)) continue;
       const newCountries = dissolveCountryIntoNomadicCountries(w, country, this.year);
+      this.log = transferCountryChronicle(this.log, country.id, newCountries.map(({ id }) => id), true);
       this.addLog(`${country.name}: без городов страна распущена; население перешло в ${newCountries.length} кочевых стран.`, [
+        chronicleReference('country', country.id),
         ...newCountries.map((newCountry) => chronicleReference('country', newCountry.id)),
         chronicleReference('culture', country.cultureId),
         ...(country.religionId === null ? [] : [chronicleReference('religion', country.religionId)]),
-      ], true);
-      this.log = transferCountryChronicle(this.log, country.id, newCountries.map(({ id }) => id), true);
+      ], [
+        chronicleReference('country', country.id),
+        ...newCountries.map((newCountry) => chronicleReference('country', newCountry.id)),
+      ]);
       dissolved = true;
     }
     if (dissolved) this.renderer.markAll();
@@ -1340,8 +1357,9 @@ export class Game {
       ? `${incoming.name} поглощена ${main.name} после перехода власти к её правителю.`
       : `${incoming.name} мирно объединилась с ${main.name}.`, [
       chronicleReference('country', main.id),
-      ...mergedCities.map((city) => chronicleReference('city', city.id)),
-    ], true);
+      chronicleReference('country', incoming.id),
+      ...mergedCities.map((city) => chronicleReference('city', city.chronicleId)),
+    ], [chronicleReference('country', main.id), chronicleReference('country', incoming.id)]);
   }
 
   /** If another country's sitting ruler inherits this throne, their former state joins it. */
@@ -1375,6 +1393,8 @@ export class Game {
     if (event.kind === 'death') {
       const deceased = person(w, ids[0]);
       if (!deceased) return;
+      const parents = deceased.parents.map((id) => person(w, id)).filter((parent): parent is Person => !!parent);
+      const deathPeople = personChronicleReferences(deceased, ...parents);
       const wasLeader = deceased.id === country.ruler.id || country.coRulerIds.includes(deceased.id);
       killPerson(w, deceased, this.year, deceased.age >= 66 ? 'старость' : 'болезнь или несчастный случай');
       if (wasLeader) {
@@ -1402,7 +1422,8 @@ export class Game {
           if (!next) {
             next = registerPerson(w, country, newCitizen(w, country, this.year));
             this.addLog(`${country.name}: линия наследования прервалась; выбран новый правитель.`,
-              [polityChronicleReference(country), ...personChronicleReferences(next)], true);
+              [polityChronicleReference(country), ...personChronicleReferences(next)],
+              personChronicleReferences(next));
           }
           this.appointCountryLeader(country, next, this.year, seatId);
           ensureOffices(w, country, this.year);
@@ -1415,20 +1436,25 @@ export class Game {
           pressure.strength = Math.max(1, pressure.strength * 2);
           country.pressures.tyranny = pressure;
           this.addLog(`${country.name}: после смерти правителя тирания сменена на форму «${GOVERNMENTS[form].name}».`,
-            [polityChronicleReference(country), ...personChronicleReferences(deceased, next)], true);
+            [polityChronicleReference(country), ...personChronicleReferences(...parents, deceased, next)],
+            personChronicleReferences(...parents, deceased, next));
         } else if (closesConsulateSeat) {
+          const affectedPeople = seatId === country.ruler.id
+            ? personChronicleReferences(...parents, deceased, next)
+            : deathPeople;
           this.addLog(`${country.name}: вакантное консульское место закрыто; осталось ${country.consulCount} мест.`, [
-            polityChronicleReference(country), ...personChronicleReferences(deceased),
-          ], true);
+            polityChronicleReference(country), ...affectedPeople,
+          ], affectedPeople);
         } else this.addLog(`${country.name}: ${deceased.name} умер${deceased.gender === 'female' ? 'ла' : ''}; правит ${next.name}.`,
-          [polityChronicleReference(country), ...personChronicleReferences(deceased, next)], true);
+          [polityChronicleReference(country), ...personChronicleReferences(...parents, deceased, next)],
+          personChronicleReferences(...parents, deceased, next));
         syncRulerTerms(country, this.year);
         if (country.type === 'settled' && country.modifiers.includes('partition') && country.government !== 'republic' && country.government !== 'tyranny') {
           this.partitionCountry(country, deceased, choice?.ruler ?? next);
         }
       } else {
         this.addLog(`${country.name}: умер${deceased.gender === 'female' ? 'ла' : ''} ${deceased.name}, ${deceased.age} лет.`,
-          [polityChronicleReference(country), ...personChronicleReferences(deceased)], true);
+          [polityChronicleReference(country), ...deathPeople], deathPeople);
       }
       refreshHeirs(w, this.year);
       return;
@@ -1440,7 +1466,8 @@ export class Game {
         const child = birth(w, country, mother, father, this.year);
         if (!child) return;
         this.addLog(`${country.name}: у ${mother.name} и ${father.name} родился ребёнок ${child.name}.`,
-          [polityChronicleReference(country), ...personChronicleReferences(mother, father, child)], true);
+          [polityChronicleReference(country), ...personChronicleReferences(mother, father, child)],
+          personChronicleReferences(mother, father, child));
         refreshHeirs(w, this.year);
       }
       return;
@@ -1451,7 +1478,8 @@ export class Game {
       if (a && b && a.alive && b.alive) {
         marry(w, country, a, b, event.kind === 'engagement');
         this.addLog(`${country.name}: ${event.kind === 'engagement' ? 'обручились' : 'поженились'} ${a.name} и ${b.name}.`,
-          [polityChronicleReference(country), ...personChronicleReferences(a, b)], true);
+          [polityChronicleReference(country), ...personChronicleReferences(a, b)],
+          event.kind === 'marriage' ? personChronicleReferences(a, b) : []);
       }
       return;
     }
@@ -1460,13 +1488,14 @@ export class Game {
       if (!a.loverIds.includes(b.id)) a.loverIds.push(b.id);
       if (!b.loverIds.includes(a.id)) b.loverIds.push(a.id);
       this.addLog(`${country.name}: романтическая связь между ${a.name} и ${b.name}.`,
-        [polityChronicleReference(country), ...personChronicleReferences(a, b)], true);
+        [polityChronicleReference(country), ...personChronicleReferences(a, b)],
+        personChronicleReferences(a, b));
     }
     if (event.kind === 'friendship' && a && b) {
       if (!a.friendIds.includes(b.id)) a.friendIds.push(b.id);
       if (!b.friendIds.includes(a.id)) b.friendIds.push(a.id);
       this.addLog(`${country.name}: ${a.name} и ${b.name} стали друзьями.`,
-        [polityChronicleReference(country), ...personChronicleReferences(a, b)], true);
+        [polityChronicleReference(country), ...personChronicleReferences(a, b)]);
     } else if (event.kind === 'trait' && a && a.traits.length === 0) {
       const traits = ['Фанатик', 'Циник', 'Космополит', 'Националист', 'Плодовитый', 'Дальновидный', 'Решительный', 'Уступчивый', 'Осторожный', 'Харизматичный'];
       a.trait = randomItem(traits); a.traits.push(a.trait);
@@ -1778,18 +1807,27 @@ export class Game {
     this.addLog(`${source.name}: страна разделена на ${partitionCount} части между ${consulatePartition ? heirs.length : partitionCount} наследниками.`, [
       chronicleReference('country', source.id),
       ...states.map((state) => chronicleReference('country', state.id)),
-      ...w.cities.filter((city) => states.some((state) => state.id === city.countryId)).map((city) => chronicleReference('city', city.id)),
+      ...w.cities.filter((city) => states.some((state) => state.id === city.countryId)).map((city) => chronicleReference('city', city.chronicleId)),
       ...states.flatMap((state) => [
         chronicleReference('culture', state.cultureId),
         ...(state.religionId === null ? [] : [chronicleReference('religion', state.religionId)]),
       ]),
-    ], true);
+    ], states.map((state) => chronicleReference('country', state.id)));
     this.log = transferCountryChronicle(this.log, source.id, states.slice(1).map(({ id }) => id));
   }
 
-  private addLog(text: string, objects: ChronicleReference[] = [], important = false): void {
+  private addLog(text: string, objects: ChronicleReference[] = [], importantObjects: ChronicleReference[] = []): void {
     const uniqueObjects = new Map(objects.map((reference) => [`${reference.type}:${reference.id}`, reference]));
-    this.log = [{ year: this.year, text, objects: [...uniqueObjects.values()], important }, ...this.log];
+    const linkedObjects = new Set(uniqueObjects.keys());
+    const uniqueImportance = new Map(importantObjects
+      .filter((reference) => linkedObjects.has(`${reference.type}:${reference.id}`))
+      .map((reference) => [`${reference.type}:${reference.id}`, reference]));
+    this.log = [{
+      year: this.year,
+      text,
+      objects: [...uniqueObjects.values()],
+      importantObjects: [...uniqueImportance.values()],
+    }, ...this.log];
   }
 
   // ---------- snapshot ----------
