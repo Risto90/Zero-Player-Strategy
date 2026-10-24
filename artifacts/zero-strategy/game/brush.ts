@@ -284,7 +284,7 @@ export class CardPainter {
     this.colonizationAnchors = colonization?.anchors ?? null;
     this.colonizationConnected = colonization?.connectedTerritory.slice() ?? null;
     this.colonizationDonors = colonization ? new ColonizationDonorHeap(world, colonization.donors) : null;
-    const influenceCountryId = card.type === 'create' ? -1
+    const influenceCountryId = card.type === 'create' || card.type === 'nomadExpand' ? -1
       : card.type === 'expand' || card.type === 'colonization' ? card.targetCountryId
         : null;
     this.cityInfluence = influenceCountryId !== null
@@ -414,7 +414,14 @@ export class CardPainter {
   private brushScaling(pixel: number): { cost: number; strength: number } {
     const card = this.card;
     const influence = this.cityInfluence?.at(pixel, card.type === 'colonization');
-    if (!influence || (card.type !== 'expand' && card.type !== 'colonization')) return { cost: 1, strength: 1 };
+    if (card.type === 'nomadExpand') {
+      const foreignFactor = influence?.foreignRankSum ?? 0;
+      return foreignFactor > 0
+        ? { cost: foreignFactor, strength: 1 / foreignFactor }
+        : { cost: 1, strength: 1 };
+    }
+    if (!influence ||
+      (card.type !== 'expand' && card.type !== 'colonization')) return { cost: 1, strength: 1 };
     const duchyRadius = Math.sqrt(RANKS[2].ink / Math.PI);
     if (card.type === 'expand') {
       const cityPixel = influence.nearestOwnCityPixel;
@@ -646,41 +653,116 @@ export class CardPainter {
       return;
     }
     let changed = false;
-    for (const pixel of pixels) {
-      if (this.card.ink <= 0) break;
-      if (!world.land[pixel] || this.strokeMask[pixel] ||
-        (this.mode === 'respect' && this.cardMask[pixel])) continue;
-      if (this.nomadMode === 'range') {
-        if (this.nomadRange.has(pixel)) continue;
+    const cultureMix = this.nomadCultureMix(nomad);
+    const religionMix = this.nomadReligionMix(nomad);
+    const population = nomad.cells.reduce((sum, cell) => sum + cell.population, 0);
+    const baseDensity = Number.isFinite(nomad.density)
+      ? nomad.density
+      : population / Math.max(1, nomad.range.length);
+    if (this.nomadMode === 'range') {
+      const queue: number[] = [];
+      const queued = new Set<number>();
+      const enqueue = (pixel: number) => {
+        if (!queued.has(pixel)) { queued.add(pixel); queue.push(pixel); }
+      };
+      for (const pixel of pixels) this.dabMask[pixel] = 1;
+      for (const pixel of pixels) {
+        if (!world.land[pixel] || this.nomadRange.has(pixel) || this.strokeMask[pixel] ||
+          (this.mode === 'respect' && this.cardMask[pixel])) continue;
+        let connected = false;
+        forEachNeighbour(pixel, (neighbor) => { if (this.nomadRange.has(neighbor)) connected = true; });
+        if (connected) enqueue(pixel);
+      }
+      for (let head = 0; head < queue.length && this.card.ink > 0; head += 1) {
+        const pixel = queue[head];
+        if (!world.land[pixel] || this.nomadRange.has(pixel) || this.strokeMask[pixel] ||
+          (this.mode === 'respect' && this.cardMask[pixel])) continue;
+        const { cost, strength } = this.brushScaling(pixel);
         nomad.range.push(pixel);
         this.nomadRange.add(pixel);
         nomad.pixels += 1;
-      } else {
+        let cell = this.nomadCells.get(pixel);
+        if (!cell) {
+          cell = { pixel, population: 0, cultureMix, religionMix };
+          this.nomadCells.set(pixel, cell);
+          nomad.cells.push(cell);
+        }
+        cell.population += baseDensity * strength;
+        this.card.ink = Math.max(0, this.card.ink - cost);
+        this.touch(pixel);
+        this.changed.push(pixel);
+        this.markDirtyPixel(pixel);
+        changed = true;
+        forEachNeighbour(pixel, (neighbor) => {
+          if (this.dabMask[neighbor] && !this.nomadRange.has(neighbor)) enqueue(neighbor);
+        });
+      }
+      for (const pixel of pixels) this.dabMask[pixel] = 0;
+    } else {
+      for (const pixel of pixels) {
+        if (this.card.ink <= 0) break;
+        if (!world.land[pixel] || !this.nomadRange.has(pixel) || this.strokeMask[pixel] ||
+          (this.mode === 'respect' && this.cardMask[pixel])) continue;
+        const { cost, strength } = this.brushScaling(pixel);
         if (!this.nomadRange.has(pixel)) continue;
         let cell = this.nomadCells.get(pixel);
         if (!cell) {
           cell = {
             pixel,
             population: 0,
-            cultureMix: world.cultureTable.single(nomad.cultureId, 100),
-            religionMix: nomad.religionId === null ? 0 : world.religionTable.single(nomad.religionId, 100),
+            cultureMix,
+            religionMix,
           };
           this.nomadCells.set(pixel, cell);
           nomad.cells.push(cell);
         }
-        cell.population += 1;
+        cell.population += strength;
+        this.card.ink = Math.max(0, this.card.ink - cost);
+        this.touch(pixel);
+        this.changed.push(pixel);
+        this.markDirtyPixel(pixel);
+        changed = true;
       }
-      this.card.ink = Math.max(0, this.card.ink - 1);
-      this.touch(pixel);
-      this.changed.push(pixel);
-      this.markDirtyPixel(pixel);
-      changed = true;
     }
     if (changed) {
       world.nomadVersion += 1;
       world.version += 1;
       this.message = this.nomadMode === 'range' ? 'Ареал кочевья расширен.' : 'Плотность кочевого населения увеличена.';
     }
+  }
+
+  private nomadCultureMix(nomad: NomadGroup): number {
+    const totals = new Map<number, number>();
+    let population = 0;
+    for (const cell of nomad.cells) {
+      const entry = this.world.cultureTable.entries[cell.cultureMix];
+      for (let index = 0; index < entry.ids.length; index += 1) {
+        totals.set(entry.ids[index], (totals.get(entry.ids[index]) ?? 0) + cell.population * entry.shares[index] / 100);
+      }
+      population += cell.population;
+    }
+    if (population <= 0) return this.world.cultureTable.single(nomad.cultureId, 100);
+    return this.world.cultureTable.intern(
+      new Map([...totals].map(([id, amount]) => [id, amount * 100 / population])),
+    );
+  }
+
+  private nomadReligionMix(nomad: NomadGroup): number {
+    const totals = new Map<number, number>();
+    let population = 0;
+    for (const cell of nomad.cells) {
+      const entry = this.world.religionTable.entries[cell.religionMix];
+      for (let index = 0; index < entry.ids.length; index += 1) {
+        totals.set(entry.ids[index], (totals.get(entry.ids[index]) ?? 0) + cell.population * entry.shares[index] / 100);
+      }
+      population += cell.population;
+    }
+    if (population <= 0) {
+      return nomad.religionId === null ? 0 : this.world.religionTable.single(nomad.religionId, 100);
+    }
+    return this.world.religionTable.intern(
+      new Map([...totals].map(([id, amount]) => [id, amount * 100 / population])),
+    );
   }
 
   private markDirtyPixel(p: number): void {

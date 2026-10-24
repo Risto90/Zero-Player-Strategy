@@ -1,18 +1,32 @@
 import { createFamilyId, createPerson, deathChance, familyNameForId, formatPersonName, legacyNameStyleForCulture, legacySurnameAffixForCulture, governmentOf, GOVERNMENTS, reservePersonId, type Person, type PersonNameContext, type SurnameAffix } from './government';
-import type { Country, World } from './world';
+import type { Country, NomadGroup, World } from './world';
 import { sampleDemographic } from './demography';
+type Polity = Country | NomadGroup;
+
+function isNomad(polity: Polity): polity is NomadGroup {
+  return 'cells' in polity;
+}
+
+function containsPerson(polity: Polity, p: Person): boolean {
+  return isNomad(polity)
+    ? polity.personIds.includes(p.id) || polity.ruler.id === p.id || polity.coRulerIds.includes(p.id)
+    : p.countryId === polity.id || polity.ruler.id === p.id || polity.coRulerIds.includes(p.id);
+}
 
 export function person(world: World, id: number | null | undefined): Person | null {
   return id == null ? null : world.people.find((p) => p.id === id) ?? null;
 }
-export function registerPerson(world: World, country: Country, p: Person): Person {
+export function registerPerson(world: World, country: Polity, p: Person): Person {
   const existing = person(world, p.id);
-  if (existing) return existing;
-  p.countryId = country.id;
-  world.people.push(p);
-  return p;
+  const registered = existing ?? p;
+  if (!existing) world.people.push(p);
+  if (isNomad(country)) {
+    registered.countryId = country.sourceCountryId ?? -1;
+    if (!country.personIds.includes(registered.id)) country.personIds.push(registered.id);
+  } else registered.countryId = country.id;
+  return registered;
 }
-export function newCitizen(world: World, country: Country, year: number): Person {
+export function newCitizen(world: World, country: Polity, year: number): Person {
   const pair = sampleDemographic(world, country);
   const cultureId = pair?.cultureId ?? country.cultureId;
   const style = world.cultures[cultureId]?.nameStyleId ?? legacyNameStyleForCulture(cultureId);
@@ -124,6 +138,23 @@ export function normalizePolitics(world: World, year: number): void {
     c.termCounts[c.ruler.id] ??= 1;
   }
   world.people = [...normalized.values()];
+  for (const nomad of world.nomads) {
+    nomad.personIds ??= [];
+    nomad.coRulerIds ??= [];
+    nomad.previousRulerIds ??= [];
+    nomad.dynastyClaims ??= [];
+    nomad.pendingDeathIds ??= [];
+    nomad.ruler = normalized.get(nomad.ruler.id) ?? nomad.ruler;
+    nomad.heir = nomad.heir ? normalized.get(nomad.heir.id) ?? nomad.heir : null;
+    for (const id of [nomad.ruler.id, ...nomad.coRulerIds]) {
+      if (!nomad.personIds.includes(id)) nomad.personIds.push(id);
+    }
+    if (!nomad.ruler.formerRulerOf.includes(nomad.sourceCountryId ?? -1) && nomad.sourceCountryId !== null) {
+      nomad.ruler.formerRulerOf.push(nomad.sourceCountryId);
+    }
+    if (!nomad.dynastyClaims.includes(nomad.ruler.familyId)) nomad.dynastyClaims.push(nomad.ruler.familyId);
+    nomad.rulerSince ??= year;
+  }
   // The old simulator stored both parents on each real birth but did not always
   // persist the relationship itself. Reconstruct a mutual love bond when needed.
   const byId = new Map(world.people.map((p) => [p.id, p]));
@@ -144,18 +175,23 @@ export function normalizePolitics(world: World, year: number): void {
   ensureUniqueDynastySurnames(world);
 }
 
-export function trackedForBirth(world: World, country: Country, p: Person): boolean {
+export function trackedForBirth(world: World, country: Polity, p: Person): boolean {
+  const member = containsPerson(country, p);
+  const inDynasty = country.dynastyClaims.includes(p.familyId) ||
+    p.formerRulerOf.includes(isNomad(country) ? country.sourceCountryId ?? -1 : country.id) ||
+    p.id === country.ruler.id || country.previousRulerIds.includes(p.id);
   if (!p.alive) return false;
   if (p.spouseIds.some((id) => {
     const spouse = person(world, id);
-    return !!spouse && (country.dynastyClaims.includes(spouse.familyId) || spouse.formerRulerOf.includes(country.id));
+    return !!spouse && (country.dynastyClaims.includes(spouse.familyId) ||
+      spouse.formerRulerOf.includes(isNomad(country) ? country.sourceCountryId ?? -1 : country.id));
   })) return true;
   if (p.loverIds.some((id) => {
     const lover = person(world, id);
-    return !!lover && (country.dynastyClaims.includes(lover.familyId) || lover.formerRulerOf.includes(country.id));
+    return !!lover && (country.dynastyClaims.includes(lover.familyId) ||
+      lover.formerRulerOf.includes(isNomad(country) ? country.sourceCountryId ?? -1 : country.id));
   })) return true;
-  return country.dynastyClaims.includes(p.familyId) || p.formerRulerOf.includes(country.id) ||
-    p.id === country.ruler.id || country.previousRulerIds.includes(p.id);
+  return member || inDynasty;
 }
 /** Every living named person belonging to this country, independent of dynasty. */
 export function countryCharacters(world: World, country: Country): Person[] {
@@ -194,6 +230,10 @@ export function ensureUniqueDynastySurnames(world: World): void {
   for (const country of world.countries) {
     dynasties.add(country.ruler.familyId);
     for (const familyId of country.dynastyClaims) dynasties.add(familyId);
+  }
+  for (const nomad of world.nomads) {
+    dynasties.add(nomad.ruler.familyId);
+    for (const familyId of nomad.dynastyClaims) dynasties.add(familyId);
   }
   const activeFamilies = [...dynasties].filter((id) => membersByFamily.get(id)?.some((p) => p.alive)).sort((a, b) => a - b);
   const usedNames = new Set<string>();
@@ -236,7 +276,7 @@ export function related(world: World, a: Person, b: Person): boolean {
     a.parents.some((id) => person(world, id)?.parents.includes(b.id)) ||
     b.parents.some((id) => person(world, id)?.parents.includes(a.id));
 }
-export function canMarry(c: Country, p: Person): boolean {
+export function canMarry(c: Polity, p: Person): boolean {
   if (!p.alive || p.age < 12) return false;
   if (p.age >= 20) return true;
   if (c.modifiers.includes('meritocracy') && (p.id === c.heir?.id || c.dynastyClaims.includes(p.familyId))) return false;
@@ -246,19 +286,25 @@ export function arePartners(a: Person, b: Person): boolean {
   return (a.spouseIds.includes(b.id) && b.spouseIds.includes(a.id)) ||
     (a.loverIds.includes(b.id) && b.loverIds.includes(a.id));
 }
-export function marry(world: World, c: Country, a: Person, b: Person, betrothal = false): void {
+export function marry(world: World, c: Polity, a: Person, b: Person, betrothal = false): void {
   const spouse = registerPerson(world, c, b);
   if (betrothal) { a.betrothedId = spouse.id; spouse.betrothedId = a.id; return; }
   if (!a.spouseIds.includes(spouse.id)) a.spouseIds.push(spouse.id);
   if (!spouse.spouseIds.includes(a.id)) spouse.spouseIds.push(a.id);
-  const isForeignLeader = world.countries.some((other) => other.id !== c.id && other.pixels > 0 &&
-    (other.ruler.id === spouse.id || other.coRulerIds.includes(spouse.id)));
+  const isForeignLeader = world.countries.some((other) => (isNomad(c) || other.id !== c.id) && other.pixels > 0 &&
+    (other.ruler.id === spouse.id || other.coRulerIds.includes(spouse.id))) ||
+    world.nomads.some((other) => other !== c &&
+      (other.ruler.id === spouse.id || other.coRulerIds.includes(spouse.id)));
   // Keep a foreign state's active ruler attached to that state until an actual
   // succession transfers power; ordinary spouses join the household.
-  if (!isForeignLeader) spouse.countryId = c.id;
+  if (!isForeignLeader) {
+    if (isNomad(c)) spouse.countryId = c.sourceCountryId ?? -1;
+    else spouse.countryId = c.id;
+    if (isNomad(c) && !c.personIds.includes(spouse.id)) c.personIds.push(spouse.id);
+  }
   a.betrothedId = null; spouse.betrothedId = null;
 }
-export function birth(world: World, c: Country, mother: Person, father: Person, year: number): Person | null {
+export function birth(world: World, c: Polity, mother: Person, father: Person, year: number): Person | null {
   if (!mother.alive || !father.alive || mother.gender !== 'female' || father.gender !== 'male' ||
       mother.age < 12 || mother.age > 45 || father.age < 12 || !arePartners(mother, father) ||
       related(world, mother, father) || mother.lastBirthYear === year) return null;
@@ -279,12 +325,21 @@ export function advancePeople(world: World, year: number, rng = Math.random): vo
   for (const p of world.people) {
     if (!p.alive) continue;
     const c = world.countries[p.countryId];
-    if (!c || c.pixels <= 0) continue;
+    const activeCountries = c && c.pixels > 0 ? [c] : [];
+    const nomads = activeCountries.length ? [] : world.nomads.filter((group) =>
+      group.personIds.includes(p.id) || group.ruler.id === p.id || group.coRulerIds.includes(p.id));
+    if (!activeCountries.length && !nomads.length) continue;
     const previousAge = p.age;
     p.age = Math.max(previousAge, Math.floor(year - p.bornAt));
     // Annual probability is derived from the full age-period risk so the
     // cumulative chance across that period matches the design value.
-    if (!c.pendingDeathIds.includes(p.id) && rng() < deathChance(previousAge)) c.pendingDeathIds.push(p.id);
+    const pending = activeCountries.length
+      ? activeCountries[0].pendingDeathIds.includes(p.id)
+      : nomads.some((group) => group.pendingDeathIds.includes(p.id));
+    if (!pending && rng() < deathChance(previousAge)) {
+      if (activeCountries.length) activeCountries[0].pendingDeathIds.push(p.id);
+      else for (const group of nomads) if (!group.pendingDeathIds.includes(p.id)) group.pendingDeathIds.push(p.id);
+    }
   }
 }
 export function killPerson(world: World, p: Person, year: number, reason: string): void {
@@ -293,4 +348,5 @@ export function killPerson(world: World, p: Person, year: number, reason: string
   if (engaged) engaged.betrothedId = null;
   p.betrothedId = null;
   for (const c of world.countries) c.pendingDeathIds = c.pendingDeathIds.filter((id) => id !== p.id);
+  for (const nomad of world.nomads) nomad.pendingDeathIds = nomad.pendingDeathIds.filter((id) => id !== p.id);
 }

@@ -1,7 +1,11 @@
 import { GOVERNMENTS, MODIFIERS } from './government';
-import { MAP_WIDTH } from './config';
+import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, RANKS } from './config';
 import { quantizeShares } from './composition';
 import type { Country, NomadCell, NomadGroup, World } from './world';
+import { forEachNeighbour } from './geography';
+import { addCityAndConcentrate, cityInfluenceRadius } from './settlements';
+import { appoint, successionOrder } from './succession';
+import { newCitizen } from './characters';
 
 type Cohort = { cultureId: number; religionId: number | null; population: number; pixel: number };
 type SplitGroup = { cultures: Set<number>; religions: Set<number | null> };
@@ -82,6 +86,7 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
   for (const cultures of cultureSplits) for (const religions of faithSplits) groups.push({ cultures, religions });
 
   const created: NomadGroup[] = [];
+  const createdGroups: SplitGroup[] = [];
   for (const group of groups) {
     const perPixel = new Map<number, Cohort[]>();
     const groupCultures = new Map<number, number>();
@@ -132,10 +137,12 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
       id: world.nomads.length,
       name,
       color: country.color,
+      density: country.density,
       cultureId: dominantCulture,
       religionId,
       cells,
       range: [...pixels],
+      personIds: [],
       sourceCountryId: country.id,
       pixels: pixels.length,
       government: 'tribal',
@@ -157,6 +164,17 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
     };
     world.nomads.push(nomad);
     created.push(nomad);
+    createdGroups.push(group);
+  }
+
+  for (const resident of world.people.filter((person) => person.countryId === country.id)) {
+    let target = createdGroups.findIndex((group) =>
+      group.cultures.has(resident.cultureId) && group.religions.has(resident.religionId));
+    if (target < 0) target = createdGroups.findIndex((group) => group.cultures.has(resident.cultureId));
+    if (target < 0 && created.length) target = 0;
+    if (target >= 0 && !created[target].personIds.includes(resident.id)) {
+      created[target].personIds.push(resident.id);
+    }
   }
 
   for (const pixel of pixels) {
@@ -171,6 +189,160 @@ export function dissolveCountryIntoNomads(world: World, country: Country): Nomad
   world.nomadVersion += 1;
   world.version += 1;
   return created;
+}
+
+export function availableNomadCitySites(world: World, nomad: NomadGroup): number[] {
+  return nomad.range.filter((pixel) =>
+    world.land[pixel] && world.owner[pixel] === 0 && !world.cityAt(pixel),
+  );
+}
+
+/** Founding a town settles the nomad on the free portion of its influence sphere. */
+export function settleNomadAsCountry(world: World, nomad: NomadGroup, cityPixel: number, year: number): Country | null {
+  if (!availableNomadCitySites(world, nomad).includes(cityPixel)) return null;
+  const proposedCity = {
+    id: -1,
+    countryId: -1,
+    pixel: cityPixel,
+    rank: 1 as const,
+    population: 0,
+    capital: true,
+  };
+  const radius = cityInfluenceRadius(world, proposedCity);
+  const cx = cityPixel % MAP_WIDTH, cy = Math.floor(cityPixel / MAP_WIDTH);
+  const radiusSquared = radius * radius;
+  const territory = nomad.range.filter((pixel) => {
+    const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
+    return world.land[pixel] && world.owner[pixel] === 0 && !world.cityAt(pixel) &&
+      (x - cx) ** 2 + (y - cy) ** 2 <= radiusSquared;
+  });
+  if (!territory.includes(cityPixel)) return null;
+
+  const rank = [...RANKS].reverse().find((candidate) => candidate.ink <= territory.length) ?? RANKS[0];
+  const country = world.newCountry({
+    rank: rank.name,
+    cultureId: nomad.cultureId,
+    religionId: nomad.religionId,
+    density: nomad.density,
+    foundedYear: year,
+    parentId: nomad.sourceCountryId,
+    government: 'tribal',
+  });
+  const generatedRulerId = country.ruler.id;
+  country.government = 'tribal';
+  country.modifiers = [...new Set([
+    ...GOVERNMENTS.tribal.modifiers,
+    ...nomad.modifiers.filter((modifier) => MODIFIERS[modifier].forms?.includes('tribal') ?? true),
+  ])];
+  country.ruler = nomad.ruler;
+  country.heir = successionOrder(world, nomad)[0] ?? null;
+  country.rulerSince = nomad.rulerSince;
+  country.previousRulerIds = [...nomad.previousRulerIds];
+  country.dynastyClaims = [...nomad.dynastyClaims];
+  country.coRulerIds = [...nomad.coRulerIds];
+  country.termYears = nomad.termYears;
+  country.maxTerms = nomad.maxTerms;
+  country.consulCount = nomad.consulCount;
+  country.seatSince = { ...nomad.seatSince };
+  country.termCounts = { ...nomad.termCounts };
+  country.barredRulerIds = [...nomad.barredRulerIds];
+  country.pendingDeathIds = [...nomad.pendingDeathIds];
+  country.pressures = Object.fromEntries(
+    Object.entries(nomad.pressures).map(([key, pressure]) => [key, { ...pressure }]),
+  );
+  country.ruler.formerRulerOf = [...new Set([...country.ruler.formerRulerOf, country.id])];
+  country.ruler.countryId = country.id;
+  if (!country.dynastyClaims.includes(country.ruler.familyId)) country.dynastyClaims.push(country.ruler.familyId);
+  world.people = world.people.filter((person) => person.id !== generatedRulerId);
+
+  for (const pixel of territory) world.setOwner(pixel, country.id + 1);
+  const destinations = new Set(territory);
+  const nearest = new Int32Array(MAP_PIXELS).fill(-1);
+  const queue = new Int32Array(MAP_PIXELS);
+  let tail = 0;
+  for (const pixel of territory) {
+    nearest[pixel] = pixel;
+    queue[tail++] = pixel;
+  }
+  for (let head = 0; head < tail; head += 1) {
+    const pixel = queue[head];
+    forEachNeighbour(pixel, (next) => {
+      if (nearest[next] !== -1) return;
+      nearest[next] = nearest[pixel];
+      queue[tail++] = next;
+    });
+  }
+
+  const additions = new Map<number, {
+    population: number;
+    cultures: Map<number, number>;
+    religions: Map<number, number>;
+  }>();
+  const addMix = (totals: Map<number, number>, mixId: number, population: number, table: World['cultureTable']): void => {
+    const entry = table.entries[mixId];
+    for (let index = 0; index < entry.ids.length; index += 1) {
+      const id = entry.ids[index];
+      totals.set(id, (totals.get(id) ?? 0) + population * entry.shares[index] / 100);
+    }
+  };
+  for (const cell of nomad.cells) {
+    if (cell.population <= 0) continue;
+    const destination = destinations.has(cell.pixel) ? cell.pixel : nearest[cell.pixel];
+    if (destination < 0) continue;
+    let addition = additions.get(destination);
+    if (!addition) {
+      addition = { population: 0, cultures: new Map(), religions: new Map() };
+      additions.set(destination, addition);
+    }
+    addition.population += cell.population;
+    addMix(addition.cultures, cell.cultureMix, cell.population, world.cultureTable);
+    addMix(addition.religions, cell.religionMix, cell.population, world.religionTable as World['cultureTable']);
+  }
+  for (const [pixel, addition] of additions) {
+    const existing = world.density[pixel];
+    const total = existing + addition.population;
+    const cultures = new Map<number, number>(), religions = new Map<number, number>();
+    if (existing > 0) {
+      addMix(cultures, world.culture[pixel], existing, world.cultureTable);
+      addMix(religions, world.religion[pixel], existing, world.religionTable as World['cultureTable']);
+    }
+    for (const [id, amount] of addition.cultures) cultures.set(id, (cultures.get(id) ?? 0) + amount);
+    for (const [id, amount] of addition.religions) religions.set(id, (religions.get(id) ?? 0) + amount);
+    world.density[pixel] = total;
+    world.culture[pixel] = world.cultureTable.intern(
+      new Map([...cultures].map(([id, amount]) => [id, amount * 100 / total])),
+    );
+    world.religion[pixel] = world.religionTable.intern(
+      new Map([...religions].map(([id, amount]) => [id, amount * 100 / total])),
+    );
+  }
+
+  const nomadIndex = world.nomads.indexOf(nomad);
+  if (nomadIndex >= 0) world.nomads.splice(nomadIndex, 1);
+  world.nomads.forEach((item, index) => { item.id = index; });
+  const transferredOffices = new Set([country.ruler.id, ...country.coRulerIds]);
+  for (const other of world.nomads) {
+    for (const leaderId of [other.ruler.id, ...other.coRulerIds]) {
+      if (!transferredOffices.has(leaderId)) continue;
+      const successor = successionOrder(world, other).find((person) =>
+        person.id !== leaderId && !other.coRulerIds.includes(person.id) && person.id !== other.ruler.id) ??
+        newCitizen(world, other, year);
+      appoint(world, other, successor, year, leaderId);
+    }
+  }
+  const city = addCityAndConcentrate(world, country.id, cityPixel, true);
+  if (!city) throw new Error('Validated nomad city site became unavailable during settlement.');
+  for (const personId of nomad.personIds) {
+    const resident = world.people.find((person) => person.id === personId);
+    if (!resident) continue;
+    const belongsElsewhere = world.nomads.some((other) => other !== nomad &&
+      (other.ruler.id === personId || other.personIds.includes(personId)));
+    if (!belongsElsewhere) resident.countryId = country.id;
+  }
+  world.recountCountries();
+  world.nomadVersion += 1;
+  world.version += 1;
+  return country;
 }
 
 export function moveNomadCell(world: World, nomad: NomadGroup, pixel: number, amount: number): number {

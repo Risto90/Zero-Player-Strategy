@@ -11,3 +11,4 @@
 - [Card save and resume](save-resume-card-state.md) — a saved map does not capture transient per-card brush progress; resume parity must compare completed outcomes.
 - [Nomad cohort conservation](nomad-cohort-conservation.md) — keep each faith and atheist population exact when splitting nomad cohorts; avoid rounding subgroup shares.
 - [Cooperative world generation](cooperative-world-generation.md) — mobile startup generation must yield between bounded work slices and remain output-identical to the synchronous generator.
+- [Task handling](task-handling.md) — when the user refers to an existing task, continue that task instead of creating a replacement.

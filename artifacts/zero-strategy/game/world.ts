@@ -71,10 +71,14 @@ export interface NomadGroup extends PoliticalState {
   id: number;
   name: string;
   color: string;
+  /** Base density used when the nomad's expansion card claims new range. */
+  density: number;
   cultureId: number;
   religionId: number | null;
   cells: NomadCell[];
   range: number[];
+  /** People assigned to this nomadic group, including its ruling household. */
+  personIds: number[];
   sourceCountryId: number | null;
   pixels: number;
 }

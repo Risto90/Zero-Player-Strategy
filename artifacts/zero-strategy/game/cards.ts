@@ -62,15 +62,21 @@ for (let y = -STANDARD_EXPANSION_RADIUS; y <= STANDARD_EXPANSION_RADIUS; y += 1)
 // A town gathers 10% from its unmodified sphere; the reference equals five default-M brush dabs.
 const CITY_DENSITY_REFERENCE = 5 * standardExpansionPassPixels / (0.1 * RANKS[0].ink);
 
-function makeCard(type: CardType, ink: number, target: Country | null, detail: string, hint: number): Card {
+type Polity = Country | NomadGroup;
+
+function isNomad(polity: Polity): polity is NomadGroup {
+  return 'cells' in polity;
+}
+
+function makeCard(type: CardType, ink: number, target: Polity | null, detail: string, hint: number): Card {
   return {
     type,
     title: CARD_TITLES[type],
     detail,
     ink,
     inkTotal: ink,
-    targetCountryId: target?.id ?? null,
-    targetNomadId: null,
+    targetCountryId: target && !isNomad(target) ? target.id : null,
+    targetNomadId: target && isNomad(target) ? target.id : null,
     newCountryId: null,
     newCultureId: null,
     newReligionId: null,
@@ -84,8 +90,38 @@ function makeCard(type: CardType, ink: number, target: Country | null, detail: s
   };
 }
 
-export function drawNomadCard(world: World, nomad: NomadGroup): Card | null {
+export function drawNomadCard(world: World, nomad: NomadGroup, year: number): Card | null {
   if (!nomad.range.length) return null;
+  const life = drawLifeCard(world, nomad, year);
+  if (life?.type === 'death' || life?.type === 'election' || life?.type === 'birth' || life?.type === 'marriage') return life;
+  const countryCount = world.countries.filter((country) => country.pixels > 0).length;
+  const citySite = countryCount < MAX_COUNTRIES
+    ? nomad.range.find((pixel) => world.land[pixel] && world.owner[pixel] === 0 && !world.cityAt(pixel))
+    : undefined;
+  const population = nomad.cells.reduce((sum, cell) => sum + cell.population, 0);
+  const density = population / Math.max(1, nomad.range.length);
+  const cityWeight = citySite === undefined
+    ? 0
+    : (1 + nomad.pixels / RANKS[2].ink) * (density / CITY_DENSITY_REFERENCE);
+  const consulateScale = nomad.modifiers.includes('consulate')
+    ? 1 / Math.max(2, nomad.consulCount)
+    : nomad.modifiers.includes('coRule') ? 0.5 : 1;
+  return drawFirstApplicable([
+    { value: () => life, weight: 1.4 },
+    { value: () => drawNomadExpansionCard(world, nomad), weight: 4 * consulateScale },
+    { value: () => drawGovernment(world, nomad, year), weight: 0.16 * consulateScale },
+    { value: () => drawGovernment(world, nomad, year, true), weight: 0.01 * consulateScale },
+    { value: () => citySite === undefined ? null : makeCard(
+      'buildCity',
+      0,
+      nomad,
+      `${nomad.name}: выберите инструмент «Город» и укажите свободную точку суши в пределах ареала. После основания города кочевье оседает.`,
+      citySite,
+    ), weight: cityWeight },
+  ]);
+}
+
+function drawNomadExpansionCard(world: World, nomad: NomadGroup): Card | null {
   const range = new Set(nomad.range);
   let hint = -1;
   for (let attempt = 0; attempt < 300; attempt += 1) {
@@ -97,11 +133,10 @@ export function drawNomadCard(world: World, nomad: NomadGroup): Card | null {
   const card = makeCard(
     'nomadExpand',
     INK.expand,
-    null,
+    nomad,
     `${nomad.name}: на карте «Кочевья» кисть расширяет ареал, а на карте «Население» повышает плотность внутри ареала. Колонизация недоступна.`,
     hint,
   );
-  card.targetNomadId = nomad.id;
   card.nomadDensityOnly = densityOnly;
   return card;
 }
@@ -399,7 +434,7 @@ function proposalChoice(world: World, proposal: ReformProposal, ruler?: import('
     termYears: proposal.termYears, maxTerms: proposal.maxTerms, consulCount: proposal.consulCount, violent: proposal.forced, ruler };
 }
 
-function drawGovernment(world: World, country: Country, year: number, violent = false): Card | null {
+function drawGovernment(world: World, country: Polity, year: number, violent = false): Card | null {
   const proposals = reformCandidates(world, country, year, violent);
   if (!proposals.length) return null;
   const take = () => {
@@ -430,7 +465,7 @@ function personDetail(world: World, candidate: import('./government').Person): s
   const religion = candidate.religionId === null ? 'атеист' : world.religions[candidate.religionId]?.name ?? 'неизвестная вера';
   return `${candidate.age} лет · ${candidate.trait || ageLabel(candidate.age)} · ${culture} · ${religion}`;
 }
-function drawLifeCard(world: World, country: Country, year: number): Card | null {
+function drawLifeCard(world: World, country: Polity, year: number): Card | null {
   if (country.government === 'tribal' && country.ruler.age >= 60 && Math.random() < 0.08) {
     const card = makeCard('succession', 0, country, `Пожилой вождь ${country.ruler.name} может передать власть при жизни.`, -1);
     card.choices = leadershipOptions(world, country, year).slice(0, 2).map((ruler) => ({

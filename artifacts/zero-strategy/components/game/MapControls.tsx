@@ -79,7 +79,13 @@ export function MapControls({
                 : 'Рисовать нечем — сдвигайте карту'}
           </Text>
         )}
-        {cityOn && snap.cityPlacementAvailable && <Text style={styles.hint}>Коснитесь незанятой точки своей страны для размещения города.</Text>}
+        {cityOn && snap.cityPlacementAvailable && (
+          <Text style={styles.hint}>
+            {snap.card?.targetNomadId !== null && snap.card?.targetNomadId !== undefined
+              ? 'Коснитесь свободной точки суши в ареале кочевья.'
+              : 'Коснитесь незанятой точки своей страны для размещения города.'}
+          </Text>
+        )}
       </View>
       <View style={styles.right} pointerEvents="box-none">
         <Pressable style={styles.zoom} onPress={() => onZoom(1.5)} accessibilityLabel="Приблизить" testID="button-zoom-in">

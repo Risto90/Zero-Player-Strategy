@@ -1,10 +1,29 @@
-import { GOVERNMENTS, MODIFIERS, availableModifiers, applyModifier, type GovernmentId, type GovernmentModifierId, type Person } from './government';
+import { GOVERNMENTS, MODIFIERS, availableModifiers, applyModifier, type GovernmentId, type GovernmentModifierId, type Person, type PoliticalState } from './government';
 import { arePartners, canMarry, livingPartners, newCitizen, related, trackedForBirth } from './characters';
 import { demography } from './demography';
 import { person } from './characters';
 import { candidateAllowed, successionOrder } from './succession';
-import type { Country, World } from './world';
+import type { Country, NomadGroup, World } from './world';
 import { forEachNeighbour } from './geography';
+type Polity = Country | NomadGroup;
+
+function isNomad(polity: Polity): polity is NomadGroup {
+  return 'cells' in polity;
+}
+
+function polityPeople(world: World, polity: Polity): Person[] {
+  return world.people.filter((p) => p.alive && (isNomad(polity)
+    ? polity.personIds.includes(p.id) || p.id === polity.ruler.id || polity.coRulerIds.includes(p.id)
+    : p.countryId === polity.id || p.id === polity.ruler.id || polity.coRulerIds.includes(p.id)));
+}
+
+function adjacentNomadGroups(world: World, nomad: NomadGroup): Set<NomadGroup> {
+  const ownPixels = new Set(nomad.range);
+  const adjacentPixels = new Set<number>();
+  for (const pixel of nomad.range) forEachNeighbour(pixel, (next) => adjacentPixels.add(next));
+  return new Set(world.nomads.filter((other) => other !== nomad &&
+    other.range.some((pixel) => ownPixels.has(pixel) || adjacentPixels.has(pixel))));
+}
 
 export interface ReformProposal {
   government?: GovernmentId;
@@ -19,7 +38,7 @@ export interface ReformProposal {
 const clamp = (v: number, lo = 0, hi = 1000) => Math.max(lo, Math.min(hi, v));
 const trait = (p: Country['ruler'], value: string) => p.traits.includes(value) || p.trait === value;
 
-export function reformCandidates(world: World, c: Country, year: number, violent = false): ReformProposal[] {
+export function reformCandidates(world: World, c: Polity, year: number, violent = false): ReformProposal[] {
   if (c.government === 'tyranny' && !violent) return [];
   const d = demography(world, c), close = [...d.cultures.values()].sort((a, b) => b - a);
   const faiths = [...d.religions.values()].sort((a, b) => b - a);
@@ -37,33 +56,37 @@ export function reformCandidates(world: World, c: Country, year: number, violent
   const proposals: ReformProposal[] = [];
 
   if (violent) {
-    for (const id of Object.keys(GOVERNMENTS) as GovernmentId[]) {
-      if (id !== c.government) proposals.push({
-        government: id,
-        weight: id === 'tyranny' ? 2 + area / (density * 1200) + pressure : 1,
-        forced: true,
-      });
+    if (!isNomad(c)) {
+      for (const id of Object.keys(GOVERNMENTS) as GovernmentId[]) {
+        if (id !== c.government) proposals.push({
+          government: id,
+          weight: id === 'tyranny' ? 2 + area / (density * 1200) + pressure : 1,
+          forced: true,
+        });
+      }
     }
   } else {
     const addForm = (id: GovernmentId, weight: number) => {
       if (id !== c.government && weight > 0) proposals.push({ government: id, weight });
     };
-  const leadingFaithWeight = d.pairs.filter((p) => p.cultureId === d.culture).reduce((n, p) => n + p.weight, 0);
-  const leadingFaithDiversity = 1 - Math.max(0, ...d.pairs.filter((p) => p.cultureId === d.culture).map((p) => p.weight)) / Math.max(1, leadingFaithWeight);
-  const tribalToHereditary = clamp((relatives + 1) * (1 + leadingFaithDiversity) / (density * (1 + divCulture)));
-  const tribalToRepublic = clamp(density * (divCulture + divFaith) / area * 0.05);
-    if (c.government === 'tribal') {
-      addForm('hereditary', tribalToHereditary);
-      addForm('republic', tribalToRepublic);
-      addForm('tyranny', (area / (density * 1200) + pressure) * (trait(c.ruler, 'Решительный') ? 2 : 1));
-    } else if (c.government === 'hereditary') {
-      addForm('tribal', clamp(120_000 / (area * (family.length + 1))));
-      addForm('republic', clamp(density * Math.max(divCulture, divFaith) / area * 0.05));
-      addForm('tyranny', area / (density * 1200) + pressure);
-    } else if (c.government === 'republic') {
-      addForm('tribal', clamp(density * divCulture / (area * (1 + divFaith)) * 10_000));
-      addForm('hereditary', clamp(area / (Math.max(1, family.length) * 12_000)));
-      addForm('tyranny', area / (density * 1200) + pressure);
+    if (!isNomad(c)) {
+      const leadingFaithWeight = d.pairs.filter((p) => p.cultureId === d.culture).reduce((n, p) => n + p.weight, 0);
+      const leadingFaithDiversity = 1 - Math.max(0, ...d.pairs.filter((p) => p.cultureId === d.culture).map((p) => p.weight)) / Math.max(1, leadingFaithWeight);
+      const tribalToHereditary = clamp((relatives + 1) * (1 + leadingFaithDiversity) / (density * (1 + divCulture)));
+      const tribalToRepublic = clamp(density * (divCulture + divFaith) / area * 0.05);
+      if (c.government === 'tribal') {
+        addForm('hereditary', tribalToHereditary);
+        addForm('republic', tribalToRepublic);
+        addForm('tyranny', (area / (density * 1200) + pressure) * (trait(c.ruler, 'Решительный') ? 2 : 1));
+      } else if (c.government === 'hereditary') {
+        addForm('tribal', clamp(120_000 / (area * (family.length + 1))));
+        addForm('republic', clamp(density * Math.max(divCulture, divFaith) / area * 0.05));
+        addForm('tyranny', area / (density * 1200) + pressure);
+      } else if (c.government === 'republic') {
+        addForm('tribal', clamp(density * divCulture / (area * (1 + divFaith)) * 10_000));
+        addForm('hereditary', clamp(area / (Math.max(1, family.length) * 12_000)));
+        addForm('tyranny', area / (density * 1200) + pressure);
+      }
     }
   }
 
@@ -226,7 +249,7 @@ export function reformCandidates(world: World, c: Country, year: number, violent
   return proposals;
 }
 
-export function applyReform(c: Country, proposal: ReformProposal): void {
+export function applyReform(c: PoliticalState, proposal: ReformProposal): void {
   if (proposal.government) {
     const old = c.government;
     c.government = proposal.government;
@@ -267,13 +290,19 @@ function neighbouringCountries(world: World, country: Country): Set<number> {
 }
 
 /** Eligible spouses are ranked by proximity/dynasty first, then by cultural and religious fit. */
-export function marriageCandidates(world: World, country: Country, person: Person, year: number): Person[] {
-  const neighbours = neighbouringCountries(world, country);
+export function marriageCandidates(world: World, country: Polity, person: Person, year: number): Person[] {
+  const neighbours = isNomad(country) ? null : neighbouringCountries(world, country);
+  const neighbourNomads = isNomad(country) ? adjacentNomadGroups(world, country) : null;
+  const locals = new Set(polityPeople(world, country).map((p) => p.id));
   const knownPairs = new Set(demography(world, country).pairs.map((pair) => `${pair.cultureId}/${pair.religionId ?? 'none'}`));
   const candidates = world.people.filter((candidate) => {
+    const isLocal = locals.has(candidate.id);
+    const isNeighbour = isNomad(country)
+      ? !!neighbourNomads && [...neighbourNomads].some((group) => group.personIds.includes(candidate.id))
+      : candidate.countryId !== country.id && !!neighbours?.has(candidate.countryId);
     if (candidate.id === person.id || candidate.gender === person.gender || !candidate.alive ||
         !canMarry(country, candidate) || candidate.spouseIds.some((id) => personWorldAlive(world, id)) ||
-        candidate.betrothedId !== null || candidate.countryId !== country.id && !neighbours.has(candidate.countryId)) return false;
+        candidate.betrothedId !== null || (!isLocal && !isNeighbour)) return false;
     if (person.spouseIds.some((id) => personWorldAlive(world, id)) || person.betrothedId !== null) return false;
     return !related(world, person, candidate);
   });
@@ -286,7 +315,7 @@ export function marriageCandidates(world: World, country: Country, person: Perso
     return 0;
   };
   candidates.sort((a, b) => {
-    const priority = (p: Person) => p.countryId !== country.id ? (p.familyId !== person.familyId ? 4 : 3) :
+    const priority = (p: Person) => !locals.has(p.id) ? (p.familyId !== person.familyId ? 4 : 3) :
       (p.familyId !== person.familyId ? 2 : 1);
     return priority(b) - priority(a) || category(b) - category(a) || a.id - b.id;
   });
@@ -305,8 +334,8 @@ function personWorldAlive(world: World, id: number): boolean {
   return person(world, id)?.alive ?? false;
 }
 
-export function lifeOpportunity(world: World, c: Country, year: number): { kind: string; ids: number[]; weight: number; newPerson?: import('./government').Person } | null {
-  const locals = world.people.filter((p) => p.alive && p.countryId === c.id);
+export function lifeOpportunity(world: World, c: Polity, year: number): { kind: string; ids: number[]; weight: number; newPerson?: import('./government').Person } | null {
+  const locals = polityPeople(world, c);
   const trackedLocals = locals.filter((p) => trackedForBirth(world, c, p));
   const birthParents = world.people.filter((p) => trackedForBirth(world, c, p) && p.alive);
   const death = c.pendingDeathIds.length ? { kind: 'death', ids: [c.pendingDeathIds[0]], weight: 10000 } : null;

@@ -1,7 +1,15 @@
 import { strict as assert } from 'node:assert';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { dissolveCountryIntoNomads } from '../game/nomads.ts';
+import { dissolveCountryIntoNomads, settleNomadAsCountry } from '../game/nomads.ts';
+import { CardPainter } from '../game/brush.ts';
+import { INK, MAP_WIDTH } from '../game/config.ts';
+import { forEachNeighbour } from '../game/geography.ts';
+import { advancePeople, birth, marry, newCitizen, registerPerson } from '../game/characters.ts';
+import { leadershipOptions } from '../game/succession.ts';
+import { applyReform, marriageCandidates, reformCandidates } from '../game/politics.ts';
+import { demography } from '../game/demography.ts';
+import { cityInfluenceRadius } from '../game/settlements.ts';
 import { hexToRgb, MapRenderer } from '../game/render.ts';
 import { nomadProfileRoute } from '../game/profileRoutes.ts';
 import { World } from '../game/world.ts';
@@ -170,10 +178,12 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
     id: 0,
     name: 'Тестовое кочевье',
     color: '#3a77b8',
+    density: 20,
     cultureId: culture.id,
     religionId: null,
     cells: [],
     range: [nomadPixel],
+    personIds: [country.ruler.id],
     sourceCountryId: null,
     pixels: 1,
     government: 'tribal',
@@ -202,6 +212,144 @@ function assertPopulationAndFaithPreserved(nomads, world, religions) {
   const [r, g, b] = hexToRgb('#3a77b8');
   const expectedNomadColor = ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
   assert.equal(renderer.pixels[nomadPixel], expectedNomadColor, 'the nomad range remains visible in nomad map mode');
+}
+
+// The nomad brush grows the range's population and the density mode grows population in place.
+{
+  const fixture = makeCountry();
+  const nomad = dissolveCountryIntoNomads(fixture.world, fixture.country)[0];
+  const originalRange = new Set(nomad.range);
+  const originalPopulation = nomad.cells.reduce((sum, cell) => sum + cell.population, 0);
+  let target = -1;
+  for (const pixel of nomad.range) {
+    forEachNeighbour(pixel, (next) => {
+      if (target < 0 && fixture.world.land[next] && !originalRange.has(next)) target = next;
+    });
+    if (target >= 0) break;
+  }
+  assert.ok(target >= 0, 'fixture has free land next to the nomad range');
+  const card = {
+    type: 'nomadExpand', title: 'expand', detail: '', ink: INK.expand, inkTotal: INK.expand,
+    targetCountryId: null, targetNomadId: nomad.id, newCountryId: null,
+    newCultureId: null, newReligionId: null, sourceCultureId: null, newGovernmentId: null,
+    newRuler: null, choices: null, selectedChoice: 0, characterEvent: null, hint: target,
+    nomadDensityOnly: false,
+  };
+  const rangePainter = new CardPainter(fixture.world, card, 'respect');
+  rangePainter.setNomadMode('range');
+  rangePainter.dab(target % MAP_WIDTH + 0.5, Math.floor(target / MAP_WIDTH) + 0.5, 1);
+  rangePainter.dispose();
+  assert.ok(nomad.range.length > originalRange.size, 'range mode claims new land');
+  const afterRange = nomad.cells.reduce((sum, cell) => sum + cell.population, 0);
+  assert.ok(afterRange > originalPopulation, 'range mode adds population instead of only extending the outline');
+  assert.ok(Math.abs(afterRange - originalPopulation - (nomad.range.length - originalRange.size) * nomad.density) < 1e-5,
+    'each new range point receives the same baseline density as state expansion');
+
+  const densityPainter = new CardPainter(fixture.world, { ...card, ink: 20 }, 'respect');
+  densityPainter.setNomadMode('density');
+  const home = nomad.range[0];
+  densityPainter.dab(home % MAP_WIDTH + 0.5, Math.floor(home / MAP_WIDTH) + 0.5, 1);
+  densityPainter.dispose();
+  assert.ok(nomad.cells.reduce((sum, cell) => sum + cell.population, 0) > afterRange,
+    'density mode increases population inside the existing range');
+}
+
+// Foreign city spheres apply the documented rank-based cost/strength factor to nomad expansion.
+{
+  const fixture = makeCountry();
+  const nomad = dissolveCountryIntoNomads(fixture.world, fixture.country)[0];
+  const pixel = nomad.range[0];
+  const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
+  const cityPixel = [...fixture.world.landIndex].find((candidate) => {
+    if (candidate === pixel || fixture.world.cityAt(candidate)) return false;
+    const distance = Math.hypot(candidate % MAP_WIDTH - x, Math.floor(candidate / MAP_WIDTH) - y);
+    return distance < 10;
+  });
+  assert.ok(cityPixel !== undefined, 'fixture has a nearby point for a foreign city');
+  const city = fixture.world.addCity(fixture.country.id, cityPixel, 2, false);
+  assert.ok(city, 'foreign city is created');
+  assert.ok(Math.hypot(city.pixel % MAP_WIDTH - x, Math.floor(city.pixel / MAP_WIDTH) - y) <
+    cityInfluenceRadius(fixture.world, city), 'the nomad point lies inside the city influence');
+
+  const cell = nomad.cells.find((entry) => entry.pixel === pixel);
+  assert.ok(cell, 'nomad has population at its range point');
+  const before = cell.population;
+  const card = {
+    type: 'nomadExpand', title: 'expand', detail: '', ink: 2, inkTotal: 2,
+    targetCountryId: null, targetNomadId: nomad.id, newCountryId: null,
+    newCultureId: null, newReligionId: null, sourceCultureId: null, newGovernmentId: null,
+    newRuler: null, choices: null, selectedChoice: 0, characterEvent: null, hint: pixel,
+  };
+  const painter = new CardPainter(fixture.world, card, 'respect');
+  painter.setNomadMode('density');
+  painter.dab(x + 0.5, y + 0.5, 1);
+  painter.dispose();
+  assert.equal(card.ink, 0, 'rank-two foreign influence doubles the brush cost');
+  assert.ok(Math.abs(cell.population - before - 0.5) < 1e-8,
+    'rank-two foreign influence halves the population added by the brush');
+}
+
+// Nomad families retain ordinary marriage, birth, aging, and leadership-option mechanics.
+{
+  const fixture = makeCountry();
+  const nomad = dissolveCountryIntoNomads(fixture.world, fixture.country)[0];
+  const leader = nomad.ruler;
+  const options = leadershipOptions(fixture.world, nomad, 12, leader);
+  assert.equal(options.length, 2, 'a nomad ruler has two succession candidates');
+  assert.notEqual(options[0].id, options[1].id, 'succession candidates are distinct');
+  const spouses = marriageCandidates(fixture.world, nomad, leader, 12);
+  assert.equal(spouses.length, 2, 'a nomad can receive two marriage candidates');
+
+  const mother = newCitizen(fixture.world, nomad, 0);
+  mother.gender = 'female'; mother.age = 25; mother.bornAt = -25;
+  registerPerson(fixture.world, nomad, mother);
+  const father = newCitizen(fixture.world, nomad, 0);
+  father.gender = 'male'; father.age = 27; father.bornAt = -27;
+  registerPerson(fixture.world, nomad, father);
+  marry(fixture.world, nomad, mother, father);
+  assert.ok(mother.spouseIds.includes(father.id) && father.spouseIds.includes(mother.id),
+    'nomad marriage is recorded reciprocally');
+  const child = birth(fixture.world, nomad, mother, father, 1);
+  assert.ok(child, 'a nomad couple can have a child');
+  assert.deepEqual(child.parents, [mother.id, father.id], 'nomad child keeps both married parents');
+  assert.ok(nomad.personIds.includes(child.id), 'the newborn joins the nomad family registry');
+  const ageBefore = mother.age;
+  advancePeople(fixture.world, 10, () => 1);
+  assert.ok(mother.age > ageBefore, 'nomad residents age during annual simulation');
+}
+
+// Nomad political reforms use tribal modifiers but can never change the nomad out of tribal government.
+{
+  const fixture = makeCountry();
+  const nomad = dissolveCountryIntoNomads(fixture.world, fixture.country)[0];
+  const proposals = reformCandidates(fixture.world, nomad, 20);
+  const modifier = proposals.find((proposal) => proposal.add);
+  assert.ok(modifier, 'nomads receive tribal modifier reform proposals');
+  assert.ok(!proposals.some((proposal) => proposal.government),
+    'nomad reforms do not offer a change away from tribal government');
+  applyReform(nomad, modifier);
+  assert.equal(nomad.government, 'tribal');
+  assert.ok(nomad.modifiers.includes(modifier.add), 'tribal modifier effect applies to a nomad');
+}
+
+// Founding a city converts one nomad into a country and conserves its whole population.
+{
+  const fixture = makeCountry();
+  const nomads = dissolveCountryIntoNomads(fixture.world, fixture.country);
+  const nomad = nomads[0];
+  const totalBefore = nomads.reduce((sum, group) =>
+    sum + group.cells.reduce((cellSum, cell) => cellSum + cell.population, 0), 0);
+  const cityPixel = nomad.range[0];
+  const settled = settleNomadAsCountry(fixture.world, nomad, cityPixel, 20);
+  assert.ok(settled, 'nomad can found a city on its unclaimed range');
+  assert.equal(fixture.world.owner[cityPixel], settled.id + 1, 'the city point becomes country territory');
+  assert.ok(fixture.world.cityAt(cityPixel)?.capital, 'the founded city is the new country capital');
+  assert.ok(!fixture.world.nomads.includes(nomad), 'the settled nomad is removed');
+  const totalAfter = fixture.world.nomads.reduce((sum, group) =>
+    sum + group.cells.reduce((cellSum, cell) => cellSum + cell.population, 0), 0) +
+    demography(fixture.world, settled).population;
+  assert.ok(Math.abs(totalAfter - totalBefore) < 1e-5,
+    `settlement preserves the total population (${totalBefore} → ${totalAfter})`);
 }
 
 // Both legend/profile links use the shared typed route; no duplicate nomad screen remains.

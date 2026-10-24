@@ -157,12 +157,27 @@ export function deserializeWorld(saved: SavedWorld): World {
   });
   world.countries = saved.countries.map((c) => ({ ...c }));
   world.cities = (saved.cities ?? []).map((city) => ({ ...city }));
-  world.nomads = (saved.nomads ?? []).map((nomad) => ({ ...nomad, range: nomad.range ?? [], cells: nomad.cells ?? [] }));
+  world.nomads = (saved.nomads ?? []).map((nomad) => ({
+    ...nomad,
+    density: nomad.density ?? (nomad.cells ?? []).reduce((sum, cell) => sum + cell.population, 0) / Math.max(1, nomad.range?.length ?? 0),
+    range: nomad.range ?? [],
+    cells: nomad.cells ?? [],
+    personIds: nomad.personIds ?? [],
+  }));
   world.nomadVersion = world.nomads.length ? 1 : 0;
   for (const city of world.cities) {
     if (city.pixel >= 0 && city.pixel < MAP_PIXELS) world.cityIdAt[city.pixel] = city.id;
   }
   world.people = saved.people ?? [];
+  for (const nomad of world.nomads) {
+    if (nomad.personIds.length || nomad.sourceCountryId === null) continue;
+    nomad.personIds = world.people
+      .filter((person) => person.countryId === nomad.sourceCountryId &&
+        person.cultureId === nomad.cultureId &&
+        (nomad.religionId === null || person.religionId === nomad.religionId))
+      .map((person) => person.id);
+    if (!nomad.personIds.includes(nomad.ruler.id)) nomad.personIds.push(nomad.ruler.id);
+  }
   world.cultures = saved.cultures.map((c) => ({ ...c }));
   world.religions = saved.religions.map((r) => ({ ...r }));
   rasterizeScalar(layers.political, world.owner);

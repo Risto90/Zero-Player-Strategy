@@ -3,14 +3,14 @@ import type { PaintActions } from './autoPaint';
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
   type BrushMode, type BrushOption, type Card, type CardChoice, type CardPainterState, type CharacterEvent } from './brush';
 import { drawCountryCard, drawNomadCard, drawWorldCard, firstCreateCard } from './cards';
-import { BIOMES, BRUSH_SIZES, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
+import { BIOMES, BRUSH_SIZES, MAX_COUNTRIES, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
 import { forEachNeighbour, type MapKind } from './geography';
 import { copyWorld, deserializeWorld, serializeSteps, type SavedWorld } from './persistence';
 import { decodeSave, encodeSave } from './saveFile';
 import { clearSaveBytes, hasSaveBytes, readSaveBytes, writeSaveBytes } from './storage';
 import { fmt } from './format';
 import { MapRenderer, type EntityLayer, type MapMode } from './render';
-import { World, type City, type Country } from './world';
+import { World, type City, type Country, type NomadGroup } from './world';
 import { GOVERNMENTS, reservePersonId, type Person } from './government';
 import { advancePeople, arePartners, birth, countryCharacters, ensureUniqueDynastySurnames, killPerson, marry, newCitizen, normalizePolitics, person, registerPerson } from './characters';
 import { applyReform } from './politics';
@@ -26,7 +26,7 @@ import {
   concentrateCityPopulation,
   populationAtPixel,
 } from './settlements';
-import { dissolveCountryIntoNomads } from './nomads';
+import { availableNomadCitySites, dissolveCountryIntoNomads, settleNomadAsCountry } from './nomads';
 
 export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
 type Slot = { scope: 'world' } | { scope: 'country'; countryId: number } | { scope: 'nomad'; nomadId: number };
@@ -433,6 +433,43 @@ export class Game {
     const px = Math.floor(x), py = Math.floor(y);
     if (px < 0 || py < 0 || px >= MAP_WIDTH || py >= MAP_HEIGHT) return false;
     const pixel = py * MAP_WIDTH + px;
+    if (card.type === 'buildCity' && card.targetNomadId !== null && card.targetNomadId !== undefined) {
+      const nomad = this.world.nomads[card.targetNomadId];
+      if (!nomad || !availableNomadCitySites(this.world, nomad).includes(pixel)) {
+        this.message = 'Кочевье может основать город только на свободной суше в пределах своего ареала.';
+        this.emit();
+        return false;
+      }
+      const removedNomadId = nomad.id;
+      const country = settleNomadAsCountry(this.world, nomad, pixel, this.year);
+      if (!country) {
+        this.message = 'Не удалось основать город и расселить кочевье.';
+        this.emit();
+        return false;
+      }
+      const remappedQueue: Slot[] = [];
+      for (const slot of this.queue) {
+        if (slot.scope !== 'nomad') remappedQueue.push(slot);
+        else if (slot.nomadId !== removedNomadId) {
+          remappedQueue.push(slot.nomadId > removedNomadId
+            ? { scope: 'nomad', nomadId: slot.nomadId - 1 }
+            : slot);
+        }
+      }
+      this.queue = remappedQueue;
+      ensureOffices(this.world, country, this.year);
+      refreshHeirs(this.world, this.year);
+      card.newCountryId = country.id;
+      card.cityPlaced = true;
+      this.message = `${country.name} основано; кочевье стало оседлым населением.`;
+      this.mapMode = 'political';
+      this.layer = null;
+      this.renderer.setView('political', null);
+      this.renderer.markAll();
+      this.emit();
+      this.scheduleSave();
+      return true;
+    }
     const countryId = card.type === 'buildCity' ? card.targetCountryId : card.newCountryId;
     const country = countryId === null ? null : this.world.countries[countryId];
     if (!country || this.world.owner[pixel] !== country.id + 1 || !this.world.land[pixel]) {
@@ -462,6 +499,11 @@ export class Game {
   private canPlaceCity(): boolean {
     const card = this.card;
     if (!card || !['create', 'buildCity'].includes(card.type)) return false;
+    if (card.type === 'buildCity' && card.targetNomadId !== null && card.targetNomadId !== undefined) {
+      const nomad = this.world.nomads[card.targetNomadId];
+      return !!nomad && !card.cityPlaced && availableNomadCitySites(this.world, nomad).length > 0 &&
+        this.world.countries.filter((country) => country.pixels > 0).length < MAX_COUNTRIES;
+    }
     const countryId = card.type === 'buildCity' ? card.targetCountryId : card.newCountryId;
     const country = countryId === null ? null : this.world.countries[countryId];
     if (!country || country.pixels <= 0 || card.cityPlaced || !this.hasOpenCitySite(country)) return false;
@@ -750,10 +792,10 @@ export class Game {
             if (card) this.resolveAutomatically(card);
           });
         }
-        for (const nomadId of this.world.nomads.map((nomad) => nomad.id)) {
+        for (const nomad of [...this.world.nomads]) {
           jobs.push(() => {
-            const nomad = this.world.nomads[nomadId];
-            const card = nomad ? drawNomadCard(this.world, nomad) : null;
+            const current = this.world.nomads.find((item) => item === nomad);
+            const card = current ? drawNomadCard(this.world, current, this.year) : null;
             if (card) this.resolveAutomatically(card);
           });
         }
@@ -812,7 +854,7 @@ export class Game {
         if (country && country.pixels > 0) card = drawCountryCard(this.world, country, this.year);
       } else {
         const nomad = this.world.nomads[slot.nomadId];
-        card = nomad ? drawNomadCard(this.world, nomad) : null;
+        card = nomad ? drawNomadCard(this.world, nomad, this.year) : null;
       }
       if (card) {
         this.startCard(card);
@@ -839,6 +881,7 @@ export class Game {
           : ['warmCurrent', 'coldCurrent', 'warmWind', 'coldWind'].includes(card.type) ? 'temperature'
         : card.type === 'faith' ? 'religions' : card.type === 'culture' ? 'cultures'
           : card.type === 'colonization' ? 'colonization'
+          : card.type === 'buildCity' && card.targetNomadId !== null && card.targetNomadId !== undefined ? 'nomads'
           : card.type === 'nomadExpand' ? (card.nomadDensityOnly ? 'density' : 'nomads') : 'political';
     this.mapMode = mode;
     this.layer = null;
@@ -924,7 +967,11 @@ export class Game {
     };
     autoPaint(painter, actions);
     this.afterPaint();
-    if (card.type === 'create' || card.type === 'buildCity') {
+    if (card.type === 'buildCity' && card.targetNomadId !== null && card.targetNomadId !== undefined) {
+      const nomad = this.world.nomads[card.targetNomadId];
+      const pixel = nomad ? availableNomadCitySites(this.world, nomad)[0] : undefined;
+      if (pixel !== undefined) this.dispatchAction({ type: 'placeCity', x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH) });
+    } else if (card.type === 'create' || card.type === 'buildCity') {
       const countryId = card.type === 'create' ? card.newCountryId : card.targetCountryId;
       const country = countryId === null ? null : this.world.countries[countryId];
       const hasCity = country ? this.world.cities.some((city) => city.countryId === country.id) : false;
@@ -982,6 +1029,9 @@ export class Game {
     const colonistsMoved = painter.colonistsMoved;
     painter.dispose();
     const target = card.targetCountryId !== null ? w.countries[card.targetCountryId] : null;
+    const targetNomad = card.targetNomadId !== null && card.targetNomadId !== undefined
+      ? w.nomads.find((nomad) => nomad.id === card.targetNomadId) ?? null
+      : null;
     switch (card.type) {
       case 'create': {
         const country = w.countries[card.newCountryId as number];
@@ -997,6 +1047,10 @@ export class Game {
       }
       case 'buildCity': {
         if (target && card.cityPlaced) this.addLog(`${target.name}: основан городок.`);
+        else if (card.cityPlaced && card.newCountryId !== null) {
+          const founded = w.countries[card.newCountryId];
+          if (founded) this.addLog(`${founded.name}: кочевье осело; основаны государство и городок.`);
+        }
         break;
       }
       case 'upgradeCity': {
@@ -1091,22 +1145,24 @@ export class Game {
       }
       case 'government':
       case 'revolt': {
-        if (target) {
+        const polity = target ?? targetNomad;
+        if (polity) {
           const choice = card.choices?.[card.selectedChoice];
-          const previous = GOVERNMENTS[target.government].name;
+          const previous = GOVERNMENTS[polity.government].name;
           if (choice) {
-            applyReform(target, { government: choice.government, add: choice.modifier, remove: choice.removeModifier,
+            applyReform(polity, { government: choice.government, add: choice.modifier, remove: choice.removeModifier,
               termYears: choice.termYears, maxTerms: choice.maxTerms, consulCount: choice.consulCount, forced: choice.violent, weight: 1 });
             if (choice.violent) {
-              const pressure = target.pressures.coup ?? { until: this.year, strength: 0 };
+              const pressure = polity.pressures.coup ?? { until: this.year, strength: 0 };
               pressure.until = Math.max(pressure.until, this.year + 8);
               pressure.strength = Math.max(1, pressure.strength * 2);
-              target.pressures.coup = pressure;
-              const ruler = choice.ruler ?? newCitizen(w, target, this.year);
-              this.appointAndAnnex(target, registerPerson(w, target, ruler), this.year);
-              this.addLog(`${target.name}: переворот. ${GOVERNMENTS[target.government].name}, правитель ${target.ruler.name}.`);
-            } else this.addLog(`${target.name}: введено изменение «${choice.label}»; форма ${previous}.`);
-            ensureOffices(w, target, this.year);
+              polity.pressures.coup = pressure;
+              const ruler = registerPerson(w, polity, choice.ruler ?? newCitizen(w, polity, this.year));
+              if (target) this.appointAndAnnex(target, ruler, this.year);
+              else appoint(w, polity, ruler, this.year);
+              this.addLog(`${polity.name}: переворот. ${GOVERNMENTS[polity.government].name}, правитель ${polity.ruler.name}.`);
+            } else this.addLog(`${polity.name}: введено изменение «${choice.label}»; форма ${previous}.`);
+            ensureOffices(w, polity, this.year);
             refreshHeirs(w, this.year);
           }
         }
@@ -1114,17 +1170,19 @@ export class Game {
       }
       case 'succession':
       case 'election': {
-        if (target) {
+        const polity = target ?? targetNomad;
+        if (polity) {
           const choice = card.choices?.[card.selectedChoice];
           const ruler = choice?.ruler ?? card.newRuler;
           if (ruler) {
-            const seatId = choice?.seatId ?? target.ruler.id;
-            const previousLeader = person(w, seatId) ?? target.ruler;
-            this.appointAndAnnex(target, ruler, this.year, seatId);
-            ensureOffices(w, target, this.year);
+            const seatId = choice?.seatId ?? polity.ruler.id;
+            const previousLeader = person(w, seatId) ?? polity.ruler;
+            if (target) this.appointAndAnnex(target, ruler, this.year, seatId);
+            else appoint(w, polity, ruler, this.year, seatId);
+            ensureOffices(w, polity, this.year);
             refreshHeirs(w, this.year);
-            const seatLabel = target.modifiers.includes('consulate') ? 'консулом' : 'правителем';
-            this.addLog(`${target.name}: ${card.type === 'election' ? 'выбран' : 'власть передана'} ${ruler.name} вместо ${previousLeader.name}; теперь он ${seatLabel}.`);
+            const seatLabel = polity.modifiers.includes('consulate') ? 'консулом' : 'правителем';
+            this.addLog(`${polity.name}: ${card.type === 'election' ? 'выбран' : 'власть передана'} ${ruler.name} вместо ${previousLeader.name}; теперь он ${seatLabel}.`);
           }
         }
         break;
@@ -1133,7 +1191,9 @@ export class Game {
       case 'marriage':
       case 'birth':
       case 'character':
-        if (target && card.characterEvent) this.applyCharacterEvent(target, card.characterEvent, card.newRuler, card.choices?.[card.selectedChoice]);
+        if ((target || targetNomad) && card.characterEvent) {
+          this.applyCharacterEvent(target ?? targetNomad!, card.characterEvent, card.newRuler, card.choices?.[card.selectedChoice]);
+        }
         break;
       case 'union':
         if (target && card.newCountryId !== null) this.mergeCountries(target, w.countries[card.newCountryId]);
@@ -1196,8 +1256,9 @@ export class Game {
     };
   }
 
-  private applyCharacterEvent(country: Country, event: CharacterEvent, generated: Person | null, choice?: CardChoice): void {
+  private applyCharacterEvent(country: Country | NomadGroup, event: CharacterEvent, generated: Person | null, choice?: CardChoice): void {
     const w = this.world, ids = event.personIds;
+    const isNomad = 'cells' in country;
     if (event.kind === 'death') {
       const deceased = person(w, ids[0]);
       if (!deceased) return;
@@ -1214,18 +1275,19 @@ export class Game {
           next = registerPerson(w, country, newCitizen(w, country, this.year));
           this.addLog(`${country.name}: линия наследования прервалась; выбран новый правитель.`);
         }
-        this.appointAndAnnex(country, next, this.year, seatId);
+        if (isNomad) appoint(w, country, next, this.year, seatId);
+        else this.appointAndAnnex(country, next, this.year, seatId);
         ensureOffices(w, country, this.year);
         if (country.government === 'tyranny' && Math.random() < 0.5) {
           const form = randomItem(['tribal', 'hereditary', 'republic'] as const);
-          applyReform(country, { government: form, forced: true, weight: 1 });
+          applyReform(country as Country, { government: form, forced: true, weight: 1 });
           const pressure = country.pressures.tyranny ?? { until: this.year, strength: 0 };
           pressure.until = Math.max(pressure.until, this.year + 8);
           pressure.strength = Math.max(1, pressure.strength * 2);
           country.pressures.tyranny = pressure;
           this.addLog(`${country.name}: после смерти правителя тирания сменена на форму «${GOVERNMENTS[form].name}».`);
         } else this.addLog(`${country.name}: ${deceased.name} умер${deceased.gender === 'female' ? 'ла' : ''}; правит ${next.name}.`);
-        if (country.modifiers.includes('partition') && country.government !== 'republic' && country.government !== 'tyranny') {
+        if (!isNomad && country.modifiers.includes('partition') && country.government !== 'republic' && country.government !== 'tyranny') {
           this.partitionCountry(country, deceased, choice?.ruler ?? next);
         }
       } else {

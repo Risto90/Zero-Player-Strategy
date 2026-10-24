@@ -1,19 +1,29 @@
 import type { Person } from './government';
 import { formatPersonName, legacyNameStyleForCulture } from './government';
-import type { Country, World } from './world';
+import type { Country, NomadGroup, World } from './world';
 import { person, newCitizen, registerPerson } from './characters';
 import { demography, weighted } from './demography';
 
-export function rulers(world: World, c: Country): Person[] {
+type Polity = Country | NomadGroup;
+
+function isNomad(c: Polity): c is NomadGroup { return 'cells' in c; }
+
+function isMember(c: Polity, p: Person): boolean {
+  return isNomad(c)
+    ? c.personIds.includes(p.id) || c.ruler.id === p.id || c.coRulerIds.includes(p.id)
+    : p.countryId === c.id || c.ruler.id === p.id || c.coRulerIds.includes(p.id);
+}
+
+export function rulers(world: World, c: Polity): Person[] {
   return [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is Person => !!p)];
 }
-export function expectedHeirFor(world: World, c: Country, leader: Person): Person | null {
+export function expectedHeirFor(world: World, c: Polity, leader: Person): Person | null {
   if (!hasFixedHeir(c)) return null;
   return successionOrder(world, c, leader)[0] ?? null;
 }
-export function candidateAllowed(world: World, c: Country, p: Person, old = c.ruler, partnerExempt = false): boolean {
+export function candidateAllowed(world: World, c: Polity, p: Person, old = c.ruler, partnerExempt = false): boolean {
   const foreignDynast = c.government !== 'republic' && c.dynastyClaims.includes(p.familyId);
-  if (!p.alive || c.pendingDeathIds.includes(p.id) || (p.countryId !== c.id && !partnerExempt && !foreignDynast)) return false;
+  if (!p.alive || c.pendingDeathIds.includes(p.id) || (!isMember(c, p) && !partnerExempt && !foreignDynast)) return false;
   if (rulers(world, c).some((leader) => leader.id === p.id && leader.id !== old.id)) return false;
   const coRule = c.coRulerIds.includes(p.id);
   const adult = c.government === 'republic' || c.modifiers.includes('meritocracy') ||
@@ -37,7 +47,7 @@ export function candidateAllowed(world: World, c: Country, p: Person, old = c.ru
   }
   return true;
 }
-export function candidateWeight(world: World, c: Country, p: Person, old = c.ruler): number {
+export function candidateWeight(world: World, c: Polity, p: Person, old = c.ruler): number {
   const d = demography(world, c);
   let weight = p.age >= 20 && p.age <= 28 ? 0.5 : 1;
   if (c.government === 'tribal') {
@@ -63,18 +73,18 @@ export function candidateWeight(world: World, c: Country, p: Person, old = c.rul
       p.parents.some((id) => person(world, id)?.formerRulerOf.includes(c.id))) weight *= 2;
   return weight;
 }
-function communistPool(c: Country, list: Person[]): Person[] {
+function communistPool(c: Polity, list: Person[]): Person[] {
   if (!c.modifiers.includes('communist')) return list;
   const both = list.filter((p) => p.religionId === null && p.traits.includes('Космополит'));
   if (both.length) return both;
   return list.filter((p) => p.religionId === null || p.traits.includes('Космополит'));
 }
-export function successionOrder(world: World, c: Country, old = c.ruler): Person[] {
+export function successionOrder(world: World, c: Polity, old = c.ruler): Person[] {
   if (c.government === 'republic') return [];
   const former = new Set([...c.previousRulerIds, old.id]);
-  let family = world.people.filter((p) => p.id !== old.id && c.dynastyClaims.includes(p.familyId));
+  let family = world.people.filter((p) => p.id !== old.id && c.dynastyClaims.includes(p.familyId) && isMember(c, p));
   if (c.government === 'tribal') family = family.filter((p) => p.parents.some((id) => former.has(id)));
-  const children = world.people.filter((p) => p.parents.includes(old.id));
+  const children = world.people.filter((p) => p.parents.includes(old.id) && isMember(c, p));
   let pool = family;
   const youngest = c.modifiers.includes('minority');
   const ageOrder = (a: Person, b: Person) => (youngest ? b.bornAt - a.bornAt : a.bornAt - b.bornAt) || a.id - b.id;
@@ -119,19 +129,19 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
   pool = pool.filter((p, i) => pool.findIndex((x) => x.id === p.id) === i && candidateAllowed(world, c, p, old, partnerIds.has(p.id)));
   return communistPool(c, pool);
 }
-export function hasFixedHeir(c: Country): boolean {
+export function hasFixedHeir(c: Polity): boolean {
   return c.government !== 'republic' && !c.modifiers.includes('oligarchy') &&
     (c.government === 'hereditary' || c.modifiers.some((id) => ['seniority', 'minority', 'primogeniture'].includes(id)));
 }
 export function refreshHeirs(world: World, year?: number): void {
-  for (const c of world.countries) {
+  for (const c of [...world.countries, ...world.nomads]) {
     if (!hasFixedHeir(c)) { c.heir = null; continue; }
     c.heir = successionOrder(world, c)[0] ?? null;
   }
 }
 
 /** Generated options are proposals only; only the chosen person is added to the world registry. */
-export function leadershipOptions(world: World, c: Country, year: number, old = c.ruler): Person[] {
+export function leadershipOptions(world: World, c: Polity, year: number, old = c.ruler): Person[] {
   const family = successionOrder(world, c, old);
   const unique = (people: (Person | null)[]) => people.filter((p, i, all): p is Person =>
     !!p && all.findIndex((x) => x?.id === p.id) === i);
@@ -154,7 +164,7 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
   };
   const distinctFamily = unique(family);
   const eligibleFamily = distinctFamily.filter((p) => candidateAllowed(world, c, p, old) ||
-    (c.modifiers.includes('pornocracy') && p.countryId !== c.id));
+    (c.modifiers.includes('pornocracy') && !isMember(c, p)));
   const ensurePair = (first: Person | null, second: Person | null, fallback: () => Person): Person[] => {
     const pair = unique([first, second]);
     while (pair.length < 2) {
@@ -191,7 +201,7 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
   }
   const make = () => {
     const proposal = fresh();
-    const matching = communistPool(c, world.people.filter((p) => p.countryId === c.id &&
+    const matching = communistPool(c, world.people.filter((p) => isMember(c, p) &&
       p.cultureId === proposal.cultureId && p.religionId === proposal.religionId && candidateAllowed(world, c, p, old)));
     if (matching.length && Math.random() < 0.5) return weighted(matching.map((p) => ({ value: p, weight: candidateWeight(world, c, p, old) })))!;
     return proposal;
@@ -202,11 +212,14 @@ export function leadershipOptions(world: World, c: Country, year: number, old = 
   for (let attempt = 0; b.id === a.id && attempt < 8; attempt += 1) b = make();
   return ensurePair(a, b.id === a.id ? fresh() : b, fresh);
 }
-export function appoint(world: World, c: Country, p: Person, year: number, seatId = c.ruler.id): void {
+export function appoint(world: World, c: Polity, p: Person, year: number, seatId = c.ruler.id): void {
   const old = person(world, seatId) ?? c.ruler;
   const chosen = registerPerson(world, c, p);
-  chosen.countryId = c.id;
-  if (!chosen.formerRulerOf.includes(c.id)) chosen.formerRulerOf.push(c.id);
+  if (isNomad(c)) chosen.countryId = c.sourceCountryId ?? -1;
+  else {
+    chosen.countryId = c.id;
+    if (!chosen.formerRulerOf.includes(c.id)) chosen.formerRulerOf.push(c.id);
+  }
   if (!c.previousRulerIds.includes(old.id)) c.previousRulerIds.push(old.id);
   if (c.modifiers.includes('continuous') && c.government === 'republic' && chosen.id !== old.id && !c.barredRulerIds.includes(old.id)) c.barredRulerIds.push(old.id);
   c.termCounts[chosen.id] = (c.termCounts[chosen.id] ?? 0) + 1;
@@ -216,7 +229,7 @@ export function appoint(world: World, c: Country, p: Person, year: number, seatI
   else c.coRulerIds = c.coRulerIds.map((id) => id === seatId ? chosen.id : id);
   c.coRulerIds = [...new Set(c.coRulerIds)].filter((id) => id !== c.ruler.id);
 }
-export function ensureOffices(world: World, c: Country, year: number): void {
+export function ensureOffices(world: World, c: Polity, year: number): void {
   const desired = c.modifiers.includes('consulate') ? c.consulCount : c.modifiers.includes('coRule') ? 2 : 1;
   c.coRulerIds = c.coRulerIds.filter((id) => !!person(world, id)?.alive).slice(0, desired - 1);
   if (c.modifiers.includes('consulate')) {
@@ -233,7 +246,7 @@ export function ensureOffices(world: World, c: Country, year: number): void {
     } else next = newCitizen(world, c, year);
     registerPerson(world, c, next);
     c.coRulerIds.push(next.id); c.seatSince[next.id] = year; c.termCounts[next.id] = (c.termCounts[next.id] ?? 0) + 1;
-    if (!next.formerRulerOf.includes(c.id)) next.formerRulerOf.push(c.id);
+    if (!isNomad(c) && !next.formerRulerOf.includes(c.id)) next.formerRulerOf.push(c.id);
     if (c.modifiers.includes('consulate') && !c.dynastyClaims.includes(next.familyId)) {
       c.dynastyClaims.push(next.familyId);
     }
