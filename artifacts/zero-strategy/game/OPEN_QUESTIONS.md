@@ -24,3 +24,12 @@
 - O01/O09 and other ordinary layers have no stated cost values or maximum-cost budget. Costs and a conservative cap are configurable defaults; tune them with the later generator/profile work.
 - O05 does not specify the Y-junction angles or which arm points toward the hoist. The geometry accepts explicit arm angles and defaults to a symmetric upward-opening Y.
 - O09 PINWHEEL does not define the half-plane split axis. The configurable implementation uses the vertical midpoint of the canton frame.
+
+## Flag emblem library (§10)
+
+- The specification does not define an emblem cost formula or starter values. The catalog currently uses a neutral configurable cost of `1` per module and composer (`0` for `SINGLE`); confirm the intended cost model before costs affect selection.
+- Several named sub-shapes lack exact dimensions or construction details (including sun ray variants, lily petal joins, ship hull curvature, and anchor details). The implementation uses simple polygonal approximations; provide exact geometry if silhouettes must match references.
+- `GLYPH` does not state whether an edge can span non-adjacent grid nodes or define quarter-arc control points. The initial builder uses adjacent grid edges and circular quarter arcs; confirm whether longer edges or other arc construction are needed.
+- The minimum physical glyph stroke depends on final placement size, which is outside this task. The emblem builder exposes the required scale and checks the configured final scale; placement must pass its actual scale to validation.
+- `INSCRIBE` and `CONCENTRIC` do not fully define child ordering, frame outlines, or ring count. The implementation treats INSCRIBE's child as contents and CONCENTRIC's first child as inner emblem and second as outer base; defaults are configurable.
+- `PAIR_MIRROR`, `RING`, `ARC_REPEAT`, `CHARGE_ON_CHARGE`, and `CONCENTRIC` omit some parameter bounds or dimensions. Configurable starter bounds/defaults are supplied for safe construction; confirm the intended ranges and proportions before those values drive generation.

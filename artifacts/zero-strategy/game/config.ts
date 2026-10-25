@@ -3,6 +3,7 @@ import { EARTH_HEIGHT, EARTH_WIDTH } from './data/earthLand';
 export { FLAG_OUTLINE_CONFIG } from './flagOutlineConfig';
 export { FLAG_LINE_STYLE_CONFIG } from './flagLineStyleConfig';
 export { FLAG_ORDINARY_CONFIG } from './flagOrdinaryConfig';
+export { FLAG_EMBLEM_CONFIG } from './flagEmblemConfig';
 
 /** Map raster size (pixels). The world map is a fixed equirectangular projection of real coastlines. */
 export const MAP_WIDTH = EARTH_WIDTH;
