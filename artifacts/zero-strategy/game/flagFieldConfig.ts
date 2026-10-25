@@ -61,4 +61,7 @@ export const FLAG_FIELD_CONFIG = {
       polygonSamples: 64,
     },
   },
+  lineStyles: {
+    default: 'STRAIGHT',
+  },
 } as const;

@@ -1,4 +1,5 @@
 import { FLAG_FIELD_CONFIG } from './flagFieldConfig';
+import { styleSharedFlagRegionBoundaries, type FlagLineStyle } from './flagLineStyles';
 
 /**
  * Geometry for the compositional flag-ground operators (§7).
@@ -987,6 +988,10 @@ function operatorRegions(
     throw new RangeError(`${op} must produce between 1 and ${FLAG_FIELD_CONFIG.limits.maxRegions} regions`);
   }
   if (slots.length !== polygons.length) throw new RangeError(`${op} produced a mismatched number of color slots`);
+  if (['G02', 'G03', 'G04', 'G11'].includes(op)) {
+    const lineStyle = params.line_style ?? params.lineStyle ?? FLAG_FIELD_CONFIG.lineStyles.default;
+    polygons = styleSharedFlagRegionBoundaries(polygons, lineStyle as string | FlagLineStyle, canvasHeight);
+  }
   for (const region of polygons) {
     if (region.length === 0 || region.some((polygon) => polygon.length < 3 || flagPolygonArea(polygon) <= EPSILON)) {
       throw new RangeError(`${op} produced an empty or degenerate region`);
