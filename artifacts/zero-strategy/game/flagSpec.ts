@@ -117,12 +117,21 @@ export interface FlagPaletteEntry extends JsonObject {
   hex: string;
 }
 
-export interface FlagMeta extends JsonObject {
+export interface FlagMeta {
   complexity: number;
   symmetry: JsonValue;
   color_count: number;
   structure_hash: string;
   visual_hash: string;
+  generation_stats?: {
+    attempts: number;
+    rejected_attempts: number;
+    palette_attempts: number;
+    fallback_used: boolean;
+    fallback_profile_id: string | null;
+    optional_layers_removed: number;
+    rejection_reasons: string[];
+  };
 }
 
 export interface FlagSpec {
