@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { World } from '../game/world.ts';
+import { CardPainter } from '../game/brush.ts';
+import { firstCreateCard } from '../game/cards.ts';
 import { ageStage, createPerson, deathChance } from '../game/government.ts';
 import { birth, marry } from '../game/characters.ts';
 import { deserializeWorld, serializeWorld } from '../game/persistence.ts';
 import { ensureCityPopulationGroups } from '../game/settlements.ts';
 import { normalizePolitics } from '../game/characters.ts';
+import { MAP_WIDTH } from '../game/config.ts';
 import {
   HUMAN_AGE_STAGES,
   HUMAN_ORIGINS,
@@ -17,10 +20,16 @@ import {
   humanOriginMixFromTable,
   inheritHumanOrigins,
   normalizeHumanOriginMix,
+  randomHumanOriginId,
 } from '../game/human.ts';
 
 const names = ['Европейская', 'Негрская', 'Пигмейская', 'Бушменская', 'Эфиопская', 'Американоидная', 'Австралоидная', 'Веддоидная'];
 assert.deepEqual(HUMAN_ORIGINS.map((origin) => origin.name), names);
+assert.deepEqual(
+  HUMAN_ORIGINS.map((_, index) => randomHumanOriginId(() => (index + 0.25) / HUMAN_ORIGINS.length)),
+  HUMAN_ORIGINS.map(({ id }) => id),
+  'founding race selection covers every in-game race, regardless of current map population',
+);
 assert.equal(HUMAN_SPECIES.id, 'human');
 assert.ok(HUMAN_ORIGINS.every((origin) => origin.parentSpeciesId === HUMAN_SPECIES.id && origin.ageStages === HUMAN_SPECIES.ageStages));
 assert.deepEqual(HUMAN_AGE_STAGES.map(({ name, minimum, maximum }) => [name, minimum, maximum]), [
@@ -91,6 +100,68 @@ const city = world.addCity(country.id, pixel, 1, true);
 city.population = 80;
 ensureCityPopulationGroups(world, city);
 assert.equal(city.populationGroups[0].humanOriginMix, originTableId);
+
+const foundingWorld = new World(world.mapKind, world.seed, world.land, {
+  humidity: world.humidity.slice(),
+  temperature: world.temperature.slice(),
+  drainage: world.drainage.slice(),
+}, {
+  water: world.water,
+  rivers: world.rivers,
+  landIndex: world.landIndex,
+  riverPixelCount: world.riverPixelCount,
+  majorRiverPixelCount: world.majorRiverPixelCount,
+});
+const existingPixel = foundingWorld.landIndex[0];
+const existingCulture = foundingWorld.newCulture(null, 900);
+const existingCountry = foundingWorld.newCountry({
+  rank: 'тест', cultureId: existingCulture.id, religionId: null, density: 10, foundedYear: 900, parentId: null,
+});
+foundingWorld.setOwner(existingPixel, existingCountry.id + 1);
+foundingWorld.density[existingPixel] = 10;
+foundingWorld.culture[existingPixel] = foundingWorld.cultureTable.single(existingCulture.id, 100);
+foundingWorld.humanOrigins[existingPixel] = foundingWorld.humanOriginTable.single(humanOriginIndex(europ), 100);
+
+const foundingRaceId = randomHumanOriginId(() => 0.3);
+assert.equal(foundingRaceId, pygmy);
+assert.notEqual(foundingWorld.humanOriginTable.entries[foundingWorld.humanOrigins[existingPixel]].ids[0],
+  humanOriginIndex(foundingRaceId), 'the chosen race is not required to already exist on the map');
+const previousRandom = Math.random;
+Math.random = () => 0.3;
+let creationCard;
+try {
+  creationCard = firstCreateCard(foundingWorld, 1000);
+} finally {
+  Math.random = previousRandom;
+}
+assert.ok(creationCard);
+const foundingCulture = foundingWorld.cultures[creationCard.newCultureId];
+const foundingCountry = foundingWorld.countries[creationCard.newCountryId];
+assert.equal(foundingCulture.foundingRaceId, foundingRaceId,
+  'a newly created country receives a random race from the full in-game list');
+const foundingPainter = new CardPainter(foundingWorld, creationCard, 'respect');
+const targetX = creationCard.hint % MAP_WIDTH;
+const targetY = Math.floor(creationCard.hint / MAP_WIDTH);
+for (let y = targetY - 1; y <= targetY + 1; y += 1) {
+  for (let x = targetX - 1; x <= targetX + 1; x += 1) {
+    const p = y * MAP_WIDTH + x;
+    foundingWorld.temperature[p] = 50;
+    foundingWorld.humidity[p] = 50;
+  }
+}
+foundingPainter.dab(targetX + 0.5, targetY + 0.5, 1);
+assert.ok(foundingPainter.changed.length > 0, 'the creation card paints its new country');
+for (const paintedPixel of foundingPainter.changed) {
+  const entry = foundingWorld.humanOriginTable.entries[foundingWorld.humanOrigins[paintedPixel]];
+  assert.deepEqual(humanOriginMixFromTable(entry.ids, entry.shares), { ids: [foundingRaceId], shares: [100] },
+    'all founding-culture territory keeps its one randomly assigned race instead of deriving it from habitat');
+}
+assert.equal(foundingCulture.foundingRaceId, foundingRaceId);
+assert.equal(foundingWorld.newCulture(foundingCulture, 1001).foundingRaceId, undefined,
+  'a culture that splits off is not assigned a new random race');
+const restoredFoundingWorld = deserializeWorld(serializeWorld(foundingWorld));
+assert.equal(restoredFoundingWorld.cultures[foundingCulture.id].foundingRaceId, foundingRaceId,
+  'the founding race remains attached to its culture after saving');
 
 const nomadId = world.humanOriginTable.intern(new Map([[humanOriginIndex(europ), 50], [humanOriginIndex(bushman), 50]]));
 world.countries.push({

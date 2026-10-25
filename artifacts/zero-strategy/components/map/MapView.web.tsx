@@ -3,11 +3,66 @@ import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
 import { STRIP_H } from '@/game/render';
+import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
+import { circleHatchLines } from './cityInfluenceHatching';
 import { isCityVisibleAtZoom } from './cityIconMath';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { centerOnMapPoint, clampView, initialView, minScale, zoomAround } from './viewMath';
+
+function rgba(hex: string, alpha: number) {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+}
+
+function drawCityInfluence(
+  ctx: CanvasRenderingContext2D,
+  game: MapViewProps['game'],
+  view: ViewTransform,
+  width: number,
+  height: number,
+  baseScale: number,
+) {
+  const snapshot = game.getSnapshot();
+  if (snapshot.mapMode !== 'cities') return;
+  const selectedCityId = snapshot.selectedCityId;
+  const selectedCity = selectedCityId === null ? null : game.world.cities[selectedCityId];
+  for (const city of game.world.cities) {
+    const centerX = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
+    const centerY = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
+    const radius = cityInfluenceRadius(game.world, city) * view.scale;
+    if (centerX + radius < 0 || centerY + radius < 0 || centerX - radius > width || centerY - radius > height) continue;
+    const hasPort = game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0;
+    const selected = selectedCity?.id === city.id;
+    if (!selected && !isCityVisibleAtZoom(view.scale, baseScale, cityVisibilityRank(city, hasPort))) continue;
+    const color = game.world.countries[city.countryId]?.color ?? '#8f3036';
+    if (selected) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.fillStyle = rgba(color, 0.12);
+      ctx.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2);
+      ctx.strokeStyle = rgba(color, 0.72);
+      ctx.lineWidth = 1.35;
+      for (const line of circleHatchLines(centerX, centerY, radius, 8)) {
+        ctx.beginPath();
+        ctx.moveTo(line.x1, line.y1);
+        ctx.lineTo(line.x2, line.y2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx.setLineDash(selected ? [8, 5] : []);
+    ctx.lineWidth = selected ? 2.2 : Math.max(0.7, 0.7 + city.rank * 0.22);
+    ctx.strokeStyle = rgba(color, selected ? 0.95 : 0.16 + city.rank * 0.075);
+    ctx.stroke();
+    if (selected) ctx.setLineDash([]);
+  }
+}
 
 /** Browser preview of the map: a plain 2D canvas, same gestures as on the phone. */
 export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect, onMapActivity }, ref) {
@@ -45,6 +100,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     ctx.fillRect(0, 0, width, height);
     ctx.imageSmoothingEnabled = view.scale < 1;
     ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
+    drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
     for (const city of game.world.cities) {
       const hasPort = game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0;
       const zoomRank = cityVisibilityRank(city, hasPort);

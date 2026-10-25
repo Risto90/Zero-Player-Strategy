@@ -113,6 +113,7 @@ export interface GameSnapshot {
   mapKind: MapKind;
   focusCountry: Country | null;
   selectedCountryId: number | null;
+  selectedCityId: number | null;
   card: Card | null;
   /** Country the active card belongs to, if any. */
   cardCountry: Country | null;
@@ -208,6 +209,7 @@ export class Game {
   private turn = 1;
   private focusCountryId: number | null = null;
   private selectedCountryId: number | null = null;
+  private selectedCityChronicleId: number | null = null;
   private card: Card | null = null;
   private painter: CardPainter | null = null;
   private pendingInheritanceSplit: {
@@ -380,8 +382,8 @@ export class Game {
       }
       game.startCard(card, saved.painterState);
     }
-    const savedMapMode = saved.mapMode as MapMode | 'colonization';
-    game.mapMode = savedMapMode === 'colonization' ? 'political' : savedMapMode;
+    const savedMapMode = saved.mapMode as MapMode | 'colonization' | 'nomads';
+    game.mapMode = savedMapMode === 'colonization' || savedMapMode === 'nomads' ? 'political' : savedMapMode;
     game.paused = saved.paused ?? false;
     game.renderer.setView(game.mapMode, null);
     return game;
@@ -825,10 +827,15 @@ export class Game {
   // ---------- map view ----------
 
   setMapMode(mode: MapMode): void {
+    if (mode !== 'political' && this.selectedCountryId !== null) {
+      this.selectedCountryId = null;
+      this.renderer.setSelectedCountry(null);
+    }
+    if (mode !== 'cities') this.selectedCityChronicleId = null;
     this.mapMode = mode;
     this.layer = null;
     if (this.painter?.card.type === 'nomadExpand') {
-      this.painter.setNomadMode(mode === 'nomads' ? 'range' : mode === 'density' ? 'density' : 'inactive');
+      this.painter.setNomadMode(mode === 'political' ? 'range' : mode === 'density' ? 'density' : 'inactive');
     }
     this.renderer.setView(mode, null);
     this.emit(true);
@@ -843,23 +850,45 @@ export class Game {
           ? 'religions'
           : 'origins';
     }
+    this.selectedCountryId = null;
+    this.selectedCityChronicleId = null;
+    this.renderer.setSelectedCountry(null);
     this.layer = layer;
+    if (this.painter?.card.type === 'nomadExpand') {
+      this.painter.setNomadMode(this.mapMode === 'political' ? 'range' : this.mapMode === 'density' ? 'density' : 'inactive');
+    }
     this.renderer.setView(this.mapMode, layer);
     this.emit(true);
   }
 
   selectCountry(countryId: number | null): void {
-    if (countryId !== null && (!this.world.countries[countryId] || this.world.countries[countryId].pixels <= 0)) return;
+    if (countryId !== null && !isActiveCountry(this.world.countries[countryId])) return;
     if (this.selectedCountryId === countryId) return;
     this.selectedCountryId = countryId;
+    this.selectedCityChronicleId = null;
     this.renderer.setSelectedCountry(countryId);
     this.emit(true);
   }
 
   showCountryOnMap(countryId: number): void {
-    if (!this.world.countries[countryId] || this.world.countries[countryId].pixels <= 0) return;
+    if (!isActiveCountry(this.world.countries[countryId])) return;
     this.setMapMode('political');
-    this.selectCountry(countryId);
+    this.selectCountry(this.selectedCountryId === countryId ? null : countryId);
+  }
+
+  selectCity(cityId: number | null): void {
+    const city = cityId === null ? null : this.world.cities[cityId];
+    if (cityId !== null && !city) return;
+    this.mapMode = 'cities';
+    this.layer = null;
+    this.selectedCountryId = null;
+    this.renderer.setSelectedCountry(null);
+    this.selectedCityChronicleId = city && this.selectedCityChronicleId !== city.chronicleId
+      ? city.chronicleId
+      : null;
+    if (this.painter?.card.type === 'nomadExpand') this.painter.setNomadMode('inactive');
+    this.renderer.setView('cities', null);
+    this.emit(true);
   }
 
   countryComposition(countryId: number): CountryComposition {
@@ -1115,8 +1144,8 @@ export class Game {
           : ['warmCurrent', 'coldCurrent', 'warmWind', 'coldWind'].includes(card.type) ? 'temperature'
         : card.type === 'faith' ? 'religions' : card.type === 'culture' ? 'cultures'
           : card.type === 'colonization' ? 'political'
-          : card.type === 'buildCity' && card.targetCountryId !== null && this.world.countries[card.targetCountryId]?.type === 'nomadic' ? 'nomads'
-          : card.type === 'nomadExpand' ? (card.nomadDensityOnly ? 'density' : 'nomads') : 'political';
+          : card.type === 'buildCity' && card.targetCountryId !== null && this.world.countries[card.targetCountryId]?.type === 'nomadic' ? 'political'
+          : card.type === 'nomadExpand' ? (card.nomadDensityOnly ? 'density' : 'political') : 'political';
     if (selectMapMode) {
       this.mapMode = mode;
       this.layer = null;
@@ -2037,6 +2066,9 @@ export class Game {
       mapKind: w.mapKind,
       focusCountry: this.focusCountryId !== null ? (w.countries[this.focusCountryId] ?? null) : null,
       selectedCountryId: this.selectedCountryId,
+      selectedCityId: this.selectedCityChronicleId === null
+        ? null
+        : w.cities.find((city) => city.chronicleId === this.selectedCityChronicleId)?.id ?? null,
       card: card ? { ...card } : null,
       cardCountry: card && card.targetCountryId !== null ? w.countries[card.targetCountryId] : null,
       queuedCards: this.queue.length,

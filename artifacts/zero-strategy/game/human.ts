@@ -8,6 +8,12 @@ export type HumanOriginId =
   | 'australoid'
   | 'veddoid';
 
+/** Selects uniformly from every race defined by the game, not only those present on the map. */
+export function randomHumanOriginId(random: () => number = Math.random): HumanOriginId {
+  const index = Math.max(0, Math.min(HUMAN_ORIGINS.length - 1, Math.floor(random() * HUMAN_ORIGINS.length)));
+  return HUMAN_ORIGINS[index].id;
+}
+
 export interface AgeStageRule {
   name: string;
   minimum: number;

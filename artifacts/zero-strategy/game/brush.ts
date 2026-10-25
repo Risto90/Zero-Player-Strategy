@@ -15,6 +15,7 @@ import {
   humanOriginMixFromTable,
   humanOriginMixToTable,
   originForHabitat,
+  randomHumanOriginId,
 } from './human';
 
 export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'waneCity' | 'moveCapital' | 'nomadExpand' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'character' | 'revolt' | 'union';
@@ -280,6 +281,12 @@ export class CardPainter {
     state?: CardPainterState | null,
   ) {
     const working = this.workingCountryId();
+    if (card.type === 'create') {
+      const culture = world.cultures[card.newCultureId ?? -1];
+      if (!culture) throw new Error('A country creation card must reference its new culture.');
+      // Older in-progress saves may contain a creation card drawn before the founding race was stored.
+      culture.foundingRaceId ??= randomHumanOriginId();
+    }
     if (card.type === 'nomadExpand' && card.targetCountryId !== null) {
       const nomad = world.countries[card.targetCountryId];
       if (nomad) {
@@ -853,9 +860,11 @@ export class CardPainter {
         world.density[p] = working.density * strength;
         world.culture[p] = world.cultureTable.single(working.cultureId, 100);
         world.religion[p] = this.religionForNewLand;
-        const originMix = originSource
-          ? expectedOriginsForPopulation(originSource.humanOrigin, originSource.population)
-          : { ids: [originForHabitat(world.temperature[p], world.humidity[p])], shares: [100] };
+        const originMix = card.type === 'create'
+          ? { ids: [world.cultures[card.newCultureId as number].foundingRaceId!], shares: [100] }
+          : originSource
+            ? expectedOriginsForPopulation(originSource.humanOrigin, originSource.population)
+            : { ids: [originForHabitat(world.temperature[p], world.humidity[p])], shares: [100] };
         world.humanOrigins[p] = world.humanOriginTable.intern(humanOriginMixToTable(originMix));
         if (working.pixels === 1) working.ruler.humanOrigin = originMix;
         card.ink = Math.max(0, card.ink - cost);
@@ -882,7 +891,7 @@ export class CardPainter {
       : world.countries[this.card.targetCountryId];
     if (!nomad || nomad.type !== 'nomadic') return;
     if (this.nomadMode === 'inactive') {
-      this.message = 'Для расширения кочевья выберите карту «Кочевья» или «Население».';
+      this.message = 'Для расширения кочевья выберите карту «Страны» или «Население».';
       return;
     }
     let changed = false;

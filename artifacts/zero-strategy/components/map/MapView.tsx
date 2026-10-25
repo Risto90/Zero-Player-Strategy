@@ -6,6 +6,7 @@ import {
   FilterMode,
   Group,
   Image as SkiaImage,
+  Line,
   MipmapMode,
   Skia,
   useImage,
@@ -17,7 +18,9 @@ import { makeMutable, useDerivedValue, useSharedValue, type SharedValue } from '
 import colors from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { STRIP_H, STRIPS } from '@/game/render';
+import { cityInfluenceRadius } from '@/game/settlements';
 import type { City, World } from '@/game/world';
+import { circleHatchLines } from './cityInfluenceHatching';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
 import { isCityVisibleAtZoom } from './cityIconMath';
 import { MapGestures } from './gestures';
@@ -93,6 +96,68 @@ function CityMarkers({ world, scale, baseScale }: {
   ));
 }
 
+function CityInfluenceMark({ city, world, selected, scale, baseScale, ox, oy, width, height }: {
+  city: City;
+  world: World;
+  selected: boolean;
+  scale: SharedValue<number>;
+  baseScale: SharedValue<number>;
+  ox: SharedValue<number>;
+  oy: SharedValue<number>;
+  width: SharedValue<number>;
+  height: SharedValue<number>;
+}) {
+  const x = city.pixel % MAP_WIDTH;
+  const y = Math.floor(city.pixel / MAP_WIDTH);
+  const radius = cityInfluenceRadius(world, city);
+  const color = world.countries[city.countryId]?.color ?? '#8f3036';
+  const hasPort = world.isCoastal(city.pixel) || world.rivers[city.pixel] > 0;
+  const zoomRank = cityVisibilityRank(city, hasPort);
+  const lines = selected ? circleHatchLines(x, y, radius, 8) : [];
+  const visible = useDerivedValue(() => {
+    const viewScale = scale.value;
+    const screenX = ox.value + x * viewScale;
+    const screenY = oy.value + y * viewScale;
+    const screenRadius = radius * viewScale;
+    const inViewport = screenX + screenRadius >= 0 && screenY + screenRadius >= 0 &&
+      screenX - screenRadius <= width.value && screenY - screenRadius <= height.value;
+    return inViewport && (selected || isCityVisibleAtZoom(viewScale, baseScale.value, zoomRank)) ? 1 : 0;
+  });
+  return (
+    <Group opacity={visible}>
+      {selected && <Circle cx={x} cy={y} r={radius} color={color} opacity={0.12} />}
+      {lines.map((line, index) => (
+        <Line key={index} p1={{ x: line.x1, y: line.y1 }} p2={{ x: line.x2, y: line.y2 }}
+          color={color} strokeWidth={1.35} opacity={0.72} />
+      ))}
+      <Circle cx={x} cy={y} r={radius} style="stroke" color={color}
+        strokeWidth={selected ? 2.2 : 0.7 + city.rank * 0.22} opacity={selected ? 0.95 : 0.16 + city.rank * 0.075} />
+    </Group>
+  );
+}
+
+function CityInfluenceLayer({ world, selectedCityId, active, scale, baseScale, ox, oy, width, height }: {
+  world: World;
+  selectedCityId: number | null;
+  active: boolean;
+  scale: SharedValue<number>;
+  baseScale: SharedValue<number>;
+  ox: SharedValue<number>;
+  oy: SharedValue<number>;
+  width: SharedValue<number>;
+  height: SharedValue<number>;
+}) {
+  if (!active) return null;
+  return (
+    <>
+      {world.cities.map((city) => (
+        <CityInfluenceMark key={city.id} city={city} world={world} selected={selectedCityId === city.id}
+          scale={scale} baseScale={baseScale} ox={ox} oy={oy} width={width} height={height} />
+      ))}
+    </>
+  );
+}
+
 function makeStrip(pixels: Uint32Array, strip: number): SkImage | null {
   const start = strip * STRIP_H * MAP_WIDTH * 4;
   const bytes = new Uint8Array(pixels.buffer, start, STRIP_H * MAP_WIDTH * 4).slice();
@@ -122,6 +187,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const markerBaseScale = useSharedValue(1);
   const ox = useSharedValue(0);
   const oy = useSharedValue(0);
+  const viewportWidth = useSharedValue(1);
+  const viewportHeight = useSharedValue(1);
   const cursorX = useSharedValue(0);
   const cursorY = useSharedValue(0);
   const cursorR = useSharedValue(0);
@@ -213,6 +280,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const onLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
     sizeRef.current = { width: Math.max(1, width), height: Math.max(1, height) };
+    viewportWidth.value = sizeRef.current.width;
+    viewportHeight.value = sizeRef.current.height;
     markerBaseScale.value = initialView(sizeRef.current.width, sizeRef.current.height).scale;
     if (!laidOut.current) {
       laidOut.current = true;
@@ -243,6 +312,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           {strips.map((image, s) => (
             <SkiaImage key={s} image={image} x={0} y={s * STRIP_H} width={MAP_WIDTH} height={STRIP_H} sampling={sampling} />
           ))}
+          <CityInfluenceLayer world={game.world} selectedCityId={game.getSnapshot().selectedCityId} active={game.getSnapshot().mapMode === 'cities'}
+            scale={scale} baseScale={markerBaseScale} ox={ox} oy={oy} width={viewportWidth} height={viewportHeight} />
           <CityMarkers world={game.world} scale={scale} baseScale={markerBaseScale} />
         </Group>
         <Group opacity={cursorOpacity}>

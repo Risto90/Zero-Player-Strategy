@@ -9,6 +9,7 @@ import { candidateAllowed, leadershipOptions, successionOrder } from './successi
 import { newCitizen, person } from './characters';
 import { demography } from './demography';
 import { colonizationPlan } from './colonization';
+import { randomHumanOriginId } from './human';
 import {
   CityInfluenceIndex,
   cityAtUpperPopulationThreshold,
@@ -198,7 +199,7 @@ function drawNomadExpansionCard(world: World, nomad: Country): Card | null {
     'nomadExpand',
     ink,
     nomad,
-    `${nomad.name}: на карте «Кочевья» кисть расширяет ареал, а на карте «Население» повышает плотность внутри ареала. Колонизация недоступна.`,
+    `${nomad.name}: на карте «Страны» кисть расширяет ареал, а на карте «Население» повышает плотность внутри ареала. Колонизация недоступна.`,
     hint,
   );
   card.nomadDensityOnly = densityOnly;
@@ -336,7 +337,7 @@ function drawCreate(world: World, year: number): Card | null {
   const rank = fitting.length > 0 ? randomItem(fitting) : RANKS[0];
   const ink = Math.min(rank.ink, best.capacity);
   // A state founded on empty land always brings its own new culture.
-  const culture = world.newCulture(null, year);
+  const culture = world.newCulture(null, year, randomHumanOriginId());
   const religionsInUse = world.religions.filter((r) => r.foundedYear <= year);
   const religionId = religionsInUse.length > 0 && Math.random() < 0.4 ? randomItem(religionsInUse).id : null;
   const country = world.newCountry({

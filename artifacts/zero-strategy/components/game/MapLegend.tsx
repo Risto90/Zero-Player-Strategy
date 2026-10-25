@@ -21,7 +21,6 @@ const MODE_LABELS: Record<MapMode, string> = {
   density: 'Плотность',
   rivers: 'Реки',
   cities: 'Города',
-  nomads: 'Кочевья',
 };
 
 function ColorKeys({ rows }: { rows: LegendRow[] }) {
@@ -56,7 +55,15 @@ function BiomeTable({ rows }: { rows: LegendRow[] }) {
 function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
   switch (snap.mapMode) {
     case 'political':
-      return <ColorKeys rows={snap.legend.countries} />;
+      return (
+        <View style={styles.modeDescription}>
+          <ColorKeys rows={snap.legend.countries} />
+          <View style={styles.key}>
+            <View style={[styles.hatchSwatch, { borderColor: '#ddc18a' }]} />
+            <Text style={styles.keyText}>штриховка — ареалы кочевых стран</Text>
+          </View>
+        </View>
+      );
     case 'cultures':
       return <ColorKeys rows={snap.legend.cultures} />;
     case 'religions':
@@ -94,19 +101,20 @@ function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
       );
     case 'cities':
       return (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.keys}>
-          {CITY_COLORS.map((color, index) => (
-            <View key={color} style={styles.key}>
-              <View style={[styles.swatch, { backgroundColor: color }]} />
-              <Text style={styles.keyText} numberOfLines={1}>{cityRankName((index + 1) as CityRank)}</Text>
-            </View>
-          ))}
-        </ScrollView>
+        <View style={styles.modeDescription}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.keys}>
+            {CITY_COLORS.map((color, index) => (
+              <View key={color} style={styles.key}>
+                <View style={[styles.swatch, { backgroundColor: color }]} />
+                <Text style={styles.keyText} numberOfLines={1}>{cityRankName((index + 1) as CityRank)}</Text>
+              </View>
+            ))}
+          </ScrollView>
+          <Text style={styles.description}>Сфера: цвет страны · яркость контура: ранг · штриховка: выбранный город</Text>
+        </View>
       );
-    case 'nomads': {
-      const rows = snap.legend.countries.filter((row) => game.world.countries[row.id]?.type === 'nomadic');
-      return rows.length ? <ColorKeys rows={rows} /> : <Text style={styles.description}>Цвет — кочевая страна</Text>;
-    }
+    case 'origins':
+      return <ColorKeys rows={snap.legend.origins} />;
   }
 }
 
@@ -145,6 +153,8 @@ const styles = StyleSheet.create({
   },
   title: { fontFamily: fonts.sansSemiBold, fontSize: 9, lineHeight: 11, color: c.secondaryForeground },
   keys: { alignItems: 'center', gap: 12 },
+  modeDescription: { gap: 3 },
+  hatchSwatch: { width: 18, height: 10, borderWidth: 1, backgroundColor: 'rgba(221,193,138,0.3)' },
   fixedKeys: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   key: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: 180 },
   keyText: { flexShrink: 1, fontFamily: fonts.sans, fontSize: 9, color: c.secondaryForeground },

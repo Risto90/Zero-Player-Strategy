@@ -15,7 +15,6 @@ export const MODES: { id: MapMode; label: string }[] = [
   { id: 'cultures', label: 'Культуры' },
   { id: 'religions', label: 'Религии' },
   { id: 'origins', label: 'Расы' },
-  { id: 'nomads', label: 'Кочевья' },
   { id: 'humidity', label: 'Влажность' },
   { id: 'temperature', label: 'Температура' },
   { id: 'drainage', label: 'Дренаж' },

@@ -63,8 +63,6 @@ function mapListCount(game: Game, snap: GameSnapshot): number | null {
       return snap.legend.origins.length;
     case 'cities':
       return game.world.cities.length;
-    case 'nomads':
-      return game.world.countries.filter((country) => country.type === 'nomadic' && isActiveCountry(country)).length;
     default:
       return null;
   }
@@ -155,11 +153,9 @@ function GameScreen({ game }: { game: Game }) {
   const overlayHeight = Math.max(140, Math.min(620, mapHeight - 56));
 
   const onCityPress = useCallback((pixel: number) => {
-    const x = pixel % MAP_WIDTH;
-    const y = Math.floor(pixel / MAP_WIDTH);
     mapRef.current?.centerAtPixel(pixel);
     setTool('hand');
-    setInspect({ info: game.inspect(x, y) });
+    setInspect(null);
   }, [game]);
 
   const showHint = useCallback((message: string, source: 'local' | 'notification' = 'local') => {

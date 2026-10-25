@@ -6,7 +6,6 @@ export function hasMapObjectList(mode: MapMode): boolean {
     case 'cities':
     case 'cultures':
     case 'religions':
-    case 'nomads':
     case 'origins':
       return true;
     default:

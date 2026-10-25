@@ -136,6 +136,19 @@ try {
   legacyModeGame.discard();
   legacyModeResumed.discard();
 
+  // Existing saves with the retired nomadic view also return to the combined
+  // political map, where nomadic ranges are now an overlay.
+  await clearSaveBytes();
+  const legacyNomadModeGame = new Game(makeFixture().world, 'all');
+  legacyNomadModeGame.mapMode = 'nomads';
+  await legacyNomadModeGame.saveNow();
+  const legacyNomadModeResumed = await Game.load();
+  assert.ok(legacyNomadModeResumed, 'a save with the retired nomadic view can be loaded');
+  assert.equal(legacyNomadModeResumed.mapMode, 'political', 'the old nomadic view migrates to political colors');
+  assert.equal(legacyNomadModeResumed.renderer.mode, 'political', 'the loaded renderer uses the combined view');
+  legacyNomadModeGame.discard();
+  legacyNomadModeResumed.discard();
+
   // An explicit player pause survives a save and can be cleared through the same toggle.
   await clearSaveBytes();
   const pausedGame = new Game(makeFixture().world, 'all');

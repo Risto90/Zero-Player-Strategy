@@ -163,16 +163,18 @@ const profiles = [
 assert.match(modeTabs, /\{ id: 'origins', label: 'Расы' \}/u,
   'the shared mode picker exposes the new map mode on mobile and web');
 assert.equal(hasMapObjectList('origins'), true, 'the races mode opens the standard object list');
-assert.match(legendPanel, /mapMode === 'origins'[\s\S]*?legend\.origins\.filter/u,
+assert.match(legendPanel, /mapMode === 'cultures' \|\| mapMode === 'religions' \|\| mapMode === 'origins'[\s\S]*?legend\.origins/u,
   'the standard list is built from the race categories currently present on the map');
-assert.match(legendPanel, /function OriginRows[\s\S]*?data=\{rows\}/u,
-  'the list renders each present race as an entity row');
-assert.match(legendPanel, /title = 'Расы'/u, 'the list is titled with the requested term');
-assert.match(legendPanel, /Найти расу/u, 'the race list supports the same name search as culture and religion lists');
-assert.match(legendPanel, /game\.showLayer\(\{ kind: 'origin', id: row\.id \}\)/u,
+assert.match(legendPanel, /function EntityRow/u,
+  'races, cultures, religions, countries, and cities use the shared entity row');
+assert.match(legendPanel, /titleName = .*'Расы'/u, 'the list is titled with the requested term');
+assert.match(legendPanel, /isReligion \? 'веру' : 'расу'/u, 'the race list supports the same name search as culture and religion lists');
+assert.match(legendPanel, /kind, id: row\.id/u,
   'selecting a race list row opens its map layer');
-assert.match(legendPanel, /router\.push\(raceProfileRoute\(origin\.id\)\)/u,
+assert.match(legendPanel, /raceProfileRoute\(HUMAN_ORIGINS\[id\]\.id\)/u,
   'every present race row links to its profile');
+assert.match(legendPanel, /showShare=\{false\}/u, 'city rows disable both the share percentage and diagram');
+assert.match(legendPanel, /profileRouteForId=\{cityProfileRoute\}/u, 'city profiles use the separate profile button');
 assert.match(legend, /origins: 'Расы'/u, 'the map mode uses the requested label');
 const raceRows = game.getSnapshot().legend.origins;
 assert.deepEqual(new Set(raceRows.map(({ id }) => id)), new Set([

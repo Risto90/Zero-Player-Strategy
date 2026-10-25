@@ -1,5 +1,6 @@
 - [Zero Strategy balance](zero-strategy-balance.md) — split/faith weights kept low until merge/conquest exists; simulate 150 years in Node to check.
 - [Delivery target](delivery-target.md) — production should open the mobile browser game; the Expo Go launch page is obsolete, but development runtime is not being removed here.
+- [Entity list share bars](entity-list-share-bars.md) — preserve the existing horizontal, entity-colored proportion fill in shared list rows; cities omit it.
 - [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
 - [Map redraw and timer](map-redraw-timer.md) — timer starts only after full redraw; every world mutation must mark its renderer area.
 - [Dynasty, lineage, and office rules](zero-strategy-dynasty-rules.md) — separate dynasty from residents; active offices stay with living leaders while biographies retain deaths.

@@ -39,9 +39,10 @@ function createTimers() {
 }
 
 assert.equal(MAP_LEGEND_DURATION_MS, 5000, 'the legend must stay visible for five seconds');
-for (const mode of ['political', 'cities', 'cultures', 'religions', 'nomads', 'origins']) {
+for (const mode of ['political', 'cities', 'cultures', 'religions', 'origins']) {
   assert.equal(hasMapObjectList(mode), true, `${mode} must expose its object list`);
 }
+assert.doesNotMatch(screen, /case 'nomads'/, 'nomadic countries use the political list instead of a dedicated mode');
 for (const mode of ['biomes', 'humidity', 'temperature', 'drainage', 'density', 'rivers']) {
   assert.equal(hasMapObjectList(mode), false, `${mode} must not expose an object list`);
 }

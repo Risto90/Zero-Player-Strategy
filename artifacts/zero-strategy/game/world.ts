@@ -17,6 +17,7 @@ import {
 import { randomItem } from './random';
 import { initialGovernment, randomNameStyle, randomSurnameAffix, type GovernmentId, type NameStyleId, type Person, type PoliticalState, type SurnameAffix } from './government';
 import { generateCityIdentity } from './cityNames';
+import type { HumanOriginId } from './human';
 
 export interface Country extends PoliticalState {
   id: number;
@@ -84,6 +85,8 @@ export interface NomadCell {
 export interface Culture {
   id: number;
   name: string;
+  /** Race chosen for a culture founded together with a new country. */
+  foundingRaceId?: HumanOriginId;
   /** Persistent naming convention selected when this culture was founded. */
   nameStyleId?: NameStyleId;
   /** One fixed family-name prefix or ending for this culture. */
@@ -359,7 +362,7 @@ export class World {
     return country;
   }
 
-  newCulture(parent: Culture | null, year: number): Culture {
+  newCulture(parent: Culture | null, year: number, foundingRaceId?: HumanOriginId): Culture {
     const used = new Set(this.cultures.map((c) => c.name));
     const name = uniqueName(
       () =>
@@ -371,6 +374,7 @@ export class World {
     const culture: Culture = {
       id: this.cultures.length,
       name: name.charAt(0).toUpperCase() + name.slice(1),
+      ...(foundingRaceId ? { foundingRaceId } : {}),
       nameStyleId: randomNameStyle(),
       surnameAffix: randomSurnameAffix(Math.random, this.cultures.map((culture) => culture.surnameAffix).filter((affix): affix is SurnameAffix => !!affix)),
       color: pickUniqueColor(PALETTE.culture, this.usedColors(this.cultures)),
