@@ -1,5 +1,7 @@
 import { EARTH_HEIGHT, EARTH_WIDTH } from './data/earthLand';
 
+export { FLAG_OUTLINE_CONFIG } from './flagOutlineConfig';
+
 /** Map raster size (pixels). The world map is a fixed equirectangular projection of real coastlines. */
 export const MAP_WIDTH = EARTH_WIDTH;
 export const MAP_HEIGHT = EARTH_HEIGHT;
