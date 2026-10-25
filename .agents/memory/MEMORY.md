@@ -22,3 +22,4 @@
 - [Human-origin climate model](human-origin-climate-model.md) — habitat ranges reflect generations in a region, and shared-table references outside rasters need stable save mappings.
 - [Notification recipients](notification-recipients.md) — interface notices target player slots, never AI/automation status; the chronicle remains shared.
 - [Race map entities](race-map-entities.md) — call categories «расы»; show only populated races, with selectable map layers and profile links.
+- [Color metric tolerances](flag-color-metric-tolerances.md) — allow floating-point tolerance for CIELAB/WCAG results computed from rounded sRGB/D65 constants.
