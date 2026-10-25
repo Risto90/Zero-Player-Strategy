@@ -16,3 +16,11 @@
 - WG-accent gives a range for the separator but no selection rule. It defaults to the midpoint of H/12..H/6 and splits the remaining width equally between the two broad bands.
 - G08/G09 allow more geometric cells than the global 16-region limit. The builder treats repeated same-slot cells as one logical region made of multiple polygons; confirm whether the limit should count cells instead.
 - G09 says the center origin but not whether the grid line or a cell center should sit at frame center. The current grid uses intersecting grid lines through the frame center.
+
+## Flag ordinaries (§9)
+
+- O07 does not specify CHECKY cell dimensions or phase. Cell size is configurable (default H/8); cells alternate from the frame's hoist/top edges, and the configured line style shapes the inner edge.
+- O03, O04, and O05 specify thickness but not a numeric interval. Their bounds are configurable and currently use H/12..H/4 with a default of H/8.
+- O01/O09 and other ordinary layers have no stated cost values or maximum-cost budget. Costs and a conservative cap are configurable defaults; tune them with the later generator/profile work.
+- O05 does not specify the Y-junction angles or which arm points toward the hoist. The geometry accepts explicit arm angles and defaults to a symmetric upward-opening Y.
+- O09 PINWHEEL does not define the half-plane split axis. The configurable implementation uses the vertical midpoint of the canton frame.
