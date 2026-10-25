@@ -33,3 +33,9 @@
 - The minimum physical glyph stroke depends on final placement size, which is outside this task. The emblem builder exposes the required scale and checks the configured final scale; placement must pass its actual scale to validation.
 - `INSCRIBE` and `CONCENTRIC` do not fully define child ordering, frame outlines, or ring count. The implementation treats INSCRIBE's child as contents and CONCENTRIC's first child as inner emblem and second as outer base; defaults are configurable.
 - `PAIR_MIRROR`, `RING`, `ARC_REPEAT`, `CHARGE_ON_CHARGE`, and `CONCENTRIC` omit some parameter bounds or dimensions. Configurable starter bounds/defaults are supplied for safe construction; confirm the intended ranges and proportions before those values drive generation.
+
+## Charge placement and repetition (§11)
+
+- The eight constellation names do not specify exact coordinates or relative star sizes. The configuration provides normalized starter layouts; tune them against heraldic references before profiles depend on their exact appearance.
+- “Alternating 6/5-style” GRID staggering does not define which rows contain six versus five charges. The default alternates six on even rows and five on odd rows, with each row centered.
+- ARC does not define its starting direction, and LINE does not specify the occupied span. The defaults use a −90° starting angle and evenly space charges across 60% of the selected axis.

@@ -59,7 +59,15 @@ function makeSpec() {
               { kind: 'fill', fill: { pattern: { id: 'dots', spacing: 0.12, slot: 's3' } } },
               { kind: 'repeat', pattern: { count: 3, rotation: 'radial' }, child: { kind: 'fill', fill: 's2' } },
               { kind: 'mirror', axis: 'x', child: { kind: 'fill', fill: 's1' } },
-              { kind: 'counterchange', boundary: { op: 'BEND', point: { u: 0.5, v: 0.5 } }, child: { kind: 'fill', fill: 's2' } },
+              {
+                kind: 'counterchange',
+                boundary: { op: 'BEND', point: { u: 0.5, v: 0.5 } },
+                child: { kind: 'fill', fill: 's2' },
+                copies: [
+                  { region_id: 'left', clip: { region: 'left' }, slot_map: { s2: 's3' }, child: { kind: 'fill', fill: 's3' } },
+                  { region_id: 'right', clip: { region: 'right' }, slot_map: { s2: 's1' }, child: { kind: 'fill', fill: 's1' } },
+                ],
+              },
               {
                 kind: 'layer',
                 layer: layer('central-charge', 'charge'),
@@ -90,6 +98,18 @@ function makeSpec() {
 
 const spec = makeSpec();
 assert.deepEqual(validateFlagSpec(spec), [], 'a full hand-authored spec should validate');
+const missingCounterchangeCopies = makeSpec();
+delete missingCounterchangeCopies.root.ground.children[1].children[3].copies;
+assert.ok(
+  validateFlagSpec(missingCounterchangeCopies).some(({ path }) => path.endsWith('.copies')),
+  'counterchange specs require both explicitly clipped copies',
+);
+const unboundedCounterchangeCopy = makeSpec();
+unboundedCounterchangeCopy.root.ground.children[1].children[3].copies[0].clip = null;
+assert.ok(
+  validateFlagSpec(unboundedCounterchangeCopy).some(({ path }) => path.endsWith('.copies[0].clip')),
+  'counterchange copies must each carry a clipping region',
+);
 const canonical = serializeFlagSpec(spec);
 const parsed = parseFlagSpec(canonical);
 assert.deepEqual(parsed, spec, 'parse/serialize must preserve every modeled and extension field');

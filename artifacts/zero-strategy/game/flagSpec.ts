@@ -74,6 +74,15 @@ export interface CounterchangeNode {
   kind: 'counterchange';
   boundary: JsonValue;
   child: FlagNode;
+  /** Explicit clipped copies keep the two region-specific color assignments unambiguous. */
+  copies: CounterchangeCopy[];
+}
+
+export interface CounterchangeCopy {
+  region_id: string;
+  clip: JsonValue;
+  slot_map: Record<string, string>;
+  child: FlagNode;
 }
 
 export type FlagNode =
@@ -286,6 +295,32 @@ function validateNode(
     case 'counterchange':
       if (!Object.hasOwn(node, 'boundary')) add(issues, `${path}.boundary`, 'is required');
       validateNode(node.child, slots, `${path}.child`, frameDepth, issues);
+      if (!Array.isArray(node.copies) || node.copies.length !== 2) {
+        add(issues, `${path}.copies`, 'must contain exactly two clipped regional copies');
+      } else {
+        const regionIds = new Set<string>();
+        node.copies.forEach((copy, index) => {
+          const copyPath = `${path}.copies[${index}]`;
+          if (!isObject(copy)) {
+            add(issues, copyPath, 'must be a clipped copy object');
+            return;
+          }
+          if (!isString(copy.region_id)) add(issues, `${copyPath}.region_id`, 'must be a non-empty region identifier');
+          else if (regionIds.has(copy.region_id)) add(issues, `${copyPath}.region_id`, 'must identify a different region for each copy');
+          else regionIds.add(copy.region_id);
+          if (!isObject(copy.clip) && !Array.isArray(copy.clip)) {
+            add(issues, `${copyPath}.clip`, 'must describe a clipping region');
+          }
+          if (!isObject(copy.slot_map) || Object.keys(copy.slot_map).length === 0) {
+            add(issues, `${copyPath}.slot_map`, 'must map source color slots to opposite-region slots');
+          }
+          else for (const [source, target] of Object.entries(copy.slot_map)) {
+            if (!slots.has(source)) add(issues, `${copyPath}.slot_map.${source}`, 'references an unknown source color slot');
+            if (!isString(target) || !slots.has(target)) add(issues, `${copyPath}.slot_map.${source}`, 'must map to a known color slot');
+          }
+          validateNode(copy.child, slots, `${copyPath}.child`, frameDepth, issues);
+        });
+      }
       break;
   }
 }
