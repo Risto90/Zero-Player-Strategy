@@ -6,10 +6,12 @@ Implement game mechanics only when they are specified in the design doc or expli
 
 Population growth is card-driven through expansion; do not add automatic annual population growth or invent a demographic formula.
 
+For the flag generator, keep operator, layout, and pattern payloads JSON-preserving while the specification leaves their exact schemas open; add stricter types only when their own requirements define them.
+
 For AI action scoring, use direct outcomes from the card's existing rules and its real ink cost. Climate scoring uses canonical population-origin mixes, including city groups. If a card effect has no modeled direct benefit for the civilization (such as drainage comfort), do not invent a global utility weight just to make the AI spend its ink.
 
 When a card has an issued ink quota, AI benefit scoring is a preference, not permission to leave legal quota unused. After choosing beneficial targets first, the AI may continue on other card-eligible points without assigning them invented utility; the quota itself must be limited to what those points can spend.
 
-**Why:** the user explicitly corrected invented colonization behavior and asked that mechanics follow the design doc strictly.
+**Why:** the user explicitly corrected invented colonization behavior and asked that mechanics follow the design doc strictly. Flag-operator payload schemas are also intentionally deferred in the current requirements.
 
-**How to apply:** before changing game rules or AI priorities, compare the requested behavior with the current design text; flag any missing amount, threshold, or exception and ask a focused question before coding. For inked cards, separate utility ranking from legal action availability and never use a fabricated utility value to justify the fallback.
+**How to apply:** before changing game rules or AI priorities, compare the requested behavior with the current design text; flag any missing amount, threshold, or exception and ask a focused question before coding. For inked cards, separate utility ranking from legal action availability and never use a fabricated utility value to justify the fallback. For FlagSpec, preserve opaque payload fields until a feature's requirements define their schema.
