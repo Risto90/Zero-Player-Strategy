@@ -119,6 +119,8 @@ export interface FlagPaletteEntry extends JsonObject {
 
 export interface FlagMeta {
   complexity: number;
+  /** Значение качества Q из §15, если оно измерено генератором. */
+  quality?: number;
   symmetry: JsonValue;
   symmetry_actual?: JsonValue;
   color_count: number;
@@ -448,6 +450,9 @@ export function validateFlagSpec(value: unknown): FlagSpecIssue[] {
   if (!isObject(meta)) add(issues, '$.meta', 'must contain flag metadata');
   else {
     if (!isFiniteNumber(meta.complexity) || meta.complexity < 0) add(issues, '$.meta.complexity', 'must be a non-negative finite number');
+    if (meta.quality !== undefined && (!isFiniteNumber(meta.quality) || meta.quality < 0 || meta.quality > 1)) {
+      add(issues, '$.meta.quality', 'must be a number from 0 through 1');
+    }
     if (!Object.hasOwn(meta, 'symmetry')) add(issues, '$.meta.symmetry', 'is required');
     if (!Number.isInteger(meta.color_count) || (meta.color_count as number) < 0) add(issues, '$.meta.color_count', 'must be a non-negative integer');
     if (!isString(meta.structure_hash)) add(issues, '$.meta.structure_hash', 'must be a non-empty string');

@@ -1,4 +1,5 @@
 import { FLAG_GENERATOR_CONFIG } from './flagGeneratorConfig';
+import { stampFlagHashes } from './flagNovelty';
 import { flagStageRandom } from './random';
 import { assertValidFlagSpec, type FlagSpec } from './flagSpec';
 
@@ -330,6 +331,7 @@ export function generateFlag<Draft>(
     optional_layers_removed: stats.optional_layers_removed,
     rejection_reasons: [...stats.rejection_reasons],
   };
+  stampFlagHashes(flag);
   assertValidFlagSpec(flag);
   return {
     flag,

@@ -1,0 +1,50 @@
+/** Стартовые пороги и размерности метрик новизны из §§16.2–16.5. */
+export const FLAG_NOVELTY_CONFIG = {
+  quantizationDivisor: 24,
+  referenceRasterWidth: 64,
+  similarity: {
+    maximumRelativeAspectDifference: 0.12,
+    maximumDeltaE: 80,
+    transparentPixelPenalty: 100,
+    referenceRejection: 0.93,
+    deduplication: 0.96,
+    cluster: 0.9,
+  },
+  deduplication: {
+    attemptsPerFlag: 50,
+    hashGridSize: 8,
+  },
+  farthestPoint: {
+    poolMultiplier: 10,
+  },
+  mapElites: {
+    colorCount: [2, 5],
+    symmetries: ['NONE', 'MIR_H', 'MIR_V', 'ROT', 'BOTH'],
+    complexityBinCount: 4,
+    outlineClasses: ['RECT', 'PENNANT', 'SWALLOW', 'BANNER', 'OTHER'],
+    structureFamilies: ['полосы', 'крест', 'деления', 'диск-заряд', 'кантон', 'клин', 'сетка-узор', 'прочее'],
+    initialPoolMultiplier: 10,
+    mutationIterationMultiplier: 20,
+    minimumMutationIterations: 100,
+  },
+  metricCategories: {
+    ordinaryFamilies: 8,
+    moduleFamilies: 30,
+  },
+  deadFeatureFrequency: 0.002,
+  estimateParameterRange: [0, 1],
+  fieldOperatorCardinalities: {
+    SOLID: 1,
+    BANDS: 600,
+    DIAG_BANDS: 1200,
+    SPLIT2: 1162,
+    QUARTERLY: 75,
+    SALTIRE_DIV: 75,
+    PALL_DIV: 2,
+    GYRONNY: 4800,
+    CHECKY: 26,
+    LOZENGY: 240,
+    CHEVRONNY: 8064,
+    CONCENTRIC: 100,
+  },
+} as const;
