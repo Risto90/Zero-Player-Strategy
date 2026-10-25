@@ -6,6 +6,7 @@ export { FLAG_ORDINARY_CONFIG } from './flagOrdinaryConfig';
 export { FLAG_EMBLEM_CONFIG } from './flagEmblemConfig';
 export { FLAG_PLACEMENT_CONFIG } from './flagPlacementConfig';
 export { FLAG_COLOR_CONFIG } from './flagColorConfig';
+export { FLAG_PROFILE_CONFIG, FLAG_PROFILE_DEFAULTS, FLAG_TAG_COMPATIBILITY, FLAG_CULTURE_PROFILE_BINDINGS } from './flagProfileConfig';
 
 /** Map raster size (pixels). The world map is a fixed equirectangular projection of real coastlines. */
 export const MAP_WIDTH = EARTH_WIDTH;
