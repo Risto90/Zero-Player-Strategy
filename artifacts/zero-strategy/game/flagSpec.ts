@@ -1,10 +1,10 @@
 /**
- * Versioned, renderer-independent flag description.
+ * Версионируемое описание флага, не зависящее от рендерера.
  *
- * Operator-specific geometry is deliberately JSON-shaped: the flag brief
- * defines the node tree but leaves several operator and pattern payloads open.
- * Keeping those payloads intact lets hand-authored specs round-trip while
- * later generator stages add their own validated conventions.
+ * Геометрия операторов намеренно имеет форму JSON: задание задаёт дерево узлов,
+ * но оставляет структуру данных операторов и узоров открытой. Сохранение этих
+ * данных позволяет преобразовывать вручную подготовленные спецификации туда и
+ * обратно, пока последующие этапы генератора добавляют проверяемые соглашения.
  */
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -48,7 +48,7 @@ export interface SplitNode {
 export interface LayerNode {
   kind: 'layer';
   layer: FlagLayer;
-  /** A canton or similar layer may own a nested coordinate frame. */
+  /** Кантон и подобный слой может иметь собственную вложенную систему координат. */
   frame?: FlagFrame;
 }
 
@@ -74,7 +74,7 @@ export interface CounterchangeNode {
   kind: 'counterchange';
   boundary: JsonValue;
   child: FlagNode;
-  /** Explicit clipped copies keep the two region-specific color assignments unambiguous. */
+  /** Явные обрезанные копии устраняют неоднозначность назначений цветов для двух областей. */
   copies: CounterchangeCopy[];
 }
 
@@ -120,6 +120,7 @@ export interface FlagPaletteEntry extends JsonObject {
 export interface FlagMeta {
   complexity: number;
   symmetry: JsonValue;
+  symmetry_actual?: JsonValue;
   color_count: number;
   structure_hash: string;
   visual_hash: string;
@@ -371,7 +372,7 @@ function validateFrame(
   else frame.layers.forEach((node, index) => validateNode(node, slots, `${path}.layers[${index}]`, depth, issues));
 }
 
-/** Return all schema and invariant failures without modifying the specification. */
+/** Возвращает все ошибки схемы и инвариантов, не изменяя спецификацию. */
 export function validateFlagSpec(value: unknown): FlagSpecIssue[] {
   const issues: FlagSpecIssue[] = [];
   validateJson(value, '$', issues);
@@ -456,7 +457,7 @@ export function validateFlagSpec(value: unknown): FlagSpecIssue[] {
   return issues;
 }
 
-/** Assert validity and return the original typed value. */
+/** Проверяет корректность и возвращает исходное значение с типом. */
 export function assertValidFlagSpec(value: unknown): asserts value is FlagSpec {
   const issues = validateFlagSpec(value);
   if (issues.length) {
@@ -472,13 +473,13 @@ function canonicalJson(value: unknown): string {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(',')}}`;
 }
 
-/** Serialize as deterministic UTF-8-compatible JSON with recursively sorted object keys. */
+/** Сериализует в детерминированный совместимый с UTF-8 JSON с рекурсивной сортировкой ключей объектов. */
 export function serializeFlagSpec(spec: FlagSpec): string {
   assertValidFlagSpec(spec);
   return canonicalJson(spec);
 }
 
-/** Parse canonical or hand-authored JSON and validate its complete FlagSpec shape. */
+/** Разбирает канонический или вручную подготовленный JSON и проверяет структуру FlagSpec целиком. */
 export function parseFlagSpec(text: string): FlagSpec {
   let value: unknown;
   try {
