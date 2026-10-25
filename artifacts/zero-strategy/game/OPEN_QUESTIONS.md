@@ -1,41 +1,41 @@
-# Open questions
+# Открытые вопросы
 
-## Flag outlines (§6)
+## Контуры флагов (§6)
 
-- For a `U` swallow notch, the specification gives a minimum arc radius but not a separate radius choice or notch opening width. The current builder derives one circular arc from the configured notch depth and section span; confirm whether profiles should be able to choose the radius independently.
-- The `EDGE` modifier is allowed on `SWALLOW` and `BANNER`, including when their base outline already has notches or a non-straight lower edge. The current builder distributes the edge pattern over that free-edge polyline; confirm whether it should decorate only the uninterrupted outermost segments instead.
-- “Contour compressed by M_SAFE” does not specify join behavior at concave corners. Safe areas start with inward parallel offsets and mitered intersections; concave spikes are conservatively pulled inward until the resulting boundary is contained and at least M_SAFE from the contour.
+- Для U-образного выреза «ласточкин хвост» в спецификации указан минимальный радиус дуги, но не задан отдельный выбор радиуса или ширина раскрытия выреза. Текущий построитель выводит одну круговую дугу из заданной глубины выреза и ширины секции; подтвердите, должны ли профили иметь возможность независимо задавать радиус.
+- Модификатор `EDGE` разрешён для `SWALLOW` и `BANNER`, в том числе когда в базовом контуре уже есть вырезы или нижний край не является прямым. Текущий построитель распределяет узор края по этой свободной ломаной; подтвердите, должен ли он украшать только непрерывные внешние сегменты.
+- В описании «контур сжат на M_SAFE» не указано, как обрабатывать стыки во вогнутых углах. Безопасные области начинаются с параллельных смещений внутрь и соединений под углом. Вогнутые выступы осторожно сдвигаются внутрь, пока получившаяся граница не окажется внутри контура и на расстоянии не менее M_SAFE от него.
 
-## Flag field operators (§7)
+## Операторы заполнения поля флага (§7)
 
-- The brief names G04 CHEVRON's vertex and slope but does not define which frame edges its two arms meet. The field builder uses configurable arms that reach the left/right edges.
-- G07 gives two sets of three angles without an orientation. The default uses a configurable start angle of −90° and proceeds clockwise in screen coordinates.
-- G10's “lozenge angle” does not clarify whether it means cell rotation or interior angle. The builder treats it as a configurable rotation for a square grid; its starting rotation is 60°.
-- G11 says “nested chevrons from a vertex” and equal thickness but omits the path construction. The builder uses configurable, parallel V-shaped bands and amplitude; its default amplitude is 0.12 of the frame height.
-- WG-comp does not specify the random distribution over valid compositions. A deterministic caller-provided random source selects among valid totals/parts; no global random source is used.
-- WG-accent gives a range for the separator but no selection rule. It defaults to the midpoint of H/12..H/6 and splits the remaining width equally between the two broad bands.
-- G08/G09 allow more geometric cells than the global 16-region limit. The builder treats repeated same-slot cells as one logical region made of multiple polygons; confirm whether the limit should count cells instead.
-- G09 says the center origin but not whether the grid line or a cell center should sit at frame center. The current grid uses intersecting grid lines through the frame center.
+- В описании G04 CHEVRON заданы вершина и наклон, но не указано, каких краёв рамки должны достигать два его плеча. Построитель поля использует настраиваемые плечи, доходящие до левого и правого краёв.
+- Для G07 указаны два набора по три угла, но не задана ориентация. По умолчанию используется настраиваемый начальный угол −90° и движение по часовой стрелке в экранных координатах.
+- Для «угла ромба» G10 неясно, имеется ли в виду поворот ячейки или внутренний угол. Построитель поля трактует его как настраиваемый поворот квадратной сетки; начальный поворот — 60°.
+- В G11 сказано «вложенные шевроны из вершины» и указана одинаковая толщина, но не описан способ построения линий. Построитель использует настраиваемые параллельные V-образные полосы и амплитуду; по умолчанию амплитуда составляет 0,12 высоты рамки.
+- WG-comp не задаёт распределение вероятностей между допустимыми композициями. Переданный вызывающей стороной детерминированный источник случайных чисел выбирает среди допустимых общих чисел и частей; глобальный источник случайности не используется.
+- WG-accent задаёт диапазон для разделителя, но не правило его выбора. По умолчанию берётся середина диапазона H/12..H/6, а оставшаяся ширина поровну делится между двумя широкими полосами.
+- G08/G09 допускают больше геометрических ячеек, чем установленный общий предел в 16 областей. Построитель считает повторяющиеся ячейки с одним и тем же слотом одной логической областью, состоящей из нескольких многоугольников; подтвердите, должен ли предел учитывать вместо этого сами ячейки.
+- В G09 указано, что начало координат находится в центре, но не уточняется, должна ли через центр рамки проходить линия сетки или центр ячейки. Текущая сетка проходит пересекающимися линиями через центр рамки.
 
-## Flag ordinaries (§9)
+## Основные геральдические фигуры флага (§9)
 
-- O07 does not specify CHECKY cell dimensions or phase. Cell size is configurable (default H/8); cells alternate from the frame's hoist/top edges, and the configured line style shapes the inner edge.
-- O03, O04, and O05 specify thickness but not a numeric interval. Their bounds are configurable and currently use H/12..H/4 with a default of H/8.
-- O01/O09 and other ordinary layers have no stated cost values or maximum-cost budget. Costs and a conservative cap are configurable defaults; tune them with the later generator/profile work.
-- O05 does not specify the Y-junction angles or which arm points toward the hoist. The geometry accepts explicit arm angles and defaults to a symmetric upward-opening Y.
-- O09 PINWHEEL does not define the half-plane split axis. The configurable implementation uses the vertical midpoint of the canton frame.
+- Для O07 не заданы размеры ячеек CHECKY и их фаза. Размер ячеек настраивается (по умолчанию H/8); ячейки чередуются от верхнего и древкового краёв рамки, а внутренний край формируется выбранным стилем линий.
+- Для O03, O04 и O05 задана толщина, но не числовой диапазон. Границы настраиваются; сейчас используется диапазон H/12..H/4 со значением по умолчанию H/8.
+- Для O01/O09 и других слоёв фигур не заданы значения стоимости или максимальный бюджет стоимости. Используются настраиваемые значения по умолчанию и консервативный предел; их следует откалибровать при последующей работе над генератором и профилями.
+- Для O05 не заданы углы ветвей Y-образного соединения и не указано, какая ветвь направлена к древку. Геометрия принимает явные углы ветвей; по умолчанию используется симметричная Y-образная фигура, раскрытая вверх.
+- В O09 PINWHEEL не задана ось разделения полуплоскостей. Настраиваемая реализация использует вертикальную середину рамки кантона.
 
-## Flag emblem library (§10)
+## Библиотека эмблем флага (§10)
 
-- The specification does not define an emblem cost formula or starter values. The catalog currently uses a neutral configurable cost of `1` per module and composer (`0` for `SINGLE`); confirm the intended cost model before costs affect selection.
-- Several named sub-shapes lack exact dimensions or construction details (including sun ray variants, lily petal joins, ship hull curvature, and anchor details). The implementation uses simple polygonal approximations; provide exact geometry if silhouettes must match references.
-- `GLYPH` does not state whether an edge can span non-adjacent grid nodes or define quarter-arc control points. The initial builder uses adjacent grid edges and circular quarter arcs; confirm whether longer edges or other arc construction are needed.
-- The minimum physical glyph stroke depends on final placement size, which is outside this task. The emblem builder exposes the required scale and checks the configured final scale; placement must pass its actual scale to validation.
-- `INSCRIBE` and `CONCENTRIC` do not fully define child ordering, frame outlines, or ring count. The implementation treats INSCRIBE's child as contents and CONCENTRIC's first child as inner emblem and second as outer base; defaults are configurable.
-- `PAIR_MIRROR`, `RING`, `ARC_REPEAT`, `CHARGE_ON_CHARGE`, and `CONCENTRIC` omit some parameter bounds or dimensions. Configurable starter bounds/defaults are supplied for safe construction; confirm the intended ranges and proportions before those values drive generation.
+- В спецификации не задана формула стоимости эмблем или начальные значения. Сейчас в каталоге используется нейтральная настраиваемая стоимость `1` за модуль и композицию (`0` для `SINGLE`); подтвердите предполагаемую модель стоимости до того, как она начнёт влиять на выбор.
+- Для нескольких названных подфигур не хватает точных размеров или деталей построения (в том числе вариантов лучей солнца, соединений лепестков лилии, кривизны корпуса корабля и деталей якоря). Реализация использует простые многоугольные приближения; если силуэты должны совпадать с образцами, укажите точную геометрию.
+- В `GLYPH` не указано, может ли линия соединять несоседние узлы сетки, и не заданы контрольные точки четверть-круговых дуг. Начальный построитель использует соседние рёбра сетки и круговые четверть-дуги; подтвердите, нужны ли более длинные линии или другой способ построения дуг.
+- Минимальная физическая толщина линии глифа зависит от его итогового размера размещения, который находится за пределами этой задачи. Построитель эмблем принимает требуемый масштаб и проверяет заданный итоговый масштаб; при проверке размещения необходимо передавать фактический масштаб.
+- В `INSCRIBE` и `CONCENTRIC` не до конца определены порядок дочерних элементов, контуры рамок и число колец. Реализация трактует дочерний элемент `INSCRIBE` как содержимое, а первый дочерний элемент `CONCENTRIC` — как внутреннюю эмблему, второй — как внешнюю основу; значения по умолчанию настраиваются.
+- Для `PAIR_MIRROR`, `RING`, `ARC_REPEAT`, `CHARGE_ON_CHARGE` и `CONCENTRIC` не заданы некоторые границы параметров или размеры. Для безопасного построения предусмотрены настраиваемые начальные границы и значения по умолчанию; подтвердите предполагаемые диапазоны и пропорции, прежде чем использовать эти значения для генерации.
 
-## Charge placement and repetition (§11)
+## Размещение и повторение фигур (§11)
 
-- The eight constellation names do not specify exact coordinates or relative star sizes. The configuration provides normalized starter layouts; tune them against heraldic references before profiles depend on their exact appearance.
-- “Alternating 6/5-style” GRID staggering does not define which rows contain six versus five charges. The default alternates six on even rows and five on odd rows, with each row centered.
-- ARC does not define its starting direction, and LINE does not specify the occupied span. The defaults use a −90° starting angle and evenly space charges across 60% of the selected axis.
+- Для восьми названий созвездий не заданы точные координаты или относительные размеры звёзд. В конфигурации приведены начальные схемы в нормализованных координатах; их следует сверить с геральдическими образцами до того, как профили начнут зависеть от точной геометрии.
+- Для чередования ячеек 6/5 в GRID не указано, в каких рядах должно быть шесть ячеек, а в каких — пять. По умолчанию в чётных рядах размещается шесть ячеек, в нечётных — пять; каждый ряд центрируется.
+- Для ARC не задано начальное направление, а для LINE — занимаемая область. По умолчанию используется начальный угол −90°, а фигуры равномерно размещаются на 60% выбранной оси.
