@@ -2,9 +2,43 @@ import type { Person } from './government';
 import type { Country, World } from './world';
 import { person, newCitizen, registerPerson } from './characters';
 import { demography, weighted, type Demography } from './demography';
+import { normalizeHumanOriginMix } from './human';
 
 function isMember(c: Country, p: Person): boolean {
   return p.countryId === c.id || c.ruler.id === p.id || c.coRulerIds.includes(p.id);
+}
+
+/** Генеалогическая ветвь не включает чужую семью лишь из-за записи в dynastyClaims. */
+function rulingLineageIds(world: World, leader: Person): Set<number> {
+  const peopleById = new Map(world.people.map((p) => [p.id, p]));
+  peopleById.set(leader.id, leader);
+  const links = new Map<number, Set<number>>();
+  const connect = (a: number, b: number) => {
+    const aLinks = links.get(a) ?? new Set<number>();
+    const bLinks = links.get(b) ?? new Set<number>();
+    aLinks.add(b);
+    bLinks.add(a);
+    links.set(a, aLinks);
+    links.set(b, bLinks);
+  };
+  for (const child of world.people) {
+    if (child.familyId !== leader.familyId) continue;
+    for (const parentId of child.parents) {
+      const parent = peopleById.get(parentId);
+      if (parent?.familyId === leader.familyId) connect(parent.id, child.id);
+    }
+  }
+
+  const connected = new Set<number>([leader.id]);
+  const queue = [leader.id];
+  for (let head = 0; head < queue.length; head += 1) {
+    for (const relatedId of links.get(queue[head]) ?? []) {
+      if (connected.has(relatedId)) continue;
+      connected.add(relatedId);
+      queue.push(relatedId);
+    }
+  }
+  return connected;
 }
 
 export function rulers(world: World, c: Country): Person[] {
@@ -344,7 +378,9 @@ export function countryCandidates(world: World, c: Country): CountryCandidate[] 
     } else if (p.parents.some((parentId) => previousLeaders.has(parentId)) && c.modifiers.includes('oligarchy') && c.government === 'hereditary') {
       basis.push('Кандидат из правящей династии при олигархии.');
     } else {
-      basis.push('Живой допустимый член наследственной линии или семьи правителя.');
+      basis.push(p.parents.includes(old.id)
+        ? 'Ребёнок правителя; родственная связь подтверждена родословной.'
+        : 'Родственная цепочка к правителю подтверждена записями о родителях.');
     }
     if (c.modifiers.includes('seniority')) advantages.push('Порядок сеньората: старший подходящий член династии.');
     if (c.modifiers.includes('minority')) advantages.push('Порядок минората: младший подходящий член династии.');
@@ -385,9 +421,12 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
   const peopleById = new Map(world.people.map((p) => [p.id, p]));
   const eligibility = candidateEligibilityContext(world, c, old);
   const former = new Set([...c.previousRulerIds, old.id]);
-  let family = world.people.filter((p) => p.id !== old.id && c.dynastyClaims.includes(p.familyId) && isMember(c, p));
+  const rulingLineage = rulingLineageIds(world, old);
+  let family = c.government === 'tribal'
+    ? world.people.filter((p) => p.id !== old.id && p.parents.some((id) => former.has(id)))
+    : world.people.filter((p) => p.id !== old.id && rulingLineage.has(p.id));
   if (c.government === 'tribal') family = family.filter((p) => p.parents.some((id) => former.has(id)));
-  const children = world.people.filter((p) => p.parents.includes(old.id) && isMember(c, p));
+  const children = world.people.filter((p) => p.parents.includes(old.id));
   let pool = family;
   const youngest = c.modifiers.includes('minority');
   const ageOrder = (a: Person, b: Person) => (youngest ? b.bornAt - a.bornAt : a.bornAt - b.bornAt) || a.id - b.id;
