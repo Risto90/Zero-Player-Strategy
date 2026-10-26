@@ -442,11 +442,9 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                   ? collapsedPeople.has(person.id)
                   : partnerBranchKeys.length > 0 && partnerBranchKeys.every((key) => collapsedPairs.has(key));
                 return (
-                  <Pressable
+                  <View
                     key={person.id}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Выбрать связи персонажа ${person.name}`}
-                    onPress={() => {
+                    onClick={() => {
                       setSelectedPersonId(person.id);
                       centerOnPerson(person.id);
                     }}
@@ -516,7 +514,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                         <Feather name="arrow-down" size={15} color={c.accent} />
                       </Pressable>
                     )}
-                  </Pressable>
+                  </View>
                 );
               })}
             </Animated.View>
