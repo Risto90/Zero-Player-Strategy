@@ -4,7 +4,8 @@ import { resolve } from 'node:path';
 import { countryCharacters, normalizePolitics } from '../game/characters.ts';
 import { availableModifiers, createFamilyId, createPerson, MODIFIERS } from '../game/government.ts';
 import { applyReform, reformCandidates } from '../game/politics.ts';
-import { appoint, candidateAllowed, candidateWeight, countryCandidates, countryRulerHistory, ensureOffices, hasFixedHeir, successionOrder } from '../game/succession.ts';
+import { demography } from '../game/demography.ts';
+import { appoint, candidateAllowed, candidateWeight, countryCandidates, countryRulerHistory, ensureOffices, hasFixedHeir, leadershipOptions, successionOrder } from '../game/succession.ts';
 import { World } from '../game/world.ts';
 
 function fixture(seed = 10201) {
@@ -174,6 +175,53 @@ function addChild(world, country, parent, options = {}) {
   assert.equal(candidates[0]?.person.id, child.id, 'the first suitable branch follows primogeniture');
   assert.equal(candidates[0]?.expectedHeir, true);
   assert.equal(candidates[0]?.weight, null, 'guaranteed inheritance is not described as a weighted chance');
+}
+
+// Disconnected claimed families are not presented as heirs; matching residents only replace random choices.
+{
+  const { world, country } = fixture(10235);
+  country.government = 'hereditary';
+  country.modifiers = [];
+  const demographics = demography(world, country);
+  const pair = demographics.pairs[0];
+  const residents = [0, 1].map(() => {
+    const resident = addPerson(world, country, {
+      cultureId: pair.cultureId,
+      religionId: pair.religionId,
+    });
+    resident.humanOrigin = demographics.humanOrigin;
+    country.dynastyClaims.push(resident.familyId);
+    return resident;
+  });
+
+  const actualCandidates = countryCandidates(world, country);
+  assert.ok(!residents.some((resident) => actualCandidates.some((candidate) =>
+    candidate.person.id === resident.id)),
+  'a disconnected dynasty claim alone does not create an heir');
+
+  const peopleBefore = world.people.length;
+  const options = leadershipOptions(world, country, 1000);
+  assert.equal(options.length, 2, 'the choice still contains two candidates');
+  assert.deepEqual(new Set(options.map((option) => option.id)), new Set(residents.map((resident) => resident.id)),
+    'matching living residents replace the two generated choice candidates');
+  assert.equal(world.people.length, peopleBefore, 'unselected generated candidates are not registered in the world');
+}
+
+// Consulate plus partition admits a consul's sibling even when the sibling is outside the ruler's dynasty claim.
+{
+  const { world, country } = fixture(10236);
+  country.government = 'hereditary';
+  country.modifiers = ['consulate', 'partition'];
+  const parent = addPerson(world, country);
+  country.ruler.parents = [parent.id];
+  const sibling = addPerson(world, country, { parents: [parent.id] });
+
+  const order = successionOrder(world, country);
+  assert.equal(order[0]?.id, sibling.id, 'a sibling of a sitting consul receives priority independently of dynastyClaims');
+  const candidate = countryCandidates(world, country).find((entry) => entry.person.id === sibling.id);
+  assert.ok(candidate);
+  assert.match(candidate.basis.join(' '), /Консулат с разделением/u,
+    'the displayed claim describes the consulate rule rather than inventing a bloodline claim');
 }
 
 // Tyranny may succeed to a spouse if no eligible child exists, subject to sex restrictions.
