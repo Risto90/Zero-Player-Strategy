@@ -3,7 +3,7 @@
 - [Entity list share bars](entity-list-share-bars.md) — preserve the existing horizontal, entity-colored proportion fill in shared list rows; cities omit it.
 - [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
 - [Map redraw and timer](map-redraw-timer.md) — timer starts only after full redraw; every world mutation must mark its renderer area.
-- [Dynasty, lineage, and office rules](zero-strategy-dynasty-rules.md) — separate dynasty from residents; active offices stay with living leaders while biographies retain deaths.
+- [Династии, родословная и должности](zero-strategy-dynasty-rules.md) — родство подтверждается родословной; новый правитель не наследует династию предшественника автоматически.
 - [Unified country residence](nomad-current-homes.md) — characters keep one current countryId; nomadic countries live in the shared country collection.
 - [Design-doc fidelity](design-doc-fidelity.md) — implement only mechanics specified for this game; clarify missing numerical rules instead of inventing them.
 - [Expo build port](zero-strategy-expo-build-port.md) — choose a free Metro port if Replit's preview service occupies 8081.
