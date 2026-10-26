@@ -18,6 +18,7 @@ import { randomItem } from './random';
 import { initialGovernment, randomNameStyle, randomSurnameAffix, type GovernmentId, type NameStyleId, type Person, type PoliticalState, type SurnameAffix } from './government';
 import { generateCityIdentity } from './cityNames';
 import type { HumanOriginId } from './human';
+import { MapContours } from './contours';
 
 export interface Country extends PoliticalState {
   id: number;
@@ -132,6 +133,10 @@ export class World {
   people: Person[] = [];
   /** Bumped on every map change; caches compare against it. */
   version = 0;
+  readonly contours = new MapContours(
+    (name) => name === 'water' ? this.water.bodyOf : this[name],
+    () => this.version,
+  );
 
   constructor(
     readonly mapKind: MapKind,
@@ -240,8 +245,11 @@ export class World {
   setOwner(p: number, id: number): void {
     const previous = this.owner[p];
     if (previous === id) return;
+    this.contours.synchronize();
     if (previous > 0) this.countries[previous - 1].pixels -= 1;
     this.owner[p] = id;
+    const row = Math.floor(p / MAP_WIDTH);
+    this.contours.changed({ x0: 0, x1: MAP_WIDTH - 1, y0: row, y1: row }, ['owner']);
     if (id > 0) {
       const country = this.countries[id - 1];
       country.pixels += 1;

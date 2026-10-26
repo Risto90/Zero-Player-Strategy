@@ -4,8 +4,9 @@ import { type Country, type NomadCell, type World } from './world';
 import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
 import { ColonizationDonorHeap, colonizationPlan, transferColonizationPopulation } from './colonization';
-import { applyDensityGrowth, changeCityPopulation, CityInfluenceIndex, ensureCityPopulationGroups, populationAtPixel } from './settlements';
+import { applyDensityGrowth, changeCityPopulation, CityInfluenceIndex, cityInfluenceRadius, ensureCityPopulationGroups, populationAtPixel } from './settlements';
 import { demography } from './demography';
+import { ContourArea, type ContourBounds, type ContourLayerName } from './contours';
 import {
   climateSuitability,
   combineHumanOriginTableMixes,
@@ -270,6 +271,10 @@ export class CardPainter {
   private readonly brushScalingCache = new Map<number, { cost: Float64Array; strength: Float64Array }>();
   private lastStrategyScalingPixel = -1;
   private lastStrategyScalingCost = 0;
+  private originScoreMix: ReturnType<typeof defaultHumanOriginMix> | null = null;
+  private forbiddenCreationArea: ContourArea | null = null;
+  private readonly influenceCache = new Map<number, ReturnType<CityInfluenceIndex['at']>>();
+  private readonly climateGainCache = new Map<number, number>();
   private nomadMode: 'range' | 'density' | 'inactive' = 'range';
   private readonly nomadRange = new Set<number>();
   private readonly nomadCells = new Map<number, NomadCell>();
@@ -407,7 +412,7 @@ export class CardPainter {
         return world.cityAt(pixel)?.population ?? 1;
       }
       if (card.type === 'colonization') {
-        const influence = this.cityInfluence?.at(pixel);
+        const influence = this.influenceAt(pixel);
         const valid = this.colonizationMask?.[pixel] === 1 && world.owner[pixel] !== workingId + 1 &&
           !world.cityAt(pixel) && !(influence && influence.foreignRankSum > 0 && influence.ownRankSum === 0);
         const donor = this.colonizationDonors?.peek() ?? -1;
@@ -419,7 +424,7 @@ export class CardPainter {
         return strength;
       }
       if (owner !== 0) return 0;
-      if (card.type === 'create' && (this.cityInfluence?.at(pixel).foreignRankSum ?? 0) > 0) return 0;
+      if (card.type === 'create' && (this.influenceAt(pixel)?.foreignRankSum ?? 0) > 0) return 0;
       let linked = working.pixels === 0 && card.type === 'create';
       forEachNeighbour(pixel, (neighbor) => {
         if (world.owner[neighbor] === workingId + 1) linked = true;
@@ -460,23 +465,9 @@ export class CardPainter {
           world.humanOriginTable,
           groups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
         );
-        const originEntry = world.humanOriginTable.entries[mixedOrigins];
-        const mix = originEntry?.total === 100
-          ? humanOriginMixFromTable(originEntry.ids, originEntry.shares)
-          : defaultHumanOriginMix();
-        return population * (
-          climateSuitability(mix, nextTemperature, nextHumidity) -
-          climateSuitability(mix, temperature, humidity)
-        );
+        return population * this.climateGain(mixedOrigins, temperature, humidity, nextTemperature, nextHumidity);
       }
-      const entry = world.humanOriginTable.entries[world.humanOrigins[pixel]];
-      const mix = entry?.total === 100
-        ? humanOriginMixFromTable(entry.ids, entry.shares)
-        : defaultHumanOriginMix();
-      return population * (
-        climateSuitability(mix, nextTemperature, nextHumidity) -
-        climateSuitability(mix, temperature, humidity)
-      );
+      return population * this.climateGain(world.humanOrigins[pixel], temperature, humidity, nextTemperature, nextHumidity);
     }
 
     if (card.type === 'faith' || card.type === 'culture') {
@@ -560,13 +551,115 @@ export class CardPainter {
     return this.brushScaling(pixel).cost;
   }
 
+  /** Геометрия пригодных целей; детальные правила мазка остаются общими с игроком. */
+  strategyCandidateArea(bounds: ContourBounds): ContourArea {
+    const world = this.world;
+    let area = world.contours.layer('land').select((value) => value === 1, bounds, 'land');
+    const type = this.card.type;
+    if (type === 'create' || type === 'expand' || type === 'split') {
+      const tag = type === 'split' ? (this.card.targetCountryId ?? -1) + 1 : 0;
+      const ownTag = (this.workingCountryId() ?? -1) + 1;
+      area = area.intersect(world.contours.layer('owner').select(
+        (value) => value === tag || (type === 'expand' && this.mode === 'repeat' && value === ownTag),
+        bounds, `${type}:${tag}:${ownTag}:${this.mode}`));
+    }
+    if (type === 'create') {
+      if (!this.forbiddenCreationArea) {
+        const spans = world.cities.flatMap((city) => ContourArea.circle(city.pixel % MAP_WIDTH + 0.5,
+          Math.floor(city.pixel / MAP_WIDTH) + 0.5, cityInfluenceRadius(world, city)).spans);
+        this.forbiddenCreationArea = new ContourArea(spans);
+      }
+      area = area.subtract(this.forbiddenCreationArea);
+    }
+    return area;
+  }
+
+  /** Контуры начала и окончания отделены от области, через которую разрешено провести кисть. */
+  strategyStrokeContours(bounds: ContourBounds): { paint: ContourArea; start: ContourArea; stop: ContourArea } {
+    const world = this.world;
+    const type = this.card.type;
+    const land = world.contours.layer('land').select((value) => value === 1, bounds, 'land');
+    if (isWind(type)) {
+      const own = world.contours.layer('owner').select((value) => value === (this.card.targetCountryId ?? -1) + 1, bounds);
+      const water = world.contours.layer('water').select((value) => this.seas.has(value), bounds);
+      return { paint: own.intersect(land).union(water), start: own.intersect(land), stop: own.intersect(land) };
+    }
+    if (isCurrent(type)) {
+      const water = world.contours.layer('water').select((value) => value >= 0, bounds);
+      return { paint: land.union(water), start: land.union(water), stop: land.union(water) };
+    }
+    const paint = this.strategyCandidateArea(bounds);
+    if (type !== 'create' && type !== 'expand') return { paint, start: paint, stop: paint };
+    const country = world.countries[this.workingCountryId() ?? -1];
+    if (!country || country.pixels === 0) return { paint, start: paint, stop: paint };
+    const owned = world.contours.layer('owner').select((value) => value === country.id + 1,
+      { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 }, `country:${country.id}`);
+    let frontier = owned.border();
+    for (const sea of this.seas) frontier = frontier.union(ContourArea.pixels(world.water.coastsOf[sea]));
+    const start = paint.intersect(frontier);
+    return { paint, start, stop: paint };
+  }
+
+  strategyClimateFit(temperature: number, humidity: number): number {
+    if (!this.originScoreMix) {
+      const country = this.world.countries[this.workingCountryId() ?? -1];
+      const foundingOrigin = this.card.type === 'create'
+        ? this.world.cultures[this.card.newCultureId ?? -1]?.foundingRaceId : null;
+      this.originScoreMix = foundingOrigin
+        ? { ids: [foundingOrigin], shares: [100] }
+        : country ? demography(this.world, country).humanOrigin : defaultHumanOriginMix();
+    }
+    return climateSuitability(this.originScoreMix, temperature, humidity);
+  }
+
+  strategySeaBodies(): ReadonlySet<number> {
+    return this.seas;
+  }
+
+  /** Общий инструмент заполнения контура: те же эффекты, связность и расход чернил, что у мазка. */
+  paintContour(area: ContourArea, seed?: number): number {
+    this.world.contours.synchronize();
+    const pixels: number[] = [];
+    area.forEachPixel((pixel) => {
+      if (this.world.land[pixel] || (isCurrent(this.card.type) && this.world.water.bodyOf[pixel] >= 0) ||
+        (isWind(this.card.type) && this.seas.has(this.world.water.bodyOf[pixel]))) pixels.push(pixel);
+    });
+    if (seed !== undefined) {
+      const index = pixels.indexOf(seed);
+      if (index > 0) { pixels.splice(index, 1); pixels.unshift(seed); }
+    }
+    if (!pixels.length || this.card.ink <= 0) return 0;
+    const before = this.card.ink;
+    const touchedStart = this.strokeTouched.length;
+    if (['create', 'expand', 'colonization', 'split', 'nomadExpand'].includes(this.card.type)) this.paintTerritory(pixels);
+    else this.paintLayer(pixels);
+    const spent = before - this.card.ink;
+    if (spent > 0) {
+      this.world.version += 1;
+      let x0 = MAP_WIDTH, y0 = MAP_HEIGHT, x1 = -1, y1 = -1;
+      for (let index = touchedStart; index < this.strokeTouched.length; index += 1) {
+        const pixel = this.strokeTouched[index], x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+        y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      }
+      const dirty = x1 >= x0 ? { x0, y0, x1, y1 } : area.bounds;
+      this.markDirty(dirty.x0 - 1, dirty.y0 - 1, dirty.x1 + 1, dirty.y1 + 1);
+      const names: ContourLayerName[] = ['owner', 'density', 'culture', 'religion', 'humanOrigins'];
+      if (['rain', 'drought'].includes(this.card.type)) names.push('humidity');
+      if (['swamping', 'desertification'].includes(this.card.type)) names.push('drainage');
+      if (isTemperatureCard(this.card.type)) names.push('temperature');
+      this.world.contours.changed(dirty, names);
+    }
+    return spent;
+  }
+
   /** Maximum ink one colonization target can consume under its population limit. */
   strategyColonizationInkCapacityAt(pixel: number, sourceDensity?: number): number {
     const countryId = this.card.targetCountryId;
     if (this.card.type !== 'colonization' || countryId === null || pixel < 0 ||
       pixel >= MAP_PIXELS || this.colonizationMask?.[pixel] !== 1 ||
       this.world.owner[pixel] === countryId + 1 || this.world.cityAt(pixel)) return 0;
-    const influence = this.cityInfluence?.at(pixel);
+    const influence = this.influenceAt(pixel);
     if (influence && influence.foreignRankSum > 0 && influence.ownRankSum === 0) return 0;
     const donor = sourceDensity === undefined ? this.colonizationDonors?.peek() ?? -1 : -1;
     const density = sourceDensity ?? (donor < 0 ? 0 : this.world.density[donor]);
@@ -685,9 +778,35 @@ export class CardPainter {
     return this.computeBrushScaling(pixel);
   }
 
+  /** Влияние городов неизменно до завершения карты, даже когда границы страны растут. */
+  private influenceAt(pixel: number): ReturnType<CityInfluenceIndex['at']> | undefined {
+    if (!this.cityInfluence) return undefined;
+    let influence = this.influenceCache.get(pixel);
+    if (!influence) {
+      influence = this.cityInfluence.at(pixel, this.card.type === 'colonization');
+      this.influenceCache.set(pixel, influence);
+    }
+    return influence;
+  }
+
+  /** Одинаковое сочетание происхождения и климата имеет одинаковый эффект на одного жителя. */
+  private climateGain(mixId: number, temperature: number, humidity: number,
+    nextTemperature: number, nextHumidity: number): number {
+    const key = mixId * 10201 + temperature * 101 + humidity;
+    let gain = this.climateGainCache.get(key);
+    if (gain === undefined) {
+      const entry = this.world.humanOriginTable.entries[mixId];
+      const mix = entry?.total === 100
+        ? humanOriginMixFromTable(entry.ids, entry.shares) : defaultHumanOriginMix();
+      gain = climateSuitability(mix, nextTemperature, nextHumidity) - climateSuitability(mix, temperature, humidity);
+      this.climateGainCache.set(key, gain);
+    }
+    return gain;
+  }
+
   private computeBrushScaling(pixel: number): { cost: number; strength: number } {
     const card = this.card;
-    const influence = this.cityInfluence?.at(pixel, card.type === 'colonization');
+    const influence = this.influenceAt(pixel);
     if (card.type === 'nomadExpand') {
       const foreignFactor = influence?.foreignRankSum ?? 0;
       return foreignFactor > 0
@@ -746,37 +865,7 @@ export class CardPainter {
       this.message = 'Чернила этой карты закончились.';
       return 0;
     }
-    const r = Math.max(1, radius);
-    const x0 = Math.max(0, Math.floor(cx - r));
-    const x1 = Math.min(MAP_WIDTH - 1, Math.ceil(cx + r));
-    const y0 = Math.max(0, Math.floor(cy - r));
-    const y1 = Math.min(MAP_HEIGHT - 1, Math.ceil(cy + r));
-    if (x0 > x1 || y0 > y1) return 0;
-    const pixels: number[] = [];
-    const r2 = r * r;
-    for (let y = y0; y <= y1; y += 1) {
-      for (let x = x0; x <= x1; x += 1) {
-        const dx = x + 0.5 - cx;
-        const dy = y + 0.5 - cy;
-        if (dx * dx + dy * dy > r2) continue;
-        const p = y * MAP_WIDTH + x;
-        if (this.world.land[p] || (isCurrent(card.type) && this.world.water.bodyOf[p] >= 0) ||
-          (isWind(card.type) && this.seas.has(this.world.water.bodyOf[p]))) pixels.push(p);
-      }
-    }
-    if (pixels.length === 0) return 0;
-    const before = card.ink;
-    const changedStart = this.changed.length;
-    if (card.type === 'create' || card.type === 'expand' || card.type === 'colonization' || card.type === 'split' || card.type === 'nomadExpand') this.paintTerritory(pixels);
-    else this.paintLayer(pixels);
-    const spent = before - card.ink;
-    if (spent > 0) {
-      this.world.version += 1;
-      if (card.type === 'colonization') {
-        for (let i = changedStart; i < this.changed.length; i += 1) this.markDirtyPixel(this.changed[i]);
-      } else this.markDirty(x0 - 1, y0 - 1, x1 + 1, y1 + 1);
-    }
-    return spent;
+    return this.paintContour(ContourArea.circle(cx, cy, Math.max(1, radius)));
   }
 
   private paintTerritory(pixels: number[]): void {
@@ -793,11 +882,11 @@ export class CardPainter {
     const sourceTag = card.type === 'split' ? (card.targetCountryId as number) + 1 : 0;
     const canTake = (p: number) => {
       if (card.type === 'colonization') {
-        const influence = this.cityInfluence?.at(p);
+        const influence = this.influenceAt(p);
         return this.colonizationMask?.[p] === 1 && world.owner[p] !== tag &&
           !world.cityAt(p) && !(influence && influence.foreignRankSum > 0 && influence.ownRankSum === 0);
       }
-      if (card.type === 'create' && (this.cityInfluence?.at(p).foreignRankSum ?? 0) > 0) return false;
+      if (card.type === 'create' && (this.influenceAt(p)?.foreignRankSum ?? 0) > 0) return false;
       if (card.type === 'split' && !this.splitBrush?.canPaint(p)) return false;
       if (card.type !== 'split' && world.owner[p] !== sourceTag) return false;
       if (card.type !== 'split' || (card.splitCultureId === undefined && card.splitReligionId === undefined)) return true;
@@ -823,15 +912,19 @@ export class CardPainter {
     // Grow only from existing territory (by land, or by any coast of a sea the country already touches).
     for (const p of pixels) this.dabMask[p] = 1;
     const queue: number[] = [];
-    const queued = new Set<number>();
     const enqueue = (p: number) => {
-      if (!queued.has(p)) {
-        queued.add(p);
+      if (this.dabMask[p] === 1) {
+        this.dabMask[p] = 2;
         queue.push(p);
       }
     };
     const first = card.type !== 'colonization' && working.pixels === 0;
     const originSource = working.pixels > 0 ? demography(world, working) : null;
+    const constantOriginMix = card.type === 'create'
+      ? { ids: [world.cultures[card.newCultureId as number].foundingRaceId!], shares: [100] }
+      : originSource ? expectedOriginsForPopulation(originSource.humanOrigin, originSource.population) : null;
+    let constantOriginId: number | null = null;
+    let cultureIndex: number | null = null;
     for (const p of pixels) {
       if (!canTake(p)) continue;
       let linked = first;
@@ -898,14 +991,15 @@ export class CardPainter {
       if (card.type !== 'split') {
         const { cost, strength } = this.brushScaling(p);
         world.density[p] = working.density * strength;
-        world.culture[p] = world.cultureTable.single(working.cultureId, 100);
+        cultureIndex ??= world.cultureTable.single(working.cultureId, 100);
+        world.culture[p] = cultureIndex;
         world.religion[p] = this.religionForNewLand;
-        const originMix = card.type === 'create'
-          ? { ids: [world.cultures[card.newCultureId as number].foundingRaceId!], shares: [100] }
-          : originSource
-            ? expectedOriginsForPopulation(originSource.humanOrigin, originSource.population)
-            : { ids: [originForHabitat(world.temperature[p], world.humidity[p])], shares: [100] };
-        world.humanOrigins[p] = world.humanOriginTable.intern(humanOriginMixToTable(originMix));
+        const originMix = constantOriginMix ??
+          { ids: [originForHabitat(world.temperature[p], world.humidity[p])], shares: [100] };
+        if (constantOriginMix) {
+          constantOriginId ??= world.humanOriginTable.intern(humanOriginMixToTable(originMix));
+          world.humanOrigins[p] = constantOriginId;
+        } else world.humanOrigins[p] = world.humanOriginTable.intern(humanOriginMixToTable(originMix));
         if (working.pixels === 1) working.ruler.humanOrigin = originMix;
         card.ink = Math.max(0, card.ink - cost);
       } else {
@@ -1055,6 +1149,8 @@ export class CardPainter {
     const tileCols = 8, tileRows = 16;
     const tileWidth = MAP_WIDTH / tileCols, tileHeight = MAP_HEIGHT / tileRows;
     const x = p % MAP_WIDTH, y = Math.floor(p / MAP_WIDTH);
+    this.world.contours.changed({ x0: x, y0: y, x1: x, y1: y },
+      ['density', 'culture', 'religion', 'humanOrigins']);
     const col = Math.floor(x / tileWidth), row = Math.floor(y / tileHeight);
     const key = row * tileCols + col;
     if (this.dirtyTileKeys.has(key)) return;

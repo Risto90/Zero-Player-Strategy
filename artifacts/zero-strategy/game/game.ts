@@ -1,5 +1,6 @@
 import { autoPaint } from './autoPaint';
 import type { PaintActions } from './autoPaint';
+import { ContourArea, type ContourSpan } from './contours';
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
   type BrushMode, type BrushOption, type Card, type CardChoice, type CardPainterState, type CharacterEvent } from './brush';
 import { drawCountryCard, drawWorldCard, firstCreateCard } from './cards';
@@ -185,6 +186,7 @@ export type GameAction =
   | { type: 'strokeTo'; x: number; y: number }
   | { type: 'endStroke' }
   | { type: 'dab'; x: number; y: number; radius: number }
+  | { type: 'paintContour'; spans: readonly ContourSpan[]; seed?: number }
   | { type: 'line'; ax: number; ay: number; bx: number; by: number; radius: number }
   | { type: 'placeCity'; x: number; y: number }
   | { type: 'completeCard' };
@@ -565,6 +567,7 @@ export class Game {
       case 'strokeTo': return this.applyStrokeTo(action.x, action.y);
       case 'endStroke': return this.applyEndStroke();
       case 'dab': return this.applyDab(action.x, action.y, action.radius);
+      case 'paintContour': return this.painter?.paintContour(new ContourArea(action.spans), action.seed) ?? 0;
       case 'line': return this.applyLine(action.ax, action.ay, action.bx, action.by, action.radius);
       case 'placeCity': return this.applyCityPlacement(action.x, action.y);
       case 'completeCard': return this.applyCardCompletion();
@@ -1351,6 +1354,7 @@ export class Game {
       dab: (x, y, radius) => this.dispatchAction({ type: 'dab', x, y, radius }) as number,
       line: (ax, ay, bx, by, radius) => this.dispatchAction({ type: 'line', ax, ay, bx, by, radius }) as number,
       endStroke: () => this.dispatchAction({ type: 'endStroke' }),
+      contour: (area, seed) => this.dispatchAction({ type: 'paintContour', spans: area.spans, seed }) as number,
     };
     const onMeasure = this.performanceTracking
       ? (stage: string, durationMs: number) => {

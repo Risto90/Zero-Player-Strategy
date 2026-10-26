@@ -169,6 +169,12 @@ class ObserverPerformanceBenchmark {
     const eventAverageMs = events.length
       ? events.reduce((sum, event) => sum + event.durationMs, 0) / events.length
       : 0;
+    const median = (values) => {
+      if (!values.length) return 0;
+      const ordered = [...values].sort((a, b) => a - b);
+      const middle = Math.floor(ordered.length / 2);
+      return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
+    };
     const averageDrawMs = events.length
       ? events.reduce((sum, event) => sum + event.drawDurationMs, 0) / events.length
       : 0;
@@ -177,6 +183,7 @@ class ObserverPerformanceBenchmark {
       : 0;
     const slowEvents = [...events].sort((a, b) => b.durationMs - a.durationMs).slice(0, 10);
     const slowStages = [...stages].sort((a, b) => b.durationMs - a.durationMs).slice(0, 10);
+    const eventTypes = Object.groupBy(events, ({ cardType }) => cardType);
     const summary = {
       turns: this.turns.length,
       totalMs: durations.reduce((sum, duration) => sum + duration, 0),
@@ -184,6 +191,15 @@ class ObserverPerformanceBenchmark {
       maximumTurnMs: Math.max(0, ...durations),
       eventCount: events.length,
       averageEventMs: eventAverageMs,
+      medianTurnMs: median(durations),
+      medianEventMs: median(events.map(({ durationMs }) => durationMs)),
+      medianEventResolutionMs: median(events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
+      medianFrameGapMs: median(allFrameGaps),
+      eventTypeMedians: Object.fromEntries(Object.entries(eventTypes ?? {}).map(([type, samples]) => [type, {
+        count: samples.length,
+        durationMs: median(samples.map(({ durationMs }) => durationMs)),
+        resolutionMs: median(samples.map(({ resolutionDurationMs }) => resolutionDurationMs)),
+      }])),
       averageCardDrawMs: averageDrawMs,
       averageCardResolutionMs: averageResolutionMs,
       maximumCardDrawMs: Math.max(0, ...events.map(({ drawDurationMs }) => drawDurationMs)),
@@ -211,7 +227,27 @@ class ObserverPerformanceBenchmark {
   async run() {
     try {
       await this.open();
+      const profiler = process.env.PERF_CPU_PROFILE === '1'
+        ? await this.context.newCDPSession(this.page) : null;
+      if (profiler) {
+        await profiler.send('Profiler.enable');
+        await profiler.send('Profiler.start');
+      }
       for (let index = 1; index <= this.years; index += 1) await this.measureTurn(index);
+      if (profiler) {
+        const { profile } = await profiler.send('Profiler.stop');
+        const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
+        const samples = new Map();
+        profile.samples?.forEach((id, index) => {
+          samples.set(id, (samples.get(id) ?? 0) + (profile.timeDeltas?.[index] ?? 0));
+        });
+        console.log('Профиль процессора:', [...samples].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([id, microseconds]) => ({
+          function: nodes.get(id).callFrame.functionName,
+          milliseconds: Math.round(microseconds / 1000),
+          line: nodes.get(id).callFrame.lineNumber,
+          parent: profile.nodes.find((node) => node.children?.includes(id))?.callFrame.functionName,
+        })));
+      }
       this.summarize();
     } finally {
       await this.close();

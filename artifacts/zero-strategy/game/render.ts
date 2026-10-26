@@ -434,18 +434,26 @@ export class MapRenderer {
     const unclaimedPacked = this.unclaimedPacked;
       const ramp = mode >= 4 && mode <= 7 ? this.ramps[this.mode as keyof typeof RAMPS] : this.ramps.density;
     const values = mode === 5 ? humidity : mode === 6 ? temperature : drainage;
+    const scalarContours = mode >= 5 && mode <= 7
+      ? w.contours.layer(mode === 5 ? 'humidity' : mode === 6 ? 'temperature' : 'drainage') : null;
     const borderShade = mode === 0 ? 0.55 : 0.7;
     const x1 = x0 + TILE_W;
+    const selectedCountry = this.selectedCountryId === null ? null : w.countries[this.selectedCountryId];
     for (let y = y0; y < y0 + STRIP_H; y += 1) {
       const row = y * MAP_WIDTH;
-      pixels.set(base.subarray(row + x0, row + x1), row + x0);
+      if (scalarContours) {
+        for (const span of scalarContours.row(y)) {
+          if (span.start >= x1) break;
+          if (span.end <= x0) continue;
+          pixels.fill(ramp[span.value], row + Math.max(x0, span.start), row + Math.min(x1, span.end));
+        }
+      } else pixels.set(base.subarray(row + x0, row + x1), row + x0);
       for (let p = row + x0; p < row + x1; p += 1) {
         if (!land[p]) {
-          if (mode === 6) pixels[p] = ramp[temperature[p]];
+          if (mode !== 6 && scalarContours) pixels[p] = base[p];
           continue;
         }
         const o = owner[p];
-        const selectedCountry = this.selectedCountryId === null ? null : w.countries[this.selectedCountryId];
         const selected = mode === 0 && !!selectedCountry && (
           selectedCountry.type === 'nomadic' ? this.selectedNomadRaster[p] === 1 : o === selectedCountry.id + 1
         );
@@ -477,11 +485,11 @@ export class MapRenderer {
           const city = cityId >= 0 ? w.cities[cityId] : null;
           color = city ? this.cityColors[city.rank - 1] : o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
         } else if (mode === 1) color = biomePacked[biomeOf(humidity[p], temperature[p], drainage[p])];
-        else if (o === 0 && mode !== 4) color = mode >= 5 && mode <= 7 ? ramp[values[p]] : unclaimedPacked;
+        else if (o === 0 && mode !== 4) color = scalarContours ? pixels[p] : unclaimedPacked;
         else if (mode === 2) color = this.compColor('culture', culture[p]);
         else if (mode === 3) color = this.compColor('religion', religion[p]);
         else if (mode === 4) color = ramp[Math.min(100, Math.round(Math.log1p(density[p] + this.nomadDensity[p]) * 12))];
-        else color = ramp[values[p]];
+        else color = scalarContours ? pixels[p] : ramp[values[p]];
         // Country borders show in every mode; coasts are lightly outlined.
         const bits = nb[p];
         const boundary = (

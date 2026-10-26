@@ -1,6 +1,7 @@
 import type { Country, World } from './world';
 import { ensureCityPopulationGroups } from './settlements';
 import { HUMAN_ORIGINS, canonicalizeHumanOrigins, humanOriginMixFromTable, type HumanOriginId, type HumanOriginMix } from './human';
+import { ContourPopulationReader } from './contourPopulation';
 
 export interface DemographicPair { cultureId: number; religionId: number | null; weight: number }
 export interface Demography {
@@ -33,6 +34,8 @@ export function demography(world: World, country: Country): Demography {
   const cultures = new Map<number, number>();
   const religions = new Map<number | null, number>();
   const humanOrigins = new Map<HumanOriginId, number>();
+  // Таблицы составов неизменны во время расчёта: один состав преобразуется ровно один раз.
+  const originMixes = new Map<number, HumanOriginMix>();
   let population = 0;
   let ruralPopulation = 0;
   const addPopulationGroup = (cultureId: number, religionId: number | null, amount: number, originMixId: number) => {
@@ -44,10 +47,14 @@ export function demography(world: World, country: Country): Demography {
     const entry = pairs.get(key);
     if (entry) entry.weight += amount;
     else pairs.set(key, { cultureId, religionId, weight: amount });
-    const originEntry = world.humanOriginTable.entries[originMixId];
-    const originMix = originEntry?.total === 100
-      ? humanOriginMixFromTable(originEntry.ids, originEntry.shares)
-      : { ids: [HUMAN_ORIGINS[0].id], shares: [100] };
+    let originMix = originMixes.get(originMixId);
+    if (!originMix) {
+      const originEntry = world.humanOriginTable.entries[originMixId];
+      originMix = originEntry?.total === 100
+        ? humanOriginMixFromTable(originEntry.ids, originEntry.shares)
+        : { ids: [HUMAN_ORIGINS[0].id], shares: [100] };
+      originMixes.set(originMixId, originMix);
+    }
     originMix.ids.forEach((id, index) => {
       humanOrigins.set(id, (humanOrigins.get(id) ?? 0) + amount * originMix.shares[index] / 100);
     });
@@ -69,8 +76,8 @@ export function demography(world: World, country: Country): Demography {
       });
     }
   } else {
-    world.forEachCountryPixel(country, (p) => {
-      ruralPopulation += world.density[p];
+    new ContourPopulationReader(world, country).forEach((p, amount) => {
+      ruralPopulation += amount;
       const city = world.cityAt(p);
       if (city) {
         for (const group of ensureCityPopulationGroups(world, city)) {
@@ -78,7 +85,7 @@ export function demography(world: World, country: Country): Demography {
         }
         return;
       }
-      const pixelPopulation = world.density[p];
+      const pixelPopulation = amount;
       const culture = world.cultureTable.entries[world.culture[p]];
       const religion = world.religionTable.entries[world.religion[p]];
       const religionIds: (number | null)[] = [...religion.ids, null];

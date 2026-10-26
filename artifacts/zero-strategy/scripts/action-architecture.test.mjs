@@ -42,7 +42,9 @@ for (const type of cardTypes) {
 
 const automaticBody = methodBody(game, 'private resolveAutomaticCard(');
 assert.match(automaticBody, /dispatchAction\(\{\s*type: 'selectChoice'/);
-assert.match(automaticBody, /autoPaint\(painter, actions\)/);
+assert.match(automaticBody, /autoPaint\(painter, actions(?:, onMeasure)?\)/);
+assert.match(automaticBody, /contour: [^\n]*dispatchAction\(\{ type: 'paintContour'/,
+  'Контурная заливка ИИ проходит через общий обработчик действий');
 assert.match(automaticBody, /dispatchAction\(\{\s*type: 'placeCity'/);
 assert.match(automaticBody, /dispatchAction\(\{\s*type: 'completeCard'/);
 assert.doesNotMatch(automaticBody, /draw(World|Country|Nomad)Card|startNextPlayerCard/,
@@ -58,8 +60,10 @@ assert.match(autoPaintBody, /actions\.line\(/);
 assert.match(autoPaintBody, /actions\.endStroke\(/);
 assert.doesNotMatch(autoPaintBody, /painter\.(dab|line|endStroke)\(/,
   'the strategy may choose coordinates, but brush effects must go through the action adapter');
-assert.match(autoPaint, /export function autoPaint\(painter: CardPainter, actions: PaintActions\)/,
+assert.match(autoPaint, /export function autoPaint\(\s*painter: CardPainter,\s*actions: PaintActions(?:,|\))/,
   'automatic painting must require a shared command adapter; no direct-painter fallback is allowed');
+assert.doesNotMatch(autoPaint, /this\.painter\.(paintContour|dab|line|endStroke)\(/,
+  'Контурная стратегия не применяет эффекты кисти в обход общего обработчика');
 
 for (const [name, marker, pattern] of [
   ['choice selection', 'selectChoice(index: number): void', /dispatchAction\(\{\s*type: 'selectChoice'/],

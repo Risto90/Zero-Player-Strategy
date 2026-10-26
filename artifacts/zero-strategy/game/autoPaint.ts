@@ -2,12 +2,93 @@ import type { CardPainter } from './brush';
 import { MAP_HEIGHT, MAP_WIDTH } from './config';
 import { forEachNeighbour } from './geography';
 import type { Country } from './world';
+import { ContourArea } from './contours';
 
 export interface PaintActions {
   beginStroke(x: number, y: number): void;
   dab(x: number, y: number, radius: number): number;
   line(ax: number, ay: number, bx: number, by: number, radius: number): number;
   endStroke(): void;
+  contour?(area: ContourArea, seed?: number): number;
+}
+
+/** ИИ выбирает связные пересечения климатических контуров, а не перебирает круговые мазки. */
+class ContourTerritoryStrategy {
+  constructor(
+    private readonly painter: CardPainter,
+    private readonly actions: PaintActions,
+    private readonly onMeasure?: (stage: string, durationMs: number) => void,
+  ) {}
+
+  run(): void {
+    const { world, card } = this.painter;
+    const started = this.onMeasure ? performance.now() : 0;
+    const bounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
+    const regions = world.contours.climateRegions();
+    const { paint, start } = this.painter.strategyStrokeContours(bounds);
+    const country = card.type === 'create'
+      ? world.countries[card.newCountryId ?? -1] : world.countries[card.targetCountryId ?? -1];
+    const candidates = new Map<number, { pixel: number; fit: number; efficiency: number }>();
+    const consideredSeas = new Set(this.painter.strategySeaBodies());
+    let choosingFirst = country?.pixels === 0;
+    const consider = (pixel: number, knownId?: number) => {
+      if (world.owner[pixel] !== 0 || !world.land[pixel] || !paint.contains(pixel)) return;
+      const id = knownId ?? world.contours.climateRegionAt(pixel);
+      if (id < 0) return;
+      const previous = candidates.get(id);
+      if (previous && world.owner[previous.pixel] === 0) return;
+      const region = regions[id];
+      const impact = this.painter.strategyImpactAt(pixel);
+      const cost = this.painter.strategyInkCostAt(pixel, impact);
+      if (!(cost > 0)) return;
+      candidates.set(id, { pixel, fit: this.painter.strategyClimateFit(region.temperature, region.humidity),
+        efficiency: impact / cost });
+    };
+    if (choosingFirst) {
+      regions.forEach((region, id) => {
+        const first = region.area.intersect(start).spans[0];
+        if (first) consider(first.y * MAP_WIDTH + first.start, id);
+      });
+    } else start.forEachPixel((pixel) => consider(pixel));
+    this.onMeasure?.('подготовка контурного плана', performance.now() - started);
+    let paintingMs = 0, frontierMs = 0;
+    while (card.ink > 0 && candidates.size > 0) {
+      let bestId = -1, bestPixel = -1, bestFit = -Infinity, bestEfficiency = -Infinity;
+      for (const [id, { pixel, fit, efficiency }] of candidates) {
+        if (world.owner[pixel] !== 0) continue;
+        if (fit > bestFit || (fit === bestFit && (efficiency > bestEfficiency ||
+          (efficiency === bestEfficiency && pixel < bestPixel)))) {
+          bestId = id; bestPixel = pixel; bestFit = fit; bestEfficiency = efficiency;
+        }
+      }
+      if (bestId < 0) break;
+      candidates.delete(bestId);
+      const area = regions[bestId].area.intersect(paint);
+      const changedStart = this.painter.changed.length;
+      const paintStarted = this.onMeasure ? performance.now() : 0;
+      const spent = this.actions.contour!(area, bestPixel);
+      if (this.onMeasure) paintingMs += performance.now() - paintStarted;
+      if (!(spent > 0)) continue;
+      const frontierStarted = this.onMeasure ? performance.now() : 0;
+      if (choosingFirst) {
+        choosingFirst = false;
+        candidates.clear();
+      }
+      // Меняется только граница закрашенного контура; весь доступный мир повторно не вычисляется.
+      for (let index = changedStart; index < this.painter.changed.length; index += 1) {
+        forEachNeighbour(this.painter.changed[index], (pixel) => consider(pixel));
+      }
+      for (const sea of this.painter.strategySeaBodies()) {
+        if (consideredSeas.has(sea)) continue;
+        consideredSeas.add(sea);
+        for (const pixel of world.water.coastsOf[sea]) consider(pixel);
+      }
+      if (this.onMeasure) frontierMs += performance.now() - frontierStarted;
+    }
+    this.onMeasure?.('заливка климатических контуров', paintingMs);
+    this.onMeasure?.('обновление границы контурного плана', frontierMs);
+    this.actions.endStroke();
+  }
 }
 
 const MAX_SCORE_CENTERS = 24;
@@ -222,6 +303,11 @@ export function autoPaint(
     card.type === 'colonization' || card.type === 'split' || card.type === 'nomadExpand';
   const radius = territorial ? 10 : 16;
   const isWind = card.type === 'warmWind' || card.type === 'coldWind';
+  if (actions.contour && (card.type === 'create' || card.type === 'expand') &&
+    painter.mode === 'respect' && !card.developmentOnly) {
+    new ContourTerritoryStrategy(painter, actions, onMeasure).run();
+    return;
+  }
   if (territorial) {
     let scoringDurationMs = 0;
     let paintingDurationMs = 0;

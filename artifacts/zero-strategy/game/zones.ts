@@ -56,7 +56,7 @@ class EdgeBuckets {
 }
 
 /** Joins directed unit edges into closed rings, keeping only the corners. */
-function linkRings(codes: number[]): Ring[] {
+export function linkRings(codes: number[]): Ring[] {
   const outgoing = new Map<number, number[]>();
   codes.forEach((code, index) => {
     const v = Math.floor(code / 4);
