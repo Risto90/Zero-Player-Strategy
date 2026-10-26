@@ -29,17 +29,18 @@ const people = [
   character(2, 2, { spouseIds: [1] }),
   character(3, 1, { parents: [1, 2], spouseIds: [4] }),
   character(4, 2, { spouseIds: [3] }),
-  character(5, 1, { parents: [3, 4] }),
+  character(5, 1, { parents: [3, 4], spouseIds: [9] }),
   character(6, 2, { parents: [1, 2], spouseIds: [7] }),
   character(7, 3, { spouseIds: [6] }),
   character(8, 2, { spouseIds: [1], alive: false }),
+  character(9, 2, { spouseIds: [5] }),
 ];
 
 const fullTree = buildDynastyTree(people, 1);
 const fullIds = new Set(fullTree.nodes.map((node) => node.person.id));
 assert.deepEqual(
   [...fullIds].sort((a, b) => a - b),
-  [1, 2, 3, 4, 5, 6],
+  [1, 2, 3, 4, 5, 6, 9],
   'в древе есть члены династии, живые партнёры и дети, но нет умершего бездетного партнёра и супруга ребёнка другой династии',
 );
 assert.ok(fullTree.pairs.some((pair) => pair.firstId === 1 && pair.secondId === 2 && pair.childrenIds.includes(6)));
@@ -47,15 +48,28 @@ assert.ok(fullTree.nodes.some((node) => node.person.id === 6 && !node.isDynastyM
 assert.equal(fullTree.nodes.find((node) => node.person.id === 6)?.childrenIds.length, 0);
 const positions = new Map(fullTree.nodes.map((node) => [node.person.id, node]));
 assert.equal(positions.get(3)?.y, positions.get(6)?.y, 'дети одного поколения находятся на одной высоте');
+assert.equal(positions.get(4)?.generation, positions.get(3)?.generation, 'супруг ребёнка остаётся в поколении своего партнёра');
+assert.equal(positions.get(9)?.generation, positions.get(5)?.generation, 'супруг внука остаётся в поколении своего партнёра');
+assert.equal(positions.get(5)?.generation, positions.get(3)?.generation + 1, 'следующее поколение располагается ниже родителей');
+assert.equal(
+  Math.abs((positions.get(3)?.x ?? 0) - (positions.get(4)?.x ?? 0)),
+  DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X,
+  'супруг ребёнка стоит рядом со своим партнёром',
+);
 assert.equal(
   Math.abs((positions.get(3)?.x ?? 0) - (positions.get(6)?.x ?? 0)),
-  DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X,
-  'дети одной пары размещаются рядом, а не среди посторонних ветвей',
+  (DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X) * 2,
+  'дети одной пары вместе со своими партнёрами остаются в общем блоке',
 );
 assert.equal(
   Math.abs((positions.get(1)?.x ?? 0) - (positions.get(2)?.x ?? 0)),
   DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X,
   'супруги занимают соседние позиции в одном поколении',
+);
+assert.equal(
+  Math.abs((positions.get(5)?.x ?? 0) - (positions.get(9)?.x ?? 0)),
+  DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X,
+  'супруг внука стоит рядом с ним, а не с основателями',
 );
 
 const viewport = { width: 400, height: 700 };

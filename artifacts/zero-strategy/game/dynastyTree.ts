@@ -226,44 +226,6 @@ export function buildDynastyTree(
     (pair) => visibleSet.has(pair.firstId) && visibleSet.has(pair.secondId),
   );
 
-  const generationCache = new Map<number, number>();
-  const parentCounts = new Map<number, number>();
-  const generationQueue: number[] = [];
-  for (const id of visibleIds) {
-    const parentCount = new Set(peopleById.get(id)!.parents.filter((parentId) => visibleSet.has(parentId))).size;
-    parentCounts.set(id, parentCount);
-    if (parentCount === 0) {
-      generationCache.set(id, 0);
-      generationQueue.push(id);
-    }
-  }
-  for (let index = 0; index < generationQueue.length; index += 1) {
-    const parentId = generationQueue[index];
-    const parentGeneration = generationCache.get(parentId) ?? 0;
-    for (const childId of childrenByParent.get(parentId) ?? []) {
-      if (!visibleSet.has(childId)) continue;
-      generationCache.set(childId, Math.max(generationCache.get(childId) ?? 0, parentGeneration + 1));
-      const nextParentCount = (parentCounts.get(childId) ?? 1) - 1;
-      parentCounts.set(childId, nextParentCount);
-      if (nextParentCount === 0) generationQueue.push(childId);
-    }
-  }
-  for (const id of visibleIds) {
-    if (!generationCache.has(id)) generationCache.set(id, 0);
-  }
-
-  const byGeneration = new Map<number, Person[]>();
-  for (const id of visibleIds) {
-    const person = peopleById.get(id)!;
-    const generation = generationCache.get(id) ?? 0;
-    const row = byGeneration.get(generation);
-    if (row) row.push(person);
-    else byGeneration.set(generation, [person]);
-  }
-
-  let maxRowSize = 1;
-  const nodes: DynastyTreeNode[] = [];
-  const xByPerson = new Map<number, number>();
   const unionFind = (ids: number[]) => {
     const parent = new Map(ids.map((id) => [id, id]));
     const find = (id: number): number => {
@@ -280,6 +242,87 @@ export function buildDynastyTree(
     };
     return { find, union };
   };
+
+  const generationUnion = unionFind(visibleIds);
+  for (const pair of visiblePairs) generationUnion.union(pair.firstId, pair.secondId);
+  const generationGroupByPerson = new Map(
+    visibleIds.map((id) => [id, generationUnion.find(id)] as const),
+  );
+  const generationGroupMembers = new Map<number, number[]>();
+  for (const id of visibleIds) {
+    const groupId = generationGroupByPerson.get(id)!;
+    const members = generationGroupMembers.get(groupId);
+    if (members) members.push(id);
+    else generationGroupMembers.set(groupId, [id]);
+  }
+
+  const generationParents = new Map<number, Set<number>>();
+  const generationChildren = new Map<number, Set<number>>();
+  for (const groupId of generationGroupMembers.keys()) {
+    generationParents.set(groupId, new Set());
+    generationChildren.set(groupId, new Set());
+  }
+  for (const childId of visibleIds) {
+    const childGroupId = generationGroupByPerson.get(childId)!;
+    for (const parentId of peopleById.get(childId)!.parents) {
+      if (!visibleSet.has(parentId)) continue;
+      const parentGroupId = generationGroupByPerson.get(parentId)!;
+      if (parentGroupId === childGroupId) continue;
+      generationParents.get(childGroupId)!.add(parentGroupId);
+      generationChildren.get(parentGroupId)!.add(childGroupId);
+    }
+  }
+
+  const unresolvedParents = new Map(
+    [...generationParents.entries()].map(([groupId, parents]) => [groupId, parents.size]),
+  );
+  const generationByGroup = new Map<number, number>();
+  const processedGroups = new Set<number>();
+  const readyGroups = [...unresolvedParents.entries()]
+    .filter(([, parentCount]) => parentCount === 0)
+    .map(([groupId]) => groupId)
+    .sort((a, b) => a - b);
+  while (processedGroups.size < generationGroupMembers.size) {
+    if (!readyGroups.length) {
+      // Ошибочная или межпоколенческая связь может образовать цикл.
+      // Разрываем его детерминированно, сохраняя партнёров на одной строке.
+      const cycleRoot = [...generationGroupMembers.keys()]
+        .filter((groupId) => !processedGroups.has(groupId))
+        .sort((a, b) => a - b)[0];
+      const knownParentGeneration = [...(generationParents.get(cycleRoot) ?? [])]
+        .filter((parentId) => processedGroups.has(parentId))
+        .map((parentId) => generationByGroup.get(parentId)! + 1);
+      generationByGroup.set(cycleRoot, Math.max(0, ...knownParentGeneration));
+      readyGroups.push(cycleRoot);
+    }
+
+    const groupId = readyGroups.shift()!;
+    if (processedGroups.has(groupId)) continue;
+    processedGroups.add(groupId);
+    const groupGeneration = generationByGroup.get(groupId) ?? 0;
+    for (const childGroupId of generationChildren.get(groupId) ?? []) {
+      generationByGroup.set(
+        childGroupId,
+        Math.max(generationByGroup.get(childGroupId) ?? 0, groupGeneration + 1),
+      );
+      const remaining = (unresolvedParents.get(childGroupId) ?? 1) - 1;
+      unresolvedParents.set(childGroupId, remaining);
+      if (remaining === 0) readyGroups.push(childGroupId);
+    }
+  }
+
+  const byGeneration = new Map<number, Person[]>();
+  for (const id of visibleIds) {
+    const person = peopleById.get(id)!;
+    const generation = generationByGroup.get(generationGroupByPerson.get(id)!) ?? 0;
+    const row = byGeneration.get(generation);
+    if (row) row.push(person);
+    else byGeneration.set(generation, [person]);
+  }
+
+  let maxRowSize = 1;
+  const nodes: DynastyTreeNode[] = [];
+  const xByPerson = new Map<number, number>();
 
   for (const [generation, row] of [...byGeneration.entries()].sort(([a], [b]) => a - b)) {
     const rowIds = row.map((person) => person.id);
@@ -326,7 +369,36 @@ export function buildDynastyTree(
       Math.min(...a.map((person) => person.bornAt)) - Math.min(...b.map((person) => person.bornAt)));
     for (const block of blocks) block.sort((a, b) => a.bornAt - b.bornAt || a.id - b.id);
 
-    const orderedRow = blocks.flat();
+    const orderedBlocks = blocks.map((block) => {
+      const blockIds = new Set(block.map((person) => person.id));
+      const partnersById = new Map<number, number[]>();
+      for (const pair of visiblePairs) {
+        if (!blockIds.has(pair.firstId) || !blockIds.has(pair.secondId)) continue;
+        const firstPartners = partnersById.get(pair.firstId) ?? [];
+        firstPartners.push(pair.secondId);
+        partnersById.set(pair.firstId, firstPartners);
+        const secondPartners = partnersById.get(pair.secondId) ?? [];
+        secondPartners.push(pair.firstId);
+        partnersById.set(pair.secondId, secondPartners);
+      }
+
+      const ordered: Person[] = [];
+      const placed = new Set<number>();
+      for (const person of block) {
+        if (placed.has(person.id)) continue;
+        ordered.push(person);
+        placed.add(person.id);
+        for (const partnerId of partnersById.get(person.id) ?? []) {
+          if (placed.has(partnerId)) continue;
+          const partner = block.find((candidate) => candidate.id === partnerId);
+          if (!partner) continue;
+          ordered.push(partner);
+          placed.add(partnerId);
+        }
+      }
+      return ordered;
+    });
+    const orderedRow = orderedBlocks.flat();
     maxRowSize = Math.max(maxRowSize, row.length);
     orderedRow.forEach((person, index) => {
       const x = DYNASTY_MARGIN_X + index * (DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X);
