@@ -16,6 +16,20 @@ const MAX_LAYER_FALLBACK_DABS = MAP_WIDTH * MAP_HEIGHT;
 const LAYER_CARDS = new Set(['drought', 'rain', 'desertification', 'swamping',
   'warmCurrent', 'coldCurrent', 'warmWind', 'coldWind', 'faith', 'culture']);
 
+function circleOffsets(radius: number): Int16Array {
+  const offsets: number[] = [];
+  const radiusSquared = radius * radius;
+  for (let dy = -radius; dy <= radius; dy += 1) {
+    for (let dx = -radius; dx <= radius; dx += 1) {
+      if (dx * dx + dy * dy <= radiusSquared) offsets.push(dx, dy);
+    }
+  }
+  return Int16Array.from(offsets);
+}
+
+const TERRITORY_SCORE_OFFSETS = circleOffsets(10);
+const OTHER_SCORE_OFFSETS = circleOffsets(16);
+
 function addCountrySeeds(
   world: CardPainter['world'],
   country: Country,
@@ -167,38 +181,26 @@ function boundedCandidatePixels(painter: CardPainter): number[] {
   return sampled.sort((a, b) => a - b);
 }
 
-function scoreCenter(
-  painter: CardPainter,
-  pixel: number,
-  radius: number,
-  pixelScores?: Map<number, { impact: number; ink: number }>,
-): number {
+function scoreCenter(painter: CardPainter, pixel: number, radius: number): number {
   const { world } = painter;
   const cx = pixel % MAP_WIDTH;
   const cy = Math.floor(pixel / MAP_WIDTH);
   let score = 0;
-  const x0 = Math.max(0, cx - radius), x1 = Math.min(MAP_WIDTH - 1, cx + radius);
-  const y0 = Math.max(0, cy - radius), y1 = Math.min(MAP_HEIGHT - 1, cy + radius);
-  const r2 = radius * radius;
+  const offsets = radius === 10 ? TERRITORY_SCORE_OFFSETS : OTHER_SCORE_OFFSETS;
   let ink = 0;
-  for (let y = y0; y <= y1; y += 1) {
-    for (let x = x0; x <= x1; x += 1) {
-      if ((x - cx) ** 2 + (y - cy) ** 2 > r2) continue;
-      const pixel = y * MAP_WIDTH + x;
-       let pixelScore = pixelScores?.get(pixel);
-       if (!pixelScore) {
-         const impact = painter.strategyImpactAt(pixel);
-         pixelScore = { impact, ink: painter.strategyInkCostAt(pixel, impact) };
-         pixelScores?.set(pixel, pixelScore);
-       }
-       ink += pixelScore.ink;
-       score += pixelScore.impact;
-      // A new country starts with exactly one seed pixel; later dabs grow it
-      // through the normal territory rules.
-      if (painter.card.type === 'create' &&
-         painter.world.countries[painter.card.newCountryId ?? -1]?.pixels === 0 && pixelScore.impact > 0) {
-        return ink > 0 ? score / ink : 0;
-      }
+  for (let offset = 0; offset < offsets.length; offset += 2) {
+    const x = cx + offsets[offset];
+    const y = cy + offsets[offset + 1];
+    if (x < 0 || x >= MAP_WIDTH || y < 0 || y >= MAP_HEIGHT) continue;
+    const scorePixel = y * MAP_WIDTH + x;
+    const impact = painter.strategyImpactAt(scorePixel);
+    ink += painter.strategyInkCostAt(scorePixel, impact);
+    score += impact;
+    // Новая страна начинает с одной исходной точки; следующие мазки растят её
+    // по обычным правилам территории.
+    if (painter.card.type === 'create' &&
+      painter.world.countries[painter.card.newCountryId ?? -1]?.pixels === 0 && impact > 0) {
+      return ink > 0 ? score / ink : 0;
     }
   }
   return ink > 0 ? score / ink : 0;
@@ -251,12 +253,10 @@ export function autoPaint(
     }
     // Territory eligibility changes as the frontier grows, so re-score a small
     // bounded candidate set after each successful dab.
-    const pixelScores = new Map<number, { impact: number; ink: number }>();
     for (let step = 0; step < MAX_TERRITORY_DABS && card.ink > 0; step += 1) {
-      pixelScores.clear();
       const scoringStartedAt = onMeasure ? performance.now() : 0;
       const candidates = boundedCandidatePixels(painter)
-        .map((pixel) => ({ pixel, score: scoreCenter(painter, pixel, radius, pixelScores) }))
+        .map((pixel) => ({ pixel, score: scoreCenter(painter, pixel, radius) }))
         .filter((candidate) => candidate.score > 0)
         .sort((a, b) => b.score - a.score || a.pixel - b.pixel)
         .slice(0, MAX_SCORE_CENTERS);
