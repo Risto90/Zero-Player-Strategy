@@ -172,12 +172,16 @@ function addChild(world, country, parent, options = {}) {
   const { child } = addChild(world, country, country.ruler, { age: 12 });
   const candidates = countryCandidates(world, country);
   assert.equal(hasFixedHeir(country), true);
-  assert.equal(candidates[0]?.person.id, child.id, 'the first suitable branch follows primogeniture');
+  assert.equal(candidates[0]?.person.id, child.id, 'при первородстве первой рассматривается старшая подходящая ветвь');
   assert.equal(candidates[0]?.expectedHeir, true);
-  assert.equal(candidates[0]?.weight, null, 'guaranteed inheritance is not described as a weighted chance');
+  assert.equal(candidates[0]?.weight, null, 'гарантированное наследование не отображается как вероятностный вес');
+  assert.ok(candidates[0]?.basis.some((reason) => reason.includes('родственная связь подтверждена родословной')),
+    'основание кандидата указывает на подтверждённое родство родителя и ребёнка');
+  assert.ok(candidates[0]?.basis.some((reason) => reason.includes('Ожидаемый наследник по действующему закону')),
+    'основание отдельно указывает на действующий порядок первородства');
 }
 
-// Disconnected claimed families are not presented as heirs; matching residents only replace random choices.
+// Несвязанные заявленные династии не становятся наследниками; совпадающие жители только заменяют случайные варианты.
 {
   const { world, country } = fixture(10235);
   country.government = 'hereditary';
@@ -195,19 +199,21 @@ function addChild(world, country, parent, options = {}) {
   });
 
   const actualCandidates = countryCandidates(world, country);
+  assert.equal(actualCandidates.length, 0,
+    'без подтверждённой родословной случайные жители не попадают в список наследников');
   assert.ok(!residents.some((resident) => actualCandidates.some((candidate) =>
     candidate.person.id === resident.id)),
-  'a disconnected dynasty claim alone does not create an heir');
+  'заявление страны на династию без родственной цепочки не создаёт право наследования');
 
   const peopleBefore = world.people.length;
   const options = leadershipOptions(world, country, 1000);
-  assert.equal(options.length, 2, 'the choice still contains two candidates');
+  assert.equal(options.length, 2, 'для выбора по-прежнему предлагаются два персонажа');
   assert.deepEqual(new Set(options.map((option) => option.id)), new Set(residents.map((resident) => resident.id)),
-    'matching living residents replace the two generated choice candidates');
-  assert.equal(world.people.length, peopleBefore, 'unselected generated candidates are not registered in the world');
+    'совпадающие живые жители заменяют два случайных варианта выбора');
+  assert.equal(world.people.length, peopleBefore, 'невыбранные случайные персонажи не добавляются в мир');
 }
 
-// Consulate plus partition admits a consul's sibling even when the sibling is outside the ruler's dynasty claim.
+// Консулат с разделением ставит родственника конкретного консула выше, даже если его династия не заявлена правителем.
 {
   const { world, country } = fixture(10236);
   country.government = 'hereditary';
@@ -217,11 +223,12 @@ function addChild(world, country, parent, options = {}) {
   const sibling = addPerson(world, country, { parents: [parent.id] });
 
   const order = successionOrder(world, country);
-  assert.equal(order[0]?.id, sibling.id, 'a sibling of a sitting consul receives priority independently of dynastyClaims');
+  assert.equal(order[0]?.id, sibling.id,
+    'брат или сестра действующего консула получает приоритет независимо от dynastyClaims');
   const candidate = countryCandidates(world, country).find((entry) => entry.person.id === sibling.id);
   assert.ok(candidate);
   assert.match(candidate.basis.join(' '), /Консулат с разделением/u,
-    'the displayed claim describes the consulate rule rather than inventing a bloodline claim');
+    'основание в интерфейсе описывает правило консулата, а не выдумывает родословную');
 }
 
 // Tyranny may succeed to a spouse if no eligible child exists, subject to sex restrictions.

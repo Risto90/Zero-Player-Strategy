@@ -3,7 +3,7 @@
 - [Entity list share bars](entity-list-share-bars.md) — preserve the existing horizontal, entity-colored proportion fill in shared list rows; cities omit it.
 - [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
 - [Map redraw and timer](map-redraw-timer.md) — timer starts only after full redraw; every world mutation must mark its renderer area.
-- [Династии, родословная и должности](zero-strategy-dynasty-rules.md) — только происхождение от родителя определяет династию; исключений нет.
+- [Династии, родословная и должности](zero-strategy-dynasty-rules.md) — родословная задаёт династию; кандидатов определяют конкретные модификаторы, а замена случайных вариантов не создаёт наследников.
 - [Розыгрыш карт](card-draw-eligibility.md) — только описанные карты в мировом и страновом пулах; индивидуальные шансы персонажей сохраняют множитель ×1,1.
 - [Unified country residence](nomad-current-homes.md) — characters keep one current countryId; nomadic countries live in the shared country collection.
 - [Design-doc fidelity](design-doc-fidelity.md) — implement only mechanics specified for this game; clarify missing numerical rules instead of inventing them.
