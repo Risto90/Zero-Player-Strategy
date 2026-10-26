@@ -586,7 +586,7 @@ export function leadershipOptions(
     const excluded = new Set([...rulers(world, c).map((leader) => leader.id), ...excludedIds]);
     const proposalOrigin = normalizeHumanOriginMix(proposal.humanOrigin);
     const matches = world.people.filter((p) => {
-      if (!p.alive || p.countryId !== c.id || excluded.has(p.id) || !eligible?.(p) && eligible) return false;
+      if (!p.alive || p.countryId !== c.id || excluded.has(p.id) || (eligible && !eligible(p))) return false;
       if (p.cultureId !== proposal.cultureId || p.religionId !== proposal.religionId) return false;
       const origin = normalizeHumanOriginMix(p.humanOrigin);
       return origin.ids.length === proposalOrigin.ids.length &&
