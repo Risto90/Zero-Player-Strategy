@@ -157,7 +157,10 @@ function PersonProfile({
         </View>
         <View style={styles.factRow}>
           <Text style={styles.fact}>Династия · </Text>
-          <Text onPress={() => router.push({ pathname: '/dynasty/[id]', params: { id: String(person.familyId) } })}
+          <Text onPress={() => router.push({
+            pathname: '/dynasty/[id]',
+            params: { id: String(person.familyId), person: String(person.id) },
+          })}
             accessibilityRole="link" style={styles.factFamily}>{person.familyName}</Text>
         </View>
         {!!person.trait && <Text style={styles.fact}>Черты · {person.traits.join(', ') || person.trait}</Text>}

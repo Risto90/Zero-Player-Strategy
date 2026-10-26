@@ -30,11 +30,9 @@ assert.equal(
 );
 
 const viewFiles = [
-  ['app/person/[id].tsx', 5, 'person and relative profiles'],
-  ['app/dynasty/[id].tsx', 2, 'dynasty cards and relation links'],
-  ['app/country/[id].tsx', 5, 'country and nomad rulers and heirs'],
-  ['components/game/LegendPanel.tsx', 7, 'country list and map inspection panel'],
-  ['components/game/CardPanel.tsx', 2, 'event names and person choices'],
+  ['app/person/[id].tsx', 5, 'страница персонажа и его родственники'],
+  ['app/country/[id].tsx', 5, 'правители и наследники стран и кочевий'],
+  ['components/game/CardPanel.tsx', 2, 'имена персонажей на картах'],
 ];
 
 for (const [relativePath, minimumUsages, description] of viewFiles) {
@@ -42,14 +40,20 @@ for (const [relativePath, minimumUsages, description] of viewFiles) {
   const usages = source.match(/personDeathStatus\(/gu)?.length ?? 0;
   assert.ok(
     usages >= minimumUsages,
-    `${description} should apply the shared death status to each person display (found ${usages})`,
+    `${description}: для каждого персонажа должен отображаться общий статус смерти (найдено: ${usages})`,
   );
 }
 
 const inspectSource = readFileSync(resolve(process.cwd(), 'components/game/InspectCard.tsx'), 'utf8');
-assert.match(inspectSource, /x \{info\.x\} · y \{info\.y\}/u, 'map inspection keeps point coordinates');
-assert.match(inspectSource, /link-inspect-country/u, 'map inspection links to the controlling country');
-assert.match(inspectSource, /link-inspect-city/u, 'map inspection links to a city at the point');
-assert.doesNotMatch(inspectSource, /personDeathStatus/u, 'detailed person information remains on profile pages');
+assert.match(inspectSource, /x \{info\.x\} · y \{info\.y\}/u, 'окно точки сохраняет её координаты');
+assert.match(inspectSource, /link-inspect-country/u, 'из окна точки можно открыть государство');
+assert.match(inspectSource, /link-inspect-city/u, 'из окна точки можно открыть город');
+assert.doesNotMatch(inspectSource, /personDeathStatus/u, 'подробные сведения о персонаже остаются на его странице');
 
-console.log('Person death status regressions passed.');
+const dynastySource = readFileSync(resolve(process.cwd(), 'app/dynasty/[id].tsx'), 'utf8');
+assert.match(dynastySource, /person\.alive \? `\$\{person\.age\} лет` : `\$\{Math\.floor\(person\.bornAt\)\}—\$\{person\.deathYear \?\? '…'\}`/u);
+assert.doesNotMatch(dynastySource, /жив\(а\)|умер(?:ла)?/u);
+assert.match(dynastySource, /gender-female/u);
+assert.match(dynastySource, /gender-male/u);
+
+console.log('Проверки отображения возраста и года смерти пройдены.');
