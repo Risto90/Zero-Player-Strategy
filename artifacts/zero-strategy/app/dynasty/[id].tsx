@@ -1,6 +1,6 @@
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import {
   Animated,
   PanResponder,
@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   View,
+  type GestureResponderEvent,
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,9 +17,11 @@ import colors, { fonts } from '@/constants/colors';
 import type { Person } from '@/game/government';
 import {
   buildDynastyTree,
+  centerDynastyPoint,
   dynastyPairKey,
   DYNASTY_NODE_HEIGHT,
   DYNASTY_NODE_WIDTH,
+  zoomDynastyAtViewportCenter,
 } from '@/game/dynastyTree';
 import { useGameSnapshot } from '@/game/useGame';
 import type { Game } from '@/game/game';
@@ -84,6 +87,27 @@ function BackButton() {
   );
 }
 
+function ZoomButton({
+  label,
+  icon,
+  onPress,
+}: {
+  label: string;
+  icon: ComponentProps<typeof Feather>['name'];
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      style={styles.zoomButton}
+    >
+      <Feather name={icon} size={13} color={c.foreground} />
+    </Pressable>
+  );
+}
+
 function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number; focusId?: number }) {
   useGameSnapshot(game);
   const insets = useSafeAreaInsets();
@@ -92,8 +116,13 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
   const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const scale = useRef(new Animated.Value(1)).current;
+  const scaleValue = useRef(1);
   const panOffset = useRef({ x: 0, y: 0 });
   const panStart = useRef({ x: 0, y: 0 });
+  const dragGestureOrigin = useRef({ x: 0, y: 0 });
+  const pinchStart = useRef<{ distance: number; scale: number } | null>(null);
+  const previousTouchCount = useRef(0);
   const centered = useRef(false);
 
   const familyMembers = game.world.people.filter((person) => person.familyId === familyId);
@@ -106,37 +135,107 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
   const safeTop = insets.top + (Platform.OS === 'web' ? 67 : 0);
   const safeBottom = insets.bottom + (Platform.OS === 'web' ? 34 : 0);
 
-  const centerOnPerson = (width: number, height: number) => {
-    if (centered.current || !focusId || width <= 0 || height <= 0) return;
-    const node = nodesById.get(focusId);
-    if (!node) return;
-    const next = {
-      x: width / 2 - node.x - DYNASTY_NODE_WIDTH / 2,
-      y: height / 2 - node.y - DYNASTY_NODE_HEIGHT / 2,
-    };
+  const centerPoint = (point: { x: number; y: number }, width = viewport.width, height = viewport.height) => {
+    if (width <= 0 || height <= 0) return;
+    const next = centerDynastyPoint(point, { width, height }, scaleValue.current);
     panOffset.current = next;
     pan.setValue(next);
+  };
+
+  const centerOnPerson = (personId: number, width = viewport.width, height = viewport.height) => {
+    const node = nodesById.get(personId);
+    if (!node) return;
+    centerPoint(
+      { x: node.x + DYNASTY_NODE_WIDTH / 2, y: node.y + DYNASTY_NODE_HEIGHT / 2 },
+      width,
+      height,
+    );
+  };
+
+  const centerInitialView = (width: number, height: number) => {
+    if (centered.current || width <= 0 || height <= 0) return;
+    const initialNode = focusId ? nodesById.get(focusId) : undefined;
+    const point = initialNode
+      ? { x: initialNode.x + DYNASTY_NODE_WIDTH / 2, y: initialNode.y + DYNASTY_NODE_HEIGHT / 2 }
+      : { x: model.width / 2, y: model.height / 2 };
+    centerPoint(point, width, height);
     centered.current = true;
+  };
+
+  const zoomAroundViewport = (nextScale: number) => {
+    const safeScale = Math.max(0.35, Math.min(2.5, nextScale));
+    const selectedNode = selectedPersonId === null ? undefined : nodesById.get(selectedPersonId);
+    const next = selectedNode
+      ? centerDynastyPoint(
+        {
+          x: selectedNode.x + DYNASTY_NODE_WIDTH / 2,
+          y: selectedNode.y + DYNASTY_NODE_HEIGHT / 2,
+        },
+        viewport,
+        safeScale,
+      )
+      : zoomDynastyAtViewportCenter(panOffset.current, viewport, scaleValue.current, safeScale);
+    scaleValue.current = safeScale;
+    scale.setValue(safeScale);
+    panOffset.current = next;
+    pan.setValue(next);
+  };
+
+  const distanceBetweenTouches = (event: GestureResponderEvent) => {
+    const touches = event.nativeEvent.touches;
+    if (!touches || touches.length < 2) return 0;
+    const [first, second] = touches;
+    return Math.hypot(first.pageX - second.pageX, first.pageY - second.pageY);
   };
 
   const responder = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => false,
-    onMoveShouldSetPanResponder: (_event, gesture) => Math.abs(gesture.dx) + Math.abs(gesture.dy) > 5,
-    onPanResponderGrant: () => {
+    onMoveShouldSetPanResponder: (event, gesture) =>
+      (event.nativeEvent.touches?.length ?? 0) > 1 || Math.abs(gesture.dx) + Math.abs(gesture.dy) > 5,
+    onMoveShouldSetPanResponderCapture: (event) => (event.nativeEvent.touches?.length ?? 0) > 1,
+    onPanResponderGrant: (event, gesture) => {
       panStart.current = panOffset.current;
+      dragGestureOrigin.current = { x: gesture.dx, y: gesture.dy };
+      const distance = distanceBetweenTouches(event);
+      if (distance > 0) pinchStart.current = { distance, scale: scaleValue.current };
     },
-    onPanResponderMove: (_event, gesture) => {
-      const next = { x: panStart.current.x + gesture.dx, y: panStart.current.y + gesture.dy };
+    onPanResponderMove: (event, gesture) => {
+      const touchCount = event.nativeEvent.touches?.length ?? 0;
+      if (touchCount > 1) {
+        const distance = distanceBetweenTouches(event);
+        if (distance > 0) {
+          if (!pinchStart.current) {
+            pinchStart.current = { distance, scale: scaleValue.current };
+          }
+          zoomAroundViewport(pinchStart.current.scale * distance / pinchStart.current.distance);
+        }
+        previousTouchCount.current = touchCount;
+        return;
+      }
+      if (previousTouchCount.current > 1) {
+        pinchStart.current = null;
+        panStart.current = panOffset.current;
+        dragGestureOrigin.current = { x: gesture.dx, y: gesture.dy };
+      }
+      previousTouchCount.current = touchCount;
+      const next = {
+        x: panStart.current.x + gesture.dx - dragGestureOrigin.current.x,
+        y: panStart.current.y + gesture.dy - dragGestureOrigin.current.y,
+      };
       panOffset.current = next;
       pan.setValue(next);
     },
     onPanResponderRelease: () => {
       panStart.current = panOffset.current;
+      pinchStart.current = null;
+      previousTouchCount.current = 0;
     },
     onPanResponderTerminate: () => {
       panStart.current = panOffset.current;
+      pinchStart.current = null;
+      previousTouchCount.current = 0;
     },
-  }), [pan]);
+  }), [pan, scale, viewport, selectedPersonId, nodesById]);
 
   const togglePerson = (personId: number) => {
     setCollapsedPeople((previous) => {
@@ -167,7 +266,17 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
 
   const onViewportLayout = (width: number, height: number) => {
     setViewport({ width, height });
-    centerOnPerson(width, height);
+    centerInitialView(width, height);
+  };
+
+  const centerOnSelection = () => {
+    const targetId = selectedPersonId ?? focusId;
+    const targetNode = targetId === undefined ? undefined : nodesById.get(targetId);
+    centerPoint(
+      targetNode
+        ? { x: targetNode.x + DYNASTY_NODE_WIDTH / 2, y: targetNode.y + DYNASTY_NODE_HEIGHT / 2 }
+        : { x: model.width / 2, y: model.height / 2 },
+    );
   };
 
   const singleParentChildren = new Map<number, (typeof model.nodes)[number][]>();
@@ -187,24 +296,19 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
       </View>
       <View style={styles.titleRow}>
         <View style={styles.titleBlock}>
-          <Text style={styles.title}>{familyName}</Text>
+          <Text numberOfLines={1} style={styles.title}>{familyName}</Text>
           <Text style={styles.subtitle}>Династия · {familyMembers.length} персонажей</Text>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Вернуться к выбранному персонажу"
-          onPress={() => {
-            centered.current = false;
-            centerOnPerson(viewport.width, viewport.height);
-          }}
-          style={styles.centerButton}
-        >
-          <Feather name="crosshair" size={18} color={c.foreground} />
-        </Pressable>
+        <View style={styles.zoomControls}>
+          <ZoomButton label="Центрировать древо" icon="crosshair" onPress={centerOnSelection} />
+          <ZoomButton label="Уменьшить масштаб" icon="minus" onPress={() => zoomAroundViewport(scaleValue.current / 1.2)} />
+          <ZoomButton label="Увеличить масштаб" icon="plus" onPress={() => zoomAroundViewport(scaleValue.current * 1.2)} />
+          <ZoomButton label="Сбросить масштаб" icon="rotate-ccw" onPress={() => zoomAroundViewport(1)} />
+        </View>
       </View>
       {model.nodes.length ? (
         <>
-          <Text style={styles.hint}>Перетаскивайте древо пальцем или мышью. Нажмите − или +, чтобы свернуть или раскрыть ветвь.</Text>
+          <Text style={styles.hint}>Перетаскивание · масштаб двумя пальцами · кнопки масштаба справа</Text>
           <View style={styles.legend}>
             <View style={styles.legendItem}>
               <View style={[styles.legendLine, styles.marriageLine]} />
@@ -228,7 +332,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
               style={[
                 styles.treeCanvas,
                 { width: Math.max(viewport.width, model.width), height: Math.max(viewport.height, model.height) },
-                { transform: pan.getTranslateTransform() },
+                { transform: [...pan.getTranslateTransform(), { scale }] },
               ]}
             >
               <Svg
@@ -342,7 +446,10 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                     key={person.id}
                     accessibilityRole="button"
                     accessibilityLabel={`Выбрать связи персонажа ${person.name}`}
-                    onPress={() => setSelectedPersonId(person.id)}
+                    onPress={() => {
+                      setSelectedPersonId(person.id);
+                      centerOnPerson(person.id);
+                    }}
                     style={[
                       styles.personCard,
                       { left: node.x, top: node.y, width: DYNASTY_NODE_WIDTH, minHeight: DYNASTY_NODE_HEIGHT },
@@ -362,7 +469,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                       </Pressable>
                       <MaterialCommunityIcons
                         name={person.gender === 'female' ? 'gender-female' : 'gender-male'}
-                        size={17}
+                        size={10}
                         color={c.primary}
                       />
                       {hasBranchControl && (
@@ -427,36 +534,37 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: c.background },
   center: { alignItems: 'center', justifyContent: 'center', gap: 16 },
-  header: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, borderBottomWidth: 2, borderColor: c.foreground },
-  back: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8 },
-  backText: { fontFamily: fonts.sansMedium, fontSize: 13, color: c.foreground },
-  eyebrow: { marginLeft: 'auto', fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.6, color: c.primary },
-  titleRow: { paddingHorizontal: 18, paddingTop: 16, paddingBottom: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  header: { minHeight: 34, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderColor: c.foreground },
+  back: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4 },
+  backText: { fontFamily: fonts.sansMedium, fontSize: 11, color: c.foreground },
+  eyebrow: { marginLeft: 'auto', fontFamily: fonts.sansSemiBold, fontSize: 8, letterSpacing: 1.2, color: c.primary },
+  titleRow: { minHeight: 43, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 3, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
   titleBlock: { flex: 1, gap: 2 },
-  title: { fontFamily: fonts.display, fontSize: 30, color: c.foreground },
-  subtitle: { fontFamily: fonts.sans, fontSize: 13, color: c.mutedForeground },
-  centerButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.border, backgroundColor: c.card },
-  hint: { paddingHorizontal: 18, paddingBottom: 8, fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
-  legend: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10, paddingHorizontal: 18, paddingBottom: 8 },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  legendLine: { width: 18, borderTopWidth: 2 },
-  marriageLine: { borderColor: c.accent, borderTopWidth: 3 },
+  title: { fontFamily: fonts.display, fontSize: 21, color: c.foreground },
+  subtitle: { fontFamily: fonts.sans, fontSize: 10, color: c.mutedForeground },
+  zoomControls: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  zoomButton: { width: 25, height: 25, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.border },
+  hint: { paddingHorizontal: 12, paddingBottom: 3, fontFamily: fonts.sans, fontSize: 9, color: c.mutedForeground },
+  legend: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 7, paddingHorizontal: 12, paddingBottom: 4 },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  legendLine: { width: 14, borderTopWidth: 2 },
+  marriageLine: { borderColor: c.accent, borderTopWidth: 2 },
   loveLine: { borderColor: c.primary, borderStyle: 'dashed' },
   parentLine: { borderColor: c.border },
-  legendText: { fontFamily: fonts.sans, fontSize: 10, color: c.mutedForeground },
+  legendText: { fontFamily: fonts.sans, fontSize: 8, color: c.mutedForeground },
   viewport: { flex: 1, overflow: 'hidden', backgroundColor: c.card },
-  treeCanvas: { position: 'absolute', left: 0, top: 0 },
-  personCard: { position: 'absolute', padding: 9, gap: 4, backgroundColor: c.background, borderWidth: 1, borderColor: c.border, borderRadius: 4, zIndex: 1 },
+  treeCanvas: { position: 'absolute', left: 0, top: 0, transformOrigin: 'top left' },
+  personCard: { position: 'absolute', padding: 5, gap: 2, backgroundColor: c.background, borderWidth: 1, borderColor: c.border, borderRadius: 3, zIndex: 1 },
   dynastyPersonCard: { borderTopWidth: 3, borderTopColor: c.primary },
   partnerPersonCard: { borderTopWidth: 3, borderTopColor: c.accent },
   selectedPersonCard: { borderColor: c.primary, borderWidth: 2, backgroundColor: c.card, shadowColor: c.foreground, shadowOpacity: 0.18, shadowRadius: 5, elevation: 4 },
-  personTitleRow: { minHeight: 27, flexDirection: 'row', alignItems: 'flex-start', gap: 4 },
+  personTitleRow: { minHeight: 18, flexDirection: 'row', alignItems: 'flex-start', gap: 2 },
   personNameButton: { flex: 1 },
-  personName: { fontFamily: fonts.sansSemiBold, fontSize: 12, lineHeight: 16, color: c.accent, textDecorationLine: 'underline' },
-  personLife: { fontFamily: fonts.sans, fontSize: 11, color: c.foreground },
-  relationType: { fontFamily: fonts.sans, fontSize: 10, color: c.mutedForeground },
-  foldButton: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center', borderRadius: 13, backgroundColor: c.muted },
-  externalDynastyButton: { width: 28, height: 22, alignItems: 'center', justifyContent: 'center', marginTop: -2 },
+  personName: { fontFamily: fonts.sansSemiBold, fontSize: 10, lineHeight: 12, color: c.accent, textDecorationLine: 'underline' },
+  personLife: { fontFamily: fonts.sans, fontSize: 9, color: c.foreground },
+  relationType: { fontFamily: fonts.sans, fontSize: 8, color: c.mutedForeground },
+  foldButton: { width: 17, height: 17, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: c.muted },
+  externalDynastyButton: { width: 18, height: 16, alignItems: 'center', justifyContent: 'center', marginTop: -1 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   note: { fontFamily: fonts.sans, fontSize: 13, color: c.mutedForeground },
 });

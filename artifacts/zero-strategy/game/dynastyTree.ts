@@ -1,11 +1,48 @@
 import type { Person } from './government';
 
-export const DYNASTY_NODE_WIDTH = 218;
-export const DYNASTY_NODE_HEIGHT = 104;
-export const DYNASTY_NODE_GAP_X = 44;
-export const DYNASTY_NODE_GAP_Y = 86;
-export const DYNASTY_MARGIN_X = 36;
-export const DYNASTY_MARGIN_Y = 40;
+export const DYNASTY_NODE_WIDTH = 152;
+export const DYNASTY_NODE_HEIGHT = 74;
+export const DYNASTY_NODE_GAP_X = 34;
+export const DYNASTY_NODE_GAP_Y = 48;
+export const DYNASTY_MARGIN_X = 22;
+export const DYNASTY_MARGIN_Y = 24;
+
+export interface DynastyViewportSize {
+  width: number;
+  height: number;
+}
+
+export interface DynastyPanOffset {
+  x: number;
+  y: number;
+}
+
+export function zoomDynastyAtViewportCenter(
+  offset: DynastyPanOffset,
+  viewport: DynastyViewportSize,
+  currentScale: number,
+  nextScale: number,
+): DynastyPanOffset {
+  const centerX = viewport.width / 2;
+  const centerY = viewport.height / 2;
+  const worldX = (centerX - offset.x) / currentScale;
+  const worldY = (centerY - offset.y) / currentScale;
+  return {
+    x: centerX - worldX * nextScale,
+    y: centerY - worldY * nextScale,
+  };
+}
+
+export function centerDynastyPoint(
+  point: { x: number; y: number },
+  viewport: DynastyViewportSize,
+  scale: number,
+): DynastyPanOffset {
+  return {
+    x: viewport.width / 2 - point.x * scale,
+    y: viewport.height / 2 - point.y * scale,
+  };
+}
 
 export interface DynastyTreeNode {
   person: Person;

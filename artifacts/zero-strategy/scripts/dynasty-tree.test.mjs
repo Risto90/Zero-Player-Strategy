@@ -1,5 +1,12 @@
 import { strict as assert } from 'node:assert';
-import { buildDynastyTree, dynastyPairKey } from '../game/dynastyTree.ts';
+import {
+  buildDynastyTree,
+  centerDynastyPoint,
+  dynastyPairKey,
+  DYNASTY_NODE_GAP_X,
+  DYNASTY_NODE_WIDTH,
+  zoomDynastyAtViewportCenter,
+} from '../game/dynastyTree.ts';
 
 function character(id, familyId, options = {}) {
   return {
@@ -42,13 +49,27 @@ const positions = new Map(fullTree.nodes.map((node) => [node.person.id, node]));
 assert.equal(positions.get(3)?.y, positions.get(6)?.y, 'дети одного поколения находятся на одной высоте');
 assert.equal(
   Math.abs((positions.get(3)?.x ?? 0) - (positions.get(6)?.x ?? 0)),
-  262,
+  DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X,
   'дети одной пары размещаются рядом, а не среди посторонних ветвей',
 );
 assert.equal(
   Math.abs((positions.get(1)?.x ?? 0) - (positions.get(2)?.x ?? 0)),
-  262,
+  DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X,
   'супруги занимают соседние позиции в одном поколении',
+);
+
+const viewport = { width: 400, height: 700 };
+const originalOffset = { x: -120, y: -80 };
+const zoomedOffset = zoomDynastyAtViewportCenter(originalOffset, viewport, 1, 1.5);
+assert.deepEqual(
+  zoomDynastyAtViewportCenter(zoomedOffset, viewport, 1.5, 1),
+  originalOffset,
+  'масштабирование и возврат сохраняют точку, находившуюся в центре области просмотра',
+);
+assert.deepEqual(
+  centerDynastyPoint({ x: 80, y: 120 }, viewport, 2),
+  { x: 40, y: 110 },
+  'выбранный персонаж можно точно центрировать при любом масштабе',
 );
 
 const collapsedPerson = buildDynastyTree(people, 1, new Set([1]));
