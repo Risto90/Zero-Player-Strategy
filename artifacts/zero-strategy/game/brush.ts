@@ -103,6 +103,7 @@ export interface CardPainterState {
 const isCurrent = (type: CardType) => type === 'warmCurrent' || type === 'coldCurrent';
 const isWind = (type: CardType) => type === 'warmWind' || type === 'coldWind';
 const isTemperatureCard = (type: CardType) => isCurrent(type) || isWind(type);
+const BRUSH_SCALING_CACHE_BLOCK = 64;
 
 export interface SplitTerritoryValidation {
   valid: boolean;
@@ -266,6 +267,9 @@ export class CardPainter {
   private readonly colonizationDonors: ColonizationDonorHeap | null;
   private readonly cityInfluence: CityInfluenceIndex | null;
   private readonly splitBrush: PartitionBrush | null;
+  private readonly brushScalingCache = new Map<number, { cost: Float64Array; strength: Float64Array }>();
+  private lastStrategyScalingPixel = -1;
+  private lastStrategyScalingCost = 0;
   private nomadMode: 'range' | 'density' | 'inactive' = 'range';
   private readonly nomadRange = new Set<number>();
   private readonly nomadCells = new Map<number, NomadCell>();
@@ -370,6 +374,8 @@ export class CardPainter {
     const onLand = world.land[pixel] === 1;
     const targetTag = card.targetCountryId === null ? -1 : card.targetCountryId + 1;
     const { cost, strength } = this.brushScaling(pixel);
+    this.lastStrategyScalingPixel = pixel;
+    this.lastStrategyScalingCost = cost;
     if (!(cost > 0) || !Number.isFinite(cost)) return 0;
 
     if (card.type === 'create' || card.type === 'expand' || card.type === 'colonization' ||
@@ -541,7 +547,11 @@ export class CardPainter {
       return next === world.culture[pixel] ? 0 : 1;
     }
 
-    return (knownImpact ?? this.strategyImpactAt(pixel)) > 0 ? this.brushScaling(pixel).cost : 0;
+    const impact = knownImpact ?? this.strategyImpactAt(pixel);
+    if (!(impact > 0)) return 0;
+    return this.lastStrategyScalingPixel === pixel
+      ? this.lastStrategyScalingCost
+      : this.brushScaling(pixel).cost;
   }
 
   /** Ink cost of painting an otherwise eligible territory pixel. */
@@ -646,6 +656,36 @@ export class CardPainter {
 
   /** City spheres scale brush ink and population strength without changing its base cost. */
   private brushScaling(pixel: number): { cost: number; strength: number } {
+    const cardType = this.card.type;
+    if (cardType === 'expand' || cardType === 'colonization' || cardType === 'nomadExpand') {
+      const x = pixel % MAP_WIDTH;
+      const y = Math.floor(pixel / MAP_WIDTH);
+      const blockColumns = Math.ceil(MAP_WIDTH / BRUSH_SCALING_CACHE_BLOCK);
+      const blockIndex = Math.floor(y / BRUSH_SCALING_CACHE_BLOCK) * blockColumns +
+        Math.floor(x / BRUSH_SCALING_CACHE_BLOCK);
+      let block = this.brushScalingCache.get(blockIndex);
+      if (!block) {
+        block = {
+          cost: new Float64Array(BRUSH_SCALING_CACHE_BLOCK * BRUSH_SCALING_CACHE_BLOCK),
+          strength: new Float64Array(BRUSH_SCALING_CACHE_BLOCK * BRUSH_SCALING_CACHE_BLOCK),
+        };
+        this.brushScalingCache.set(blockIndex, block);
+      }
+      const offset = (y % BRUSH_SCALING_CACHE_BLOCK) * BRUSH_SCALING_CACHE_BLOCK +
+        (x % BRUSH_SCALING_CACHE_BLOCK);
+      const cachedCost = block.cost[offset];
+      if (cachedCost > 0) return { cost: cachedCost, strength: block.strength[offset] };
+      const scaling = this.computeBrushScaling(pixel);
+      if (scaling.cost > 0 && Number.isFinite(scaling.cost) && Number.isFinite(scaling.strength)) {
+        block.cost[offset] = scaling.cost;
+        block.strength[offset] = scaling.strength;
+      }
+      return scaling;
+    }
+    return this.computeBrushScaling(pixel);
+  }
+
+  private computeBrushScaling(pixel: number): { cost: number; strength: number } {
     const card = this.card;
     const influence = this.cityInfluence?.at(pixel, card.type === 'colonization');
     if (card.type === 'nomadExpand') {

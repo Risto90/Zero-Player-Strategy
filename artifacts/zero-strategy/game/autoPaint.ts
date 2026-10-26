@@ -167,7 +167,12 @@ function boundedCandidatePixels(painter: CardPainter): number[] {
   return sampled.sort((a, b) => a - b);
 }
 
-function scoreCenter(painter: CardPainter, pixel: number, radius: number): number {
+function scoreCenter(
+  painter: CardPainter,
+  pixel: number,
+  radius: number,
+  pixelScores?: Map<number, { impact: number; ink: number }>,
+): number {
   const { world } = painter;
   const cx = pixel % MAP_WIDTH;
   const cy = Math.floor(pixel / MAP_WIDTH);
@@ -180,13 +185,18 @@ function scoreCenter(painter: CardPainter, pixel: number, radius: number): numbe
     for (let x = x0; x <= x1; x += 1) {
       if ((x - cx) ** 2 + (y - cy) ** 2 > r2) continue;
       const pixel = y * MAP_WIDTH + x;
-      const impact = painter.strategyImpactAt(pixel);
-       ink += painter.strategyInkCostAt(pixel, impact);
-      score += impact;
+       let pixelScore = pixelScores?.get(pixel);
+       if (!pixelScore) {
+         const impact = painter.strategyImpactAt(pixel);
+         pixelScore = { impact, ink: painter.strategyInkCostAt(pixel, impact) };
+         pixelScores?.set(pixel, pixelScore);
+       }
+       ink += pixelScore.ink;
+       score += pixelScore.impact;
       // A new country starts with exactly one seed pixel; later dabs grow it
       // through the normal territory rules.
       if (painter.card.type === 'create' &&
-        painter.world.countries[painter.card.newCountryId ?? -1]?.pixels === 0 && impact > 0) {
+         painter.world.countries[painter.card.newCountryId ?? -1]?.pixels === 0 && pixelScore.impact > 0) {
         return ink > 0 ? score / ink : 0;
       }
     }
@@ -241,10 +251,12 @@ export function autoPaint(
     }
     // Territory eligibility changes as the frontier grows, so re-score a small
     // bounded candidate set after each successful dab.
+    const pixelScores = new Map<number, { impact: number; ink: number }>();
     for (let step = 0; step < MAX_TERRITORY_DABS && card.ink > 0; step += 1) {
+      pixelScores.clear();
       const scoringStartedAt = onMeasure ? performance.now() : 0;
       const candidates = boundedCandidatePixels(painter)
-        .map((pixel) => ({ pixel, score: scoreCenter(painter, pixel, radius) }))
+        .map((pixel) => ({ pixel, score: scoreCenter(painter, pixel, radius, pixelScores) }))
         .filter((candidate) => candidate.score > 0)
         .sort((a, b) => b.score - a.score || a.pixel - b.pixel)
         .slice(0, MAX_SCORE_CENTERS);
