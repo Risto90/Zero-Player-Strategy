@@ -281,8 +281,6 @@ export class CardPainter {
   private forbiddenCreationArea: ContourArea | null = null;
   private colonizationTargetArea: ContourArea | null = null;
   private readonly influenceCache = new Map<number, ReturnType<CityInfluenceIndex['at']>>();
-  private readonly anchoredInfluenceCache = new Map<number, ReturnType<CityInfluenceIndex['at']>>();
-  private readonly coverageInfluenceCache = new Map<number, ReturnType<CityInfluenceIndex['at']>>();
   private readonly climateGainCache = new Map<number, number>();
   private nomadMode: 'range' | 'density' | 'inactive' = 'range';
   private readonly nomadRange = new Set<number>();
@@ -875,19 +873,12 @@ export class CardPainter {
   }
 
   /** Влияние городов неизменно до завершения карты, даже когда границы страны растут. */
-  private influenceAt(
-    pixel: number,
-    needAnchor = this.card.type === 'colonization',
-    needNearestCity = true,
-  ): ReturnType<CityInfluenceIndex['at']> | undefined {
+  private influenceAt(pixel: number): ReturnType<CityInfluenceIndex['at']> | undefined {
     if (!this.cityInfluence) return undefined;
-    const cache = !needNearestCity
-      ? this.coverageInfluenceCache
-      : needAnchor ? this.anchoredInfluenceCache : this.influenceCache;
-    let influence = cache.get(pixel);
+    let influence = this.influenceCache.get(pixel);
     if (!influence) {
-      influence = this.cityInfluence.at(pixel, needAnchor, needNearestCity);
-      cache.set(pixel, influence);
+      influence = this.cityInfluence.at(pixel, this.card.type === 'colonization');
+      this.influenceCache.set(pixel, influence);
     }
     return influence;
   }
@@ -897,7 +888,7 @@ export class CardPainter {
     if (this.card.type !== 'colonization' || countryId === null || pixel < 0 || pixel >= MAP_PIXELS ||
       this.colonizationMask?.[pixel] !== 1 || this.world.owner[pixel] === countryId + 1 ||
       this.world.cityAt(pixel)) return false;
-    const influence = this.influenceAt(pixel, false, false);
+    const influence = this.influenceAt(pixel);
     return !(influence && influence.foreignRankSum > 0 && influence.ownRankSum === 0);
   }
 
