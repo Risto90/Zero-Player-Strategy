@@ -203,7 +203,7 @@ checkPartition({ childrenCount: 5, incumbentCount: 2, cityCount: 2, expectedPart
   const baseline = { ...country, modifiers: ['consulate'] };
   const baselineWeight = reformCandidates(world, baseline, 1000).reduce((sum, proposal) => sum + proposal.weight, 0);
   assert.ok(Math.abs(adjustedEvent - (0.16 / 3) * adjustedWeight / baselineWeight) < 1e-9,
-    'government-card probability follows the sum of available adjusted reform weights');
+    `government-card probability follows available adjusted reform weights (${adjustedEvent} vs ${(0.16 / 3) * adjustedWeight / baselineWeight}; totals ${adjustedWeight}/${baselineWeight})`);
 
   country.consulCount = 2;
   const cancellationAtTwo = reformCandidates(world, country, 1000).find((proposal) => proposal.remove === 'consulate');
