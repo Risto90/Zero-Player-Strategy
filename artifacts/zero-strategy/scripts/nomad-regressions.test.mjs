@@ -202,11 +202,46 @@ function groupFaithTotals(countries, world, faiths) {
   setPersonHome(resident, fixture.country);
   fixture.world.people.push(resident);
   dissolveCountryIntoNomadicCountries(fixture.world, fixture.country, 10);
+  const nomad = fixture.world.countries.find((country) => country.type === 'nomadic');
+  assert.ok(nomad?.cells?.length);
+  const rasterCultureMixes = new Set(fixture.world.culture);
+  let nomadCultureMix;
+  for (let share = 5; share < 100; share += 5) {
+    const id = fixture.world.cultureTable.intern(new Map([
+      [fixture.cultures[0].id, share],
+      [fixture.cultures[1].id, 100 - share],
+    ]));
+    if (!rasterCultureMixes.has(id)) {
+      nomadCultureMix = id;
+      break;
+    }
+  }
+  assert.notEqual(nomadCultureMix, undefined);
+  const rasterReligionMixes = new Set(fixture.world.religion);
+  let nomadReligionMix;
+  for (let share = 5; share < 100; share += 5) {
+    const id = fixture.world.religionTable.intern(new Map([
+      [fixture.faiths[0].id, share],
+      [fixture.faiths[1].id, 100 - share],
+    ]));
+    if (!rasterReligionMixes.has(id)) {
+      nomadReligionMix = id;
+      break;
+    }
+  }
+  assert.notEqual(nomadReligionMix, undefined);
+  nomad.cells[0].cultureMix = nomadCultureMix;
+  nomad.cells[0].religionMix = nomadReligionMix;
+  const expectedCulture = structuredClone(fixture.world.cultureTable.entries[nomadCultureMix]);
+  const expectedReligion = structuredClone(fixture.world.religionTable.entries[nomadReligionMix]);
   const saved = serializeWorld(fixture.world);
   assert.equal('nomads' in saved, false);
   const roundTrip = deserializeWorld(saved);
   assert.ok(roundTrip.countries.some((country) => country.type === 'nomadic'));
   assert.equal(roundTrip.people.find((person) => person.id === resident.id).countryId, resident.countryId);
+  const roundTripNomad = roundTrip.countries.find((country) => country.type === 'nomadic');
+  assert.deepEqual(roundTrip.cultureTable.entries[roundTripNomad.cells[0].cultureMix], expectedCulture);
+  assert.deepEqual(roundTrip.religionTable.entries[roundTripNomad.cells[0].religionMix], expectedReligion);
 
   const legacy = structuredClone(saved);
   const legacyGroups = legacy.countries.filter((country) => country.type === 'nomadic');

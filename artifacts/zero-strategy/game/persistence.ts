@@ -35,7 +35,9 @@ export interface SavedWorld {
   nomads?: LegacyNomadSave[];
   cultures: Culture[];
   religions: Religion[];
-  /** Stable composition indices used by city and nomad population groups. */
+  /** Стабильные индексы составов, на которые ссылаются городские и кочевые группы. */
+  cultureTable?: { ids: number[]; shares: number[] }[];
+  religionTable?: { ids: number[]; shares: number[] }[];
   humanOriginTable?: { ids: number[]; shares: number[] }[];
   people: World['people'];
   cardMultipliers?: Record<string, number>;
@@ -173,6 +175,14 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     cardMultipliers: copy.cardMultipliers,
     climateWater: true,
     layers: { land, political, density, humidity, temperature, drainage, cultures, religions, humanOrigins },
+    cultureTable: copy.cultureTable.entries.map((entry) => ({
+      ids: [...entry.ids],
+      shares: [...entry.shares],
+    })),
+    religionTable: copy.religionTable.entries.map((entry) => ({
+      ids: [...entry.ids],
+      shares: [...entry.shares],
+    })),
     humanOriginTable: copy.humanOriginTable.entries.map((entry) => ({
       ids: [...entry.ids],
       shares: [...entry.shares],
@@ -200,6 +210,22 @@ export function deserializeWorld(saved: SavedWorld): World {
     temperature,
     drainage: rasterize(layers.drainage, new Uint8Array(MAP_PIXELS)),
   });
+  const restoreCompositionTable = (
+    table: World['cultureTable'],
+    entries: SavedWorld['cultureTable'],
+  ) => {
+    if (!entries) return;
+    entries.slice(1).forEach((entry, index) => {
+      const restoredIndex = table.intern(new Map(
+        entry.ids.map((id, shareIndex) => [id, entry.shares[shareIndex] ?? 0]),
+      ));
+      if (restoredIndex !== index + 1) {
+        throw new Error('Не удалось сохранить исходные индексы состава населения.');
+      }
+    });
+  };
+  restoreCompositionTable(world.cultureTable, saved.cultureTable);
+  restoreCompositionTable(world.religionTable, saved.religionTable);
   if (saved.humanOriginTable) {
     for (const entry of saved.humanOriginTable.slice(1)) {
       world.humanOriginTable.intern(new Map(entry.ids.map((id, index) => [id, entry.shares[index] ?? 0])));
