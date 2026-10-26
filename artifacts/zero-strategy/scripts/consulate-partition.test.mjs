@@ -202,8 +202,8 @@ checkPartition({ childrenCount: 5, incumbentCount: 2, cityCount: 2, expectedPart
   const adjustedWeight = reformCandidates(world, country, 1000).reduce((sum, proposal) => sum + proposal.weight, 0);
   const baseline = { ...country, modifiers: ['consulate'] };
   const baselineWeight = reformCandidates(world, baseline, 1000).reduce((sum, proposal) => sum + proposal.weight, 0);
-  assert.ok(Math.abs(adjustedEvent - (0.16 / 3) * adjustedWeight / baselineWeight) < 1e-9,
-    `government-card probability follows available adjusted reform weights (${adjustedEvent} vs ${(0.16 / 3) * adjustedWeight / baselineWeight}; totals ${adjustedWeight}/${baselineWeight})`);
+  assert.ok(Math.abs(adjustedEvent - (1 / 3) * adjustedWeight / baselineWeight) < 1e-9,
+    'government-card weight follows the unmodified consulate scale and available reform weights');
 
   country.consulCount = 2;
   const cancellationAtTwo = reformCandidates(world, country, 1000).find((proposal) => proposal.remove === 'consulate');
@@ -212,7 +212,7 @@ checkPartition({ childrenCount: 5, incumbentCount: 2, cityCount: 2, expectedPart
   const ordinaryDecrease = reformCandidates(world, country, 1000).find((proposal) => proposal.consulCount === 1);
   assert.equal(ordinaryDecrease, undefined, 'outside partition/consulate, the base degree floor stays unchanged');
   const ordinaryEvent = governmentEventWeight(world, country, 1000, false, 1 / 2);
-  assert.equal(ordinaryEvent, 0.08, 'outside the combination, the ordinary consulate card weight is unchanged');
+  assert.equal(ordinaryEvent, 0.5, 'outside the combination, the ordinary consulate scale remains unchanged');
 }
 
 // Missing heir options are filled from residents/generated candidates; 50% can replace
