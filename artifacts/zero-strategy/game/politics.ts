@@ -1,5 +1,5 @@
 import { GOVERNMENTS, MODIFIERS, availableModifiers, applyModifier, type GovernmentId, type GovernmentModifierId, type Person, type PoliticalState } from './government';
-import { arePartners, canMarry, livingPartners, newCitizen, related, trackedForBirth } from './characters';
+import { canMarry, newCitizen, related } from './characters';
 import { demography } from './demography';
 import { person } from './characters';
 import { candidateAllowed, successionOrder } from './succession';
@@ -299,7 +299,13 @@ function neighbouringCountries(world: World, country: Country): Set<number> {
 }
 
 /** Eligible spouses are ranked by proximity/dynasty first, then by cultural and religious fit. */
-export function marriageCandidates(world: World, country: Country, person: Person, year: number): Person[] {
+export function marriageCandidates(
+  world: World,
+  country: Country,
+  person: Person,
+  year: number,
+  count = 2,
+): Person[] {
   const neighbours = country.type === 'nomadic' ? null : neighbouringCountries(world, country);
   const neighbourNomads = country.type === 'nomadic' ? adjacentNomadicCountries(world, country) : null;
   const locals = new Set(polityPeople(world, country).map((p) => p.id));
@@ -328,8 +334,8 @@ export function marriageCandidates(world: World, country: Country, person: Perso
       (p.familyId !== person.familyId ? 2 : 1);
     return priority(b) - priority(a) || category(b) - category(a) || a.id - b.id;
   });
-  const selected = candidates.slice(0, 2);
-  while (selected.length < 2) {
+  const selected = candidates.slice(0, count);
+  while (selected.length < count) {
     const generated = newCitizen(world, country, year);
     generated.age = Math.max(20, person.age + Math.floor(Math.random() * 11) - 5);
     generated.bornAt = year - generated.age - Math.random();
@@ -341,93 +347,4 @@ export function marriageCandidates(world: World, country: Country, person: Perso
 
 function personWorldAlive(world: World, id: number): boolean {
   return person(world, id)?.alive ?? false;
-}
-
-type LifeOpportunity = {
-  kind: string;
-  ids: number[];
-  weight: number;
-  newPerson?: Person;
-  createBetrothed?: boolean;
-  sourceGender?: Person['gender'];
-};
-
-function lifeOpportunityPool(world: World, c: Country, year: number): { events: LifeOpportunity[]; chance: number } {
-  const locals = polityPeople(world, c);
-  const trackedLocals = locals.filter((p) => trackedForBirth(world, c, p));
-  const birthParents = world.people.filter((p) => trackedForBirth(world, c, p) && p.alive);
-  const activeSeats = [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is NonNullable<typeof p> => !!p)];
-  const expiredSeat = activeSeats.find((p) => {
-    const since = c.seatSince[p.id] ?? c.rulerSince;
-    return ((c.government === 'republic' && c.modifiers.includes('term')) || c.modifiers.includes('consulate')) && year - since >= c.termYears;
-  });
-  if (expiredSeat) return { events: [{ kind: 'election', ids: [expiredSeat.id], weight: 10000 }], chance: 1 };
-  const events: LifeOpportunity[] = [];
-  for (const mother of birthParents.filter((p) => p.gender === 'female' && p.age >= 12 && p.age <= 45)) {
-    if (mother.lastBirthYear === year) continue;
-    const father = livingPartners(world, mother).find((p) => p.gender === 'male' && p.age >= 12 &&
-      arePartners(mother, p) && !related(world, mother, p));
-    if (!father) continue;
-    const fertility = mother.age < 20 ? 0.12 : mother.age <= 45 ? 0.65 : 0;
-    const maleFertility = father.age <= 45 ? 1 : father.age <= 65 ? 0.5 : 0.15;
-    const fecundity = mother.traits.includes('Плодовитый') || father.traits.includes('Плодовитый') ? 2 : 1;
-    events.push({ kind: 'birth', ids: [mother.id, father.id], weight: fertility * maleFertility * fecundity * 0.6 });
-  }
-  for (const p of trackedLocals.filter((x) => canMarry(c, x) || (x.age >= 8 && x.age < 12))) {
-    const betrothed = person(world, p.betrothedId);
-    if (betrothed?.alive && p.age >= 12 && betrothed.age >= 12 && canMarry(c, p) && canMarry(c, betrothed)) {
-      events.push({ kind: 'marriage', ids: [p.id, betrothed.id], weight: 0.15 });
-      continue;
-    }
-    if (p.betrothedId || p.spouseIds.some((id) => person(world, id)?.alive)) continue;
-    const potential = locals.find((q) => q.id !== p.id && q.gender !== p.gender && canMarry(c, q) &&
-      !q.spouseIds.includes(p.id) && !q.parents.includes(p.id) && !p.parents.includes(q.id) &&
-      !q.parents.some((id) => p.parents.includes(id)) && !related(world, p, q));
-    const isMinor = p.age < 20;
-    if (potential && isMinor && !c.modifiers.includes('meritocracy')) {
-      const marriageWeight = isMinor ? (p.age < 12 ? 0.005 : c.government === 'tribal' ? 0.06 : 0.02) : 0.1;
-      events.push({ kind: isMinor ? 'engagement' : 'marriage', ids: [p.id, potential.id], weight: marriageWeight });
-    }
-    else if (!isMinor) {
-      events.push({ kind: 'marriage', ids: [p.id], weight: 0.1 });
-    } else if (p.age >= 8 && !c.modifiers.includes('meritocracy')) {
-      events.push({ kind: 'engagement', ids: [p.id], createBetrothed: true, sourceGender: p.gender, weight: 0.005 });
-    }
-  }
-  const candidates = locals.filter((p) => p.age >= 8 && p.alive);
-  const friendPair = candidates.flatMap((p, i) => candidates.slice(i + 1).map((q) => [p, q] as const))
-    .find(([p, q]) => !p.friendIds.includes(q.id));
-  if (friendPair) events.push({ kind: 'friendship', ids: [friendPair[0].id, friendPair[1].id], weight: 0.035 });
-  const romancePair = locals.flatMap((p, i) => locals.slice(i + 1).filter((q) => q.gender !== p.gender && q.age >= 12 && p.age >= 12 &&
-    !p.loverIds.includes(q.id) && !p.spouseIds.includes(q.id) && !related(world, p, q)).map((q) => [p, q] as const))[0];
-  if (romancePair) events.push({ kind: 'romance', ids: [romancePair[0].id, romancePair[1].id], weight: romancePair[0].age < 20 || romancePair[1].age < 20 ? 0.015 : 0.03 });
-  const traits = locals.filter((p) => p.age >= 3 && p.age < 18 && p.traits.length === 0);
-  if (traits.length) events.push({ kind: 'trait', ids: [traits[0].id], weight: 0.08 });
-  const total = events.reduce((n, x) => n + x.weight, 0);
-  return { events, chance: events.length ? Math.min(0.8, total) : 0 };
-}
-
-export function lifeOpportunityChance(world: World, c: Country, year: number): number {
-  return lifeOpportunityPool(world, c, year).chance;
-}
-
-export function lifeOpportunity(world: World, c: Country, year: number): { kind: string; ids: number[]; weight: number; newPerson?: Person } | null {
-  const { events } = lifeOpportunityPool(world, c, year);
-  if (!events.length) return null;
-  const total = events.reduce((n, event) => n + event.weight, 0);
-  let draw = Math.random() * total;
-  const selected = events.find((event) => (draw -= event.weight) <= 0) ?? events[events.length - 1];
-  if (!selected.createBetrothed) return selected;
-  const candidate = person(world, selected.ids[0]);
-  if (!candidate?.alive) return null;
-  const betrothed = newCitizen(world, c, year);
-  betrothed.age = 8 + Math.floor(Math.random() * 4);
-  betrothed.bornAt = year - betrothed.age - Math.random();
-  if (betrothed.gender === candidate.gender) betrothed.gender = candidate.gender === 'male' ? 'female' : 'male';
-  return {
-    kind: selected.kind,
-    ids: selected.ids,
-    weight: selected.weight,
-    newPerson: betrothed,
-  };
 }

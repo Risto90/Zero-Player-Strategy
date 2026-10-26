@@ -187,6 +187,7 @@ export type GameAction =
   | { type: 'endStroke' }
   | { type: 'dab'; x: number; y: number; radius: number }
   | { type: 'paintContour'; spans: readonly ContourSpan[]; seed?: number }
+  | { type: 'paintContours'; areas: readonly (readonly ContourSpan[])[] }
   | { type: 'line'; ax: number; ay: number; bx: number; by: number; radius: number }
   | { type: 'placeCity'; x: number; y: number }
   | { type: 'completeCard' };
@@ -568,6 +569,9 @@ export class Game {
       case 'endStroke': return this.applyEndStroke();
       case 'dab': return this.applyDab(action.x, action.y, action.radius);
       case 'paintContour': return this.painter?.paintContour(new ContourArea(action.spans), action.seed) ?? 0;
+      case 'paintContours': return this.painter?.paintContours(
+        action.areas.map((spans) => new ContourArea(spans)),
+      ) ?? 0;
       case 'line': return this.applyLine(action.ax, action.ay, action.bx, action.by, action.radius);
       case 'placeCity': return this.applyCityPlacement(action.x, action.y);
       case 'completeCard': return this.applyCardCompletion();
@@ -1355,6 +1359,10 @@ export class Game {
       line: (ax, ay, bx, by, radius) => this.dispatchAction({ type: 'line', ax, ay, bx, by, radius }) as number,
       endStroke: () => this.dispatchAction({ type: 'endStroke' }),
       contour: (area, seed) => this.dispatchAction({ type: 'paintContour', spans: area.spans, seed }) as number,
+      contours: (areas) => this.dispatchAction({
+        type: 'paintContours',
+        areas: areas.map((area) => area.spans),
+      }) as number,
     };
     const onMeasure = this.performanceTracking
       ? (stage: string, durationMs: number) => {
@@ -1740,7 +1748,10 @@ export class Game {
       const parents = deceased.parents.map((id) => person(w, id)).filter((parent): parent is Person => !!parent);
       const deathPeople = personChronicleReferences(deceased, ...parents);
       const wasLeader = deceased.id === country.ruler.id || country.coRulerIds.includes(deceased.id);
-      killPerson(w, deceased, this.year, deceased.age >= 66 ? 'старость' : 'болезнь или несчастный случай');
+      const deathReason = event.deathCause === 'oldAge' || (!event.deathCause && deceased.age >= 66)
+        ? 'старость'
+        : 'болезнь или несчастный случай';
+      killPerson(w, deceased, this.year, deathReason);
       if (wasLeader) {
         const seatId = deceased.id;
         const closesConsulateSeat = country.modifiers.includes('consulate') && choice?.closeConsulateSeat;
@@ -1820,6 +1831,11 @@ export class Game {
       const a = person(w, ids[0]);
       const b = choice?.person ?? choice?.ruler ?? person(w, ids[1]) ?? event.newPerson ?? generated;
       if (a && b && a.alive && b.alive) {
+        if (event.kind === 'marriage' && a.betrothedId !== null && a.betrothedId !== b.id) {
+          const previousBetrothed = person(w, a.betrothedId);
+          if (previousBetrothed?.betrothedId === a.id) previousBetrothed.betrothedId = null;
+          a.betrothedId = null;
+        }
         marry(w, country, a, b, event.kind === 'engagement');
         this.addLog(`${country.name}: ${event.kind === 'engagement' ? 'обручились' : 'поженились'} ${a.name} и ${b.name}.`,
           [polityChronicleReference(country), ...personChronicleReferences(a, b)],

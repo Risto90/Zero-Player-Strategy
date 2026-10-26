@@ -3,10 +3,10 @@ import { BRUSH_SIZES, INK, MAP_PIXELS, MAX_COUNTRIES, RANKS } from './config';
 import { forEachNeighbour } from './geography';
 import { randomItem, weightedPick } from './random';
 import { isActiveCountry, type Country, type World } from './world';
-import { deathChance, personIdSequence, reservePersonId, restorePersonIdSequence, GOVERNMENTS, MODIFIERS, type GovernmentId, type GovernmentModifierId, type Person } from './government';
-import { lifeOpportunity, lifeOpportunityChance, marriageCandidates, reformCandidates, type ReformProposal } from './politics';
+import { oldAgeDeathChance, randomDeathChance, personIdSequence, reservePersonId, restorePersonIdSequence, GOVERNMENTS, MODIFIERS, type GovernmentId, type GovernmentModifierId, type Person } from './government';
+import { marriageCandidates, reformCandidates, type ReformProposal } from './politics';
 import { candidateAllowed, leadershipOptions, successionOrder } from './succession';
-import { newCitizen, person } from './characters';
+import { arePartners, canMarry, livingPartners, newCitizen, person, related, trackedForCharacterCards } from './characters';
 import { demography } from './demography';
 import { colonizationPlan } from './colonization';
 import { randomHumanOriginId } from './human';
@@ -49,7 +49,7 @@ export const CARD_TITLES: Record<CardType, string> = {
   marriage: 'Брак',
   birth: 'Рождение ребёнка',
   death: 'Смерть',
-  character: 'Событие персонажей',
+  character: 'Событие персонажа',
   revolt: 'Переворот',
   union: 'Объединение',
 };
@@ -65,12 +65,19 @@ for (let y = -STANDARD_EXPANSION_RADIUS; y <= STANDARD_EXPANSION_RADIUS; y += 1)
 const CITY_DENSITY_REFERENCE = 5 * standardExpansionPassPixels / (0.1 * RANKS[0].ink);
 
 type Polity = Country;
+/**
+ * Один объект — одна отдельная карта в общем розыгрыше.
+ * Если дизайн-док не задаёт процентный базовый шанс, baseWeight равен 1;
+ * численные веса ниже являются только явно заданными шансами или множителями.
+ * Для персонажей ключ обязательно включает конкретного участника события,
+ * чтобы адаптивный множитель каждого персонажа накапливался отдельно.
+ */
 type CardDrawOption = {
   key: string;
   weight: number;
   baseWeight?: number;
   available?: (world: World, polity: Polity | null) => boolean;
-  value: (world: World, polity: Polity | null) => Card | null;
+  value: (world: World, polity: Polity | null) => Card;
 };
 type PreparedCard = {
   card: Card;
@@ -145,16 +152,16 @@ function traceCardDraw(
       world.cardMultipliers,
       scope,
     );
-    // Адаптивный множитель учитывается и в базе; здесь убираются только множители правления.
+    // Адаптивный множитель учитывается и в базе; здесь убираются только запрограммированные множители.
     const baseline = normalizedCardProbabilities(
-      drawOptions.map((option) => ({ key: option.key, weight: option.baseWeight ?? option.weight })),
+      drawOptions.map((option) => ({ key: option.key, weight: option.baseWeight ?? 1 })),
       world.cardMultipliers,
       scope,
     );
     const actualByKey = new Map(actual.map((option) => [option.key, option.probability]));
     const baselineByKey = new Map(baseline.map((option) => [option.key, option.probability]));
     return drawOptions.map((option) => {
-      const baseWeight = option.baseWeight ?? option.weight;
+      const baseWeight = option.baseWeight ?? 1;
       return {
         key: option.key,
         baseWeight,
@@ -188,6 +195,8 @@ export function updateCardDrawMultipliers(
 ): void {
   const drawn = probabilities.find((candidate) => candidate.key === drawnKey);
   if (!drawn) throw new Error(`Drawn card ${drawnKey} was not in the probability distribution.`);
+  // У каждого ключа — своя карта, в том числе у смерти, брака, помолвки и рождения
+  // конкретного персонажа. Здесь нельзя объединять эти вероятности в общую «карту жизни».
   for (const candidate of probabilities) {
     const key = `${scope}:${candidate.key}`;
     if (candidate.key === drawnKey) multipliers[key] = 1;
@@ -220,6 +229,15 @@ function makeCard(type: CardType, ink: number, target: Polity | null, detail: st
   };
 }
 
+/**
+ * Защита инварианта розыгрыша: генератор уже выбранной карты не может вернуть
+ * пустой результат, чтобы отказаться от карты или запустить переброс.
+ */
+function requireCard(card: Card | null, key: string): Card {
+  if (!card) throw new Error(`Карта «${key}» прошла проверку доступности, но не была создана.`);
+  return card;
+}
+
 function drawNomadicCountryCard(world: World, nomad: Country, year: number): Card | null {
   if (!nomad.range?.length) return null;
   const countryCount = world.countries.filter(isActiveCountry).length;
@@ -235,24 +253,27 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
     ? 1 / Math.max(2, nomad.consulCount)
     : nomad.modifiers.includes('coRule') ? 0.5 : 1;
   const options: CardDrawOption[] = [
-    ...lifeDrawOptions(world, nomad, year),
-    { key: 'nomadExpand', value: (_w, p) => drawNomadExpansionCard(_w, p as Country), weight: 4 * consulateScale, baseWeight: 4,
+    ...characterCardOptions(world, nomad, year),
+    { key: 'nomadExpand', value: (_w, p) => requireCard(drawNomadExpansionCard(_w, p as Country), 'nomadExpand'),
+      weight: consulateScale, baseWeight: 1,
       available: () => (nomad.range ?? []).some((pixel) => world.land[pixel]) },
-    { key: 'government', value: (_w, p) => drawGovernment(_w, p!, year), weight: governmentEventWeight(world, nomad, year, false, consulateScale), baseWeight: 0.16,
+    { key: 'government', value: (_w, p) => requireCard(drawGovernment(_w, p!, year), 'government'),
+      weight: governmentEventWeight(world, nomad, year, false, consulateScale), baseWeight: 1,
       available: (_w, p) => reformCandidates(world, p as Country, year, false).length > 0 },
-    { key: 'revolt', value: (_w, p) => drawGovernment(_w, p!, year, true), weight: governmentEventWeight(world, nomad, year, true, consulateScale), baseWeight: 0.01,
+    { key: 'revolt', value: (_w, p) => requireCard(drawGovernment(_w, p!, year, true), 'revolt'),
+      weight: governmentEventWeight(world, nomad, year, true, consulateScale), baseWeight: 1,
       available: (_w, p) => reformCandidates(world, p as Country, year, true).length > 0 },
     { key: 'buildCity', value: (_w, p) => {
       const candidate = p as Country;
       const freeSite = (candidate.range ?? []).find((pixel) => _w.land[pixel] && _w.owner[pixel] === 0 && !_w.cityAt(pixel));
-      return freeSite === undefined ? null : makeCard(
+      return requireCard(freeSite === undefined ? null : makeCard(
       'buildCity',
       0,
       candidate,
       `${candidate.name}: выберите инструмент «Город» и укажите свободную точку суши в пределах ареала. После основания города кочевье оседает.`,
       freeSite,
-    );
-    }, weight: cityWeight, available: () => citySite !== undefined },
+    ), 'buildCity');
+    }, weight: cityWeight, baseWeight: 1, available: () => citySite !== undefined },
   ];
   return drawFirstApplicable(world, `country:${nomad.id}`, nomad, options, year);
 }
@@ -437,44 +458,72 @@ function drawCreate(world: World, year: number, seeds = createSeeds(world)): Car
   return card;
 }
 
-function drawExpand(world: World, country: Country): Card | null {
+type ExpansionCardPlan = {
+  hints: number[];
+  ink: number;
+  developmentOnly: boolean;
+};
+
+/**
+ * Рассчитывает заранее, есть ли у расширения хотя бы одна доступная точка
+ * и достаточная стоимость мазка. План не использует случайность: генератор
+ * карты не сможет вернуть пустой результат после её выбора.
+ */
+function expansionCardPlan(world: World, country: Country): ExpansionCardPlan {
   const contours = new CountryExpansionContourIndex(world, country);
   const frontierArea = contours.frontier();
   const frontier: number[] = [];
   frontierArea.forEachPixel((pixel) => frontier.push(pixel));
   const seas = contours.seaBodies();
-  // Четырёх тысяч точек достаточно для обычной квоты расширения.
-  // Ограничиваем проверку намеренно: меньшая оценка только снижает запас карт
-  // и не создаёт чернила, которые кисть не сможет потратить.
   const reachable = reachableFree(world, frontier, INK.expand, seas);
   if (reachable.count < 1) {
     // Если ничейной земли нет, расширение становится внутренним развитием, а не исчезает.
     const available: number[] = [];
     contours.territory.forEachPixel((pixel) => available.push(pixel));
-    if (!available.length) return null;
-    const card = makeCard('expand', INK.expand, country, `Свободной суши нет. Повышайте плотность населения в ${country.name}: один мазок развивает уже занятые земли.`, randomItem(available));
-    card.developmentOnly = true;
-    const painter = new CardPainter(world, card, 'repeat');
-    card.ink = territoryInkCapacity(available, painter, INK.expand);
-    card.inkTotal = card.ink;
-    return card.ink > 0 ? card : null;
+    if (!available.length) return { hints: [], ink: 0, developmentOnly: true };
+    const probe = makeCard('expand', INK.expand, country, '', available[0]);
+    probe.developmentOnly = true;
+    const painter = new CardPainter(world, probe, 'repeat');
+    return {
+      hints: available,
+      ink: territoryInkCapacity(available, painter, INK.expand),
+      developmentOnly: true,
+    };
   }
-  let hint = frontier.length > 0 ? randomItem(frontier) : -1;
-  if (hint < 0) {
+  let hints = frontier;
+  if (!hints.length) {
+    hints = [];
     for (const body of seas) {
       const free = [...world.water.coastsOf[body]].filter((p) => world.owner[p] === 0);
       if (free.length > 0) {
-        hint = randomItem(free);
+        hints = free;
         break;
       }
     }
   }
-  const card = makeCard('expand', INK.expand, country,
-    `Закрашивайте свободные земли у границ ${country.name} или на любом берегу того же моря.`, hint);
-  const painter = new CardPainter(world, card, 'respect');
-  card.ink = territoryInkCapacity(reachable.pixels, painter, INK.expand);
+  if (!hints.length) return { hints: [], ink: 0, developmentOnly: false };
+  const probe = makeCard('expand', INK.expand, country, '', hints[0]);
+  const painter = new CardPainter(world, probe, 'respect');
+  return {
+    hints,
+    ink: territoryInkCapacity(reachable.pixels, painter, INK.expand),
+    developmentOnly: false,
+  };
+}
+
+function drawExpand(world: World, country: Country, plan: ExpansionCardPlan): Card {
+  if (plan.ink < 1 || !plan.hints.length) {
+    throw new Error(`Карта расширения ${country.name} не имеет доступной точки для кисти.`);
+  }
+  const hint = randomItem(plan.hints);
+  const card = makeCard('expand', plan.ink, country,
+    plan.developmentOnly
+      ? `Свободной суши нет. Повышайте плотность населения в ${country.name}: один мазок развивает уже занятые земли.`
+      : `Закрашивайте свободные земли у границ ${country.name} или на любом берегу того же моря.`,
+    hint);
+  if (plan.developmentOnly) card.developmentOnly = true;
   card.inkTotal = card.ink;
-  return card.ink > 0 ? card : null;
+  return card;
 }
 
 function territoryInkCapacity(pixels: Iterable<number>, painter: CardPainter, limit: number): number {
@@ -703,7 +752,9 @@ function drawGovernment(world: World, country: Polity, year: number, violent = f
 }
 
 export function governmentEventWeight(world: World, country: Polity, year: number, violent: boolean, consulateScale: number): number {
-  const base = (violent ? 0.01 : 0.16) * consulateScale;
+  // Процентный шанс для этих карт не задан: их исходный вес равен 1.
+  // Учитываются только действующие модификаторы, а не придуманный низкий базовый вес.
+  const base = consulateScale;
   if (!country.modifiers.includes('consulate') || !country.modifiers.includes('partition')) return base;
   const total = (polity: Polity) => reformCandidates(world, polity, year, violent)
     .reduce((sum, proposal) => sum + proposal.weight, 0);
@@ -753,92 +804,295 @@ function personDetail(world: World, candidate: import('./government').Person): s
   const religion = candidate.religionId === null ? 'атеист' : world.religions[candidate.religionId]?.name ?? 'неизвестная вера';
   return `${candidate.age} лет · ${candidate.trait || ageLabel(candidate.age)} · ${culture} · ${religion}`;
 }
-function lifeDrawOptions(world: World, polity: Polity, year: number): CardDrawOption[] {
-  const members = world.people.filter((candidate) => candidate.alive &&
+function countryPeople(world: World, polity: Polity): Person[] {
+  return world.people.filter((candidate) => candidate.alive &&
     (candidate.countryId === polity.id || candidate.id === polity.ruler.id || polity.coRulerIds.includes(candidate.id)));
-  const successionChance = polity.government === 'tribal' && polity.ruler.age >= 60 ? 0.08 : 0;
-  const opportunityChance = lifeOpportunityChance(world, polity, year);
-  const lifeEventChance = successionChance + (1 - successionChance) * opportunityChance;
-  return [
-    ...members.map((candidate) => ({
-      key: `death:${candidate.id}`,
-      weight: deathChance(candidate.age),
-      value: (candidateWorld: World, candidatePolity: Polity | null) =>
-        drawDeathCard(candidateWorld, candidatePolity!, candidate.id, year),
-    })),
-    { key: 'life-event', weight: 1.4 * lifeEventChance, baseWeight: 1.4 * lifeEventChance,
-      available: () => lifeEventChance > 0,
-      value: (candidateWorld: World, candidatePolity: Polity | null) =>
-        drawLifeCard(candidateWorld, candidatePolity!, year) },
-  ];
 }
 
-function drawDeathCard(world: World, polity: Polity, personId: number, year: number): Card | null {
+function pairCardKey(kind: 'engagement' | 'friendship' | 'romance', a: Person, b: Person): string {
+  const firstId = Math.min(a.id, b.id);
+  const secondId = Math.max(a.id, b.id);
+  return `${kind}:${firstId}:${secondId}`;
+}
+
+function makeNewBetrothed(world: World, polity: Polity, person: Person, year: number): Person {
+  const betrothed = newCitizen(world, polity, year);
+  betrothed.age = person.age < 12
+    ? 8 + Math.floor(Math.random() * 4)
+    : 12 + Math.floor(Math.random() * 8);
+  betrothed.bornAt = year - betrothed.age - Math.random();
+  if (betrothed.gender === person.gender) betrothed.gender = person.gender === 'male' ? 'female' : 'male';
+  return betrothed;
+}
+
+/**
+ * Генерирует уже выбранную карту смерти одного конкретного человека.
+ * Причина передаётся в событии явно: возраст сам по себе не превращает случайную
+ * смерть в смерть от старости и наоборот.
+ */
+function drawDeathCard(
+  world: World,
+  polity: Polity,
+  personId: number,
+  year: number,
+  deathCause: 'random' | 'oldAge',
+): Card {
   const deceased = person(world, personId);
-  if (!deceased?.alive) return null;
-  const card = makeCard('death', 0, polity, `${deceased.name}, ${deceased.age} лет, умер${deceased.gender === 'female' ? 'ла' : ''}.`, -1);
-  card.characterEvent = { kind: 'death', personIds: [deceased.id] };
+  if (!deceased?.alive) throw new Error(`Карта смерти ссылается на отсутствующего или умершего персонажа ${personId}.`);
+  const causeText = deathCause === 'oldAge' ? 'умер от старости' : 'умер случайно';
+  const card = makeCard('death', 0, polity, `${deceased.name}, ${deceased.age} лет: ${causeText}.`, -1);
+  card.characterEvent = { kind: 'death', personIds: [deceased.id], deathCause };
   if (deceased.id === polity.ruler.id || polity.coRulerIds.includes(deceased.id)) {
-    card.choices = leadershipOptions(world, polity, year, deceased).slice(0, 2).map((ruler) => ({
-      label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: deceased.id,
-    }));
+    card.choices = polity.modifiers.includes('consulate')
+      ? consulDeathChoices(world, polity, year, deceased)
+      : leadershipOptions(world, polity, year, deceased).slice(0, 2).map((ruler) => ({
+        label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: deceased.id,
+      }));
   }
   return card;
 }
 
-function drawLifeCard(world: World, country: Polity, year: number): Card | null {
-  const successionChance = country.government === 'tribal' && country.ruler.age >= 60 ? 0.08 : 0;
-  const opportunityChance = lifeOpportunityChance(world, country, year);
-  const lifeEventChance = successionChance + (1 - successionChance) * opportunityChance;
-  if (lifeEventChance <= 0) return null;
-  if (successionChance > 0 && Math.random() * lifeEventChance < successionChance) {
-    const card = makeCard('succession', 0, country, `Пожилой вождь ${country.ruler.name} может передать власть при жизни.`, -1);
-    card.choices = leadershipOptions(world, country, year, country.ruler).slice(0, 2).map((ruler) => ({
-      label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: country.ruler.id,
-    }));
-    return card;
-  }
-  const opportunity = lifeOpportunity(world, country, year);
-  if (!opportunity) throw new Error(`A life-event card was selected without an available event in ${country.name}.`);
-  const p = person(world, opportunity.ids[0]);
-  if (!p) throw new Error(`A life-event card refers to missing character ${opportunity.ids[0]}.`);
-  if (opportunity.kind === 'death') {
-    const card = makeCard('death', 0, country, `${p.name}, ${p.age} лет, умер${p.gender === 'female' ? 'ла' : ''}.`, -1);
-    card.characterEvent = { kind: 'death', personIds: opportunity.ids };
-    if (p.id === country.ruler.id || country.coRulerIds.includes(p.id)) {
-      card.choices = country.modifiers.includes('consulate')
-        ? consulDeathChoices(world, country, year, p)
-        : leadershipOptions(world, country, year, p).slice(0, 2).map((ruler) => ({
-          label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: p.id,
-        }));
+function drawElectionCard(world: World, polity: Polity, personId: number, year: number): Card {
+  const outgoing = person(world, personId);
+  if (!outgoing?.alive) throw new Error(`Карта выборов ссылается на отсутствующего или умершего должностного лица ${personId}.`);
+  const seat = polity.modifiers.includes('consulate') ? 'консула' : 'правителя';
+  const card = makeCard('election', 0, polity,
+    `Срок полномочий истёк. Выберите ${seat} ${polity.name} на ${polity.termYears} лет.`, -1);
+  card.choices = leadershipOptions(world, polity, year, outgoing).slice(0, 2).map((ruler) => ({
+    label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: outgoing.id,
+  }));
+  return card;
+}
+
+function drawCharacterEventCard(
+  world: World,
+  polity: Polity,
+  kind: 'birth' | 'marriage' | 'engagement' | 'friendship' | 'romance' | 'trait',
+  personIds: number[],
+  year: number,
+  createBetrothed = false,
+): Card {
+  const first = person(world, personIds[0]);
+  if (!first?.alive) throw new Error(`Карта «${kind}» ссылается на отсутствующего или умершего персонажа ${personIds[0]}.`);
+  const second = person(world, personIds[1]);
+  const newPerson = createBetrothed ? makeNewBetrothed(world, polity, first, year) : undefined;
+  const otherName = second?.name ?? newPerson?.name ?? 'персонаж';
+  const type: CardType = kind === 'birth' ? 'birth' :
+    kind === 'marriage' || kind === 'engagement' ? 'marriage' : 'character';
+  const title = kind === 'birth' ? `Рождение ребёнка у ${first.name} и ${otherName}` :
+    kind === 'marriage' ? `Выбор супруга: ${first.name}` :
+      kind === 'engagement' ? `Обручение: ${first.name} и ${otherName}` :
+        kind === 'friendship' ? `Дружба: ${first.name} и ${otherName}` :
+          kind === 'romance' ? `Романтическая связь: ${first.name} и ${otherName}` :
+            `${first.name} получает новую черту`;
+  const card = makeCard(type, 0, polity, title, -1);
+  card.characterEvent = { kind, personIds, newPerson };
+  if (kind === 'birth') {
+    const mother = personIds.map((id) => person(world, id)).find((candidate) => candidate?.gender === 'female');
+    const father = personIds.map((id) => person(world, id)).find((candidate) => candidate?.gender === 'male');
+    if (!mother || !father || !mother.alive || !father.alive ||
+        !arePartners(mother, father) || related(world, mother, father)) {
+      throw new Error(`Карта рождения для ${first.name} не имеет двух живых партнёров-родителей.`);
     }
-    return card;
   }
-  if (opportunity.kind === 'election') {
-    const seat = country.modifiers.includes('consulate') ? 'консула' : 'правителя';
-    const card = makeCard('election', 0, country, `Срок полномочий истёк. Выберите ${seat} ${country.name} на ${country.termYears} лет.`, -1);
-    card.choices = leadershipOptions(world, country, year, p).slice(0, 2).map((ruler) => ({
-      label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: p.id,
-    }));
-    return card;
-  }
-  const type = opportunity.kind === 'birth' ? 'birth' : opportunity.kind === 'marriage' || opportunity.kind === 'engagement' ? 'marriage' : 'character';
-  const other = person(world, opportunity.ids[1]);
-  const title = type === 'birth' ? 'Ожидается рождение ребёнка' :
-    type === 'marriage' ? opportunity.kind === 'engagement' ? `Обручение: ${p.name} и ${other?.name ?? 'персонаж'}` : `Выбор супруга: ${p.name}` :
-      opportunity.kind === 'friendship' ? `Дружба: ${p.name} и ${other?.name ?? 'персонаж'}` :
-        opportunity.kind === 'romance' ? `Романтическая связь: ${p.name} и ${other?.name ?? 'персонаж'}` : `${p.name} получает новую черту`;
-  const card = makeCard(type, 0, country, title, -1);
-  card.characterEvent = { kind: opportunity.kind as 'birth' | 'marriage' | 'friendship' | 'trait' | 'engagement',
-    personIds: opportunity.ids, newPerson: opportunity.newPerson };
-  if (opportunity.kind === 'marriage') {
-    card.choices = marriageCandidates(world, country, p, year).map((candidate) => ({
+  if (kind === 'marriage') {
+    let candidates: Person[];
+    if (personIds.length === 1) {
+      // Пользователь выбирает супруга из двух кандидатов; генерация новых людей
+      // допустима только внутри marriageCandidates, если реальных кандидатов меньше двух.
+      candidates = marriageCandidates(world, polity, first, year, 2);
+    } else if (personIds.length === 2 && second?.alive && first.betrothedId === second.id) {
+      // Помолвка ставит одного кандидата первым; второго ищем среди реальных
+      // подходящих людей и создаём только при полном отсутствии такого кандидата.
+      const alternative = marriageCandidates(world, polity, { ...first, betrothedId: null }, year, 1)
+        .filter((candidate) => candidate.id !== second.id);
+      candidates = [second, ...alternative].slice(0, 2);
+    } else {
+      throw new Error(`Карта брака персонажа ${first.name} не связана с его выбором супруга.`);
+    }
+    if (candidates.length !== 2) {
+      throw new Error(`Для карты брака персонажа ${first.name} не подготовлены ровно два кандидата.`);
+    }
+    card.choices = candidates.map((candidate) => ({
       label: candidate.name,
       detail: personDetail(world, candidate),
       person: candidate,
     }));
   }
   return card;
+}
+
+/**
+ * Формирует пул независимых карт персонажей.
+ * Никакой агрегированной карты «событие жизни» здесь нет: смерть, рождение,
+ * помолвка, брак, дружба, роман и черта имеют собственный ключ и вес.
+ */
+function characterCardOptions(world: World, polity: Polity, year: number): CardDrawOption[] {
+  const members = countryPeople(world, polity);
+  const tracked = members.filter((candidate) => trackedForCharacterCards(world, polity, candidate));
+  const options: CardDrawOption[] = [];
+  const addedKeys = new Set<string>();
+
+  const addPersonCard = (
+    key: string,
+    value: CardDrawOption['value'],
+    weight = 1,
+    baseWeight = 1,
+  ) => {
+    if (addedKeys.has(key)) return;
+    addedKeys.add(key);
+    options.push({ key, weight, baseWeight, value });
+  };
+
+  // Там, где дизайн-док говорит только «редко», «обычно» или «чаще», но не
+  // задаёт процент, отдельная карта получает базовый вес 1; численное отношение
+  // между такими событиями здесь не выдумывается.
+  // Смерть отслеживается для каждого живого именного персонажа страны,
+  // независимо от того, входит ли он в династию или пул семейных карт.
+  for (const candidate of members) {
+    const randomRisk = randomDeathChance(candidate.age);
+    if (randomRisk > 0) {
+      const key = `death:random:${candidate.id}`;
+      addPersonCard(key,
+        (candidateWorld, candidatePolity) =>
+          drawDeathCard(candidateWorld, candidatePolity!, candidate.id, year, 'random'),
+        randomRisk,
+        randomRisk);
+    }
+    const oldAgeRisk = oldAgeDeathChance(candidate.age);
+    if (oldAgeRisk > 0) {
+      const key = `death:oldAge:${candidate.id}`;
+      addPersonCard(key,
+        (candidateWorld, candidatePolity) =>
+          drawDeathCard(candidateWorld, candidatePolity!, candidate.id, year, 'oldAge'),
+        oldAgeRisk,
+        oldAgeRisk);
+    }
+  }
+
+  // Карты рождения создаются по каждой паре родителей отдельно. Наличие ребёнка
+  // возможно только у живых партнёров; их отношения проверяются повторно при
+  // создании карты и при её разыгрывании.
+  const birthPairs = new Set<string>();
+  for (const trackedPerson of tracked) {
+    for (const partner of livingPartners(world, trackedPerson)) {
+      const mother = trackedPerson.gender === 'female' ? trackedPerson : partner;
+      const father = trackedPerson.gender === 'male' ? trackedPerson : partner;
+      if (mother.gender !== 'female' || father.gender !== 'male' ||
+          mother.age < 12 || mother.age > 45 || father.age < 12 ||
+          mother.lastBirthYear === year || !arePartners(mother, father) || related(world, mother, father)) continue;
+      const key = `birth:${mother.id}:${father.id}`;
+      if (birthPairs.has(key)) continue;
+      birthPairs.add(key);
+      addPersonCard(key,
+        (candidateWorld, candidatePolity) =>
+          drawCharacterEventCard(candidateWorld, candidatePolity!, 'birth', [mother.id, father.id], year));
+    }
+  }
+
+  // Семейные карты доступны только персонажам, которых отслеживает текущая форма
+  // правления. Все возможные пары добавляются отдельно, а не сворачиваются в один шанс.
+  for (let i = 0; i < tracked.length; i += 1) {
+    const candidate = tracked[i];
+    const hasLivingSpouse = candidate.spouseIds.some((id) => person(world, id)?.alive);
+    const betrothed = person(world, candidate.betrothedId);
+    if (!hasLivingSpouse && betrothed?.alive && betrothed.betrothedId === candidate.id &&
+        !betrothed.spouseIds.some((id) => person(world, id)?.alive) &&
+        candidate.age >= 12 && betrothed.age >= 12 &&
+        canMarry(polity, candidate) && canMarry(polity, betrothed)) {
+      const firstId = Math.min(candidate.id, betrothed.id);
+      const secondId = Math.max(candidate.id, betrothed.id);
+      addPersonCard(`marriage:betrothed:${firstId}:${secondId}`,
+        (candidateWorld, candidatePolity) =>
+          drawCharacterEventCard(candidateWorld, candidatePolity!, 'marriage',
+            [candidate.id, betrothed.id], year));
+    }
+
+    if (!hasLivingSpouse && candidate.betrothedId === null && canMarry(polity, candidate)) {
+      addPersonCard(`marriage:${candidate.id}`,
+        (candidateWorld, candidatePolity) =>
+          drawCharacterEventCard(candidateWorld, candidatePolity!, 'marriage', [candidate.id], year));
+    }
+    if (!hasLivingSpouse && candidate.betrothedId === null &&
+        candidate.age >= 8 && candidate.age < 20 && !polity.modifiers.includes('meritocracy')) {
+      const possibleBetrothed = tracked.filter((other) =>
+        other.id !== candidate.id && other.gender !== candidate.gender &&
+        other.age >= 8 && other.betrothedId === null &&
+        !other.spouseIds.some((id) => person(world, id)?.alive) &&
+        !related(world, candidate, other));
+      if (possibleBetrothed.length) {
+        for (const other of possibleBetrothed) {
+          addPersonCard(pairCardKey('engagement', candidate, other),
+            (candidateWorld, candidatePolity) =>
+              drawCharacterEventCard(candidateWorld, candidatePolity!, 'engagement',
+                [candidate.id, other.id], year));
+        }
+      } else {
+        addPersonCard(`engagement:${candidate.id}:new`,
+          (candidateWorld, candidatePolity) =>
+            drawCharacterEventCard(candidateWorld, candidatePolity!, 'engagement',
+              [candidate.id], year, true));
+      }
+    }
+
+    if (candidate.age >= 3 && candidate.age < 18 && candidate.traits.length === 0) {
+      addPersonCard(`trait:${candidate.id}`,
+        (candidateWorld, candidatePolity) =>
+          drawCharacterEventCard(candidateWorld, candidatePolity!, 'trait', [candidate.id], year));
+    }
+
+    for (let j = i + 1; j < tracked.length; j += 1) {
+      const other = tracked[j];
+      if (candidate.age >= 3 && other.age >= 3 &&
+          !candidate.friendIds.includes(other.id) && !other.friendIds.includes(candidate.id)) {
+        const key = pairCardKey('friendship', candidate, other);
+        addPersonCard(key,
+          (candidateWorld, candidatePolity) =>
+            drawCharacterEventCard(candidateWorld, candidatePolity!, 'friendship',
+              [candidate.id, other.id], year));
+      }
+      if (candidate.gender !== other.gender && candidate.age >= 12 && other.age >= 12 &&
+          !candidate.loverIds.includes(other.id) && !other.loverIds.includes(candidate.id) &&
+          !candidate.spouseIds.includes(other.id) && !other.spouseIds.includes(candidate.id) &&
+          !related(world, candidate, other)) {
+        const key = pairCardKey('romance', candidate, other);
+        addPersonCard(key,
+          (candidateWorld, candidatePolity) =>
+            drawCharacterEventCard(candidateWorld, candidatePolity!, 'romance',
+              [candidate.id, other.id], year));
+      }
+    }
+  }
+
+  // Условия срока полномочий создают отдельную карту для каждого истёкшего места.
+  const electionAllowed = (polity.government === 'republic' && polity.modifiers.includes('term')) ||
+    polity.modifiers.includes('consulate');
+  if (electionAllowed) {
+    const officeHolders = [polity.ruler, ...polity.coRulerIds
+      .map((id) => person(world, id))
+      .filter((holder): holder is Person => !!holder?.alive)];
+    for (const holder of officeHolders) {
+      const since = polity.seatSince[holder.id] ?? polity.rulerSince;
+      if (year - since < polity.termYears) continue;
+      addPersonCard(`election:${holder.id}`,
+        (candidateWorld, candidatePolity) =>
+          drawElectionCard(candidateWorld, candidatePolity!, holder.id, year));
+    }
+  }
+
+  // Передача власти при жизни — самостоятельная карта старого племенного вождя,
+  // а не вероятность внутри общей карты персонажей.
+  if (polity.government === 'tribal' && polity.ruler.age >= 66) {
+    addPersonCard(`succession:${polity.ruler.id}`, (candidateWorld, candidatePolity) => {
+      const card = makeCard('succession', 0, candidatePolity!,
+        `Пожилой вождь ${polity.ruler.name} может передать власть при жизни.`, -1);
+      card.choices = leadershipOptions(candidateWorld, candidatePolity!, year, polity.ruler).slice(0, 2).map((ruler) => ({
+        label: ruler.name, detail: personDetail(candidateWorld, ruler), ruler, seatId: polity.ruler.id,
+      }));
+      return card;
+    });
+  }
+  return options;
 }
 
 function splitCardAvailable(world: World, country: Country, uprising: boolean): boolean {
@@ -1149,7 +1403,7 @@ function forkWorld(world: World, polity: Polity | null): World {
   return fork;
 }
 
-function prepareSelectedCard(fork: World, option: CardDrawOption, candidate: Polity | null, seed: number): PreparedCard | null {
+function prepareSelectedCard(fork: World, option: CardDrawOption, candidate: Polity | null, seed: number): PreparedCard {
   const originalRandom = Math.random;
   const personIds = personIdSequence();
   const countryCount = fork.countries.length;
@@ -1163,7 +1417,7 @@ function prepareSelectedCard(fork: World, option: CardDrawOption, candidate: Pol
   };
   try {
     const card = option.value(fork, candidate);
-    if (!card) return null;
+    if (!card) throw new Error(`Генератор выбранной карты «${option.key}» вернул пустой результат.`);
     return {
       card,
       additions: {
@@ -1210,7 +1464,7 @@ function drawFirstApplicable(
       if (!climateOptions.has(option.key)) return false;
     }
     if (option.key.startsWith('death:')) {
-      const personId = Number(option.key.slice('death:'.length));
+      const personId = Number(option.key.slice(option.key.lastIndexOf(':') + 1));
       if (!person(world, personId)?.alive) return false;
     }
     return option.available?.(world, polity) ?? true;
@@ -1234,17 +1488,9 @@ function drawFirstApplicable(
   if (!selected) throw new Error(`Card draw selected unknown option ${drawnKey} for ${scope}.`);
   const seed = Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
   const prepared = prepareSelectedCard(stagingWorld, selected, stagingPolity, seed);
-  if (!prepared) {
-    throw new Error(`Selected card ${selected.key} could not be generated for ${scope}; post-draw rejection is disabled.`);
-  }
   traceCardDraw(world, scope, year, polity, candidates, selected.key, prepared.card.type);
   updateCardDrawMultipliers(scope, probabilities, selected.key, world.cardMultipliers);
   return commitPreparedCard(world, prepared);
-}
-
-/** Чем больше вероисповеданий уже существует, тем реже появляются новые, чтобы мир не заполнялся мелкими сектами. */
-function faithRoom(world: World): number {
-  return Math.max(0.02, 1 - world.religions.length / 16);
 }
 
 export function drawWorldCard(world: World, year: number): Card | null {
@@ -1253,26 +1499,29 @@ export function drawWorldCard(world: World, year: number): Card | null {
   const cultureSources = availableCultureSources(world, null);
   const hasOwnedLand = world.landIndex.some((pixel) => world.owner[pixel] > 0);
   return drawFirstApplicable(world, 'world', null, [
-    { key: 'create', value: (w) => drawCreate(w, year, seeds), weight: 3, available: () => seeds.length > 0 },
-    { key: 'drought', value: (w) => drawClimateCard(w, 'drought', null), weight: 1 },
-    { key: 'rain', value: (w) => drawClimateCard(w, 'rain', null), weight: 1 },
-    { key: 'desertification', value: (w) => drawClimateCard(w, 'desertification', null), weight: 0.6 },
-    { key: 'swamping', value: (w) => drawClimateCard(w, 'swamping', null), weight: 0.6 },
-    { key: 'warmCurrent', value: (w) => drawClimateCard(w, 'warmCurrent', null), weight: 0.3 },
-    { key: 'coldCurrent', value: (w) => drawClimateCard(w, 'coldCurrent', null), weight: 0.3 },
-    { key: 'faith', value: (w) => drawFaith(w, null, year), weight: living > 0 ? 0.25 * faithRoom(world) : 0,
+    { key: 'create', value: (w) => requireCard(drawCreate(w, year, seeds), 'create'), weight: 1, baseWeight: 1,
+      available: () => seeds.length > 0 },
+    { key: 'drought', value: (w) => requireCard(drawClimateCard(w, 'drought', null), 'drought'), weight: 1, baseWeight: 1 },
+    { key: 'rain', value: (w) => requireCard(drawClimateCard(w, 'rain', null), 'rain'), weight: 1, baseWeight: 1 },
+    { key: 'desertification', value: (w) => requireCard(drawClimateCard(w, 'desertification', null), 'desertification'), weight: 1, baseWeight: 1 },
+    { key: 'swamping', value: (w) => requireCard(drawClimateCard(w, 'swamping', null), 'swamping'), weight: 1, baseWeight: 1 },
+    { key: 'warmCurrent', value: (w) => requireCard(drawClimateCard(w, 'warmCurrent', null), 'warmCurrent'), weight: 1, baseWeight: 1 },
+    { key: 'coldCurrent', value: (w) => requireCard(drawClimateCard(w, 'coldCurrent', null), 'coldCurrent'), weight: 1, baseWeight: 1 },
+    { key: 'faith', value: (w) => requireCard(drawFaith(w, null, year), 'faith'), weight: living > 0 ? 1 : 0, baseWeight: 1,
       available: () => hasOwnedLand },
-    { key: 'culture', value: (w) => drawCultureSplit(w, null, year, cultureSources), weight: living > 0 ? 0.3 : 0,
+    { key: 'culture', value: (w) => requireCard(drawCultureSplit(w, null, year, cultureSources), 'culture'), weight: living > 0 ? 1 : 0, baseWeight: 1,
       available: () => cultureSources.length > 0 },
   ], year);
 }
 
 export function drawCountryCard(world: World, country: Country, year: number): Card | null {
   if (country.type === 'nomadic') return drawNomadicCountryCard(world, country, year);
-  const big = country.pixels >= 12000;
   const diversity = demography(world, country);
   const countryCities = world.cities.filter((city) => city.countryId === country.id);
   const freeCitySite = firstFreeCitySite(world, country);
+  const expansionPlan = country.pixels > 0
+    ? expansionCardPlan(world, country)
+    : { hints: [], ink: 0, developmentOnly: false };
   const upgradeCandidates = upgradeableCities(world, country.id);
   const capitalCandidates = largestCities(world, countryCities.filter((city) => !city.capital));
   const cultureSources = availableCultureSources(world, country);
@@ -1312,38 +1561,50 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const splitScale = country.modifiers.includes('confederation') ? 3 : country.modifiers.includes('federation') ? 2 : 1;
   const unrestScale = country.modifiers.includes('confederation') ? 1 / 3 : country.modifiers.includes('federation') ? 1 / 2 : 1;
   const options: CardDrawOption[] = [
-    ...lifeDrawOptions(world, country, year),
-    { key: 'expand', value: (w, p) => drawExpand(w, p as Country), weight: 4 * consulateScale, baseWeight: 4,
-      available: (_w, p) => (p as Country).pixels > 0 },
-    { key: 'buildCity', value: (w, p) => drawBuildCityCard(w, p as Country), weight: buildCityWeight,
+    ...characterCardOptions(world, country, year),
+    { key: 'expand', value: (w, p) => drawExpand(w, p as Country, expansionPlan),
+      weight: expansionPlan.ink > 0 ? consulateScale : 0, baseWeight: 1,
+      available: () => expansionPlan.ink > 0 },
+    { key: 'buildCity', value: (w, p) => requireCard(drawBuildCityCard(w, p as Country), 'buildCity'), weight: buildCityWeight, baseWeight: 1,
       available: () => freeCitySite !== undefined },
-    { key: 'upgradeCity', value: (w, p) => drawUpgradeCityCard(w, p as Country), weight: upgradeCityWeight,
+    { key: 'upgradeCity', value: (w, p) => requireCard(drawUpgradeCityCard(w, p as Country), 'upgradeCity'), weight: upgradeCityWeight, baseWeight: 1,
       available: () => upgradeCandidates.length > 0 },
-    { key: 'waneCity', value: (w, p) => drawWaneCityCard(w, p as Country), weight: cityWaningWeight(world, country) },
-    { key: 'moveCapital', value: (w, p) => drawMoveCapital(w, p as Country), weight: capitalCandidates.length >= 2 ? 1 : 0,
+    { key: 'waneCity', value: (w, p) => requireCard(drawWaneCityCard(w, p as Country), 'waneCity'),
+      weight: cityWaningWeight(world, country) > 0 ? 1 : 0, baseWeight: 1,
+      available: () => cityWaningWeight(world, country) > 0 },
+    { key: 'moveCapital', value: (w, p) => requireCard(drawMoveCapital(w, p as Country), 'moveCapital'),
+      weight: capitalCandidates.length >= 2 ? 1 : 0, baseWeight: 1,
       available: () => capitalCandidates.length >= 2 },
-    { key: 'colonization', value: (w, p) => drawColonization(w, p as Country, colonization!, colonizationCapacity),
-      weight: colonizationCapacity >= 1 ? colonizationBaseWeight * consulateScale : 0, baseWeight: colonizationBaseWeight,
+    { key: 'colonization', value: (w, p) => requireCard(
+      drawColonization(w, p as Country, colonization!, colonizationCapacity), 'colonization'),
+      weight: colonizationCapacity >= 1 ? colonizationBaseWeight * consulateScale : 0, baseWeight: 1,
       available: () => colonizationCapacity >= 1 },
-    { key: 'government', value: (w, p) => drawGovernment(w, p!, year), weight: governmentEventWeight(world, country, year, false, consulateScale), baseWeight: 0.16,
+    { key: 'government', value: (w, p) => requireCard(drawGovernment(w, p!, year), 'government'),
+      weight: governmentEventWeight(world, country, year, false, consulateScale), baseWeight: 1,
       available: () => governmentAvailable },
-    { key: 'revolt', value: (w, p) => drawGovernment(w, p!, year, true), weight: governmentEventWeight(world, country, year, true, consulateScale), baseWeight: 0.01,
+    { key: 'revolt', value: (w, p) => requireCard(drawGovernment(w, p!, year, true), 'revolt'),
+      weight: governmentEventWeight(world, country, year, true, consulateScale), baseWeight: 1,
       available: () => revoltAvailable },
-    { key: 'split', value: (w, p) => drawSplitCard(w, p as Country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale, baseWeight: big ? 0.3 * (1 + largerThanCapital) : 0,
+    { key: 'split', value: (w, p) => requireCard(drawSplitCard(w, p as Country, year), 'split'),
+      weight: (1 + largerThanCapital) * splitScale * consulateScale, baseWeight: 1,
       available: () => ordinarySplitAvailable },
-    { key: 'uprising', value: (w, p) => drawSplitCard(w, p as Country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale, baseWeight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015),
+    { key: 'uprising', value: (w, p) => requireCard(drawSplitCard(w, p as Country, year, true), 'uprising'),
+      weight: uprisingAvailable ? unrestScale * consulateScale : 0, baseWeight: 1,
       available: () => uprisingAvailable },
-    { key: 'union', value: (w, p) => drawUnion(w, p as Country, year, unionTargets), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0, baseWeight: 0,
+    { key: 'union', value: (w, p) => requireCard(drawUnion(w, p as Country, year, unionTargets), 'union'),
+      weight: unionTargets.size > 0 ? 1 : 0, baseWeight: 1,
       available: () => unionTargets.size > 0 },
-    { key: 'drought', value: (w, p) => drawClimateCard(w, 'drought', p as Country), weight: 0.8 },
-    { key: 'rain', value: (w, p) => drawClimateCard(w, 'rain', p as Country), weight: 0.8 },
-    { key: 'desertification', value: (w, p) => drawClimateCard(w, 'desertification', p as Country), weight: 0.45 },
-    { key: 'swamping', value: (w, p) => drawClimateCard(w, 'swamping', p as Country), weight: 0.45 },
-    { key: 'warmWind', value: (w, p) => drawClimateCard(w, 'warmWind', p as Country), weight: 0.25 },
-    { key: 'coldWind', value: (w, p) => drawClimateCard(w, 'coldWind', p as Country), weight: 0.25 },
-    { key: 'faith', value: (w, p) => drawFaith(w, p as Country, year), weight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) * (country.modifiers.includes('theocracy') ? 2 : 1), baseWeight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world),
+    { key: 'drought', value: (w, p) => requireCard(drawClimateCard(w, 'drought', p as Country), 'drought'), weight: 1, baseWeight: 1 },
+    { key: 'rain', value: (w, p) => requireCard(drawClimateCard(w, 'rain', p as Country), 'rain'), weight: 1, baseWeight: 1 },
+    { key: 'desertification', value: (w, p) => requireCard(drawClimateCard(w, 'desertification', p as Country), 'desertification'), weight: 1, baseWeight: 1 },
+    { key: 'swamping', value: (w, p) => requireCard(drawClimateCard(w, 'swamping', p as Country), 'swamping'), weight: 1, baseWeight: 1 },
+    { key: 'warmWind', value: (w, p) => requireCard(drawClimateCard(w, 'warmWind', p as Country), 'warmWind'), weight: 1, baseWeight: 1 },
+    { key: 'coldWind', value: (w, p) => requireCard(drawClimateCard(w, 'coldWind', p as Country), 'coldWind'), weight: 1, baseWeight: 1 },
+    { key: 'faith', value: (w, p) => requireCard(drawFaith(w, p as Country, year), 'faith'),
+      weight: country.pixels > 0 ? (country.modifiers.includes('theocracy') ? 2 : 1) : 0, baseWeight: 1,
       available: () => country.pixels > 0 },
-    { key: 'culture', value: (w, p) => drawCultureSplit(w, p as Country, year, cultureSources), weight: country.pixels >= 6000 ? 0.06 : 0,
+    { key: 'culture', value: (w, p) => requireCard(drawCultureSplit(w, p as Country, year, cultureSources), 'culture'),
+      weight: cultureSources.length > 0 ? 1 : 0, baseWeight: 1,
       available: () => cultureSources.length > 0 },
   ];
   return drawFirstApplicable(world, `country:${country.id}`, country, options, year);

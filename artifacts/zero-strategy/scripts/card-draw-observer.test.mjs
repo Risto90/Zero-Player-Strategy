@@ -97,7 +97,7 @@ for (const event of events) {
     cardTypesByPool.set(pool, types);
   }
   for (const choice of event.choices) {
-    const cardKey = choice.key.startsWith('death:') ? 'death' : choice.key;
+    const cardKey = choice.key;
     const key = `${pool}:${cardKey}`;
     const row = grouped.get(key) ?? {
       pool,

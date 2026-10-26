@@ -302,23 +302,60 @@ export function normalizePolitics(world: World, year: number): void {
   ensureUniqueDynastySurnames(world);
 }
 
-export function trackedForBirth(world: World, country: Country, p: Person): boolean {
-  const member = containsPerson(country, p);
-  const inDynasty = country.dynastyClaims.includes(p.familyId) ||
-    p.formerRulerOf.includes(country.id) ||
-    p.id === country.ruler.id || country.previousRulerIds.includes(p.id);
-  if (!p.alive) return false;
-  if (p.spouseIds.some((id) => {
-    const spouse = person(world, id);
-    return !!spouse && (country.dynastyClaims.includes(spouse.familyId) ||
-       spouse.formerRulerOf.includes(country.id));
-  })) return true;
-  if (p.loverIds.some((id) => {
-    const lover = person(world, id);
-    return !!lover && (country.dynastyClaims.includes(lover.familyId) ||
-       lover.formerRulerOf.includes(country.id));
-  })) return true;
-  return member || inDynasty;
+/**
+ * Определяет, для кого могут появляться личные карты брака, помолвки и рождения.
+ * Это не список важных персонажей страны и не список тех, чьи смерти отслеживаются:
+ * смерть имеет отдельную карту для каждого живого именного персонажа страны.
+ *
+ * Правила формы правления взяты из раздела о персонажах и наследовании:
+ * наследственная форма следит за действующей династией; племя — за правителями
+ * и их прямыми детьми (внуки попадают в пул после вступления их родителя во власть);
+ * республика — за правителями и их прямыми детьми; тирания — за семьями нынешних
+ * и прежних правителей, поскольку власть может перейти родственнику.
+ */
+export function trackedForCharacterCards(world: World, country: Country, p: Person): boolean {
+  if (!p.alive || !containsPerson(country, p)) return false;
+
+  const currentLeaderIds = new Set([country.ruler.id, ...country.coRulerIds]);
+  const historicalLeaderIds = new Set(country.previousRulerIds);
+  const allLeaderIds = new Set([...currentLeaderIds, ...historicalLeaderIds]);
+  const familyIds = new Set(
+    [...allLeaderIds]
+      .map((id) => person(world, id)?.familyId)
+      .filter((id): id is number => id !== undefined),
+  );
+  const isCurrentLeader = currentLeaderIds.has(p.id);
+  const isHistoricalLeader = historicalLeaderIds.has(p.id);
+  const isChildOfLeader = p.parents.some((id) => allLeaderIds.has(id));
+  const isMemberOfCurrentDynasty = [...currentLeaderIds]
+    .some((id) => person(world, id)?.familyId === p.familyId);
+  const isMemberOfRulerFamily = familyIds.has(p.familyId);
+  const partnerIds = new Set([...p.spouseIds, ...p.loverIds]);
+  const isPartnerOfCurrentDynasty = [...currentLeaderIds].some((id) => partnerIds.has(id)) ||
+    [...partnerIds].some((id) => {
+      const partner = person(world, id);
+      return !!partner && [...currentLeaderIds]
+        .some((leaderId) => person(world, leaderId)?.familyId === partner.familyId);
+    });
+  const isPartnerOfRulerFamily = [...partnerIds].some((id) => {
+    const partner = person(world, id);
+    return !!partner && familyIds.has(partner.familyId);
+  });
+  const isPartnerOfRulerOrChild = [...partnerIds].some((id) => {
+    const partner = person(world, id);
+    return !!partner && (allLeaderIds.has(partner.id) ||
+      partner.parents.some((parentId) => allLeaderIds.has(parentId)));
+  });
+
+  switch (country.government) {
+    case 'hereditary':
+      return isMemberOfCurrentDynasty || isPartnerOfCurrentDynasty;
+    case 'tribal':
+    case 'republic':
+      return isCurrentLeader || isHistoricalLeader || isChildOfLeader || isPartnerOfRulerOrChild;
+    case 'tyranny':
+      return isCurrentLeader || isHistoricalLeader || isMemberOfRulerFamily || isPartnerOfRulerFamily;
+  }
 }
 /** Все живые именные персонажи страны независимо от династии. */
 export function countryCharacters(world: World, country: Country): Person[] {

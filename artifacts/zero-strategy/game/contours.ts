@@ -139,6 +139,14 @@ export class ContourArea {
     }
   }
 
+  /** Перебирает пиксели в порядке контурных строк без промежуточного массива. */
+  *[Symbol.iterator](): Generator<number> {
+    for (const span of this.spans) {
+      const row = span.y * MAP_WIDTH;
+      for (let x = span.start; x < span.end; x += 1) yield row + x;
+    }
+  }
+
   /** Соседство по стороне: диагональное касание не соединяет территории. */
   border(): ContourArea {
     const expanded: ContourSpan[] = [];

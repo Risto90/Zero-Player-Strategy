@@ -15,6 +15,7 @@ export interface PaintActions {
   line(ax: number, ay: number, bx: number, by: number, radius: number): number;
   endStroke(): void;
   contour?(area: ContourArea, seed?: number): number;
+  contours?(areas: readonly ContourArea[]): number;
 }
 
 /** ИИ выбирает связные пересечения климатических контуров, а не перебирает круговые мазки. */
@@ -200,12 +201,15 @@ class AutoPaintStrategy {
   }
 
   private paintOtherCards(radius: number, isWind: boolean): void {
-    const { painter, actions } = this;
+    const { painter, actions, onMeasure } = this;
     const { card, world } = painter;
+    const scoringStarted = onMeasure ? performance.now() : 0;
     const candidates = this.rankCandidates(radius);
+    onMeasure?.('оценка центров карты слоя', performance.now() - scoringStarted);
     const selected: number[] = [];
     const spacing = radius * 1.6;
     const spacingSquared = spacing * spacing;
+    const spacingStarted = onMeasure ? performance.now() : 0;
     for (const candidate of candidates) {
       if (selected.length >= MAX_SCORE_CENTERS) break;
       const x = candidate.pixel % MAP_WIDTH, y = Math.floor(candidate.pixel / MAP_WIDTH);
@@ -214,29 +218,104 @@ class AutoPaintStrategy {
       )) continue;
       selected.push(candidate.pixel);
     }
+    onMeasure?.('расстановка центров карты слоя', performance.now() - spacingStarted);
 
     const windStart = isWind && card.hint >= 0 ? card.hint : -1;
     if (windStart >= 0) {
       actions.beginStroke((windStart % MAP_WIDTH) + 0.5, Math.floor(windStart / MAP_WIDTH) + 0.5);
     }
-    for (const pixel of selected) {
-      if (card.ink <= 0) break;
-      if (isWind && pixel === windStart) continue;
-      actions.dab((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5, radius);
+    const centers = selected.filter((pixel) => !isWind || pixel !== windStart);
+    let batchedLayerPaint = false;
+    const areaStarted = onMeasure ? performance.now() : 0;
+    if (this.candidates.isLayerCard() && actions.contours) {
+      // Сначала идут лучшие центры, затем остаток целевого слоя; один пакет
+      // сохраняет этот приоритет и пересчитывает границы только после всей кисти.
+      const areas: ContourArea[] = [];
+      if (centers.length && card.ink > 0) {
+        const first = centers[0];
+        let centerArea = ContourArea.circle(
+          (first % MAP_WIDTH) + 0.5,
+          Math.floor(first / MAP_WIDTH) + 0.5,
+          radius,
+        );
+        for (const pixel of centers.slice(1)) {
+          centerArea = centerArea.union(ContourArea.circle(
+            (pixel % MAP_WIDTH) + 0.5,
+            Math.floor(pixel / MAP_WIDTH) + 0.5,
+            radius,
+          ));
+        }
+        areas.push(centerArea);
+      }
+      if (card.ink > 0) {
+        areas.push(painter.strategyLayerTargetArea({
+          x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1,
+        }));
+      }
+      onMeasure?.('подготовка контуров карты слоя', performance.now() - areaStarted);
+      const paintingStarted = onMeasure ? performance.now() : 0;
+      actions.contours(areas);
+      onMeasure?.('заливка контуров карты слоя', performance.now() - paintingStarted);
+      batchedLayerPaint = true;
+    } else if (actions.contour && centers.length && card.ink > 0) {
+      const first = centers[0];
+      let area = ContourArea.circle(
+        (first % MAP_WIDTH) + 0.5,
+        Math.floor(first / MAP_WIDTH) + 0.5,
+        radius,
+      );
+      for (const pixel of centers.slice(1)) {
+        area = area.union(ContourArea.circle(
+          (pixel % MAP_WIDTH) + 0.5,
+          Math.floor(pixel / MAP_WIDTH) + 0.5,
+          radius,
+        ));
+      }
+      // Объединённый мазок меняет те же пиксели центров, но обновляет контуры
+      // и производные слои один раз, а не после каждого центра отдельно.
+      onMeasure?.('подготовка контуров карты слоя', performance.now() - areaStarted);
+      const paintingStarted = onMeasure ? performance.now() : 0;
+      actions.contour(area);
+      onMeasure?.('заливка контуров карты слоя', performance.now() - paintingStarted);
+    } else {
+      onMeasure?.('подготовка контуров карты слоя', performance.now() - areaStarted);
+      const paintingStarted = onMeasure ? performance.now() : 0;
+      for (const pixel of centers) {
+        if (card.ink <= 0) break;
+        actions.dab((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5, radius);
+      }
+      onMeasure?.('заливка контуров карты слоя', performance.now() - paintingStarted);
     }
-    if (this.candidates.isLayerCard() && card.ink > 0) {
+    if (!batchedLayerPaint && this.candidates.isLayerCard() && card.ink > 0) {
       this.paintRemainingLayerTargets(isWind, windStart);
     }
     if (isWind && windStart >= 0) {
       const x = (windStart % MAP_WIDTH) + 0.5;
       const y = Math.floor(windStart / MAP_WIDTH) + 0.5;
+      const lineStarted = onMeasure ? performance.now() : 0;
       actions.line(x, y, x, y, radius);
+      onMeasure?.('обработка начала ветра', performance.now() - lineStarted);
     }
   }
 
   private paintRemainingLayerTargets(isWind: boolean, windStart: number): void {
     const { painter, actions } = this;
     const { card, world } = painter;
+    if (actions.contour) {
+      const bounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
+      const area = painter.strategyLayerTargetArea(bounds);
+      if (isWind && windStart < 0) {
+        const start = painter.strategyStrokeContours(bounds).start.spans[0];
+        if (start) {
+          const pixel = start.y * MAP_WIDTH + start.start;
+          actions.beginStroke((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5);
+        }
+      }
+      // Заполняем остаток одной пакетной операцией: контурный проход сохраняет
+      // валидатор и порядок растровых целей, не создавая тысячи мелких мазков.
+      actions.contour(area);
+      return;
+    }
     const legalTargets: number[] = [];
     for (let pixel = 0; pixel < world.land.length; pixel += 1) {
       if (painter.strategyInkCostAt(pixel) > 0) legalTargets.push(pixel);

@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
 import { Game } from '../game/game.ts';
 import { advancePeople } from '../game/characters.ts';
-import { drawClimateCard, drawCountryCard, drawWorldCard, normalizedCardProbabilities, updateCardDrawMultipliers } from '../game/cards.ts';
+import {
+  drawClimateCard,
+  drawCountryCard,
+  drawWorldCard,
+  normalizedCardProbabilities,
+  setCardDrawTraceListener,
+  updateCardDrawMultipliers,
+} from '../game/cards.ts';
 import { CardPainter } from '../game/brush.ts';
 import { autoPaint } from '../game/autoPaint.ts';
 import { forEachNeighbour } from '../game/geography.ts';
+import { arePartners, birth as createChild, newCitizen } from '../game/characters.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
 
@@ -186,6 +194,21 @@ try {
   assert.equal(seaOnlyWind.ink, 0, 'the automatic wind painter can spend a half-ink sea-only quota');
 
   const ruler = country.ruler;
+  ruler.age = 30;
+  const spouse = newCitizen(world, country, 1000);
+  spouse.age = 30;
+  spouse.gender = ruler.gender === 'female' ? 'male' : 'female';
+  spouse.countryId = country.id;
+  if (!world.people.some((candidate) => candidate.id === ruler.id)) world.people.push(ruler);
+  world.people.push(spouse);
+  ruler.spouseIds.push(spouse.id);
+  spouse.spouseIds.push(ruler.id);
+  const motherBeforeSave = ruler.gender === 'female' ? ruler : spouse;
+  const fatherBeforeSave = ruler.gender === 'male' ? ruler : spouse;
+  const adultChild = createChild(world, country, motherBeforeSave, fatherBeforeSave, 1000);
+  assert.ok(adultChild, 'родившийся ребёнок зарегистрирован у обоих партнёров');
+  adultChild.age = 25;
+  adultChild.bornAt = 975;
   const other = world.newCountry({
     rank: 'вторая',
     cultureId: country.cultureId,
@@ -194,14 +217,14 @@ try {
     foundedYear: 1000,
     parentId: null,
   }).ruler;
-  world.cardMultipliers['country:0:death:unavailable-person'] = 1.331;
-  world.cardMultipliers[`country:${country.id}:death:${ruler.id}`] = 1e100;
+  world.cardMultipliers['country:0:death:random:unavailable-person'] = 1.331;
+  world.cardMultipliers[`country:${country.id}:death:random:${ruler.id}`] = 1e100;
   country.pendingDeathIds = [ruler.id]; // A pre-migration save may still contain this legacy field.
   const game = new Game(world, 'all');
   await game.saveNow();
   const restored = await Game.load();
   assert.ok(restored, 'the card probability state survives save and load');
-  closeTo(restored.world.cardMultipliers['country:0:death:unavailable-person'], 1.331,
+  closeTo(restored.world.cardMultipliers['country:0:death:random:unavailable-person'], 1.331,
     'multipliers for currently unavailable cards are persisted');
 
   const savedRuler = restored.world.countries[country.id].ruler;
@@ -211,18 +234,102 @@ try {
   assert.equal(savedOther.alive, true, 'annual aging does not queue any character death');
   assert.equal('pendingDeathIds' in restored.world.countries[country.id], false, 'country state has no death queue');
 
-  const death = drawCountryCard(restored.world, restored.world.countries[country.id], 1001);
-  assert.equal(death?.type, 'death', 'a death is returned as the one selected country card');
+  const restoredCountry = restored.world.countries[country.id];
+  const savedSpouse = restored.world.people.find((person) => person.id === spouse.id);
+  const savedAdultChild = restored.world.people.find((person) => person.id === adultChild.id);
+  assert.ok(savedSpouse && arePartners(savedRuler, savedSpouse),
+    'родители взаимно записаны супругами до появления карты рождения');
+  assert.ok(savedAdultChild, 'семейный персонаж сохранился после загрузки');
+  const mother = savedRuler.gender === 'female' ? savedRuler : savedSpouse;
+  const father = savedRuler.gender === 'male' ? savedRuler : savedSpouse;
+  const birthKey = `birth:${mother.id}:${father.id}`;
+  restored.world.cardMultipliers[`country:${country.id}:${birthKey}`] = 1e200;
+  const drawTraces = [];
+  setCardDrawTraceListener((event) => drawTraces.push(event));
+  const birth = drawCountryCard(restored.world, restoredCountry, 1001);
+  assert.equal(birth?.type, 'birth',
+    `отдельная карта этой пары родителей может выпасть: ${JSON.stringify(drawTraces.at(-1))}`);
+  assert.deepEqual(birth.characterEvent.personIds, [mother.id, father.id],
+    'карта рождения указывает обоих родителей и не создаёт ребёнка без них');
+  restored.year = 1001;
+  restored.applyCharacterEvent(restoredCountry, birth.characterEvent, null);
+  const child = restored.world.people.find((person) =>
+    person.id !== savedAdultChild.id &&
+    person.parents.includes(mother.id) && person.parents.includes(father.id));
+  assert.ok(child, 'после карты рождения у ребёнка записаны оба родителя');
+  assert.ok(arePartners(mother, father), 'родители ребёнка состоят в браке или взаимной любовной связи');
+
+  const birthTrace = drawTraces.at(-1);
+  assert.ok(!birthTrace.choices.some((choice) => choice.key === 'life-event'),
+    'в пуле нет общей карты «событие жизни»');
+  assert.ok(birthTrace.choices.some((choice) => choice.key === birthKey),
+    'у пары родителей есть собственная карта с независимым весом');
+  assert.ok(birthTrace.choices.filter((choice) => !choice.key.startsWith('death:'))
+    .every((choice) => choice.baseWeight === 1),
+  'для карт без заданного процентного шанса базовый вес равен 1');
+
+  restored.world.cardMultipliers[`country:${country.id}:marriage:${savedAdultChild.id}`] = 1e200;
+  const marriage = drawCountryCard(restored.world, restoredCountry, 1001);
+  assert.equal(marriage?.type, 'marriage', 'отдельная карта брака конкретного персонажа может выпасть');
+  assert.equal(marriage.choices?.length, 2, 'карта выбора супруга всегда предлагает ровно двух кандидатов');
+
+  const fiance = newCitizen(restored.world, restoredCountry, 1001);
+  fiance.age = 25;
+  fiance.gender = savedAdultChild.gender === 'female' ? 'male' : 'female';
+  fiance.countryId = country.id;
+  restored.world.people.push(fiance);
+  savedAdultChild.betrothedId = fiance.id;
+  fiance.betrothedId = savedAdultChild.id;
+  const betrothalFirstId = Math.min(savedAdultChild.id, fiance.id);
+  const betrothalSecondId = Math.max(savedAdultChild.id, fiance.id);
+  restored.world.cardMultipliers[
+    `country:${country.id}:marriage:betrothed:${betrothalFirstId}:${betrothalSecondId}`
+  ] = 1e200;
+  const betrothedMarriage = drawCountryCard(restored.world, restoredCountry, 1001);
+  assert.equal(betrothedMarriage?.type, 'marriage', 'карта свадьбы после помолвки также разыгрывается');
+  assert.equal(betrothedMarriage.choices?.length, 2,
+    'даже при помолвке карта брака предлагает два варианта');
+  assert.equal(betrothedMarriage.choices[0].person.id, fiance.id,
+    'помолвленный персонаж первым кандидатом сохраняет своего жениха или невесту');
+  const alternativeSpouse = betrothedMarriage.choices[1].person;
+  restored.applyCharacterEvent(restoredCountry, betrothedMarriage.characterEvent, null, betrothedMarriage.choices[1]);
+  assert.equal(savedAdultChild.betrothedId, null, 'после выбора другого кандидата помолвка снимается');
+  assert.equal(fiance.betrothedId, null, 'снятая помолвка не оставляет одностороннюю ссылку');
+  assert.ok(arePartners(savedAdultChild, alternativeSpouse),
+    `выбранный вместо помолвленного кандидата становится супругом: ${JSON.stringify({
+      adultChild: { id: savedAdultChild.id, spouses: savedAdultChild.spouseIds },
+      alternative: { id: alternativeSpouse.id, spouses: alternativeSpouse.spouseIds },
+    })}`);
+
+  const death = drawCountryCard(restored.world, restoredCountry, 1001);
+  assert.equal(death?.type, 'death', 'в розыгрыше выбрана карта смерти');
   assert.deepEqual(death.characterEvent.personIds, [savedRuler.id],
-    'the selected death card refers only to its own character');
-  assert.equal(savedRuler.alive, true, 'the death card itself does not kill anyone before resolution');
+    'карта смерти относится только к одному персонажу');
+  assert.equal(death.characterEvent.deathCause, 'random',
+    'причина смерти задана картой и не выводится только из возраста');
+  const deathTrace = drawTraces.at(-1);
+  const rulerDeathCards = deathTrace.choices.filter((choice) =>
+    choice.key === `death:random:${savedRuler.id}` ||
+    choice.key === `death:oldAge:${savedRuler.id}`);
+  assert.equal(rulerDeathCards.length, 2, 'случайная смерть и смерть от старости — разные карты персонажа');
+  assert.equal(new Set(rulerDeathCards.map((choice) => choice.key)).size, 2,
+    'у каждой причины смерти свой ключ накопительного множителя');
+  assert.ok(deathTrace.choices.some((choice) => choice.key === `death:random:${savedSpouse.id}`),
+    'карты смерти создаются и для именных жителей вне семейного пула правителя');
+  assert.ok(!deathTrace.choices.some((choice) => choice.key === 'life-event'),
+    'смерть и другие события персонажей не сворачиваются в общую карту');
+  assert.equal(savedRuler.alive, true, 'сама карта смерти не убивает персонажа до её разрешения');
   restored.applyCharacterEvent(restored.world.countries[country.id], death.characterEvent, null);
-  assert.equal(savedRuler.alive, false, 'the selected death card causes death when resolved');
-  assert.equal(savedOther.alive, true, 'resolving one death card leaves other characters alive');
-  assert.equal(death.characterEvent.personIds.length, 1, 'one draw never returns multiple death cards');
+  assert.equal(savedRuler.alive, false, 'смерть наступает при разрешении выбранной карты');
+  assert.equal(savedRuler.deathReason, 'болезнь или несчастный случай',
+    'карта случайной смерти явно сохраняет свою причину');
+  assert.equal(savedOther.alive, true, 'смерть одного персонажа не убивает остальных');
+  assert.equal(death.characterEvent.personIds.length, 1, 'одна карта смерти относится только к одному человеку');
+  setCardDrawTraceListener(null);
   restored.discard();
   game.discard();
 } finally {
+  setCardDrawTraceListener(null);
   await clearSaveBytes();
   Game.persist = previousPersist;
 }

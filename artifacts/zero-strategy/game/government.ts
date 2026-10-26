@@ -340,16 +340,44 @@ export function applyModifier(current: GovernmentModifierId[], id: GovernmentMod
   }
   return [...result, id];
 }
-export function deathChance(age: number): number {
-  if (age < 3) return 1 - Math.pow(1 - 0.33, 1 / 3);
-  if (age <= 7) return 1 - Math.pow(1 - 0.20, 1 / 5);
-  if (age <= 11) return 1 - Math.pow(1 - 0.01, 1 / 4);
-  if (age <= 19) return 1 - Math.pow(1 - 0.10, 1 / 8);
-  if (age <= 28) return 1 - Math.pow(0.99 * 0.99, 1 / 9);
-  if (age <= 45) return 1 - Math.pow(0.99 * 0.95, 1 / 17);
-  if (age <= 65) return 1 - Math.pow(0.99 * 0.85, 1 / 20);
-  // Дизайн-док задаёт ежегодный возрастающий риск смерти в старости.
+function annualizePeriodRisk(periodRisk: number, periodYears: number): number {
+  return 1 - Math.pow(1 - periodRisk, 1 / periodYears);
+}
+
+/**
+ * Годовой вес отдельной карты случайной смерти.
+ * Проценты из возрастных диапазонов в дизайн-доке относятся ко всему диапазону,
+ * поэтому перед розыгрышем карты переводятся в эквивалентный риск за один год.
+ */
+export function randomDeathChance(age: number): number {
+  if (age < 3) return annualizePeriodRisk(0.33, 3);
+  if (age <= 7) return annualizePeriodRisk(0.20, 5);
+  if (age <= 11) return annualizePeriodRisk(0.01, 4);
+  if (age <= 19) return annualizePeriodRisk(0.10, 8);
+  if (age <= 28) return annualizePeriodRisk(0.01, 9);
+  if (age <= 45) return annualizePeriodRisk(0.01, 17);
+  if (age <= 65) return annualizePeriodRisk(0.01, 20);
+  return 0;
+}
+
+/**
+ * Годовой вес отдельной карты смерти от старости.
+ * Для возрастов до 66 лет доля из таблицы относится ко всему возрастному
+ * диапазону; начиная с 66 лет дизайн-док задаёт прямой ежегодный процент.
+ */
+export function oldAgeDeathChance(age: number): number {
+  if (age < 20) return 0;
+  if (age <= 28) return annualizePeriodRisk(0.01, 9);
+  if (age <= 45) return annualizePeriodRisk(0.05, 17);
+  if (age <= 65) return annualizePeriodRisk(0.15, 20);
   return Math.min(1, (age - 56) / 100);
+}
+
+/** Совместная вероятность двух отдельных карт смерти за год. */
+export function deathChance(age: number): number {
+  const random = randomDeathChance(age);
+  const oldAge = oldAgeDeathChance(age);
+  return 1 - (1 - random) * (1 - oldAge);
 }
 export function uniqueLeader(_countryId: number, year: number): Person {
   return createPerson(year, 29 + Math.floor(Math.random() * 17), createFamilyId());

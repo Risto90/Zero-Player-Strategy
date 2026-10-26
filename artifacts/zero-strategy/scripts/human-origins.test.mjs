@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { World } from '../game/world.ts';
 import { CardPainter } from '../game/brush.ts';
 import { firstCreateCard } from '../game/cards.ts';
-import { ageStage, createPerson, deathChance } from '../game/government.ts';
+import { ageStage, createPerson, deathChance, oldAgeDeathChance, randomDeathChance } from '../game/government.ts';
 import { birth, marry } from '../game/characters.ts';
 import { deserializeWorld, serializeWorld } from '../game/persistence.ts';
 import { ensureCityPopulationGroups } from '../game/settlements.ts';
@@ -56,6 +56,13 @@ const inherited = inheritHumanOrigins({ ids: [europ], shares: [100] }, { ids: [b
 assert.deepEqual(inherited, { ids: [europ, bushman], shares: [50, 50] });
 assert.equal(deathChance(2), 1 - Math.pow(1 - 0.33, 1 / 3));
 assert.equal(deathChance(3), 1 - Math.pow(1 - 0.20, 1 / 5));
+assert.equal(randomDeathChance(20), 1 - Math.pow(1 - 0.01, 1 / 9),
+  'the 1% random-death risk applies to the full 20–28 age band');
+assert.equal(oldAgeDeathChance(20), 1 - Math.pow(1 - 0.01, 1 / 9),
+  'the separate 1% old-age risk applies to the full 20–28 age band');
+assert.equal(oldAgeDeathChance(66), 0.1,
+  'from age 66 the design document sets the annual old-age risk to age minus 56 percent');
+assert.equal(randomDeathChance(66), 0, 'the design document defines only old-age risk from 66 onward');
 assert.deepEqual(normalizeHumanOriginMix({ ids: [europ, pygmy], shares: [62.5, 37.5] }), {
   ids: [europ, pygmy], shares: [75, 25],
 });

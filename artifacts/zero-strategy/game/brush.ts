@@ -36,7 +36,13 @@ export interface CardChoice {
   violent?: boolean;
   closeConsulateSeat?: boolean;
 }
-export interface CharacterEvent { kind: 'marriage' | 'birth' | 'death' | 'friendship' | 'trait' | 'engagement' | 'romance'; personIds: number[]; trait?: string; newPerson?: Person }
+export interface CharacterEvent {
+  kind: 'marriage' | 'birth' | 'death' | 'friendship' | 'trait' | 'engagement' | 'romance';
+  personIds: number[];
+  trait?: string;
+  newPerson?: Person;
+  deathCause?: 'random' | 'oldAge';
+}
 /** 'respect': a pixel changes at most once per card. 'repeat': every new stroke applies again. */
 export type BrushMode = 'respect' | 'repeat';
 export type BrushOption = 'density' | 'repeat' | null;
@@ -574,6 +580,35 @@ export class CardPainter {
     return area;
   }
 
+  /** Область действия климатической/демографической карты, собранная из контуров слоя. */
+  strategyLayerTargetArea(bounds: ContourBounds): ContourArea {
+    const world = this.world;
+    const land = world.contours.layer('land').select((value) => value === 1, bounds, 'land');
+    const owners = world.contours.layer('owner');
+    const type = this.card.type;
+
+    if (isCurrent(type)) {
+      const water = world.contours.layer('water').select((value) => value >= 0, bounds);
+      return land.union(water);
+    }
+    if (isWind(type)) {
+      const own = owners.select((value) => value === (this.card.targetCountryId ?? -1) + 1, bounds);
+      const water = world.contours.layer('water').select((value) => this.seas.has(value), bounds);
+      return own.intersect(land).union(water);
+    }
+    if (type === 'faith' || type === 'culture') {
+      const inhabited = owners.select((value) => value > 0, bounds);
+      const scope = this.card.targetCountryId === null
+        ? inhabited
+        : inhabited.intersect(owners.select((value) => value === this.card.targetCountryId! + 1, bounds));
+      return scope.intersect(land);
+    }
+    if (this.card.targetCountryId !== null) {
+      return land.intersect(owners.select((value) => value === this.card.targetCountryId! + 1, bounds));
+    }
+    return land;
+  }
+
   /** Контуры начала и окончания отделены от области, через которую разрешено провести кисть. */
   strategyStrokeContours(bounds: ContourBounds): { paint: ContourArea; start: ContourArea; stop: ContourArea } {
     const world = this.world;
@@ -618,21 +653,34 @@ export class CardPainter {
 
   /** Общий инструмент заполнения контура: те же эффекты, связность и расход чернил, что у мазка. */
   paintContour(area: ContourArea, seed?: number): number {
+    return this.paintContours([area], seed);
+  }
+
+  /** Несколько областей одного события обрабатываются за одну синхронизацию и инвалидацию слоёв. */
+  paintContours(areas: readonly ContourArea[], seed?: number): number {
     this.world.contours.synchronize();
-    const pixels: number[] = [];
-    area.forEachPixel((pixel) => {
-      if (this.world.land[pixel] || (isCurrent(this.card.type) && this.world.water.bodyOf[pixel] >= 0) ||
-        (isWind(this.card.type) && this.seas.has(this.world.water.bodyOf[pixel]))) pixels.push(pixel);
-    });
-    if (seed !== undefined) {
-      const index = pixels.indexOf(seed);
-      if (index > 0) { pixels.splice(index, 1); pixels.unshift(seed); }
-    }
-    if (!pixels.length || this.card.ink <= 0) return 0;
+    if (!areas.some((area) => area.size > 0) || this.card.ink <= 0) return 0;
     const before = this.card.ink;
     const touchedStart = this.strokeTouched.length;
-    if (['create', 'expand', 'colonization', 'split', 'nomadExpand'].includes(this.card.type)) this.paintTerritory(pixels);
-    else this.paintLayer(pixels);
+    if (['create', 'expand', 'colonization', 'split', 'nomadExpand'].includes(this.card.type)) {
+      const pixels: number[] = [];
+      for (const area of areas) {
+        area.forEachPixel((pixel) => {
+          if (this.world.land[pixel] || (isCurrent(this.card.type) && this.world.water.bodyOf[pixel] >= 0) ||
+            (isWind(this.card.type) && this.seas.has(this.world.water.bodyOf[pixel]))) pixels.push(pixel);
+        });
+      }
+      if (seed !== undefined) {
+        const index = pixels.indexOf(seed);
+        if (index > 0) { pixels.splice(index, 1); pixels.unshift(seed); }
+      }
+      if (!pixels.length) return 0;
+      this.paintTerritory(pixels);
+    } else {
+      // Слой обрабатывается потоково: когда чернила заканчиваются, перебор
+      // останавливается без создания массива всех пикселей большого контура.
+      this.paintLayer(this.layerPixels(areas));
+    }
     const spent = before - this.card.ink;
     if (spent > 0) {
       this.world.version += 1;
@@ -642,7 +690,16 @@ export class CardPainter {
         x0 = Math.min(x0, x); x1 = Math.max(x1, x);
         y0 = Math.min(y0, y); y1 = Math.max(y1, y);
       }
-      const dirty = x1 >= x0 ? { x0, y0, x1, y1 } : area.bounds;
+      const fallbackBounds = areas.reduce((bounds, area) => {
+        const current = area.bounds;
+        return {
+          x0: Math.min(bounds.x0, current.x0),
+          y0: Math.min(bounds.y0, current.y0),
+          x1: Math.max(bounds.x1, current.x1),
+          y1: Math.max(bounds.y1, current.y1),
+        };
+      }, { x0: MAP_WIDTH, y0: MAP_HEIGHT, x1: -1, y1: -1 });
+      const dirty = x1 >= x0 ? { x0, y0, x1, y1 } : fallbackBounds;
       this.markDirty(dirty.x0 - 1, dirty.y0 - 1, dirty.x1 + 1, dirty.y1 + 1);
       const names: ContourLayerName[] = ['owner', 'density', 'culture', 'religion', 'humanOrigins'];
       if (['rain', 'drought'].includes(this.card.type)) names.push('humidity');
@@ -651,6 +708,18 @@ export class CardPainter {
       this.world.contours.changed(dirty, names);
     }
     return spent;
+  }
+
+  private *layerPixels(areas: readonly ContourArea[]): Generator<number> {
+    for (const area of areas) {
+      for (const pixel of area) {
+        const onLand = this.world.land[pixel] === 1;
+        if (onLand || (isCurrent(this.card.type) && this.world.water.bodyOf[pixel] >= 0) ||
+          (isWind(this.card.type) && this.seas.has(this.world.water.bodyOf[pixel]))) {
+          yield pixel;
+        }
+      }
+    }
   }
 
   /** Maximum ink one colonization target can consume under its population limit. */
@@ -1161,7 +1230,7 @@ export class CardPainter {
     });
   }
 
-  private paintLayer(pixels: number[]): void {
+  private paintLayer(pixels: Iterable<number>): void {
     const world = this.world;
     const card = this.card;
     const targetTag = card.targetCountryId !== null ? card.targetCountryId + 1 : -1;
