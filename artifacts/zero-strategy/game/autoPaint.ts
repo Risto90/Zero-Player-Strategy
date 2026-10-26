@@ -24,8 +24,12 @@ class ContourTerritoryStrategy {
     const { world, card } = this.painter;
     const started = this.onMeasure ? performance.now() : 0;
     const bounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
-    const regions = world.contours.climateRegions();
     const { paint, start } = this.painter.strategyStrokeContours(bounds);
+    const regions = world.contours.climateIntersections(paint);
+    const regionIds = new Map<string, number>();
+    regions.forEach((region, id) => {
+      regionIds.set(`${region.humidity}:${region.temperature}:${region.drainage}`, id);
+    });
     const country = card.type === 'create'
       ? world.countries[card.newCountryId ?? -1] : world.countries[card.targetCountryId ?? -1];
     const candidates = new Map<number, { pixel: number; fit: number; efficiency: number }>();
@@ -33,8 +37,10 @@ class ContourTerritoryStrategy {
     let choosingFirst = country?.pixels === 0;
     const consider = (pixel: number, knownId?: number) => {
       if (world.owner[pixel] !== 0 || !world.land[pixel] || !paint.contains(pixel)) return;
-      const id = knownId ?? world.contours.climateRegionAt(pixel);
-      if (id < 0) return;
+      const id = knownId ?? regionIds.get(
+        `${world.humidity[pixel]}:${world.temperature[pixel]}:${world.drainage[pixel]}`,
+      );
+      if (id === undefined) return;
       const previous = candidates.get(id);
       if (previous && world.owner[previous.pixel] === 0) return;
       const region = regions[id];
@@ -63,7 +69,7 @@ class ContourTerritoryStrategy {
       }
       if (bestId < 0) break;
       candidates.delete(bestId);
-      const area = regions[bestId].area.intersect(paint);
+      const area = regions[bestId].area;
       const changedStart = this.painter.changed.length;
       const paintStarted = this.onMeasure ? performance.now() : 0;
       const spent = this.actions.contour!(area, bestPixel);

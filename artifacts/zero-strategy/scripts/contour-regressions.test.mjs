@@ -3,6 +3,8 @@ import { ContourArea, ScalarContourLayer, MapContours } from '../game/contours.t
 import { MAP_WIDTH, MAP_HEIGHT, MAP_PIXELS } from '../game/config.ts';
 import { rasterizeScalar } from '../game/zones.ts';
 import { ContourPopulationReader } from '../game/contourPopulation.ts';
+import { CountryExpansionContourIndex } from '../game/countryExpansionContours.ts';
+import { forEachNeighbour } from '../game/geography.ts';
 
 const pixels = (area) => {
   const result = new Set();
@@ -108,4 +110,60 @@ assert.equal(contourPopulation.size, referencePopulation.size);
 for (const [key, expected] of referencePopulation) {
   assert.ok(Math.abs(contourPopulation.get(key) - expected) < 1e-7, 'Контурные суммы сохраняют составы и отдельные города');
 }
+const expansionLayers = {
+  owner: new Uint16Array(MAP_PIXELS),
+  land: new Uint8Array(MAP_PIXELS),
+  density: new Float32Array(MAP_PIXELS),
+};
+const waterBody = new Int32Array(MAP_PIXELS).fill(-1);
+const expansionCountry = { id: 2, box: [90, 80, 100, 89], pixels: 0 };
+for (let y = 80; y <= 89; y += 1) {
+  for (let x = 90; x <= 100; x += 1) {
+    const pixel = y * MAP_WIDTH + x;
+    expansionLayers.land[pixel] = 1;
+    expansionLayers.density[pixel] = (x + y) % 9;
+    if ((x + y) % 5 !== 0) {
+      expansionLayers.owner[pixel] = expansionCountry.id + 1;
+      expansionCountry.pixels += 1;
+    }
+  }
+}
+for (let y = 80; y <= 89; y += 1) {
+  const coastalPixel = y * MAP_WIDTH + 89;
+  expansionLayers.land[coastalPixel] = 0;
+  waterBody[coastalPixel] = 4;
+}
+const expansionWorld = {
+  ...expansionLayers,
+  water: { bodyOf: waterBody },
+  contours: new MapContours((name) => expansionLayers[name], () => 0),
+};
+const expansionIndex = new CountryExpansionContourIndex(expansionWorld, expansionCountry);
+const expectedFrontier = new Set();
+const expectedSeas = new Set();
+for (let y = 80; y <= 89; y += 1) {
+  for (let x = 90; x <= 100; x += 1) {
+    const pixel = y * MAP_WIDTH + x;
+    if (expansionLayers.owner[pixel] !== expansionCountry.id + 1) continue;
+    forEachNeighbour(pixel, (neighbor) => {
+      if (waterBody[neighbor] >= 0) expectedSeas.add(waterBody[neighbor]);
+      if (expansionLayers.land[neighbor] && expansionLayers.owner[neighbor] === 0) expectedFrontier.add(neighbor);
+    });
+  }
+}
+assert.deepEqual(pixels(expansionIndex.frontier()), [...expectedFrontier].sort((a, b) => a - b),
+  'Контурный фронтир совпадает с попиксельной проверкой');
+assert.deepEqual([...expansionIndex.seaBodies()].sort(), [...expectedSeas].sort(),
+  'Контур границы сохраняет доступные морские бассейны');
+const expansionCity = { countryId: expansionCountry.id, pixel: 84 * MAP_WIDTH + 94 };
+const totalExpansionDensity = [...Array(MAP_PIXELS).keys()]
+  .filter((pixel) => expansionLayers.owner[pixel] === expansionCountry.id + 1)
+  .reduce((sum, pixel) => sum + expansionLayers.density[pixel], 0);
+const expectedNonCityDensity = (totalExpansionDensity - expansionLayers.density[expansionCity.pixel]) /
+  (expansionCountry.pixels - 1);
+assert.ok(Math.abs(
+  CountryExpansionContourIndex.averageNonCityDensity(
+    expansionWorld, expansionCountry, totalExpansionDensity, [expansionCity],
+  ) - expectedNonCityDensity,
+) < 1e-9, 'Средняя плотность без городов сохраняется');
 console.log('Проверены круги, пересечения, вычитание, связность, кольца с дырой и локальная инвалидация климатических контуров.');

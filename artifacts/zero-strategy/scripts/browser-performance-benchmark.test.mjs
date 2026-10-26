@@ -166,55 +166,44 @@ class ObserverPerformanceBenchmark {
     const events = this.turns.flatMap(({ events: samples }) => samples.filter((sample) => sample.cardType !== null));
     const stages = this.turns.flatMap(({ stages: samples }) => samples);
     const allFrameGaps = this.turns.flatMap(({ frameGaps }) => frameGaps);
-    const eventAverageMs = events.length
-      ? events.reduce((sum, event) => sum + event.durationMs, 0) / events.length
-      : 0;
     const median = (values) => {
       if (!values.length) return 0;
       const ordered = [...values].sort((a, b) => a - b);
       const middle = Math.floor(ordered.length / 2);
       return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
     };
-    const averageDrawMs = events.length
-      ? events.reduce((sum, event) => sum + event.drawDurationMs, 0) / events.length
-      : 0;
-    const averageResolutionMs = events.length
-      ? events.reduce((sum, event) => sum + event.resolutionDurationMs, 0) / events.length
-      : 0;
-    const slowEvents = [...events].sort((a, b) => b.durationMs - a.durationMs).slice(0, 10);
+    const slowEvents = [...events].sort((a, b) => b.resolutionDurationMs - a.resolutionDurationMs).slice(0, 10);
     const slowStages = [...stages].sort((a, b) => b.durationMs - a.durationMs).slice(0, 10);
     const eventTypes = Object.groupBy(events, ({ cardType }) => cardType);
     const summary = {
       turns: this.turns.length,
       totalMs: durations.reduce((sum, duration) => sum + duration, 0),
-      averageTurnMs: durations.reduce((sum, duration) => sum + duration, 0) / Math.max(1, durations.length),
       maximumTurnMs: Math.max(0, ...durations),
       eventCount: events.length,
-      averageEventMs: eventAverageMs,
       medianTurnMs: median(durations),
-      medianEventMs: median(events.map(({ durationMs }) => durationMs)),
-      medianEventResolutionMs: median(events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
+      medianCardCycleMs: median(events.map(({ durationMs }) => durationMs)),
+      medianEventExecutionMs: median(events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
+      maximumEventExecutionMs: Math.max(0, ...events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
+      medianCardDrawMs: median(events.map(({ drawDurationMs }) => drawDurationMs)),
+      maximumEventMs: Math.max(0, ...events.map(({ durationMs }) => durationMs)),
       medianFrameGapMs: median(allFrameGaps),
       eventTypeMedians: Object.fromEntries(Object.entries(eventTypes ?? {}).map(([type, samples]) => [type, {
         count: samples.length,
-        durationMs: median(samples.map(({ durationMs }) => durationMs)),
-        resolutionMs: median(samples.map(({ resolutionDurationMs }) => resolutionDurationMs)),
+        cardCycleMs: median(samples.map(({ durationMs }) => durationMs)),
+        executionMs: median(samples.map(({ resolutionDurationMs }) => resolutionDurationMs)),
       }])),
-      averageCardDrawMs: averageDrawMs,
-      averageCardResolutionMs: averageResolutionMs,
       maximumCardDrawMs: Math.max(0, ...events.map(({ drawDurationMs }) => drawDurationMs)),
       maximumCardResolutionMs: Math.max(0, ...events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
       slowStages,
-      eventsOverOneSecond: events.filter(({ durationMs }) => durationMs > 1000).length,
+      eventsExecutionOverOneSecond: events.filter(({ resolutionDurationMs }) => resolutionDurationMs > 1000).length,
       maximumFrameGapMs: Math.max(0, ...allFrameGaps),
       framesOver50Ms: allFrameGaps.filter((gap) => gap > 50).length,
       slowEvents,
     };
     console.log(`Итог браузерного замера: ${JSON.stringify(summary, null, 2)}`);
-    if (summary.maximumTurnMs > this.timeoutMs) console.warn('Превышен установленный предел длительности хода.');
-    if (summary.eventsOverOneSecond) console.warn('Есть автоматические события дольше одной секунды — их нужно оптимизировать.');
-    if (summary.averageEventMs > 200) console.warn('Среднее время автоматического события превышает 200 мс.');
-    if (summary.framesOver50Ms) console.warn('Зафиксированы задержки кадров больше 50 мс.');
+    assert.ok(summary.maximumTurnMs <= 60_000, 'Один ход не должен длиться больше 60 секунд.');
+    assert.ok(summary.maximumEventExecutionMs <= 1_000, 'Исполнение одного события не должно длиться больше секунды.');
+    assert.ok(summary.medianEventExecutionMs <= 200, 'Медианное время исполнения события не должно превышать 200 мс.');
     assert.deepEqual(this.pageErrors, [], 'В браузере не должно быть необработанных ошибок.');
   }
 

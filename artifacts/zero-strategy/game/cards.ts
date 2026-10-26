@@ -10,6 +10,7 @@ import { newCitizen, person } from './characters';
 import { demography } from './demography';
 import { colonizationPlan } from './colonization';
 import { randomHumanOriginId } from './human';
+import { CountryExpansionContourIndex } from './countryExpansionContours';
 import {
   CityInfluenceIndex,
   cityAtUpperPopulationThreshold,
@@ -275,9 +276,7 @@ function randomCountryPixel(world: World, country: Country, accept: (p: number) 
 }
 
 function countrySeas(world: World, country: Country): Set<number> {
-  const seas = new Set<number>();
-  world.forEachCountryPixel(country, (p) => world.seasOfPixel(p, seas));
-  return seas;
+  return new CountryExpansionContourIndex(world, country).seaBodies();
 }
 
 type CapacityDonor = { pixel: number; density: number };
@@ -360,13 +359,11 @@ function drawCreate(world: World, year: number): Card | null {
 }
 
 function drawExpand(world: World, country: Country): Card | null {
+  const contours = new CountryExpansionContourIndex(world, country);
+  const frontierArea = contours.frontier();
   const frontier: number[] = [];
-  world.forEachCountryPixel(country, (p) => {
-    forEachNeighbour(p, (n) => {
-      if (world.land[n] && world.owner[n] === 0) frontier.push(n);
-    });
-  });
-  const seas = countrySeas(world, country);
+  frontierArea.forEachPixel((pixel) => frontier.push(pixel));
+  const seas = contours.seaBodies();
   // Четырёх тысяч точек достаточно для обычной квоты расширения.
   // Ограничиваем проверку намеренно: меньшая оценка только снижает запас карт
   // и не создаёт чернила, которые кисть не сможет потратить.
@@ -374,9 +371,7 @@ function drawExpand(world: World, country: Country): Card | null {
   if (reachable.count < 1) {
     // Если ничейной земли нет, расширение становится внутренним развитием, а не исчезает.
     const available: number[] = [];
-    world.forEachCountryPixel(country, (p) => {
-      available.push(p);
-    });
+    contours.territory.forEachPixel((pixel) => available.push(pixel));
     if (!available.length) return null;
     const card = makeCard('expand', INK.expand, country, `Свободной суши нет. Повышайте плотность населения в ${country.name}: один мазок развивает уже занятые земли.`, randomItem(available));
     card.developmentOnly = true;
@@ -1149,13 +1144,12 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const big = country.pixels >= 12000;
   const diversity = demography(world, country);
   const countryCities = world.cities.filter((city) => city.countryId === country.id);
-  let nonCityDensity = 0, nonCityPixels = 0;
-  world.forEachCountryPixel(country, (p) => {
-    if (world.cityIdAt[p] >= 0) return;
-    nonCityDensity += world.density[p];
-    nonCityPixels += 1;
-  });
-  const averageNonCityDensity = nonCityDensity / Math.max(1, nonCityPixels);
+  const averageNonCityDensity = CountryExpansionContourIndex.averageNonCityDensity(
+    world,
+    country,
+    diversity.density * country.pixels,
+    countryCities,
+  );
   const cityModifierTotal = countryCities.reduce(
     (sum, city) => sum + city.rank * cityInfluenceMultiplier(world, city),
     0,

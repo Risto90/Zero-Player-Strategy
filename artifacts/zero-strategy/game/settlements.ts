@@ -118,6 +118,7 @@ export class CityInfluenceIndex {
     private readonly includeAnchors = false,
     private readonly anchorMask?: Uint8Array,
   ) {
+    const seenAnchors = new Set<number>();
     for (const city of world.cities) {
       const x = city.pixel % MAP_WIDTH;
       const y = Math.floor(city.pixel / MAP_WIDTH);
@@ -132,21 +133,20 @@ export class CityInfluenceIndex {
       const x0 = Math.max(0, x - r), x1 = Math.min(MAP_WIDTH - 1, x + r);
       const y0 = Math.max(0, y - r), y1 = Math.min(MAP_HEIGHT - 1, y + r);
       const rr = indexed.radius * indexed.radius;
-      const seen = new Set<number>();
       for (let yy = y0; yy <= y1; yy += 1) {
         for (let xx = x0; xx <= x1; xx += 1) {
           if ((xx - x) ** 2 + (yy - y) ** 2 > rr) continue;
           const p = yy * MAP_WIDTH + xx;
           if (world.land[p] && (world.isCoastal(p) || world.rivers[p] > 0) &&
-            (!this.anchorMask || this.anchorMask[p] === 1)) seen.add(p);
+            (!this.anchorMask || this.anchorMask[p] === 1)) seenAnchors.add(p);
         }
       }
-      for (const p of seen) {
+    }
+    for (const p of seenAnchors) {
         const anchorKey = this.key(Math.floor((p % MAP_WIDTH) / BUCKET), Math.floor(Math.floor(p / MAP_WIDTH) / BUCKET));
         const bucket = this.anchors.get(anchorKey) ?? [];
         bucket.push(p);
         this.anchors.set(anchorKey, bucket);
-      }
     }
   }
 

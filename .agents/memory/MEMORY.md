@@ -25,3 +25,4 @@
 - [Race map entities](race-map-entities.md) — call categories «расы»; show only populated races, with selectable map layers and profile links.
 - [Color metric tolerances](flag-color-metric-tolerances.md) — allow floating-point tolerance for CIELAB/WCAG results computed from rounded sRGB/D65 constants.
 - [Flag novelty benchmarks](flag-novelty-benchmarks.md) — a hand-authored reference corpus is not a substitute for measured seeded-generator results.
+- [Map contour rule](map-contour-rule.md) — treat equal-valued map regions as contours, reuse intersections and update only changed boundaries while retaining paint/start/stop constraints.
