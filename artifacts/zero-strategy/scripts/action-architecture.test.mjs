@@ -33,6 +33,10 @@ const dispatchedTypes = new Set([...dispatcherBody.matchAll(/case '([^']+)'/g)].
 for (const type of actionTypes) {
   assert.ok(dispatchedTypes.has(type), `action "${type}" must be handled by the shared dispatcher`);
 }
+assert.match(dispatcherBody, /case 'dab': return this\.applyDab\(/);
+assert.match(dispatcherBody, /case 'line': return this\.applyLine\(/);
+assert.match(dispatcherBody, /case 'paintContour': return this\.painter\?\.paintContour\(/);
+assert.match(dispatcherBody, /case 'paintContours': return this\.painter\?\.paintContours\(/);
 
 const finishBody = methodBody(game, 'private finish(painter: CardPainter): void');
 const completedTypes = new Set([...finishBody.matchAll(/case '([^']+)'/g)].map((match) => match[1]));
@@ -55,15 +59,34 @@ assert.equal((game.match(/new CardPainter\(/g) ?? []).length, 1,
   'all cards must create their painter through the shared card-start path');
 
 const autoPaintBody = methodBody(autoPaint, 'export function autoPaint(');
-assert.match(autoPaintBody, /actions\.dab\(/);
-assert.match(autoPaintBody, /actions\.line\(/);
-assert.match(autoPaintBody, /actions\.endStroke\(/);
-assert.doesNotMatch(autoPaintBody, /painter\.(dab|line|endStroke)\(/,
-  'the strategy may choose coordinates, but brush effects must go through the action adapter');
+assert.match(autoPaintBody, /new AutoPaintStrategy\(painter,\s*actions,\s*onMeasure\)\.run\(\)/);
+const strategyBody = methodBody(autoPaint, 'class AutoPaintStrategy');
+for (const action of ['beginStroke', 'dab', 'line', 'endStroke', 'contour', 'contours']) {
+  assert.match(strategyBody, new RegExp(`actions\\.${action}\\s*\\(`),
+    `Автоматическая стратегия должна наносить мазок общей командой ${action}`);
+}
+assert.doesNotMatch(strategyBody, /painter\.(dab|line|paintContour|paintContours)\(/,
+  'автоматическая стратегия не обходит общий обработчик и кисть');
+const contourStrategyBody = methodBody(autoPaint, 'class ContourTerritoryStrategy');
+assert.match(contourStrategyBody, /this\.actions\.contour!\(/);
+assert.match(contourStrategyBody, /this\.actions\.endStroke\(/);
+assert.doesNotMatch(contourStrategyBody, /this\.painter\.(dab|line|paintContour|paintContours)\(/,
+  'контурная стратегия применяет заливку через общий обработчик');
 assert.match(autoPaint, /export function autoPaint\(\s*painter: CardPainter,\s*actions: PaintActions(?:,|\))/,
   'automatic painting must require a shared command adapter; no direct-painter fallback is allowed');
-assert.doesNotMatch(autoPaint, /this\.painter\.(paintContour|dab|line|endStroke)\(/,
-  'Контурная стратегия не применяет эффекты кисти в обход общего обработчика');
+assert.match(automaticBody, /beginStroke: \(x, y\) => this\.dispatchAction\(\{\s*type: 'beginStroke'/);
+assert.match(automaticBody, /dab: \(x, y, radius\) => this\.dispatchAction\(\{\s*type: 'dab'/);
+assert.match(automaticBody, /line: \(ax, ay, bx, by, radius\) => this\.dispatchAction\(\{\s*type: 'line'/);
+assert.match(automaticBody, /endStroke: \(\) => this\.dispatchAction\(\{\s*type: 'endStroke'/);
+assert.match(automaticBody, /contour: \(area, seed\) => this\.dispatchAction\(\{\s*type: 'paintContour'/);
+assert.match(automaticBody, /type: 'paintContours'/);
+
+const dabBody = methodBody(brush, 'dab(cx: number, cy: number, radius: number): number');
+assert.match(dabBody, /return this\.paintContour\(ContourArea\.circle/);
+const contourBody = methodBody(brush, 'paintContour(area: ContourArea, seed\?: number): number');
+assert.match(contourBody, /return this\.paintContours\(\[area\], seed\)/);
+assert.match(methodBody(game, 'private applyDab('), /this\.painter\.dab\(/);
+assert.match(methodBody(game, 'private applyLine('), /this\.painter\.line\(/);
 
 for (const [name, marker, pattern] of [
   ['choice selection', 'selectChoice(index: number): void', /dispatchAction\(\{\s*type: 'selectChoice'/],
