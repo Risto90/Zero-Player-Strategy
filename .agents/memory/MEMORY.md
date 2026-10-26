@@ -4,7 +4,7 @@
 - [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
 - [Map redraw and timer](map-redraw-timer.md) — timer starts only after full redraw; every world mutation must mark its renderer area.
 - [Династии, родословная и должности](zero-strategy-dynasty-rules.md) — только происхождение от родителя определяет династию; исключений нет.
-- [Розыгрыш карт](card-draw-eligibility.md) — при отсутствии процента базовый вес 1; каждое событие персонажа — отдельная карта с личным ключом ×1,1.
+- [Розыгрыш карт](card-draw-eligibility.md) — только описанные карты в мировом и страновом пулах; индивидуальные шансы персонажей сохраняют множитель ×1,1.
 - [Unified country residence](nomad-current-homes.md) — characters keep one current countryId; nomadic countries live in the shared country collection.
 - [Design-doc fidelity](design-doc-fidelity.md) — implement only mechanics specified for this game; clarify missing numerical rules instead of inventing them.
 - [Expo build port](zero-strategy-expo-build-port.md) — choose a free Metro port if Replit's preview service occupies 8081.

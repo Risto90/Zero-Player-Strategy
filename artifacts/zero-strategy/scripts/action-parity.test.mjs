@@ -156,7 +156,6 @@ function worldState(world) {
     parents: person.parents.map((id) => personIds.get(id) ?? 'missing-person'),
     spouseIds: person.spouseIds.map((id) => personIds.get(id) ?? 'missing-person'),
     loverIds: person.loverIds.map((id) => personIds.get(id) ?? 'missing-person'),
-    friendIds: person.friendIds.map((id) => personIds.get(id) ?? 'missing-person'),
   });
   const normalizePolitical = (political) => ({
     ...political,
@@ -440,14 +439,14 @@ const cases = [
       characterEvent: { kind: 'death', personIds: [person.id] },
     });
   }),
-  scenario('character', ({ world, country }) => {
-    const friend = registerPerson(world, country, newCitizen(world, country, 1000));
-    return card('character', {
+  scenario('trait', ({ world, country }) => {
+    const person = registerPerson(world, country, newCitizen(world, country, 1000));
+    return card('trait', {
       targetCountryId: country.id,
       hint: -1,
       ink: 0,
       inkTotal: 0,
-      characterEvent: { kind: 'friendship', personIds: [country.ruler.id, friend.id] },
+      characterEvent: { kind: 'trait', personIds: [person.id] },
     });
   }),
   scenario('revolt', ({ country }) => card('revolt', {

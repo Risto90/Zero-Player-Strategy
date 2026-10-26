@@ -201,25 +201,10 @@ for (const person of [mother, father, child]) {
 assert.equal(isChronicleImportant(birthEvent, ref('country', characterCountry.id)), false,
   'a child birth is not country-important');
 
-const lovers = [makePerson('female', 24), makePerson('male', 25)];
-characterGame.applyCharacterEvent(characterCountry, { kind: 'romance', personIds: lovers.map(({ id }) => id) }, null);
-for (const person of lovers) assert.equal(isChronicleImportant(characterGame.log[0], ref('person', person.id)), true,
-  'romance is important to both people');
-assert.equal(isChronicleImportant(characterGame.log[0], ref('country', characterCountry.id)), false,
-  'romance is not country-important');
-
 const spouses = [makePerson('female', 23), makePerson('male', 27)];
 characterGame.applyCharacterEvent(characterCountry, { kind: 'marriage', personIds: spouses.map(({ id }) => id) }, null);
 for (const person of spouses) assert.equal(isChronicleImportant(characterGame.log[0], ref('person', person.id)), true,
   'marriage is important to both spouses');
-
-const engaged = [makePerson('female', 21), makePerson('male', 22)];
-characterGame.applyCharacterEvent(characterCountry, { kind: 'engagement', personIds: engaged.map(({ id }) => id) }, null);
-assert.deepEqual(characterGame.log[0].importantObjects, [], 'an engagement is not a listed important event');
-
-const friends = [makePerson('female', 26), makePerson('male', 28)];
-characterGame.applyCharacterEvent(characterCountry, { kind: 'friendship', personIds: friends.map(({ id }) => id) }, null);
-assert.deepEqual(characterGame.log[0].importantObjects, [], 'friendship is not a listed important event');
 
 characterGame.applyCharacterEvent(characterCountry, { kind: 'death', personIds: [child.id] }, null);
 const childDeath = characterGame.log[0];

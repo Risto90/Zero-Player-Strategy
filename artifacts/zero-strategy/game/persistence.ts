@@ -132,8 +132,8 @@ export function copyWorld(world: World): WorldCopy {
       ...(c.range ? { range: [...c.range] } : {}),
       ...(c.cells ? { cells: c.cells.map((cell) => ({ ...cell })) } : {}),
       rulerTerms: c.rulerTerms.map((term) => ({ ...term })),
-      ruler: { ...c.ruler, humanOrigin: c.ruler.humanOrigin ? { ids: [...c.ruler.humanOrigin.ids], shares: [...c.ruler.humanOrigin.shares] } : undefined, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], friendIds: [...c.ruler.friendIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
-      heir: c.heir ? { ...c.heir, humanOrigin: c.heir.humanOrigin ? { ids: [...c.heir.humanOrigin.ids], shares: [...c.heir.humanOrigin.shares] } : undefined, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], friendIds: [...c.heir.friendIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
+      ruler: { ...c.ruler, humanOrigin: c.ruler.humanOrigin ? { ids: [...c.ruler.humanOrigin.ids], shares: [...c.ruler.humanOrigin.shares] } : undefined, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
+      heir: c.heir ? { ...c.heir, humanOrigin: c.heir.humanOrigin ? { ids: [...c.heir.humanOrigin.ids], shares: [...c.heir.humanOrigin.shares] } : undefined, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
     })),
     cities: world.cities.map((city) => ({
       ...city,
@@ -142,7 +142,7 @@ export function copyWorld(world: World): WorldCopy {
     nextCityChronicleId: world.nextCityChronicleId,
     cultures: world.cultures.map((c) => ({ ...c })),
     religions: world.religions.map((r) => ({ ...r })),
-    people: world.people.map((p) => ({ ...p, humanOrigin: p.humanOrigin ? { ids: [...p.humanOrigin.ids], shares: [...p.humanOrigin.shares] } : undefined, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], friendIds: [...p.friendIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
+    people: world.people.map((p) => ({ ...p, humanOrigin: p.humanOrigin ? { ids: [...p.humanOrigin.ids], shares: [...p.humanOrigin.shares] } : undefined, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
     cardMultipliers: { ...world.cardMultipliers },
   };
 }

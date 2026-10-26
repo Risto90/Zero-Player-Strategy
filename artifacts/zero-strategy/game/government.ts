@@ -75,7 +75,6 @@ export interface Person {
   deathReason: string | null;
   betrothedId: number | null;
   loverIds: number[];
-  friendIds: number[];
   traits: string[];
   formerRulerOf: number[];
   lastBirthYear: number | null;
@@ -286,7 +285,7 @@ export function createPerson(
   const givenName = pick(GIVEN[gender]);
   return { id, givenName, name: formatPersonName(givenName, familyName, gender, nameContext), age, gender, trait, since: year, alive: true, parents, spouseIds: [], familyId, familyName, familyCultureId, cultureId, religionId,
     humanOrigin: defaultHumanOriginMix(), countryId: -1, bornAt: year - age - Math.random(), deathYear: null, deathReason: null, betrothedId: null,
-    loverIds: [], friendIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
+    loverIds: [], traits: trait ? [trait] : [], formerRulerOf: [], lastBirthYear: null };
 }
 export function createFamilyId(): number { return nextPersonId++; }
 export function reservePersonId(id: number): void { if (Number.isFinite(id)) nextPersonId = Math.max(nextPersonId, id + 1); }

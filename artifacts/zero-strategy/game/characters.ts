@@ -76,7 +76,7 @@ function normalizePerson(raw: Person, c: Country, year: number, world: World): P
   p.parents = Array.isArray(raw.parents) ? [...raw.parents] : [];
   p.spouseIds = Array.isArray(raw.spouseIds) ? [...raw.spouseIds] : [];
   p.loverIds = Array.isArray(raw.loverIds) ? [...raw.loverIds] : [];
-  p.friendIds = Array.isArray(raw.friendIds) ? [...raw.friendIds] : [];
+  delete (p as Person & { friendIds?: number[] }).friendIds;
   p.traits = Array.isArray(raw.traits) ? [...raw.traits] : [];
   p.formerRulerOf = Array.isArray(raw.formerRulerOf) ? [...raw.formerRulerOf] : [];
   reservePersonId(p.id); reservePersonId(p.familyId);

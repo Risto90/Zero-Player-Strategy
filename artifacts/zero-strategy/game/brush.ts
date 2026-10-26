@@ -19,7 +19,7 @@ import {
   randomHumanOriginId,
 } from './human';
 
-export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'waneCity' | 'moveCapital' | 'nomadExpand' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'friendship' | 'romance' | 'trait' | 'revolt' | 'union';
+export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'waneCity' | 'moveCapital' | 'nomadExpand' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'trait' | 'revolt' | 'union';
 export interface CardChoice {
   label: string;
   detail: string;
@@ -37,10 +37,9 @@ export interface CardChoice {
   closeConsulateSeat?: boolean;
 }
 export interface CharacterEvent {
-  kind: 'marriage' | 'birth' | 'death' | 'friendship' | 'trait' | 'engagement' | 'romance';
+  kind: 'marriage' | 'birth' | 'death' | 'trait';
   personIds: number[];
   trait?: string;
-  newPerson?: Person;
   deathCause?: 'random' | 'oldAge';
 }
 /** 'respect': a pixel changes at most once per card. 'repeat': every new stroke applies again. */

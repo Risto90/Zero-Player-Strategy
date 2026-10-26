@@ -372,8 +372,7 @@ function GameScreen({ game }: { game: Game }) {
           ? 'Провести выборы'
           : snap.card?.type === 'death'
             ? 'Продолжить'
-            : snap.card?.type === 'marriage' || snap.card?.type === 'birth' ||
-              snap.card?.type === 'friendship' || snap.card?.type === 'romance' || snap.card?.type === 'trait'
+            : snap.card?.type === 'marriage' || snap.card?.type === 'birth' || snap.card?.type === 'trait'
               ? 'Далее'
               : 'Следующий год';
   const latestText = snap.log[0]?.replace(/^\d+:\s*/, '') ?? '';

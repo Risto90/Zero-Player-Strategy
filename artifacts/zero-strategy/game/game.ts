@@ -385,7 +385,6 @@ export class Game {
       if (choice.person) reservePersonId(choice.person.id);
     }
     if (saved.card?.newRuler) reservePersonId(saved.card.newRuler.id);
-    if (saved.card?.characterEvent?.newPerson) reservePersonId(saved.card.characterEvent.newPerson.id);
     refreshHeirs(game.world, saved.year);
     for (const country of [...game.world.countries]) {
       if (!game.world.countries.includes(country)) continue;
@@ -1654,11 +1653,9 @@ export class Game {
       case 'death':
       case 'marriage':
       case 'birth':
-      case 'friendship':
-      case 'romance':
       case 'trait':
         if (target && card.characterEvent) {
-          this.applyCharacterEvent(target, card.characterEvent, card.newRuler, card.choices?.[card.selectedChoice]);
+          this.applyCharacterEvent(target, card.characterEvent, card.choices?.[card.selectedChoice]);
         }
         break;
       case 'union':
@@ -1742,7 +1739,7 @@ export class Game {
     };
   }
 
-  private applyCharacterEvent(country: Country, event: CharacterEvent, generated: Person | null, choice?: CardChoice): void {
+  private applyCharacterEvent(country: Country, event: CharacterEvent, choice?: CardChoice): void {
     const w = this.world, ids = event.personIds;
     if (event.kind === 'death') {
       const deceased = person(w, ids[0]);
@@ -1829,36 +1826,24 @@ export class Game {
       }
       return;
     }
-    if (event.kind === 'marriage' || event.kind === 'engagement') {
+    if (event.kind === 'marriage') {
       const a = person(w, ids[0]);
-      const b = choice?.person ?? choice?.ruler ?? person(w, ids[1]) ?? event.newPerson ?? generated;
+      const b = choice?.person ?? choice?.ruler ?? person(w, ids[1]);
       if (a && b && a.alive && b.alive) {
-        if (event.kind === 'marriage' && a.betrothedId !== null && a.betrothedId !== b.id) {
+        if (a.betrothedId !== null && a.betrothedId !== b.id) {
           const previousBetrothed = person(w, a.betrothedId);
           if (previousBetrothed?.betrothedId === a.id) previousBetrothed.betrothedId = null;
           a.betrothedId = null;
         }
-        marry(w, country, a, b, event.kind === 'engagement');
-        this.addLog(`${country.name}: ${event.kind === 'engagement' ? 'обручились' : 'поженились'} ${a.name} и ${b.name}.`,
+        marry(w, country, a, b);
+        this.addLog(`${country.name}: поженились ${a.name} и ${b.name}.`,
           [polityChronicleReference(country), ...personChronicleReferences(a, b)],
-          event.kind === 'marriage' ? personChronicleReferences(a, b) : []);
+          personChronicleReferences(a, b));
       }
       return;
     }
-    const a = person(w, ids[0]), b = person(w, ids[1]);
-    if (event.kind === 'romance' && a && b && a.alive && b.alive) {
-      if (!a.loverIds.includes(b.id)) a.loverIds.push(b.id);
-      if (!b.loverIds.includes(a.id)) b.loverIds.push(a.id);
-      this.addLog(`${country.name}: романтическая связь между ${a.name} и ${b.name}.`,
-        [polityChronicleReference(country), ...personChronicleReferences(a, b)],
-        personChronicleReferences(a, b));
-    }
-    if (event.kind === 'friendship' && a && b) {
-      if (!a.friendIds.includes(b.id)) a.friendIds.push(b.id);
-      if (!b.friendIds.includes(a.id)) b.friendIds.push(a.id);
-      this.addLog(`${country.name}: ${a.name} и ${b.name} стали друзьями.`,
-        [polityChronicleReference(country), ...personChronicleReferences(a, b)]);
-    } else if (event.kind === 'trait' && a && a.traits.length === 0) {
+    const a = person(w, ids[0]);
+    if (event.kind === 'trait' && a && a.traits.length === 0) {
       const traits = ['Фанатик', 'Циник', 'Космополит', 'Националист', 'Плодовитый', 'Дальновидный', 'Решительный', 'Уступчивый', 'Осторожный', 'Харизматичный'];
       a.trait = randomItem(traits); a.traits.push(a.trait);
       this.addLog(`${country.name}: у ${a.name} проявилась черта «${a.trait}».`,

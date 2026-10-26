@@ -249,7 +249,7 @@ checkPartition({ childrenCount: 5, incumbentCount: 2, cityCount: 2, expectedPart
   const second = addIncumbent(world, country, 41);
   country.coRulerIds = [first.id, second.id];
   const game = new Game(world, 'observer');
-  game.applyCharacterEvent(country, { kind: 'death', personIds: [first.id] }, null, {
+  game.applyCharacterEvent(country, { kind: 'death', personIds: [first.id] }, {
     label: 'Не назначать консула',
     detail: 'Закрыть место.',
     closeConsulateSeat: true,

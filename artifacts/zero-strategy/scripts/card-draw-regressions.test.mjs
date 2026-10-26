@@ -298,8 +298,8 @@ try {
     'накопительный множитель сбрасывается для выбранного персонажа-цели');
   closeTo(restored.world.cardMultipliers[`country:${country.id}:birth:${father.id}`] ?? 1, 1,
     'у второго родителя остаётся собственный, не общий множитель карты');
-  assert.ok(!birthTrace.choices.some((choice) => /^(birth|marriage|engagement|friendship|romance|trait):\d/.test(choice.key)),
-    'ключи страновых событий не содержат ID персонажа или пары');
+  assert.ok(!birthTrace.choices.some((choice) => /^(birth|marriage|trait):\d/.test(choice.key)),
+    'ключи существующих карт персонажей не содержат ID целевого персонажа');
   assert.ok(birthTrace.choices.filter((choice) =>
     !['death:random', 'death:oldAge'].includes(choice.key))
     .every((choice) => choice.baseWeight >= 1),
@@ -327,7 +327,7 @@ try {
   assert.equal(betrothedMarriage.choices[0].person.id, fiance.id,
     'помолвленный персонаж первым кандидатом сохраняет своего жениха или невесту');
   const alternativeSpouse = betrothedMarriage.choices[1].person;
-  restored.applyCharacterEvent(restoredCountry, betrothedMarriage.characterEvent, null, betrothedMarriage.choices[1]);
+  restored.applyCharacterEvent(restoredCountry, betrothedMarriage.characterEvent, betrothedMarriage.choices[1]);
   assert.equal(savedAdultChild.betrothedId, null, 'после выбора другого кандидата помолвка снимается');
   assert.equal(fiance.betrothedId, null, 'снятая помолвка не оставляет одностороннюю ссылку');
   assert.ok(arePartners(savedAdultChild, alternativeSpouse),

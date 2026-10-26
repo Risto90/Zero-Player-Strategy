@@ -49,8 +49,6 @@ export const CARD_TITLES: Record<CardType, string> = {
   marriage: 'Брак',
   birth: 'Рождение ребёнка',
   death: 'Смерть',
-  friendship: 'Дружба',
-  romance: 'Романтическая связь',
   trait: 'Черта персонажа',
   revolt: 'Переворот',
   union: 'Объединение',
@@ -905,16 +903,6 @@ function countryPeople(world: World, polity: Polity): Person[] {
     (candidate.countryId === polity.id || candidate.id === polity.ruler.id || polity.coRulerIds.includes(candidate.id)));
 }
 
-function makeNewBetrothed(world: World, polity: Polity, person: Person, year: number): Person {
-  const betrothed = newCitizen(world, polity, year);
-  betrothed.age = person.age < 12
-    ? 8 + Math.floor(Math.random() * 4)
-    : 12 + Math.floor(Math.random() * 8);
-  betrothed.bornAt = year - betrothed.age - Math.random();
-  if (betrothed.gender === person.gender) betrothed.gender = person.gender === 'male' ? 'female' : 'male';
-  return betrothed;
-}
-
 /**
  * Генерирует уже выбранную карту смерти одного конкретного человека.
  * Причина передаётся в событии явно: возраст сам по себе не превращает случайную
@@ -957,28 +945,19 @@ function drawElectionCard(world: World, polity: Polity, personId: number, year: 
 function drawCharacterEventCard(
   world: World,
   polity: Polity,
-  kind: 'birth' | 'marriage' | 'engagement' | 'friendship' | 'romance' | 'trait',
+  kind: 'birth' | 'marriage' | 'trait',
   personIds: number[],
   year: number,
-  createBetrothed = false,
 ): Card {
   const first = person(world, personIds[0]);
   if (!first?.alive) throw new Error(`Карта «${kind}» ссылается на отсутствующего или умершего персонажа ${personIds[0]}.`);
   const second = person(world, personIds[1]);
-  const newPerson = createBetrothed ? makeNewBetrothed(world, polity, first, year) : undefined;
-  const otherName = second?.name ?? newPerson?.name ?? 'персонаж';
-  const type: CardType = kind === 'birth' ? 'birth' :
-    kind === 'marriage' || kind === 'engagement' ? 'marriage' :
-      kind === 'friendship' ? 'friendship' :
-        kind === 'romance' ? 'romance' : 'trait';
-  const title = kind === 'birth' ? `Рождение ребёнка у ${first.name} и ${otherName}` :
+  const type: CardType = kind;
+  const title = kind === 'birth' ? `Рождение ребёнка у ${first.name} и ${second?.name ?? 'персонажа'}` :
     kind === 'marriage' ? `Выбор супруга: ${first.name}` :
-      kind === 'engagement' ? `Обручение: ${first.name} и ${otherName}` :
-        kind === 'friendship' ? `Дружба: ${first.name} и ${otherName}` :
-          kind === 'romance' ? `Романтическая связь: ${first.name} и ${otherName}` :
-            `${first.name} получает новую черту`;
+      `${first.name} получает новую черту`;
   const card = makeCard(type, 0, polity, title, -1);
-  card.characterEvent = { kind, personIds, newPerson };
+  card.characterEvent = { kind, personIds };
   if (kind === 'birth') {
     const mother = personIds.map((id) => person(world, id)).find((candidate) => candidate?.gender === 'female');
     const father = personIds.map((id) => person(world, id)).find((candidate) => candidate?.gender === 'male');
@@ -1088,67 +1067,6 @@ function countryCharacterEventOptions(world: World, polity: Polity, year: number
     options.push(characterContributionOption(world, scope, 'marriage', equalContributions(marriageTargets),
       (candidateWorld, candidatePolity, target) =>
         drawCharacterEventCard(candidateWorld, candidatePolity!, 'marriage', [target.id], year)));
-  }
-
-  const engagementTargets = tracked.filter((candidate) =>
-    !candidate.spouseIds.some((id) => person(world, id)?.alive) &&
-    candidate.betrothedId === null && candidate.age >= 8 && candidate.age < 20 &&
-    !polity.modifiers.includes('meritocracy'));
-  if (engagementTargets.length) {
-    options.push(characterContributionOption(world, scope, 'engagement', equalContributions(engagementTargets),
-      (candidateWorld, candidatePolity, target) => {
-        const candidates = tracked.filter((other) =>
-          other.id !== target.id && other.gender !== target.gender &&
-          other.age >= 8 && other.betrothedId === null &&
-          !other.spouseIds.some((id) => person(world, id)?.alive) &&
-          !related(world, target, other));
-        const selected = randomItem(candidates);
-        return selected
-          ? drawCharacterEventCard(candidateWorld, candidatePolity!, 'engagement', [target.id, selected.id], year)
-          : drawCharacterEventCard(candidateWorld, candidatePolity!, 'engagement', [target.id], year, true);
-      }));
-  }
-
-  const friendshipPartners = new Map<number, Person[]>();
-  for (const target of tracked) {
-    if (target.age < 3) continue;
-    const candidates = tracked.filter((other) =>
-      other.id !== target.id && other.age >= 3 &&
-      !target.friendIds.includes(other.id) && !other.friendIds.includes(target.id));
-    if (candidates.length) friendshipPartners.set(target.id, candidates);
-  }
-  const friendshipTargets = [...friendshipPartners.keys()]
-    .map((id) => tracked.find((candidate) => candidate.id === id))
-    .filter((target): target is Person => !!target);
-  if (friendshipTargets.length) {
-    options.push(characterContributionOption(world, scope, 'friendship', equalContributions(friendshipTargets),
-      (candidateWorld, candidatePolity, target) => {
-        const partner = randomItem(friendshipPartners.get(target.id) ?? []);
-        if (!partner) throw new Error(`У выбранной цели карты дружбы ${target.name} не осталось подходящего персонажа.`);
-        return drawCharacterEventCard(candidateWorld, candidatePolity!, 'friendship', [target.id, partner.id], year);
-      }));
-  }
-
-  const romancePartners = new Map<number, Person[]>();
-  for (const target of tracked) {
-    if (target.age < 12) continue;
-    const candidates = tracked.filter((other) =>
-      other.id !== target.id && other.gender !== target.gender && other.age >= 12 &&
-      !target.loverIds.includes(other.id) && !other.loverIds.includes(target.id) &&
-      !target.spouseIds.includes(other.id) && !other.spouseIds.includes(target.id) &&
-      !related(world, target, other));
-    if (candidates.length) romancePartners.set(target.id, candidates);
-  }
-  const romanceTargets = [...romancePartners.keys()]
-    .map((id) => tracked.find((candidate) => candidate.id === id))
-    .filter((target): target is Person => !!target);
-  if (romanceTargets.length) {
-    options.push(characterContributionOption(world, scope, 'romance', equalContributions(romanceTargets),
-      (candidateWorld, candidatePolity, target) => {
-        const partner = randomItem(romancePartners.get(target.id) ?? []);
-        if (!partner) throw new Error(`У выбранной цели романтической связи ${target.name} не осталось подходящего персонажа.`);
-        return drawCharacterEventCard(candidateWorld, candidatePolity!, 'romance', [target.id, partner.id], year);
-      }));
   }
 
   const traitTargets = tracked.filter((candidate) =>
