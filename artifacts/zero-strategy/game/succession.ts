@@ -279,7 +279,7 @@ interface ConsulateSuccessionOptions {
   childIds: Set<number>;
 }
 
-/** Отдельные источники преемников по сочетанию консулата и разделения. */
+/** Источники преемников конкретного консула по сочетанию консулата и разделения. */
 function consulateSuccessionOptions(
   world: World,
   c: Country,
@@ -289,16 +289,14 @@ function consulateSuccessionOptions(
   if (!c.modifiers.includes('consulate') || !c.modifiers.includes('partition')) {
     return { priority: [], siblingIds: new Set(), childIds: new Set() };
   }
-  const consuls = rulers(world, c).filter((leader) => leader.alive);
-  const consulIds = new Set(consuls.map((leader) => leader.id));
   const eligible = (p: Person) => candidateAllowedWithContext(
     world, c, p, old, false, false, true, eligibility,
   );
-  const siblings = world.people.filter((p) => p.alive && !consulIds.has(p.id) &&
-    consuls.some((leader) => leader.parents.some((parentId) => p.parents.includes(parentId))) &&
+  const siblings = world.people.filter((p) => p.alive && p.id !== old.id &&
+    old.parents.some((parentId) => p.parents.includes(parentId)) &&
     eligible(p));
-  const children = world.people.filter((p) => p.alive && !consulIds.has(p.id) &&
-    p.parents.some((parentId) => consulIds.has(parentId)) && eligible(p));
+  const children = world.people.filter((p) => p.alive &&
+    p.parents.includes(old.id) && eligible(p));
   return {
     priority: siblings.length ? siblings : children,
     siblingIds: new Set(siblings.map((p) => p.id)),

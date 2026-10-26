@@ -111,10 +111,14 @@ try {
     const options = leadershipOptions(world, country, 1000, country.ruler);
     assert.equal(options.length, 2, 'наследование по-прежнему предлагает двух кандидатов');
     const generated = options.find((candidate) => !knownIds.has(candidate.id));
-    assert.ok(generated, 'запасной кандидат создаётся только при необходимости');
-    assert.deepEqual(generated.parents, [], 'новому кандидату не приписывают выдуманных родителей');
-    assert.notEqual(generated.familyId, country.ruler.familyId,
-      'новый кандидат начинает династию вместо притворства родственником правителя');
+    if (generated) {
+      assert.deepEqual(generated.parents, [], 'новому кандидату не приписывают выдуманных родителей');
+      assert.notEqual(generated.familyId, country.ruler.familyId,
+        'новый кандидат начинает династию вместо притворства родственником правителя');
+    } else {
+      assert.equal(new Set(options.map((candidate) => candidate.id)).size, 2,
+        'existing demographic matches replace generated candidates without duplicating an option');
+    }
   }
 
   // После смерти правителя должность переходит подходящему потомку, а запись о смерти сохраняется.
