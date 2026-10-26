@@ -48,6 +48,11 @@ assert.deepEqual([...raster.keys()].filter((p) => raster[p] === 1), pixels(islan
 const values = new Uint8Array(MAP_PIXELS).fill(20);
 const layer = new ScalarContourLayer(() => values);
 const bounds = { x0: 0, y0: 0, x1: 80, y1: 80 };
+const mask = new Uint8Array(MAP_PIXELS);
+rectangle(11, 12, 15, 15).forEachPixel((pixel) => { mask[pixel] = 1; });
+const masked = ContourArea.fromMask(mask, bounds, (_value, pixel) => pixel % MAP_WIDTH < 14);
+assert.deepEqual(pixels(masked), pixels(rectangle(11, 12, 13, 15)),
+  'Маска преобразуется в точные горизонтальные контуры с фильтром');
 const unchangedRow = layer.row(70);
 assert.equal(layer.select((v) => v === 20, bounds, '20').size, 81 * 81);
 values[10 * MAP_WIDTH + 20] = 40;

@@ -38,23 +38,33 @@ class ContourTerritoryStrategy {
     });
     const country = card.type === 'create'
       ? world.countries[card.newCountryId ?? -1] : world.countries[card.targetCountryId ?? -1];
+    const isColonization = card.type === 'colonization';
     const candidates = new Map<number, { pixel: number; fit: number; efficiency: number }>();
     const consideredSeas = new Set(this.painter.strategySeaBodies());
     let choosingFirst = country?.pixels === 0;
     const consider = (pixel: number, knownId?: number) => {
-      if (world.owner[pixel] !== 0 || !world.land[pixel] || !paint.contains(pixel)) return;
+      if ((!isColonization && world.owner[pixel] !== 0) || !world.land[pixel] || !paint.contains(pixel)) return;
       const id = knownId ?? regionIds.get(
         `${world.humidity[pixel]}:${world.temperature[pixel]}:${world.drainage[pixel]}`,
       );
       if (id === undefined) return;
       const previous = candidates.get(id);
-      if (previous && world.owner[previous.pixel] === 0) return;
+      const previousIsAvailable = previous && (isColonization
+        ? this.painter.strategyImpactAt(previous.pixel) > 0
+        : world.owner[previous.pixel] === 0);
+      if (previousIsAvailable && !isColonization) return;
       const region = regions[id];
       const impact = this.painter.strategyImpactAt(pixel);
       const cost = this.painter.strategyInkCostAt(pixel, impact);
       if (!(cost > 0)) return;
-      candidates.set(id, { pixel, fit: this.painter.strategyClimateFit(region.temperature, region.humidity),
-        efficiency: impact / cost });
+      const efficiency = impact / cost;
+      if (previousIsAvailable && isColonization &&
+        (previous.efficiency > efficiency || (previous.efficiency === efficiency && previous.pixel <= pixel))) return;
+      candidates.set(id, {
+        pixel,
+        fit: this.painter.strategyClimateFit(region.temperature, region.humidity),
+        efficiency,
+      });
     };
     if (choosingFirst) {
       regions.forEach((region, id) => {
@@ -90,10 +100,12 @@ class ContourTerritoryStrategy {
       for (let index = changedStart; index < this.painter.changed.length; index += 1) {
         forEachNeighbour(this.painter.changed[index], (pixel) => consider(pixel));
       }
-      for (const sea of this.painter.strategySeaBodies()) {
-        if (consideredSeas.has(sea)) continue;
-        consideredSeas.add(sea);
-        for (const pixel of world.water.coastsOf[sea]) consider(pixel);
+      if (!isColonization) {
+        for (const sea of this.painter.strategySeaBodies()) {
+          if (consideredSeas.has(sea)) continue;
+          consideredSeas.add(sea);
+          for (const pixel of world.water.coastsOf[sea]) consider(pixel);
+        }
       }
       if (this.onMeasure) frontierMs += performance.now() - frontierStarted;
     }
@@ -148,8 +160,15 @@ class AutoPaintStrategy {
   run(): void {
     const card = this.painter.card;
     if (card.hint < 0 && card.type !== 'create') return;
+    if (card.type === 'colonization') {
+      if (!this.actions.contour) {
+        throw new Error('Для колонизации ИИ требуется общий инструмент контурной кисти.');
+      }
+      new ContourTerritoryStrategy(this.painter, this.actions, this.onMeasure).run();
+      return;
+    }
     const territorial = card.type === 'create' || card.type === 'expand' ||
-      card.type === 'colonization' || card.type === 'split' || card.type === 'nomadExpand';
+      card.type === 'split' || card.type === 'nomadExpand';
     const radius = territorial ? 10 : 16;
     const isWind = card.type === 'warmWind' || card.type === 'coldWind';
     if (this.actions.contour && (card.type === 'create' || card.type === 'expand') &&

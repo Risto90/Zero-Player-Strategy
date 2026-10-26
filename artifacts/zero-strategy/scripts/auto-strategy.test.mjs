@@ -7,6 +7,7 @@ import { mulberry32 } from '../game/random.ts';
 import { MAP_HEIGHT, MAP_WIDTH, RANKS } from '../game/config.ts';
 import { forEachNeighbour } from '../game/geography.ts';
 import { World } from '../game/world.ts';
+import { colonizationPlan } from '../game/colonization.ts';
 
 function withSeed(seed, callback) {
   const previous = Math.random;
@@ -196,6 +197,147 @@ const noBenefitCard = climateCard('warmCurrent', noPopulationBenefit.country.id,
 runPainter(new CardPainter(noPopulationBenefit.world, noBenefitCard, 'respect'));
 assert.equal(noBenefitCard.ink, 0,
   'climate automation spends its quota on eligible points even when no comfort benefit can be scored');
+
+function colonizationContourFixture() {
+  const world = World.create('random', 61505);
+  const width = 100, height = 100;
+  const x0 = Math.floor((MAP_WIDTH - width) / 2);
+  const y0 = Math.floor((MAP_HEIGHT - height) / 2);
+  const patch = [];
+  const origin = world.humanOriginTable.intern(humanOriginMixToTable({
+    ids: ['european'],
+    shares: [100],
+  }));
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixel = (y0 + y) * MAP_WIDTH + x0 + x;
+      world.land[pixel] = 1;
+      world.water.bodyOf[pixel] = -1;
+      world.temperature[pixel] = 0;
+      world.humidity[pixel] = 0;
+      world.drainage[pixel] = 30;
+      world.humanOrigins[pixel] = origin;
+      patch.push(pixel);
+    }
+  }
+  const existingLand = new Set(world.landIndex);
+  world.landIndex = Int32Array.from([
+    ...world.landIndex,
+    ...patch.filter((pixel) => !existingLand.has(pixel)),
+  ].sort((a, b) => a - b));
+
+  const culture = world.newCulture(null, 1000);
+  const country = world.newCountry({
+    rank: 'тест',
+    cultureId: culture.id,
+    religionId: null,
+    density: 1000,
+    foundedYear: 1000,
+    parentId: null,
+  });
+  const cultureMix = world.cultureTable.single(culture.id, 100);
+  for (let y = 0; y <= 60; y += 1) {
+    for (let x = 0; x <= 19; x += 1) {
+      const pixel = (y0 + y) * MAP_WIDTH + x0 + x;
+      world.setOwner(pixel, country.id + 1);
+      world.density[pixel] = 1000;
+      world.culture[pixel] = cultureMix;
+    }
+  }
+  for (let y = 20; y <= 60; y += 1) {
+    world.rivers[(y0 + y) * MAP_WIDTH + x0 + 19] = 1;
+  }
+  world.recountCountries();
+  assert.ok(world.addCity(country.id, (y0 + 1) * MAP_WIDTH + x0 + 1, 1, true));
+
+  const foreignCulture = world.newCulture(null, 1000);
+  const foreign = world.newCountry({
+    rank: 'тест',
+    cultureId: foreignCulture.id,
+    religionId: null,
+    density: 10,
+    foundedYear: 1000,
+    parentId: null,
+  });
+  const foreignMix = world.cultureTable.single(foreignCulture.id, 100);
+  for (let y = 59; y <= 61; y += 1) {
+    for (let x = 33; x <= 35; x += 1) {
+      const pixel = (y0 + y) * MAP_WIDTH + x0 + x;
+      world.setOwner(pixel, foreign.id + 1);
+      world.density[pixel] = 10;
+      world.culture[pixel] = foreignMix;
+    }
+  }
+  world.recountCountries();
+  assert.ok(world.addCity(foreign.id, (y0 + 60) * MAP_WIDTH + x0 + 34, 2, true));
+
+  const betterTemperature = 50, betterHumidity = 55;
+  for (let y = 25; y <= 30; y += 1) {
+    for (let x = 20; x <= 26; x += 1) {
+      const pixel = (y0 + y) * MAP_WIDTH + x0 + x;
+      world.temperature[pixel] = betterTemperature;
+      world.humidity[pixel] = betterHumidity;
+    }
+  }
+  return {
+    world,
+    country,
+    x0,
+    y0,
+    betterTemperature,
+    betterHumidity,
+    blockedPixel: (y0 + 60) * MAP_WIDTH + x0 + 36,
+    preferredPixel: (y0 + 25) * MAP_WIDTH + x0 + 20,
+  };
+}
+
+const colonizationFixtureData = colonizationContourFixture();
+const colonizationPlanData = colonizationPlan(
+  colonizationFixtureData.world,
+  colonizationFixtureData.country,
+);
+assert.ok(colonizationPlanData.targetCount > 0, 'речная область содержит подходящие цели колонизации');
+assert.equal(colonizationPlanData.targets[colonizationFixtureData.preferredPixel], 1,
+  'предпочтительный климатический контур доступен по реке');
+assert.equal(colonizationPlanData.targets[colonizationFixtureData.blockedPixel], 1,
+  'точка внутри чужой городской сферы есть в географическом плане для проверки городского запрета');
+const colonizationCard = climateCard(
+  'colonization',
+  colonizationFixtureData.country.id,
+  colonizationPlanData.hint,
+  0.02,
+);
+const colonizationPainter = new CardPainter(colonizationFixtureData.world, colonizationCard, 'respect');
+const worldBounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
+const colonizationArea = colonizationPainter.strategyCandidateArea(worldBounds);
+assert.ok(colonizationPainter.strategyImpactAt(colonizationFixtureData.preferredPixel) > 0,
+  'городские множители дают законную стоимость в собственной речной сфере');
+assert.equal(colonizationPainter.strategyImpactAt(colonizationFixtureData.blockedPixel), 0,
+  'чужая городская сфера без пересечения со своей запрещает колонизацию точки');
+assert.equal(colonizationArea.contains(colonizationFixtureData.blockedPixel), false,
+  'ИИ исключает запрещённую городскую область ещё при выборе контуров');
+const colonizationActions = {
+  beginStroke: (x, y) => colonizationPainter.dab(x, y, 10),
+  dab: (x, y, radius) => colonizationPainter.dab(x, y, radius),
+  line: (ax, ay, bx, by, radius) => colonizationPainter.line(ax, ay, bx, by, radius),
+  endStroke: () => colonizationPainter.endStroke(),
+  contour: (area, seed) => colonizationPainter.paintContour(area, seed),
+  contours: (areas) => colonizationPainter.paintContours(areas),
+};
+autoPaint(colonizationPainter, colonizationActions);
+assert.ok(colonizationPainter.changed.length > 0, 'ИИ колонизирует часть разрешённой речной области');
+assert.equal(
+  colonizationFixtureData.world.temperature[colonizationPainter.changed[0]],
+  colonizationFixtureData.betterTemperature,
+  'ИИ начинает с наиболее подходящего климатического контура, а не со случайного мазка',
+);
+assert.equal(
+  colonizationFixtureData.world.humidity[colonizationPainter.changed[0]],
+  colonizationFixtureData.betterHumidity,
+  'первый выбранный контур учитывает влажность вместе с температурой',
+);
+assert.ok(colonizationPainter.changed.every((pixel) => colonizationPlanData.targets[pixel] === 1),
+  'кисть остаётся внутри береговых и речных целей плана колонизации');
 
 function cityPlacementFixture() {
   const world = World.create('random', 61503);

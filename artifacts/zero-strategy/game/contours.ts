@@ -54,6 +54,31 @@ export class ContourArea {
     return new ContourArea(spans);
   }
 
+  static fromMask(
+    mask: ArrayLike<number>,
+    bounds: ContourBounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 },
+    accepts: (value: number, pixel: number) => boolean = () => true,
+  ): ContourArea {
+    const spans: ContourSpan[] = [];
+    const x0 = Math.max(0, bounds.x0);
+    const x1 = Math.min(MAP_WIDTH - 1, bounds.x1);
+    for (let y = Math.max(0, bounds.y0); y <= Math.min(MAP_HEIGHT - 1, bounds.y1); y += 1) {
+      const row = y * MAP_WIDTH;
+      let start = -1;
+      for (let x = x0; x <= x1 + 1; x += 1) {
+        const pixel = row + x;
+        const value = mask[pixel] ?? 0;
+        const included = x <= x1 && value > 0 && accepts(value, pixel);
+        if (included && start < 0) start = x;
+        else if (!included && start >= 0) {
+          spans.push({ y, start, end: x });
+          start = -1;
+        }
+      }
+    }
+    return new ContourArea(spans, true);
+  }
+
   /** Координаты кисти непрерывные; проверяется центр каждой точки, как у ручного мазка. */
   static circle(cx: number, cy: number, radius: number): ContourArea {
     const spans: ContourSpan[] = [];

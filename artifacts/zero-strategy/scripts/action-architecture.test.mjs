@@ -6,6 +6,7 @@ const root = resolve(import.meta.dirname, '..');
 const game = readFileSync(resolve(root, 'game/game.ts'), 'utf8');
 const brush = readFileSync(resolve(root, 'game/brush.ts'), 'utf8');
 const autoPaint = readFileSync(resolve(root, 'game/autoPaint.ts'), 'utf8');
+const autoPaintCandidates = readFileSync(resolve(root, 'game/autoPaintCandidates.ts'), 'utf8');
 const instructions = readFileSync(resolve(root, '../../replit.md'), 'utf8');
 
 function methodBody(source, marker) {
@@ -72,6 +73,10 @@ assert.match(contourStrategyBody, /this\.actions\.contour!\(/);
 assert.match(contourStrategyBody, /this\.actions\.endStroke\(/);
 assert.doesNotMatch(contourStrategyBody, /this\.painter\.(dab|line|paintContour|paintContours)\(/,
   'контурная стратегия применяет заливку через общий обработчик');
+assert.match(autoPaint, /if \(card\.type === 'colonization'\)[\s\S]{0,220}new ContourTerritoryStrategy/,
+  'ИИ выбирает колонизацию через контурную стратегию');
+assert.doesNotMatch(autoPaintCandidates, /card\.type === 'colonization'[\s\S]{0,220}colonizationMask/,
+  'поиск случайных точек больше не используется для выбора места колонизации');
 assert.match(autoPaint, /export function autoPaint\(\s*painter: CardPainter,\s*actions: PaintActions(?:,|\))/,
   'automatic painting must require a shared command adapter; no direct-painter fallback is allowed');
 assert.match(automaticBody, /beginStroke: \(x, y\) => this\.dispatchAction\(\{\s*type: 'beginStroke'/);

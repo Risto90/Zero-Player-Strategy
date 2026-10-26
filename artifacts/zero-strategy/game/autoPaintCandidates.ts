@@ -82,12 +82,6 @@ export class AutoPaintCandidateSelector {
       }
       this.addCoastSeeds(seas, candidates, 400);
       this.globalSeeds(candidates, 80);
-    } else if (card.type === 'colonization' && this.painter.colonizationMask) {
-      const mask = this.painter.colonizationMask;
-      const stride = Math.max(1, Math.ceil(mask.length / 900));
-      for (let pixel = 0; pixel < mask.length; pixel += stride) {
-        if (mask[pixel] === 1) candidates.add(pixel);
-      }
     } else if (card.type === 'nomadExpand' && target) {
       this.addCountrySeeds(target, candidates);
       if (!card.nomadDensityOnly) {

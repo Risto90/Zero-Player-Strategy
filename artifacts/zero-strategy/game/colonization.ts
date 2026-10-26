@@ -1,8 +1,9 @@
-import { MAP_PIXELS, SHARE_STEP } from './config';
+import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, SHARE_STEP } from './config';
 import { quantizeShares } from './composition';
 import { combineHumanOriginTableMixes } from './human';
 import { demography } from './demography';
 import { forEachNeighbour } from './geography';
+import type { ContourBounds } from './contours';
 import { resizeCityPopulation } from './settlements';
 import type { Country, World } from './world';
 
@@ -18,6 +19,7 @@ export interface ColonizationPlan {
   availablePopulation: number;
   targetCount: number;
   hint: number;
+  targetBounds: ContourBounds;
 }
 
 export interface PopulationGroup {
@@ -415,7 +417,26 @@ export function colonizationPlan(world: World, country: Country): ColonizationPl
     });
   }
   const targetCount = queue.length;
-  const plan = { targets, anchors, connectedTerritory, donors, averageDensity, availablePopulation, targetCount, hint };
+  const targetBounds = { x0: MAP_WIDTH, y0: MAP_HEIGHT, x1: -1, y1: -1 };
+  for (const pixel of queue) {
+    const x = pixel % MAP_WIDTH;
+    const y = Math.floor(pixel / MAP_WIDTH);
+    targetBounds.x0 = Math.min(targetBounds.x0, x);
+    targetBounds.y0 = Math.min(targetBounds.y0, y);
+    targetBounds.x1 = Math.max(targetBounds.x1, x);
+    targetBounds.y1 = Math.max(targetBounds.y1, y);
+  }
+  const plan = {
+    targets,
+    anchors,
+    connectedTerritory,
+    donors,
+    averageDensity,
+    availablePopulation,
+    targetCount,
+    hint,
+    targetBounds,
+  };
   cached = { world, version: world.version, countryId: country.id, plan };
   return plan;
 }
