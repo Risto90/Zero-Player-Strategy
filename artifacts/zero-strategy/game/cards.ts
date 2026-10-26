@@ -60,7 +60,7 @@ for (let y = -STANDARD_EXPANSION_RADIUS; y <= STANDARD_EXPANSION_RADIUS; y += 1)
     if (x * x + y * y <= STANDARD_EXPANSION_RADIUS * STANDARD_EXPANSION_RADIUS) standardExpansionPassPixels += 1;
   }
 }
-// A town gathers 10% from its unmodified sphere; the reference equals five default-M brush dabs.
+// Город собирает 10% населения из немодифицированной сферы; ориентир равен пяти мазкам стандартной кисти M.
 const CITY_DENSITY_REFERENCE = 5 * standardExpansionPassPixels / (0.1 * RANKS[0].ink);
 
 type Polity = Country;
@@ -209,8 +209,8 @@ function drawNomadExpansionCard(world: World, nomad: Country): Card | null {
 const visited = new Uint8Array(MAP_PIXELS);
 
 /**
- * Counts free land reachable from the seeds (by land, or across any sea to any of its coasts),
- * stopping at `cap`.
+ * Считает свободные земли, достижимые от исходных точек по суше или через море до любого берега,
+ * и останавливается на значении `cap`.
  */
 function reachableFree(
   world: World,
@@ -336,7 +336,7 @@ function drawCreate(world: World, year: number): Card | null {
   const fitting = RANKS.filter((rank) => rank.ink <= best.capacity);
   const rank = fitting.length > 0 ? randomItem(fitting) : RANKS[0];
   const ink = Math.min(rank.ink, best.capacity);
-  // A state founded on empty land always brings its own new culture.
+  // Государство, основанное на ничейной земле, всегда приносит новую культуру.
   const culture = world.newCulture(null, year, randomHumanOriginId());
   const religionsInUse = world.religions.filter((r) => r.foundedYear <= year);
   const religionId = religionsInUse.length > 0 && Math.random() < 0.4 ? randomItem(religionsInUse).id : null;
@@ -368,12 +368,12 @@ function drawExpand(world: World, country: Country): Card | null {
     });
   });
   const seas = countrySeas(world, country);
-  // Four thousand candidate pixels are enough for a normal expansion quota.
-  // We deliberately cap the scan there; a lower measured cost only reduces
-  // the card stock and cannot create ink the brush cannot spend.
+  // Четырёх тысяч точек достаточно для обычной квоты расширения.
+  // Ограничиваем проверку намеренно: меньшая оценка только снижает запас карт
+  // и не создаёт чернила, которые кисть не сможет потратить.
   const reachable = reachableFree(world, frontier, INK.expand, seas);
   if (reachable.count < 1) {
-    // With no unclaimed land, expansion becomes internal development rather than disappearing.
+    // Если ничейной земли нет, расширение становится внутренним развитием, а не исчезает.
     const available: number[] = [];
     world.forEachCountryPixel(country, (p) => {
       available.push(p);
@@ -448,8 +448,9 @@ function drawColonization(world: World, country: Country): Card | null {
     });
     if (inkCapacity >= ink) break;
   }
-  // Simulate the real densest-donor transfer limits: foreign targets may use
-  // less than one pixel's ink, and every new settlement can become a donor.
+  // Учитываем реальные ограничения переноса от самого плотного участка:
+  // для чужой территории может требоваться меньше чернил, чем на одну точку,
+  // а каждый новый заселённый участок может стать донором.
   card.ink = Math.min(card.ink, inkCapacity);
   card.inkTotal = card.ink;
   if (card.ink < 1) return null;
@@ -697,7 +698,7 @@ function drawDeathCard(world: World, polity: Polity, personId: number, year: num
 function drawLifeCard(world: World, country: Polity, year: number): Card | null {
   if (country.government === 'tribal' && country.ruler.age >= 60 && Math.random() < 0.08) {
     const card = makeCard('succession', 0, country, `Пожилой вождь ${country.ruler.name} может передать власть при жизни.`, -1);
-    card.choices = leadershipOptions(world, country, year, country.ruler, { peacefulTransfer: true }).slice(0, 2).map((ruler) => ({
+    card.choices = leadershipOptions(world, country, year, country.ruler).slice(0, 2).map((ruler) => ({
       label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: country.ruler.id,
     }));
     return card;
@@ -841,7 +842,7 @@ function drawUnion(world: World, country: Country, year: number): Card | null {
   return card;
 }
 
-/** Counts pixels in scope that the card can change, stopping at `cap`. */
+/** Считает доступные карте точки в заданной области и останавливается на `cap`. */
 function countScope(world: World, country: Country | null, cap: number, accept: (p: number) => boolean): { count: number; hint: number } {
   let count = 0;
   let hint = -1;
@@ -876,15 +877,15 @@ const CLIMATE_CARD_KEYS = new Set<ClimateCard>([
   'warmCurrent', 'coldCurrent', 'warmWind', 'coldWind',
 ]);
 
-/** Climate candidates share one early-exit scan rather than rescanning the full map for each card. */
+/** Все климатические варианты используют одну проверку с ранним выходом, а не пересканируют всю карту. */
 function availableClimateCards(world: World, polity: Polity | null, keys: Set<string>): Set<string> {
   const candidates = [...keys].filter((key): key is ClimateCard => CLIMATE_CARD_KEYS.has(key as ClimateCard));
   const available = new Set<string>();
   if (!candidates.length) return available;
   const country = polity && !isNomad(polity) ? polity : null;
   if (country) {
-    // Any valid country climate card must have a land start point in that country.
-    // Checking its bounding box avoids a full-world scan for every country's draw.
+    // Для климатической карты страны нужна исходная точка на её суше.
+    // Проверка ограничивающей рамки избегает полного сканирования мира при каждом розыгрыше.
     world.forEachCountryPixel(country, (pixel) => {
       for (const type of candidates) {
         if (!available.has(type) && climateCanChange(world, type, pixel)) available.add(type);
@@ -935,7 +936,7 @@ export function drawClimateCard(world: World, type: ClimateCard, country: Countr
     const cost = winds && !land ? 0.5 : 1;
     if (capacity + cost > cap) continue;
     capacity += cost;
-    // Winds must start on the country's land; other climate brushes may start anywhere eligible.
+    // Кисть ветра должна начинаться на суше страны; другие климатические кисти могут начинаться в любой подходящей точке.
     if ((!country || land) && (hint < 0 || Math.random() < 1 / Math.max(1, capacity))) hint = p;
   }
   if (capacity <= 0) return null;
@@ -1084,7 +1085,7 @@ function commitProbedCard(world: World, prepared: ProbedCard): Card {
   return prepared.card;
 }
 
-/** Probe candidates in an isolated world copy, then commit only the selected card's new entities. */
+/** Проверяет варианты на изолированной копии мира и переносит новые сущности только выбранной карты. */
 function drawFirstApplicable(world: World, scope: string, polity: Polity | null, options: CardDrawOption[]): Card | null {
   const climateOptions = availableClimateCards(world, polity, new Set(options.map((option) => option.key)));
   const probe = forkWorld(world, polity);
@@ -1132,7 +1133,7 @@ function drawFirstApplicable(world: World, scope: string, polity: Polity | null,
   return null;
 }
 
-/** New faiths become rarer as more of them exist, so the world is not flooded with tiny sects. */
+/** Чем больше вероисповеданий уже существует, тем реже появляются новые, чтобы мир не заполнялся мелкими сектами. */
 function faithRoom(world: World): number {
   return Math.max(0.02, 1 - world.religions.length / 16);
 }

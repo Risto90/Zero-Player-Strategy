@@ -3,7 +3,7 @@ import { isActiveCountry, type Country, type World } from './world';
 import { demography, sampleDemographic } from './demography';
 import { inheritHumanOrigins, normalizeHumanOriginMix } from './human';
 
-/** Every polity, settled or nomadic, is a country with one current ID. */
+/** Каждое политическое образование — оседлое или кочевое — является страной с одним текущим ID. */
 export function setPersonHome(p: Person, home: Country | null): void {
   p.countryId = home?.id ?? -1;
 }
@@ -93,7 +93,79 @@ function normalizePerson(raw: Person, c: Country, year: number, world: World): P
   return p;
 }
 
-/** Additive migration: keep legacy rulers/heirs and map the old empire/monarchy identifiers. */
+/** Проверяет, что общий familyId подтверждается связной цепочкой родства. */
+function normalizeDynastyLineage(world: World): void {
+  const byId = new Map(world.people.map((p) => [p.id, p]));
+  const ordered = [...world.people].sort((a, b) => a.bornAt - b.bornAt || a.id - b.id);
+
+  for (const p of ordered) {
+    if (!p.parents.length) continue;
+    const parents = p.parents.map((id) => byId.get(id));
+    if (parents.length < 2 || parents.some((parent) => !parent)) {
+      p.parents = [];
+      continue;
+    }
+    const lineageParent = parents.find((parent) => parent?.familyId === p.familyId) ?? parents[0];
+    if (lineageParent) p.familyId = lineageParent.familyId;
+  }
+
+  const membersByFamily = new Map<number, Person[]>();
+  for (const p of world.people) {
+    const members = membersByFamily.get(p.familyId) ?? [];
+    members.push(p);
+    membersByFamily.set(p.familyId, members);
+  }
+
+  for (const [familyId, members] of membersByFamily) {
+    const memberIds = new Set(members.map((p) => p.id));
+    const connected = new Map(members.map((p) => [p.id, new Set<number>()]));
+    for (const child of members) {
+      for (const parentId of child.parents) {
+        const parent = byId.get(parentId);
+        if (!parent || parent.familyId !== familyId || !memberIds.has(parentId)) continue;
+        connected.get(child.id)!.add(parentId);
+        connected.get(parentId)!.add(child.id);
+      }
+    }
+
+    const components: Person[][] = [];
+    const visited = new Set<number>();
+    for (const member of members) {
+      if (visited.has(member.id)) continue;
+      const component: Person[] = [];
+      const queue = [member.id];
+      visited.add(member.id);
+      for (let head = 0; head < queue.length; head += 1) {
+        const current = byId.get(queue[head]);
+        if (current) component.push(current);
+        for (const relatedId of connected.get(queue[head]) ?? []) {
+          if (visited.has(relatedId)) continue;
+          visited.add(relatedId);
+          queue.push(relatedId);
+        }
+      }
+      components.push(component);
+    }
+
+    components.sort((a, b) => {
+      const firstA = a.reduce((first, p) => p.bornAt < first.bornAt ||
+        (p.bornAt === first.bornAt && p.id < first.id) ? p : first, a[0]);
+      const firstB = b.reduce((first, p) => p.bornAt < first.bornAt ||
+        (p.bornAt === first.bornAt && p.id < first.id) ? p : first, b[0]);
+      return firstA.bornAt - firstB.bornAt || firstA.id - firstB.id;
+    });
+
+    for (const component of components.slice(1)) {
+      const newFamilyId = createFamilyId();
+      for (const p of component) {
+        p.familyId = newFamilyId;
+        delete p.familyCultureId;
+      }
+    }
+  }
+}
+
+/** Дополняющая миграция: сохраняет прежних правителей и наследников и сопоставляет старые формы правления. */
 export function normalizePolitics(world: World, year: number): void {
   for (const culture of world.cultures) {
     culture.nameStyleId ??= legacyNameStyleForCulture(culture.id);
@@ -124,15 +196,12 @@ export function normalizePolitics(world: World, year: number): void {
     }));
     if (c.heir) {
       c.heir = link(c.heir);
-      // Older saves could contain a fabricated one-parent heir. Keep the person,
-      // but do not preserve a false parent-child relationship or heir status.
+      // В старых сохранениях мог быть выдуманный наследник с одним родителем.
+      // Персонажа сохраняем, но не оставляем ложную связь родителя с ребёнком и статус наследника.
       if (c.heir.parents.length < 2) {
         c.heir.parents = [];
         c.heir = null;
       } else {
-        c.heir.familyId = c.ruler.familyId;
-        c.heir.familyName = c.ruler.familyName;
-        c.heir.familyCultureId = c.ruler.familyCultureId ?? c.ruler.cultureId;
         c.heir.name = formatPersonName(c.heir.givenName, c.heir.familyName, c.heir.gender,
           parentNamingContext(world, c.heir, world.cultures[c.heir.cultureId]?.nameStyleId ?? legacyNameStyleForCulture(c.heir.cultureId)));
         if (c.heir.countryId < 0 && (c.pixels > 0 || c.type === 'nomadic')) setPersonHome(c.heir, c);
@@ -203,8 +272,8 @@ export function normalizePolitics(world: World, year: number): void {
     }
     c.rulerTerms = terms;
   }
-  // The old simulator stored both parents on each real birth but did not always
-  // persist the relationship itself. Reconstruct a mutual love bond when needed.
+  // Прежний симулятор записывал обоих родителей при рождении, но не всегда
+  // сохранял их отношения. При необходимости восстанавливаем взаимную любовную связь.
   const byId = new Map(world.people.map((p) => [p.id, p]));
   for (const child of world.people) {
     if (child.parents.length < 2) {
@@ -212,13 +281,23 @@ export function normalizePolitics(world: World, year: number): void {
       continue;
     }
     const [a, b] = child.parents.slice(0, 2).map((id) => byId.get(id));
-    if (!a || !b) continue;
+    if (!a || !b) {
+      child.parents = [];
+      continue;
+    }
     const married = a.spouseIds.includes(b.id) || b.spouseIds.includes(a.id);
     const lovers = a.loverIds.includes(b.id) || b.loverIds.includes(a.id);
     const relation = married ? a.spouseIds : lovers ? a.loverIds : a.loverIds;
     const reciprocal = married ? b.spouseIds : b.loverIds;
     if (!relation.includes(b.id)) relation.push(b.id);
     if (!reciprocal.includes(a.id)) reciprocal.push(a.id);
+  }
+  normalizeDynastyLineage(world);
+  for (const c of world.countries) {
+    const officeFamilies = [c.ruler, ...c.coRulerIds.map((id) => person(world, id)).filter((p): p is Person => !!p)]
+      .map((p) => p.familyId);
+    if (c.heir) officeFamilies.push(c.heir.familyId);
+    c.dynastyClaims = [...new Set([...c.dynastyClaims, ...officeFamilies])];
   }
   ensureUniqueDynastySurnames(world);
 }
@@ -241,13 +320,13 @@ export function trackedForBirth(world: World, country: Country, p: Person): bool
   })) return true;
   return member || inDynasty;
 }
-/** Every living named person belonging to this country, independent of dynasty. */
+/** Все живые именные персонажи страны независимо от династии. */
 export function countryCharacters(world: World, country: Country): Person[] {
   return world.people
     .filter((p) => p.alive && p.countryId === country.id)
     .sort((a, b) => b.age - a.age || a.name.localeCompare(b.name) || a.id - b.id);
 }
-/** Migrate family surnames, retain each family's cultural affix, and keep living dynasties distinct. */
+/** Переносит фамилии семей, сохраняет культурный аффикс и разделяет династии живых персонажей. */
 export function ensureUniqueDynastySurnames(world: World): void {
   const membersByFamily = new Map<number, Person[]>();
   for (const p of world.people) {

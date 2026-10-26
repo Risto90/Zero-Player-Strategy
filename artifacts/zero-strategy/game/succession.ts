@@ -1,5 +1,4 @@
 import type { Person } from './government';
-import { formatPersonName, legacyNameStyleForCulture } from './government';
 import type { Country, World } from './world';
 import { person, newCitizen, registerPerson } from './characters';
 import { demography, weighted, type Demography } from './demography';
@@ -19,7 +18,7 @@ export interface RulerHistoryEntry {
   current: boolean;
   currentCoRuler: boolean;
 }
-/** Reconcile open terms when offices are adjusted outside a direct appointment. */
+/** Согласует открытые сроки должностей, изменённых вне прямого назначения. */
 export function syncRulerTerms(c: Country, year: number): void {
   c.rulerTerms ??= [];
   const active = new Map<number, 'ruler' | 'coRuler'>([[c.ruler.id, 'ruler']]);
@@ -46,7 +45,7 @@ function closeRulerTerm(c: Country, personId: number, office: 'ruler' | 'coRuler
   if (term) term.endYear = year;
 }
 
-/** Returns one chronologically sorted row for every recorded appointment. */
+/** Возвращает по одной записи о каждом назначении, отсортированные по времени. */
 export function countryRulerHistory(world: World, c: Country): RulerHistoryEntry[] {
   const activeIds = new Set([c.ruler.id, ...c.coRulerIds]);
   const ids = new Set([
@@ -285,7 +284,7 @@ function candidateWeightNotes(
   return notes;
 }
 
-/** Eligible existing candidates, with chance advantages kept separate from succession rights. */
+/** Подходящие существующие кандидаты; преимущества шанса не смешиваются с правами наследования. */
 export function countryCandidates(world: World, c: Country): CountryCandidate[] {
   const old = c.ruler;
   const peopleById = new Map(world.people.map((p) => [p.id, p]));
@@ -492,42 +491,21 @@ export function refreshHeirs(world: World, year?: number): void {
   }
 }
 
-/** Generated options are proposals only; only the chosen person is added to the world registry. */
+/** Сгенерированные варианты — только предложения; в реестр мира попадает лишь выбранный персонаж. */
 export function leadershipOptions(
   world: World,
   c: Country,
   year: number,
   old = c.ruler,
-  options: { peacefulTransfer?: boolean } = {},
 ): Person[] {
   const family = successionOrder(world, c, old);
   const unique = (people: (Person | null)[]) => people.filter((p, i, all): p is Person =>
     !!p && all.findIndex((x) => x?.id === p.id) === i);
   const fresh = () => newCitizen(world, c, year);
-  const dynastic = (): Person => {
-    const p = fresh();
-    p.familyId = old.familyId;
-    p.familyName = old.familyName;
-    p.familyCultureId = old.familyCultureId ?? old.cultureId;
-    p.parents = [];
-    p.age = c.modifiers.includes('meritocracy') || (c.government === 'republic') ? 24 :
-      c.government === 'tyranny' || c.modifiers.includes('coRule') ? 12 : 16;
-    p.bornAt = year - p.age - Math.random();
-    if (c.modifiers.includes('ethnic') && c.government !== 'republic') p.cultureId = old.cultureId;
-    if (c.modifiers.includes('theocracy') && c.government !== 'republic') p.religionId = old.religionId;
-    p.name = formatPersonName(p.givenName, p.familyName, p.gender, {
-      style: world.cultures[p.cultureId]?.nameStyleId ?? legacyNameStyleForCulture(p.cultureId),
-    });
-    return p;
-  };
-  const oldDynastyHeirs = unique(family).filter((p) => p.familyId === old.familyId);
-  const hasPartition = options.peacefulTransfer && c.modifiers.includes('partition');
-  const allowForeignDynasty = !hasPartition || oldDynastyHeirs.length <= 1 ||
-    world.cities.filter((city) => city.countryId === c.id).length === 1;
-  const restrictForeignDynasties = hasPartition && !allowForeignDynasty;
-  const distinctFamily = unique(family).filter((p) =>
-    !restrictForeignDynasties || p.familyId === old.familyId);
-  const fallback = () => restrictForeignDynasties ? dynastic() : fresh();
+  const distinctFamily = unique(family);
+  // Новый кандидат начинает отдельную семью. Не создаём видимость родства
+  // с прежним правителем копированием его familyId.
+  const fallback = fresh;
   const republicanPartners = c.government === 'republic' && c.modifiers.includes('pornocracy')
     ? new Set(countryCandidates(world, c).filter((candidate) =>
       candidate.advantages.some((reason) => reason.startsWith('Порнократия:')))
@@ -562,7 +540,7 @@ export function leadershipOptions(
     const first = hasFixedHeir(c) ? eligible[0] ?? null :
       weighted(eligible.map((p) => ({ value: p, weight: candidateWeight(world, c, p, old) })));
     const second = eligible.find((p) => p.id !== first?.id) ?? null;
-    return ensurePair(first, second, dynastic);
+    return ensurePair(first, second, fallback);
   }
   if (c.government === 'tyranny') {
     const first = drawFamily();
@@ -573,7 +551,7 @@ export function leadershipOptions(
     const proposal = fallback();
     const matching = communistPool(c, world.people.filter((p) => isMember(c, p) &&
       p.cultureId === proposal.cultureId && p.religionId === proposal.religionId &&
-      (!restrictForeignDynasties || p.familyId === old.familyId) && candidateAllowed(world, c, p, old)));
+      candidateAllowed(world, c, p, old)));
     if (matching.length && Math.random() < 0.5) return weighted(matching.map((p) => ({
       value: p,
       weight: candidateWeight(world, c, p, old, republicanPartners.has(p.id)),
@@ -605,8 +583,8 @@ export function appoint(world: World, c: Country, p: Person, year: number, seatI
   syncRulerTerms(c, year);
 }
 /**
- * Repairs legacy or inconsistent active offices without changing living leaders.
- * The callback lets country successions retain the game's normal annexation path.
+ * Исправляет старые или несогласованные должности, не меняя живых правителей.
+ * Функция обратного вызова сохраняет обычный путь присоединения стран при наследовании.
  */
 export function repairDeadOfficeHolders(
   world: World,
