@@ -72,6 +72,12 @@ assert.ok(successfulEvents.every((event) => event.cardType !== null),
   'every selected card must be traced with its resulting card type');
 assert.ok(successfulEvents.every((event) => event.choices.some((choice) => choice.key === event.selectedKey)),
   'every selected key must be present in the recorded draw pool');
+const retriedEvent = successfulEvents.find((event) => event.rejectedKeys.length > 0);
+assert.ok(retriedEvent, 'the seeded observer run must exercise and record a rejected candidate');
+assert.ok(retriedEvent.rejectedKeys.every((key) =>
+  retriedEvent.choices.some((choice) => choice.key === key) &&
+  !retriedEvent.finalChoices.some((choice) => choice.key === key)),
+'rejected options must remain in the initial pool and be removed before the final retry');
 for (const event of successfulEvents) {
   const actualTotal = event.choices.reduce((sum, choice) => sum + choice.actualProbability, 0);
   const baseTotal = event.choices.reduce((sum, choice) => sum + choice.baseProbability, 0);
