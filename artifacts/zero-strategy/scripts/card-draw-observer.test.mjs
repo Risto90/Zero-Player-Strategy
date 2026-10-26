@@ -72,19 +72,16 @@ assert.ok(successfulEvents.every((event) => event.cardType !== null),
   'every selected card must be traced with its resulting card type');
 assert.ok(successfulEvents.every((event) => event.choices.some((choice) => choice.key === event.selectedKey)),
   'every selected key must be present in the recorded draw pool');
-const retriedEvent = successfulEvents.find((event) => event.rejectedKeys.length > 0);
-assert.ok(retriedEvent, 'the seeded observer run must exercise and record a rejected candidate');
-assert.ok(retriedEvent.rejectedKeys.every((key) =>
-  retriedEvent.choices.some((choice) => choice.key === key) &&
-  !retriedEvent.finalChoices.some((choice) => choice.key === key)),
-'rejected options must remain in the initial pool and be removed before the final retry');
+assert.ok(successfulEvents.every((event) => !('rejectedKeys' in event) && !('finalChoices' in event)),
+  'the draw trace must contain one pool only, with no post-selection rejection pool');
 for (const event of successfulEvents) {
   const actualTotal = event.choices.reduce((sum, choice) => sum + choice.actualProbability, 0);
   const baseTotal = event.choices.reduce((sum, choice) => sum + choice.baseProbability, 0);
-  const finalTotal = event.finalChoices.reduce((sum, choice) => sum + choice.actualProbability, 0);
+  const selected = event.choices.find((choice) => choice.key === event.selectedKey);
+  assert.ok(selected && selected.programmedWeight > 0,
+    'the selected card must have positive weight in the original draw pool');
   assert.ok(Math.abs(actualTotal - 1) < 1e-9, 'actual probabilities must sum to one');
   assert.ok(Math.abs(baseTotal - 1) < 1e-9, 'base probabilities must sum to one');
-  assert.ok(Math.abs(finalTotal - 1) < 1e-9, 'final retry probabilities must sum to one');
 }
 
 const grouped = new Map();
@@ -168,11 +165,6 @@ const typeCounts = [...successfulEvents.reduce((counts, event) => {
   counts.set(event.cardType, (counts.get(event.cardType) ?? 0) + 1);
   return counts;
 }, new Map())].sort(([a], [b]) => a.localeCompare(b));
-const rejectedCounts = new Map();
-for (const event of events) {
-  for (const key of event.rejectedKeys) rejectedCounts.set(key, (rejectedCounts.get(key) ?? 0) + 1);
-}
-
 process.stdout.write(`CARD_DRAW_SUMMARY ${JSON.stringify({
   mode: 'observer',
   graphics: false,
@@ -182,7 +174,6 @@ process.stdout.write(`CARD_DRAW_SUMMARY ${JSON.stringify({
   forcedInitialEvents,
   drawSlots: events.length,
   successfulEvents: successfulEvents.length,
-  rejectedAttempts: Object.fromEntries([...rejectedCounts].sort(([a], [b]) => a.localeCompare(b))),
   eventTypeCounts: Object.fromEntries(typeCounts),
   eventTypeCountsByPool: Object.fromEntries(
     [...cardTypesByPool].sort(([a], [b]) => a.localeCompare(b)).map(([pool, counts]) => [

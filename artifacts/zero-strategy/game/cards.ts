@@ -1,10 +1,10 @@
 import { CardPainter, type Card, type CardChoice, type CardType } from './brush';
-import { BRUSH_SIZES, INK, MAP_PIXELS, MAP_WIDTH, MAX_COUNTRIES, RANKS } from './config';
+import { BRUSH_SIZES, INK, MAP_PIXELS, MAX_COUNTRIES, RANKS } from './config';
 import { forEachNeighbour } from './geography';
 import { randomItem, weightedPick } from './random';
 import { isActiveCountry, type Country, type World } from './world';
 import { deathChance, personIdSequence, reservePersonId, restorePersonIdSequence, GOVERNMENTS, MODIFIERS, type GovernmentId, type GovernmentModifierId, type Person } from './government';
-import { lifeOpportunity, marriageCandidates, reformCandidates, type ReformProposal } from './politics';
+import { lifeOpportunity, lifeOpportunityChance, marriageCandidates, reformCandidates, type ReformProposal } from './politics';
 import { candidateAllowed, leadershipOptions, successionOrder } from './succession';
 import { newCitizen, person } from './characters';
 import { demography } from './demography';
@@ -69,6 +69,7 @@ type CardDrawOption = {
   key: string;
   weight: number;
   baseWeight?: number;
+  available?: (world: World, polity: Polity | null) => boolean;
   value: (world: World, polity: Polity | null) => Card | null;
 };
 type PreparedCard = {
@@ -101,9 +102,7 @@ export interface CardDrawTraceEvent {
   modifiers: GovernmentModifierId[];
   selectedKey: string | null;
   cardType: CardType | null;
-  rejectedKeys: string[];
   choices: CardDrawTraceChoice[];
-  finalChoices: CardDrawTraceChoice[];
 }
 
 let cardDrawTraceListener: ((event: CardDrawTraceEvent) => void) | null = null;
@@ -137,8 +136,6 @@ function traceCardDraw(
   options: CardDrawOption[],
   selectedKey: string | null,
   cardType: CardType | null,
-  rejectedKeys: string[],
-  finalOptions: CardDrawOption[] = options,
 ): void {
   const listener = cardDrawTraceListener;
   if (!listener) return;
@@ -170,10 +167,6 @@ function traceCardDraw(
     });
   };
   const choices = makeChoices(options);
-  const finalChoices = finalOptions.length === options.length &&
-    finalOptions.every((option, index) => option === options[index])
-    ? choices
-    : makeChoices(finalOptions);
   listener({
     year,
     scope,
@@ -183,9 +176,7 @@ function traceCardDraw(
     modifiers: polity ? [...polity.modifiers] : [],
     selectedKey,
     cardType,
-    rejectedKeys: [...rejectedKeys],
     choices,
-    finalChoices,
   });
 }
 
@@ -245,9 +236,12 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
     : nomad.modifiers.includes('coRule') ? 0.5 : 1;
   const options: CardDrawOption[] = [
     ...lifeDrawOptions(world, nomad, year),
-    { key: 'nomadExpand', value: (_w, p) => drawNomadExpansionCard(_w, p as Country), weight: 4 * consulateScale, baseWeight: 4 },
-    { key: 'government', value: (_w, p) => drawGovernment(_w, p!, year), weight: governmentEventWeight(world, nomad, year, false, consulateScale), baseWeight: 0.16 },
-    { key: 'revolt', value: (_w, p) => drawGovernment(_w, p!, year, true), weight: governmentEventWeight(world, nomad, year, true, consulateScale), baseWeight: 0.01 },
+    { key: 'nomadExpand', value: (_w, p) => drawNomadExpansionCard(_w, p as Country), weight: 4 * consulateScale, baseWeight: 4,
+      available: () => (nomad.range ?? []).some((pixel) => world.land[pixel]) },
+    { key: 'government', value: (_w, p) => drawGovernment(_w, p!, year), weight: governmentEventWeight(world, nomad, year, false, consulateScale), baseWeight: 0.16,
+      available: (_w, p) => reformCandidates(world, p as Country, year, false).length > 0 },
+    { key: 'revolt', value: (_w, p) => drawGovernment(_w, p!, year, true), weight: governmentEventWeight(world, nomad, year, true, consulateScale), baseWeight: 0.01,
+      available: (_w, p) => reformCandidates(world, p as Country, year, true).length > 0 },
     { key: 'buildCity', value: (_w, p) => {
       const candidate = p as Country;
       const freeSite = (candidate.range ?? []).find((pixel) => _w.land[pixel] && _w.owner[pixel] === 0 && !_w.cityAt(pixel));
@@ -258,7 +252,7 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
       `${candidate.name}: выберите инструмент «Город» и укажите свободную точку суши в пределах ареала. После основания города кочевье оседает.`,
       freeSite,
     );
-    }, weight: cityWeight },
+    }, weight: cityWeight, available: () => citySite !== undefined },
   ];
   return drawFirstApplicable(world, `country:${nomad.id}`, nomad, options, year);
 }
@@ -342,29 +336,11 @@ function reachableFree(
   return { count: Math.min(cap, touched.length), pixels: touched };
 }
 
-function randomLandPixel(world: World, accept: (p: number) => boolean, tries = 400): number {
-  for (let i = 0; i < tries; i += 1) {
-    const p = world.landIndex[Math.floor(Math.random() * world.landIndex.length)];
-    if (accept(p)) return p;
-  }
-  return -1;
-}
-
-function randomCountryPixel(world: World, country: Country, accept: (p: number) => boolean = () => true): number {
-  const [x0, y0, x1, y1] = country.box;
-  const tag = country.id + 1;
-  for (let i = 0; i < 300; i += 1) {
-    const x = x0 + Math.floor(Math.random() * (x1 - x0 + 1));
-    const y = y0 + Math.floor(Math.random() * (y1 - y0 + 1));
-    const p = y * MAP_WIDTH + x;
-    if (world.owner[p] === tag && accept(p)) return p;
-  }
+function firstCountryPixel(world: World, country: Country): number {
   let found = -1;
-  const seen: number[] = [];
-  world.forEachCountryPixel(country, (p) => {
-    if (accept(p)) seen.push(p);
+  world.forEachCountryPixel(country, (pixel) => {
+    if (found < 0) found = pixel;
   });
-  if (seen.length > 0) found = randomItem(seen);
   return found;
 }
 
@@ -411,19 +387,29 @@ function popCapacityDonor(heap: CapacityDonor[]): CapacityDonor | null {
   return top;
 }
 
-function drawCreate(world: World, year: number): Card | null {
-  if (world.countries.filter((c) => c.pixels > 0).length >= MAX_COUNTRIES) return null;
+function createSeeds(world: World): number[] {
+  if (world.countries.filter((c) => c.pixels > 0).length >= MAX_COUNTRIES) return [];
+  const cityAreas = new CityInfluenceIndex(world, -1);
+  const freeOfCityInfluence = (p: number) => cityAreas.at(p).foreignRankSum === 0;
+  const seeds: number[] = [];
+  for (const pixel of world.landIndex) {
+    if (world.owner[pixel] === 0 && freeOfCityInfluence(pixel)) seeds.push(pixel);
+  }
+  return seeds;
+}
+
+function drawCreate(world: World, year: number, seeds = createSeeds(world)): Card | null {
+  if (!seeds.length) return null;
   const cityAreas = new CityInfluenceIndex(world, -1);
   const freeOfCityInfluence = (p: number) => cityAreas.at(p).foreignRankSum === 0;
   let best = { seed: -1, capacity: 0 };
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    const seed = randomLandPixel(world, (p) => world.owner[p] === 0 && freeOfCityInfluence(p));
-    if (seed < 0) break;
+    const seed = randomItem(seeds);
     const reachable = reachableFree(world, [seed], RANKS[RANKS.length - 1].ink, new Set(), freeOfCityInfluence);
     if (reachable.count > best.capacity) best = { seed, capacity: reachable.count };
     if (reachable.count >= RANKS[2].ink) break;
   }
-  if (best.seed < 0) return null;
+  if (best.seed < 0) throw new Error('A checked country-creation site became unreachable before its card was prepared.');
   const fitting = RANKS.filter((rank) => rank.ink <= best.capacity);
   const rank = fitting.length > 0 ? randomItem(fitting) : RANKS[0];
   const ink = Math.min(rank.ink, best.capacity);
@@ -469,11 +455,7 @@ function drawExpand(world: World, country: Country): Card | null {
     const card = makeCard('expand', INK.expand, country, `Свободной суши нет. Повышайте плотность населения в ${country.name}: один мазок развивает уже занятые земли.`, randomItem(available));
     card.developmentOnly = true;
     const painter = new CardPainter(world, card, 'repeat');
-    const inkCapacity = available.reduce(
-      (sum, pixel) => sum + painter.strategyTerritoryInkCostAt(pixel),
-      0,
-    );
-    card.ink = Math.min(INK.expand, inkCapacity);
+    card.ink = territoryInkCapacity(available, painter, INK.expand);
     card.inkTotal = card.ink;
     return card.ink > 0 ? card : null;
   }
@@ -490,27 +472,25 @@ function drawExpand(world: World, country: Country): Card | null {
   const card = makeCard('expand', INK.expand, country,
     `Закрашивайте свободные земли у границ ${country.name} или на любом берегу того же моря.`, hint);
   const painter = new CardPainter(world, card, 'respect');
-  const inkCapacity = reachable.pixels.reduce(
-    (sum, pixel) => sum + painter.strategyTerritoryInkCostAt(pixel),
-    0,
-  );
-  card.ink = Math.min(INK.expand, inkCapacity);
+  card.ink = territoryInkCapacity(reachable.pixels, painter, INK.expand);
   card.inkTotal = card.ink;
   return card.ink > 0 ? card : null;
 }
 
-function drawColonization(world: World, country: Country): Card | null {
-  const plan = colonizationPlan(world, country);
+function territoryInkCapacity(pixels: Iterable<number>, painter: CardPainter, limit: number): number {
+  let capacity = 0;
+  for (const pixel of pixels) {
+    capacity += painter.strategyTerritoryInkCostAt(pixel);
+    if (capacity >= limit) return limit;
+  }
+  return capacity;
+}
+
+function colonizationInkCapacity(world: World, country: Country, plan: ReturnType<typeof colonizationPlan>): number {
   const ink = Math.min(INK.colonization, plan.targetCount);
-  if (ink < 1 || plan.hint < 0 || plan.availablePopulation <= 0) return null;
-  const card = makeCard(
-    'colonization',
-    ink,
-    country,
-    `Колонизируйте побережья доступных морей или земли в бассейне реки, уже проходящей через ${country.name}. Отдельная колония может быть отделена от основной территории, но должна оставаться связанной с рекой или побережьем. Чужие участки доступны, только если их плотность ниже средней плотности страны и государства не союзники. Для каждой точки заново выбирается самый плотный участок страны-донор; переселяется до 10% его населения. На чужой точке число переселенцев ограничено её исходной плотностью, на ничейной — нет. Точка колонии не становится плотнее донора: при меньшей разнице плотности выравниваются, расходуя меньше чернил. Сколько жителей переселилось, столько местных удаляется. Совпадение культуры и религии даёт первый приоритет переселенцам и последний местным на удаление; совпадение только одного признака — следующий приоритет.`,
-    plan.hint,
-  );
-  const painter = new CardPainter(world, card, 'respect');
+  if (ink < 1 || plan.hint < 0 || plan.availablePopulation <= 0) return 0;
+  const probe = makeCard('colonization', ink, country, '', plan.hint);
+  const painter = new CardPainter(world, probe, 'respect');
   const donors: CapacityDonor[] = [];
   for (const pixel of plan.donors) pushCapacityDonor(donors, { pixel, density: world.density[pixel] });
   let inkCapacity = 0;
@@ -535,12 +515,23 @@ function drawColonization(world: World, country: Country): Card | null {
     });
     if (inkCapacity >= ink) break;
   }
-  // Учитываем реальные ограничения переноса от самого плотного участка:
-  // для чужой территории может требоваться меньше чернил, чем на одну точку,
-  // а каждый новый заселённый участок может стать донором.
-  card.ink = Math.min(card.ink, inkCapacity);
-  card.inkTotal = card.ink;
-  if (card.ink < 1) return null;
+  return Math.min(ink, inkCapacity);
+}
+
+function drawColonization(
+  world: World,
+  country: Country,
+  plan = colonizationPlan(world, country),
+  capacity = colonizationInkCapacity(world, country, plan),
+): Card | null {
+  if (capacity < 1) return null;
+  const card = makeCard(
+    'colonization',
+    capacity,
+    country,
+    `Колонизируйте побережья доступных морей или земли в бассейне реки, уже проходящей через ${country.name}. Отдельная колония может быть отделена от основной территории, но должна оставаться связанной с рекой или побережьем. Чужие участки доступны, только если их плотность ниже средней плотности страны и государства не союзники. Для каждой точки заново выбирается самый плотный участок страны-донор; переселяется до 10% его населения. На чужой точке число переселенцев ограничено её исходной плотностью, на ничейной — нет. Точка колонии не становится плотнее донора: при меньшей разнице плотности выравниваются, расходуя меньше чернил. Сколько жителей переселилось, столько местных удаляется. Совпадение культуры и религии даёт первый приоритет переселенцам и последний местным на удаление; совпадение только одного признака — следующий приоритет.`,
+    plan.hint,
+  );
   return card;
 }
 
@@ -562,10 +553,7 @@ function largestCities(world: World, cities: City[], limit = 2): City[] {
 
 export function drawBuildCityCard(world: World, country: Country): Card | null {
   if (!world.countries[country.id] || !country.pixels) return null;
-  const occupied = new Set(world.cities.map((city) => city.pixel));
-  let hasSite = false;
-  world.forEachCountryPixel(country, (p) => { if (!occupied.has(p)) hasSite = true; });
-  if (!hasSite) return null;
+  if (firstFreeCitySite(world, country) === undefined) return null;
   return makeCard(
     'buildCity',
     0,
@@ -573,6 +561,15 @@ export function drawBuildCityCard(world: World, country: Country): Card | null {
     `Выберите инструмент «Город» и укажите незанятую точку суши в ${country.name}. Появится городок.`,
     -1,
   );
+}
+
+function firstFreeCitySite(world: World, country: Country): number | undefined {
+  const occupied = new Set(world.cities.map((city) => city.pixel));
+  let site: number | undefined;
+  world.forEachCountryPixel(country, (pixel) => {
+    if (site === undefined && !occupied.has(pixel)) site = pixel;
+  });
+  return site;
 }
 
 export function drawUpgradeCityCard(world: World, country: Country): Card | null {
@@ -600,7 +597,8 @@ export function drawUpgradeCityCard(world: World, country: Country): Card | null
 
 export function cityWaningWeight(world: World, country: Country): number {
   const cities = world.cities.filter((city) => city.countryId === country.id);
-  if (!cities.some(cityAtWaningThreshold)) return 0;
+  const candidates = cities.length > 2 ? cities.filter((city) => !city.capital) : cities;
+  if (!candidates.some(cityAtWaningThreshold)) return 0;
   const averageDensity = demography(world, country).population / Math.max(1, country.pixels);
   const rankSum = cities.reduce((sum, city) => sum + city.rank, 0);
   return rankSum /
@@ -681,7 +679,8 @@ function proposalChoice(world: World, proposal: ReformProposal, ruler?: import('
 }
 
 function drawGovernment(world: World, country: Polity, year: number, violent = false): Card | null {
-  const proposals = reformCandidates(world, country, year, violent);
+  const proposals = reformCandidates(world, country, year, violent)
+    .filter((proposal) => Number.isFinite(proposal.weight) && proposal.weight > 0);
   if (!proposals.length) return null;
   const take = () => {
     const index = weightedPick(proposals.map((p, i) => ({ value: i, weight: p.weight })));
@@ -757,6 +756,9 @@ function personDetail(world: World, candidate: import('./government').Person): s
 function lifeDrawOptions(world: World, polity: Polity, year: number): CardDrawOption[] {
   const members = world.people.filter((candidate) => candidate.alive &&
     (candidate.countryId === polity.id || candidate.id === polity.ruler.id || polity.coRulerIds.includes(candidate.id)));
+  const successionChance = polity.government === 'tribal' && polity.ruler.age >= 60 ? 0.08 : 0;
+  const opportunityChance = lifeOpportunityChance(world, polity, year);
+  const lifeEventChance = successionChance + (1 - successionChance) * opportunityChance;
   return [
     ...members.map((candidate) => ({
       key: `death:${candidate.id}`,
@@ -764,8 +766,10 @@ function lifeDrawOptions(world: World, polity: Polity, year: number): CardDrawOp
       value: (candidateWorld: World, candidatePolity: Polity | null) =>
         drawDeathCard(candidateWorld, candidatePolity!, candidate.id, year),
     })),
-    { key: 'life-event', weight: 1.4, value: (candidateWorld: World, candidatePolity: Polity | null) =>
-      drawLifeCard(candidateWorld, candidatePolity!, year) },
+    { key: 'life-event', weight: 1.4 * lifeEventChance, baseWeight: 1.4 * lifeEventChance,
+      available: () => lifeEventChance > 0,
+      value: (candidateWorld: World, candidatePolity: Polity | null) =>
+        drawLifeCard(candidateWorld, candidatePolity!, year) },
   ];
 }
 
@@ -783,7 +787,11 @@ function drawDeathCard(world: World, polity: Polity, personId: number, year: num
 }
 
 function drawLifeCard(world: World, country: Polity, year: number): Card | null {
-  if (country.government === 'tribal' && country.ruler.age >= 60 && Math.random() < 0.08) {
+  const successionChance = country.government === 'tribal' && country.ruler.age >= 60 ? 0.08 : 0;
+  const opportunityChance = lifeOpportunityChance(world, country, year);
+  const lifeEventChance = successionChance + (1 - successionChance) * opportunityChance;
+  if (lifeEventChance <= 0) return null;
+  if (successionChance > 0 && Math.random() * lifeEventChance < successionChance) {
     const card = makeCard('succession', 0, country, `Пожилой вождь ${country.ruler.name} может передать власть при жизни.`, -1);
     card.choices = leadershipOptions(world, country, year, country.ruler).slice(0, 2).map((ruler) => ({
       label: ruler.name, detail: personDetail(world, ruler), ruler, seatId: country.ruler.id,
@@ -791,9 +799,9 @@ function drawLifeCard(world: World, country: Polity, year: number): Card | null 
     return card;
   }
   const opportunity = lifeOpportunity(world, country, year);
-  if (!opportunity) return null;
+  if (!opportunity) throw new Error(`A life-event card was selected without an available event in ${country.name}.`);
   const p = person(world, opportunity.ids[0]);
-  if (!p) return null;
+  if (!p) throw new Error(`A life-event card refers to missing character ${opportunity.ids[0]}.`);
   if (opportunity.kind === 'death') {
     const card = makeCard('death', 0, country, `${p.name}, ${p.age} лет, умер${p.gender === 'female' ? 'ла' : ''}.`, -1);
     card.characterEvent = { kind: 'death', personIds: opportunity.ids };
@@ -831,6 +839,31 @@ function drawLifeCard(world: World, country: Polity, year: number): Card | null 
     }));
   }
   return card;
+}
+
+function splitCardAvailable(world: World, country: Country, uprising: boolean): boolean {
+  if (country.pixels < 3000) return false;
+  const cities = world.cities.filter((city) => city.countryId === country.id);
+  const nonCapitalCities = cities.filter((city) => !city.capital);
+  if (cities.length < 2 || nonCapitalCities.length < 1) return false;
+  let splitCultureId: number | undefined;
+  let splitReligionId: number | undefined;
+  if (uprising || country.modifiers.includes('federation') || country.modifiers.includes('confederation')) {
+    const d = demography(world, country);
+    const minority = d.pairs.filter((pair) => pair.cultureId !== d.culture || pair.religionId !== d.religion)
+      .sort((a, b) => b.weight - a.weight)[0];
+    if (minority) {
+      if (minority.cultureId !== d.culture) splitCultureId = minority.cultureId;
+      if (minority.religionId !== d.religion) splitReligionId = minority.religionId ?? -1;
+      if (!splitCultureId && !splitReligionId) splitCultureId = minority.cultureId;
+    } else if (uprising) return false;
+    if (uprising && !splitCultureId && !splitReligionId) return false;
+  }
+  return nonCapitalCities.some((city) => {
+    const cultureMatch = splitCultureId !== undefined && world.cultureTable.shareOf(world.culture[city.pixel], splitCultureId) > 0;
+    const faithMatch = splitReligionId !== undefined && world.religionTable.shareOf(world.religion[city.pixel], splitReligionId) > 0;
+    return splitCultureId === undefined && splitReligionId === undefined || cultureMatch || faithMatch;
+  });
 }
 
 export function drawSplitCard(world: World, country: Country, year: number, uprising = false): Card | null {
@@ -907,7 +940,7 @@ export function drawSplitCard(world: World, country: Country, year: number, upri
   return card;
 }
 
-function drawUnion(world: World, country: Country, year: number): Card | null {
+function unionCandidates(world: World, country: Country): Map<number, number> {
   const neighbours = new Map<number, number>();
   const tag = country.id + 1;
   world.forEachCountryPixel(country, (p) => forEachNeighbour(p, (n) => {
@@ -920,6 +953,10 @@ function drawUnion(world: World, country: Country, year: number): Card | null {
     const religious = country.ruler.religionId !== null && country.ruler.religionId === other.ruler.religionId;
     if (dynastic || cultural || religious) neighbours.set(otherId, (neighbours.get(otherId) ?? 0) + 1);
   }));
+  return neighbours;
+}
+
+function drawUnion(world: World, country: Country, year: number, neighbours = unionCandidates(world, country)): Card | null {
   if (!neighbours.size) return null;
   const candidates = [...neighbours].map(([id, border]) => ({ value: world.countries[id], weight: border }));
   const other = weightedPick(candidates);
@@ -1027,7 +1064,7 @@ export function drawClimateCard(world: World, type: ClimateCard, country: Countr
     if ((!country || land) && (hint < 0 || Math.random() < 1 / Math.max(1, capacity))) hint = p;
   }
   if (capacity <= 0) return null;
-  if (hint < 0 && country && winds) hint = randomCountryPixel(world, country);
+  if (hint < 0 && country && winds) hint = firstCountryPixel(world, country);
   if (hint < 0) return null;
   const where = country ? `в ${country.name}` : 'по всему миру';
   const detail: Record<ClimateCard, string> = {
@@ -1053,56 +1090,40 @@ function drawFaith(world: World, country: Country | null, year: number): Card | 
   return card;
 }
 
-function dominantCulture(world: World, p: number): number {
-  const entry = world.cultureTable.entries[world.culture[p]];
-  let best = -1;
-  let bestShare = -1;
-  entry.ids.forEach((id, i) => {
-    if (entry.shares[i] > bestShare) {
-      best = id;
-      bestShare = entry.shares[i];
+function availableCultureSources(world: World, country: Country | null): number[] {
+  const counts = new Map<number, number>();
+  const inhabited = new Set<number>();
+  const visit = (pixel: number) => {
+    const entry = world.cultureTable.entries[world.culture[pixel]];
+    for (let i = 0; i < entry.ids.length; i += 1) {
+      const id = entry.ids[i];
+      if (entry.shares[i] <= 0) continue;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+      if (world.owner[pixel] > 0) inhabited.add(id);
     }
-  });
-  return best;
+  };
+  if (country) world.forEachCountryPixel(country, visit);
+  else for (const pixel of world.landIndex) visit(pixel);
+  return [...counts].filter(([id, count]) => count >= 40 && inhabited.has(id)).map(([id]) => id);
 }
 
-function drawCultureSplit(world: World, country: Country | null, year: number): Card | null {
-  let probe: number;
-  if (country) probe = randomCountryPixel(world, country);
-  else probe = randomLandPixel(world, (p) => world.owner[p] > 0);
-  if (probe < 0) return null;
-  const sourceId = country ? (world.culture[probe] ? (countryMainCulture(world, country) ?? dominantCulture(world, probe)) : -1) : dominantCulture(world, probe);
-  if (sourceId < 0) return null;
+function drawCultureSplit(
+  world: World,
+  country: Country | null,
+  year: number,
+  sources = availableCultureSources(world, country),
+): Card | null {
+  if (!sources.length) return null;
+  const sourceId = sources[Math.floor(Math.random() * sources.length)];
   const { count, hint } = countScope(world, country, INK.culture, (p) => world.cultureTable.shareOf(world.culture[p], sourceId) > 0);
-  if (count < 40) return null;
+  if (count < 40 || hint < 0) throw new Error(`Culture ${sourceId} became unavailable while preparing its card.`);
   const source = world.cultures[sourceId];
+  if (!source) throw new Error(`Culture ${sourceId} is missing while preparing its card.`);
   const culture = world.newCulture(source, year);
   const card = makeCard('culture', count, country, `Половина народа «${source.name}» в закрашенных землях становится народом «${culture.name}».`, hint);
   card.newCultureId = culture.id;
   card.sourceCultureId = sourceId;
   return card;
-}
-
-function countryMainCulture(world: World, country: Country): number | null {
-  const totals = new Map<number, number>();
-  let sampled = 0;
-  for (let i = 0; i < 200; i += 1) {
-    const p = randomCountryPixel(world, country);
-    if (p < 0) break;
-    const entry = world.cultureTable.entries[world.culture[p]];
-    entry.ids.forEach((id, k) => totals.set(id, (totals.get(id) ?? 0) + entry.shares[k]));
-    sampled += 1;
-    if (sampled >= 60) break;
-  }
-  let best: number | null = null;
-  let bestTotal = -1;
-  totals.forEach((total, id) => {
-    if (total > bestTotal) {
-      best = id;
-      bestTotal = total;
-    }
-  });
-  return best;
 }
 
 function forkWorld(world: World, polity: Polity | null): World {
@@ -1172,7 +1193,7 @@ function commitPreparedCard(world: World, prepared: PreparedCard): Card {
   return prepared.card;
 }
 
-/** Проверяет варианты на изолированной копии мира и переносит новые сущности только выбранной карты. */
+/** Разыгрывает одну выбранную карту; генератор результата не может запустить повторный розыгрыш. */
 function drawFirstApplicable(
   world: World,
   scope: string,
@@ -1183,53 +1204,42 @@ function drawFirstApplicable(
   const climateOptions = availableClimateCards(world, polity, new Set(options.map((option) => option.key)));
   const stagingWorld = forkWorld(world, polity);
   const stagingPolity = polity ? stagingWorld.countries[polity.id] : null;
-  // Случайные части генератора запускаются только после взвешенного выбора, а не отбирают варианты заранее.
   const candidates = options.filter((option) => {
+    if (!Number.isFinite(option.weight) || option.weight <= 0) return false;
     if (CLIMATE_CARD_KEYS.has(option.key as ClimateCard)) {
-      return climateOptions.has(option.key);
+      if (!climateOptions.has(option.key)) return false;
     }
     if (option.key.startsWith('death:')) {
       const personId = Number(option.key.slice('death:'.length));
-      return person(world, personId)?.alive ?? false;
+      if (!person(world, personId)?.alive) return false;
     }
-    return true;
+    return option.available?.(world, polity) ?? true;
   });
   if (!candidates.length) {
-    traceCardDraw(world, scope, year, polity, [], null, null, []);
+    traceCardDraw(world, scope, year, polity, [], null, null);
     return null;
   }
-  const initialCandidates = [...candidates];
-  let remaining = [...initialCandidates];
-  const rejectedKeys: string[] = [];
-  while (remaining.length) {
-    const probabilities = normalizedCardProbabilities(
-      remaining.map((option) => ({ key: option.key, weight: option.weight })),
-      world.cardMultipliers,
-      scope,
-    );
-    if (!probabilities.length) {
-      traceCardDraw(world, scope, year, polity, initialCandidates, null, null, rejectedKeys, remaining);
-      return null;
-    }
-    const drawnKey = weightedPick(probabilities.map((option) => ({ value: option.key, weight: option.probability })));
-    if (drawnKey === null) {
-      traceCardDraw(world, scope, year, polity, initialCandidates, null, null, rejectedKeys, remaining);
-      return null;
-    }
-    const selected = remaining.find((option) => option.key === drawnKey)!;
-    const seed = Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
-    const prepared = prepareSelectedCard(stagingWorld, selected, stagingPolity, seed);
-    if (!prepared) {
-      rejectedKeys.push(selected.key);
-      remaining = remaining.filter((option) => option !== selected);
-      continue;
-    }
-    traceCardDraw(world, scope, year, polity, initialCandidates, selected.key, prepared.card.type, rejectedKeys, remaining);
-    updateCardDrawMultipliers(scope, probabilities, selected.key, world.cardMultipliers);
-    return commitPreparedCard(world, prepared);
+  const probabilities = normalizedCardProbabilities(
+    candidates.map((option) => ({ key: option.key, weight: option.weight })),
+    world.cardMultipliers,
+    scope,
+  );
+  if (!probabilities.length) {
+    traceCardDraw(world, scope, year, polity, [], null, null);
+    return null;
   }
-  traceCardDraw(world, scope, year, polity, initialCandidates, null, null, rejectedKeys, []);
-  return null;
+  const drawnKey = weightedPick(probabilities.map((option) => ({ value: option.key, weight: option.probability })));
+  if (drawnKey === null) throw new Error(`Card draw produced no selection for ${scope} with a non-empty pool.`);
+  const selected = candidates.find((option) => option.key === drawnKey);
+  if (!selected) throw new Error(`Card draw selected unknown option ${drawnKey} for ${scope}.`);
+  const seed = Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
+  const prepared = prepareSelectedCard(stagingWorld, selected, stagingPolity, seed);
+  if (!prepared) {
+    throw new Error(`Selected card ${selected.key} could not be generated for ${scope}; post-draw rejection is disabled.`);
+  }
+  traceCardDraw(world, scope, year, polity, candidates, selected.key, prepared.card.type);
+  updateCardDrawMultipliers(scope, probabilities, selected.key, world.cardMultipliers);
+  return commitPreparedCard(world, prepared);
 }
 
 /** Чем больше вероисповеданий уже существует, тем реже появляются новые, чтобы мир не заполнялся мелкими сектами. */
@@ -1239,16 +1249,21 @@ function faithRoom(world: World): number {
 
 export function drawWorldCard(world: World, year: number): Card | null {
   const living = world.countries.filter((c) => c.pixels > 0).length;
+  const seeds = createSeeds(world);
+  const cultureSources = availableCultureSources(world, null);
+  const hasOwnedLand = world.landIndex.some((pixel) => world.owner[pixel] > 0);
   return drawFirstApplicable(world, 'world', null, [
-    { key: 'create', value: (w) => drawCreate(w, year), weight: 3 },
+    { key: 'create', value: (w) => drawCreate(w, year, seeds), weight: 3, available: () => seeds.length > 0 },
     { key: 'drought', value: (w) => drawClimateCard(w, 'drought', null), weight: 1 },
     { key: 'rain', value: (w) => drawClimateCard(w, 'rain', null), weight: 1 },
     { key: 'desertification', value: (w) => drawClimateCard(w, 'desertification', null), weight: 0.6 },
     { key: 'swamping', value: (w) => drawClimateCard(w, 'swamping', null), weight: 0.6 },
     { key: 'warmCurrent', value: (w) => drawClimateCard(w, 'warmCurrent', null), weight: 0.3 },
     { key: 'coldCurrent', value: (w) => drawClimateCard(w, 'coldCurrent', null), weight: 0.3 },
-    { key: 'faith', value: (w) => drawFaith(w, null, year), weight: living > 0 ? 0.25 * faithRoom(world) : 0 },
-    { key: 'culture', value: (w) => drawCultureSplit(w, null, year), weight: living > 0 ? 0.3 : 0 },
+    { key: 'faith', value: (w) => drawFaith(w, null, year), weight: living > 0 ? 0.25 * faithRoom(world) : 0,
+      available: () => hasOwnedLand },
+    { key: 'culture', value: (w) => drawCultureSplit(w, null, year, cultureSources), weight: living > 0 ? 0.3 : 0,
+      available: () => cultureSources.length > 0 },
   ], year);
 }
 
@@ -1257,6 +1272,20 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const big = country.pixels >= 12000;
   const diversity = demography(world, country);
   const countryCities = world.cities.filter((city) => city.countryId === country.id);
+  const freeCitySite = firstFreeCitySite(world, country);
+  const upgradeCandidates = upgradeableCities(world, country.id);
+  const capitalCandidates = largestCities(world, countryCities.filter((city) => !city.capital));
+  const cultureSources = availableCultureSources(world, country);
+  const ordinarySplitAvailable = splitCardAvailable(world, country, false);
+  const uprisingAvailable = splitCardAvailable(world, country, true);
+  const governmentAvailable = reformCandidates(world, country, year, false).length > 0;
+  const revoltAvailable = reformCandidates(world, country, year, true).length > 0;
+  const unionTargets = country.modifiers.includes('confederation') || country.modifiers.includes('federation')
+    ? unionCandidates(world, country)
+    : new Map<number, number>();
+  const colonizationBaseWeight = Math.max(0, diversity.density * 0.12);
+  const colonization = colonizationBaseWeight > 0 ? colonizationPlan(world, country) : null;
+  const colonizationCapacity = colonization ? colonizationInkCapacity(world, country, colonization) : 0;
   const averageNonCityDensity = CountryExpansionContourIndex.averageNonCityDensity(
     world,
     country,
@@ -1271,7 +1300,7 @@ export function drawCountryCard(world: World, country: Country, year: number): C
     ? (1 + country.pixels / RANKS[2].ink) * (averageNonCityDensity / CITY_DENSITY_REFERENCE) / cityModifierTotal
     : 0;
   const upperThresholdCount = countryCities.filter(cityAtUpperPopulationThreshold).length;
-  const upgradeCityWeight = countryCities.length > 0
+  const upgradeCityWeight = upgradeCandidates.length > 0
     ? diversity.population / RANKS[2].ink * countryCities.length * (1 + upperThresholdCount)
     : 0;
   const capital = countryCities.find((city) => city.capital);
@@ -1284,25 +1313,38 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const unrestScale = country.modifiers.includes('confederation') ? 1 / 3 : country.modifiers.includes('federation') ? 1 / 2 : 1;
   const options: CardDrawOption[] = [
     ...lifeDrawOptions(world, country, year),
-    { key: 'expand', value: (w, p) => drawExpand(w, p as Country), weight: 4 * consulateScale, baseWeight: 4 },
-    { key: 'buildCity', value: (w, p) => drawBuildCityCard(w, p as Country), weight: buildCityWeight },
-    { key: 'upgradeCity', value: (w, p) => drawUpgradeCityCard(w, p as Country), weight: upgradeCityWeight },
+    { key: 'expand', value: (w, p) => drawExpand(w, p as Country), weight: 4 * consulateScale, baseWeight: 4,
+      available: (_w, p) => (p as Country).pixels > 0 },
+    { key: 'buildCity', value: (w, p) => drawBuildCityCard(w, p as Country), weight: buildCityWeight,
+      available: () => freeCitySite !== undefined },
+    { key: 'upgradeCity', value: (w, p) => drawUpgradeCityCard(w, p as Country), weight: upgradeCityWeight,
+      available: () => upgradeCandidates.length > 0 },
     { key: 'waneCity', value: (w, p) => drawWaneCityCard(w, p as Country), weight: cityWaningWeight(world, country) },
-    { key: 'moveCapital', value: (w, p) => drawMoveCapital(w, p as Country), weight: countryCities.length >= 3 ? 1 : 0 },
-    { key: 'colonization', value: (w, p) => drawColonization(w, p as Country), weight: Math.max(0, diversity.density * 0.12) * consulateScale, baseWeight: Math.max(0, diversity.density * 0.12) },
-    { key: 'government', value: (w, p) => drawGovernment(w, p!, year), weight: governmentEventWeight(world, country, year, false, consulateScale), baseWeight: 0.16 },
-    { key: 'revolt', value: (w, p) => drawGovernment(w, p!, year, true), weight: governmentEventWeight(world, country, year, true, consulateScale), baseWeight: 0.01 },
-    { key: 'split', value: (w, p) => drawSplitCard(w, p as Country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale, baseWeight: big ? 0.3 * (1 + largerThanCapital) : 0 },
-    { key: 'uprising', value: (w, p) => drawSplitCard(w, p as Country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale, baseWeight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) },
-    { key: 'union', value: (w, p) => drawUnion(w, p as Country, year), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0, baseWeight: 0 },
+    { key: 'moveCapital', value: (w, p) => drawMoveCapital(w, p as Country), weight: capitalCandidates.length >= 2 ? 1 : 0,
+      available: () => capitalCandidates.length >= 2 },
+    { key: 'colonization', value: (w, p) => drawColonization(w, p as Country, colonization!, colonizationCapacity),
+      weight: colonizationCapacity >= 1 ? colonizationBaseWeight * consulateScale : 0, baseWeight: colonizationBaseWeight,
+      available: () => colonizationCapacity >= 1 },
+    { key: 'government', value: (w, p) => drawGovernment(w, p!, year), weight: governmentEventWeight(world, country, year, false, consulateScale), baseWeight: 0.16,
+      available: () => governmentAvailable },
+    { key: 'revolt', value: (w, p) => drawGovernment(w, p!, year, true), weight: governmentEventWeight(world, country, year, true, consulateScale), baseWeight: 0.01,
+      available: () => revoltAvailable },
+    { key: 'split', value: (w, p) => drawSplitCard(w, p as Country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale, baseWeight: big ? 0.3 * (1 + largerThanCapital) : 0,
+      available: () => ordinarySplitAvailable },
+    { key: 'uprising', value: (w, p) => drawSplitCard(w, p as Country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale, baseWeight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015),
+      available: () => uprisingAvailable },
+    { key: 'union', value: (w, p) => drawUnion(w, p as Country, year, unionTargets), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0, baseWeight: 0,
+      available: () => unionTargets.size > 0 },
     { key: 'drought', value: (w, p) => drawClimateCard(w, 'drought', p as Country), weight: 0.8 },
     { key: 'rain', value: (w, p) => drawClimateCard(w, 'rain', p as Country), weight: 0.8 },
     { key: 'desertification', value: (w, p) => drawClimateCard(w, 'desertification', p as Country), weight: 0.45 },
     { key: 'swamping', value: (w, p) => drawClimateCard(w, 'swamping', p as Country), weight: 0.45 },
     { key: 'warmWind', value: (w, p) => drawClimateCard(w, 'warmWind', p as Country), weight: 0.25 },
     { key: 'coldWind', value: (w, p) => drawClimateCard(w, 'coldWind', p as Country), weight: 0.25 },
-    { key: 'faith', value: (w, p) => drawFaith(w, p as Country, year), weight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) * (country.modifiers.includes('theocracy') ? 2 : 1), baseWeight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) },
-    { key: 'culture', value: (w, p) => drawCultureSplit(w, p as Country, year), weight: country.pixels >= 6000 ? 0.06 : 0 },
+    { key: 'faith', value: (w, p) => drawFaith(w, p as Country, year), weight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) * (country.modifiers.includes('theocracy') ? 2 : 1), baseWeight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world),
+      available: () => country.pixels > 0 },
+    { key: 'culture', value: (w, p) => drawCultureSplit(w, p as Country, year, cultureSources), weight: country.pixels >= 6000 ? 0.06 : 0,
+      available: () => cultureSources.length > 0 },
   ];
   return drawFirstApplicable(world, `country:${country.id}`, country, options, year);
 }

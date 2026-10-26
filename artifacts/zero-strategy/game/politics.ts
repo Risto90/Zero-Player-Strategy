@@ -343,7 +343,16 @@ function personWorldAlive(world: World, id: number): boolean {
   return person(world, id)?.alive ?? false;
 }
 
-export function lifeOpportunity(world: World, c: Country, year: number): { kind: string; ids: number[]; weight: number; newPerson?: import('./government').Person } | null {
+type LifeOpportunity = {
+  kind: string;
+  ids: number[];
+  weight: number;
+  newPerson?: Person;
+  createBetrothed?: boolean;
+  sourceGender?: Person['gender'];
+};
+
+function lifeOpportunityPool(world: World, c: Country, year: number): { events: LifeOpportunity[]; chance: number } {
   const locals = polityPeople(world, c);
   const trackedLocals = locals.filter((p) => trackedForBirth(world, c, p));
   const birthParents = world.people.filter((p) => trackedForBirth(world, c, p) && p.alive);
@@ -352,8 +361,8 @@ export function lifeOpportunity(world: World, c: Country, year: number): { kind:
     const since = c.seatSince[p.id] ?? c.rulerSince;
     return ((c.government === 'republic' && c.modifiers.includes('term')) || c.modifiers.includes('consulate')) && year - since >= c.termYears;
   });
-  if (expiredSeat) return { kind: 'election', ids: [expiredSeat.id], weight: 10000 };
-  const events: { kind: string; ids: number[]; weight: number; newPerson?: Person }[] = [];
+  if (expiredSeat) return { events: [{ kind: 'election', ids: [expiredSeat.id], weight: 10000 }], chance: 1 };
+  const events: LifeOpportunity[] = [];
   for (const mother of birthParents.filter((p) => p.gender === 'female' && p.age >= 12 && p.age <= 45)) {
     if (mother.lastBirthYear === year) continue;
     const father = livingPartners(world, mother).find((p) => p.gender === 'male' && p.age >= 12 &&
@@ -382,11 +391,7 @@ export function lifeOpportunity(world: World, c: Country, year: number): { kind:
     else if (!isMinor) {
       events.push({ kind: 'marriage', ids: [p.id], weight: 0.1 });
     } else if (p.age >= 8 && !c.modifiers.includes('meritocracy')) {
-      const betrothed = newCitizen(world, c, year);
-      betrothed.age = 8 + Math.floor(Math.random() * 4);
-      betrothed.bornAt = year - betrothed.age - Math.random();
-      if (betrothed.gender === p.gender) betrothed.gender = p.gender === 'male' ? 'female' : 'male';
-      events.push({ kind: 'engagement', ids: [p.id], newPerson: betrothed, weight: 0.005 });
+      events.push({ kind: 'engagement', ids: [p.id], createBetrothed: true, sourceGender: p.gender, weight: 0.005 });
     }
   }
   const candidates = locals.filter((p) => p.age >= 8 && p.alive);
@@ -399,7 +404,30 @@ export function lifeOpportunity(world: World, c: Country, year: number): { kind:
   const traits = locals.filter((p) => p.age >= 3 && p.age < 18 && p.traits.length === 0);
   if (traits.length) events.push({ kind: 'trait', ids: [traits[0].id], weight: 0.08 });
   const total = events.reduce((n, x) => n + x.weight, 0);
-  if (!events.length || Math.random() > Math.min(0.8, total)) return null;
+  return { events, chance: events.length ? Math.min(0.8, total) : 0 };
+}
+
+export function lifeOpportunityChance(world: World, c: Country, year: number): number {
+  return lifeOpportunityPool(world, c, year).chance;
+}
+
+export function lifeOpportunity(world: World, c: Country, year: number): { kind: string; ids: number[]; weight: number; newPerson?: Person } | null {
+  const { events } = lifeOpportunityPool(world, c, year);
+  if (!events.length) return null;
+  const total = events.reduce((n, event) => n + event.weight, 0);
   let draw = Math.random() * total;
-  return events.find((e) => (draw -= e.weight) <= 0) ?? events[events.length - 1];
+  const selected = events.find((event) => (draw -= event.weight) <= 0) ?? events[events.length - 1];
+  if (!selected.createBetrothed) return selected;
+  const candidate = person(world, selected.ids[0]);
+  if (!candidate?.alive) return null;
+  const betrothed = newCitizen(world, c, year);
+  betrothed.age = 8 + Math.floor(Math.random() * 4);
+  betrothed.bornAt = year - betrothed.age - Math.random();
+  if (betrothed.gender === candidate.gender) betrothed.gender = candidate.gender === 'male' ? 'female' : 'male';
+  return {
+    kind: selected.kind,
+    ids: selected.ids,
+    weight: selected.weight,
+    newPerson: betrothed,
+  };
 }

@@ -393,7 +393,7 @@ export function colonizationPlan(world: World, country: Country): ColonizationPl
   }
 
   const queue: number[] = [];
-  let hint = -1, startCount = 0;
+  let hint = -1;
   for (const p of world.landIndex) {
     if (!candidates[p]) continue;
     let linked = anchors[p] === 1;
@@ -405,8 +405,7 @@ export function colonizationPlan(world: World, country: Country): ColonizationPl
     if (!linked) continue;
     targets[p] = 1;
     queue.push(p);
-    startCount += 1;
-    if (hint < 0 || Math.random() < 1 / startCount) hint = p;
+    if (hint < 0) hint = p;
   }
   for (let head = 0; head < queue.length; head += 1) {
     forEachNeighbour(queue[head], (n) => {
