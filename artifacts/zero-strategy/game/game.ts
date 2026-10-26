@@ -1654,7 +1654,9 @@ export class Game {
       case 'death':
       case 'marriage':
       case 'birth':
-      case 'character':
+      case 'friendship':
+      case 'romance':
+      case 'trait':
         if (target && card.characterEvent) {
           this.applyCharacterEvent(target, card.characterEvent, card.newRuler, card.choices?.[card.selectedChoice]);
         }

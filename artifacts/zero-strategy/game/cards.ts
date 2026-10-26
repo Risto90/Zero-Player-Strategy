@@ -49,7 +49,9 @@ export const CARD_TITLES: Record<CardType, string> = {
   marriage: 'Брак',
   birth: 'Рождение ребёнка',
   death: 'Смерть',
-  character: 'Событие персонажа',
+  friendship: 'Дружба',
+  romance: 'Романтическая связь',
+  trait: 'Черта персонажа',
   revolt: 'Переворот',
   union: 'Объединение',
 };
@@ -66,11 +68,8 @@ const CITY_DENSITY_REFERENCE = 5 * standardExpansionPassPixels / (0.1 * RANKS[0]
 
 type Polity = Country;
 /**
- * Один объект — одна отдельная карта в общем розыгрыше.
- * Если дизайн-док не задаёт процентный базовый шанс, baseWeight равен 1;
- * численные веса ниже являются только явно заданными шансами или множителями.
- * Для персонажей ключ обязательно включает конкретного участника события,
- * чтобы адаптивный множитель каждого персонажа накапливался отдельно.
+ * Запись внутри мирового или странового розыгрыша. Это не отдельный класс карт:
+ * области розыгрыша только две, а конкретное действие задаёт CardType.
  */
 type CardDrawOption = {
   key: string;
@@ -78,7 +77,65 @@ type CardDrawOption = {
   baseWeight?: number;
   available?: (world: World, polity: Polity | null) => boolean;
   value: (world: World, polity: Polity | null) => Card;
+  /** Внутренние индивидуальные карты персонажей, свёрнутые в одну запись по виду события. */
+  adaptiveContributions?: { key: string; weight: number; baselineWeight: number }[];
+  selectedAdaptiveKey?: () => string | null;
 };
+type CharacterContribution = {
+  target: Person;
+  weight: number;
+  baseWeight: number;
+};
+
+/**
+ * Персонажи складывают вес одной карты страны, сохраняя индивидуальные вклады
+ * и накопительные множители. Цель выбирается пропорционально этим вкладам;
+ * отдельные ключи для пар не создаются.
+ */
+function characterContributionOption(
+  world: World,
+  scope: string,
+  key: string,
+  contributions: CharacterContribution[],
+  createCard: (world: World, polity: Polity | null, target: Person) => Card,
+): CardDrawOption {
+  let selectedAdaptiveKey: string | null = null;
+  const adjustedContributions = contributions.map((contribution) => {
+    const contributionKey = `${key}:${contribution.target.id}`;
+    const multiplier = world.cardMultipliers[`${scope}:${contributionKey}`] ?? 1;
+    return {
+      target: contribution.target,
+      key: contributionKey,
+      weight: contribution.weight * multiplier,
+      baselineWeight: contribution.baseWeight * multiplier,
+    };
+  });
+  const weight = adjustedContributions.reduce((sum, contribution) => sum + contribution.weight, 0);
+  const baseWeight = contributions.reduce((sum, contribution) => sum + contribution.baseWeight, 0);
+  return {
+    key,
+    weight,
+    baseWeight,
+    adaptiveContributions: adjustedContributions.map(({ key: contributionKey, weight: contributionWeight, baselineWeight }) => ({
+      key: contributionKey,
+      weight: contributionWeight,
+      baselineWeight,
+    })),
+    selectedAdaptiveKey: () => selectedAdaptiveKey,
+    available: () => weight > 0,
+    value: (world, polity) => {
+      const selected = weightedPick(adjustedContributions.map((contribution) => ({
+        value: contribution.target,
+        weight: contribution.weight,
+      })));
+      if (selected === null) {
+        throw new Error(`У карты страны «${key}» нет персонажа-цели с положительным вкладом.`);
+      }
+      selectedAdaptiveKey = `${key}:${selected.id}`;
+      return createCard(world, polity, selected);
+    },
+  };
+}
 type PreparedCard = {
   card: Card;
   additions: {
@@ -121,14 +178,15 @@ export function setCardDrawTraceListener(
 }
 
 export function normalizedCardProbabilities(
-  options: { key: string; weight: number }[],
+  options: { key: string; weight: number; adaptiveMultiplier?: number }[],
   multipliers: Record<string, number> = {},
   scope = '',
 ): { key: string; probability: number }[] {
   const adjusted = options
     .map((option) => ({
       key: option.key,
-      weight: option.weight * (multipliers[scope ? `${scope}:${option.key}` : option.key] ?? 1),
+      weight: option.weight * (option.adaptiveMultiplier ??
+        multipliers[scope ? `${scope}:${option.key}` : option.key] ?? 1),
     }))
     .filter((option) => Number.isFinite(option.weight) && option.weight > 0);
   const total = adjusted.reduce((sum, option) => sum + option.weight, 0);
@@ -148,13 +206,23 @@ function traceCardDraw(
   if (!listener) return;
   const makeChoices = (drawOptions: CardDrawOption[]) => {
     const actual = normalizedCardProbabilities(
-      drawOptions.map((option) => ({ key: option.key, weight: option.weight })),
+      drawOptions.map((option) => ({
+        key: option.key,
+        weight: option.weight,
+        ...(option.adaptiveContributions ? { adaptiveMultiplier: 1 } : {}),
+      })),
       world.cardMultipliers,
       scope,
     );
     // Адаптивный множитель учитывается и в базе; здесь убираются только запрограммированные множители.
     const baseline = normalizedCardProbabilities(
-      drawOptions.map((option) => ({ key: option.key, weight: option.baseWeight ?? 1 })),
+      drawOptions.map((option) => ({
+        key: option.key,
+        weight: option.adaptiveContributions
+          ? option.adaptiveContributions.reduce((sum, contribution) => sum + contribution.baselineWeight, 0)
+          : option.baseWeight ?? 1,
+        ...(option.adaptiveContributions ? { adaptiveMultiplier: 1 } : {}),
+      })),
       world.cardMultipliers,
       scope,
     );
@@ -162,12 +230,17 @@ function traceCardDraw(
     const baselineByKey = new Map(baseline.map((option) => [option.key, option.probability]));
     return drawOptions.map((option) => {
       const baseWeight = option.baseWeight ?? 1;
+      const adaptiveBaseWeight = option.adaptiveContributions
+        ? option.adaptiveContributions.reduce((sum, contribution) => sum + contribution.baselineWeight, 0)
+        : baseWeight;
       return {
         key: option.key,
         baseWeight,
         programmedWeight: option.weight,
-        programmedMultiplier: baseWeight > 0 ? option.weight / baseWeight : null,
-        adaptiveMultiplier: world.cardMultipliers[`${scope}:${option.key}`] ?? 1,
+        programmedMultiplier: adaptiveBaseWeight > 0 ? option.weight / adaptiveBaseWeight : null,
+        adaptiveMultiplier: option.adaptiveContributions
+          ? (baseWeight > 0 ? adaptiveBaseWeight / baseWeight : 1)
+          : world.cardMultipliers[`${scope}:${option.key}`] ?? 1,
         baseProbability: baselineByKey.get(option.key) ?? 0,
         actualProbability: actualByKey.get(option.key) ?? 0,
       };
@@ -187,20 +260,43 @@ function traceCardDraw(
   });
 }
 
+/**
+ * Обновляет накопление после выбора карты. Обычные варианты сравниваются как
+ * единичные карты; сгруппированный вид события сначала разворачивается обратно
+ * в индивидуальные шансы персонажей. Парных ключей для отношений здесь нет.
+ */
 export function updateCardDrawMultipliers(
   scope: string,
   probabilities: { key: string; probability: number }[],
   drawnKey: string,
   multipliers: Record<string, number>,
+  options: CardDrawOption[] = [],
+  selectedAdaptiveKey: string | null = null,
 ): void {
   const drawn = probabilities.find((candidate) => candidate.key === drawnKey);
-  if (!drawn) throw new Error(`Drawn card ${drawnKey} was not in the probability distribution.`);
-  // У каждого ключа — своя карта, в том числе у смерти, брака, помолвки и рождения
-  // конкретного персонажа. Здесь нельзя объединять эти вероятности в общую «карту жизни».
+  if (!drawn) throw new Error(`Выпавшая карта «${drawnKey}» отсутствует в распределении вероятностей.`);
+  const optionByKey = new Map(options.map((option) => [option.key, option]));
+  const selectedOption = optionByKey.get(drawnKey);
+  const selectedContribution = selectedOption?.adaptiveContributions
+    ?.find((contribution) => contribution.key === selectedAdaptiveKey);
+  const selectedProbability = selectedContribution && selectedOption?.weight
+    ? drawn.probability * selectedContribution.weight / selectedOption.weight
+    : drawn.probability;
+
   for (const candidate of probabilities) {
+    const option = optionByKey.get(candidate.key);
+    if (option?.adaptiveContributions?.length && option.weight > 0) {
+      for (const contribution of option.adaptiveContributions) {
+        const key = `${scope}:${contribution.key}`;
+        const contributionProbability = candidate.probability * contribution.weight / option.weight;
+        if (candidate.key === drawnKey && contribution.key === selectedAdaptiveKey) multipliers[key] = 1;
+        else if (contributionProbability > selectedProbability) multipliers[key] = (multipliers[key] ?? 1) * 1.1;
+      }
+      continue;
+    }
     const key = `${scope}:${candidate.key}`;
-    if (candidate.key === drawnKey) multipliers[key] = 1;
-    else if (candidate.probability > drawn.probability) multipliers[key] = (multipliers[key] ?? 1) * 1.1;
+    if (candidate.key === drawnKey && !selectedContribution) multipliers[key] = 1;
+    else if (candidate.probability > selectedProbability) multipliers[key] = (multipliers[key] ?? 1) * 1.1;
   }
 }
 
@@ -253,7 +349,7 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
     ? 1 / Math.max(2, nomad.consulCount)
     : nomad.modifiers.includes('coRule') ? 0.5 : 1;
   const options: CardDrawOption[] = [
-    ...characterCardOptions(world, nomad, year),
+    ...countryCharacterEventOptions(world, nomad, year),
     { key: 'nomadExpand', value: (_w, p) => requireCard(drawNomadExpansionCard(_w, p as Country), 'nomadExpand'),
       weight: consulateScale, baseWeight: 1,
       available: () => (nomad.range ?? []).some((pixel) => world.land[pixel]) },
@@ -809,12 +905,6 @@ function countryPeople(world: World, polity: Polity): Person[] {
     (candidate.countryId === polity.id || candidate.id === polity.ruler.id || polity.coRulerIds.includes(candidate.id)));
 }
 
-function pairCardKey(kind: 'engagement' | 'friendship' | 'romance', a: Person, b: Person): string {
-  const firstId = Math.min(a.id, b.id);
-  const secondId = Math.max(a.id, b.id);
-  return `${kind}:${firstId}:${secondId}`;
-}
-
 function makeNewBetrothed(world: World, polity: Polity, person: Person, year: number): Person {
   const betrothed = newCitizen(world, polity, year);
   betrothed.age = person.age < 12
@@ -878,7 +968,9 @@ function drawCharacterEventCard(
   const newPerson = createBetrothed ? makeNewBetrothed(world, polity, first, year) : undefined;
   const otherName = second?.name ?? newPerson?.name ?? 'персонаж';
   const type: CardType = kind === 'birth' ? 'birth' :
-    kind === 'marriage' || kind === 'engagement' ? 'marriage' : 'character';
+    kind === 'marriage' || kind === 'engagement' ? 'marriage' :
+      kind === 'friendship' ? 'friendship' :
+        kind === 'romance' ? 'romance' : 'trait';
   const title = kind === 'birth' ? `Рождение ребёнка у ${first.name} и ${otherName}` :
     kind === 'marriage' ? `Выбор супруга: ${first.name}` :
       kind === 'engagement' ? `Обручение: ${first.name} и ${otherName}` :
@@ -896,20 +988,16 @@ function drawCharacterEventCard(
     }
   }
   if (kind === 'marriage') {
-    let candidates: Person[];
-    if (personIds.length === 1) {
-      // Пользователь выбирает супруга из двух кандидатов; генерация новых людей
-      // допустима только внутри marriageCandidates, если реальных кандидатов меньше двух.
-      candidates = marriageCandidates(world, polity, first, year, 2);
-    } else if (personIds.length === 2 && second?.alive && first.betrothedId === second.id) {
-      // Помолвка ставит одного кандидата первым; второго ищем среди реальных
-      // подходящих людей и создаём только при полном отсутствии такого кандидата.
-      const alternative = marriageCandidates(world, polity, { ...first, betrothedId: null }, year, 1)
-        .filter((candidate) => candidate.id !== second.id);
-      candidates = [second, ...alternative].slice(0, 2);
-    } else {
-      throw new Error(`Карта брака персонажа ${first.name} не связана с его выбором супруга.`);
-    }
+    const betrothed = person(world, first.betrothedId);
+    const hasLiveBetrothal = !!betrothed?.alive && betrothed.betrothedId === first.id &&
+      !betrothed.spouseIds.some((id) => person(world, id)?.alive);
+    const candidates = hasLiveBetrothal
+      ? [
+        betrothed,
+        ...marriageCandidates(world, polity, { ...first, betrothedId: null }, year, 1)
+          .filter((candidate) => candidate.id !== betrothed.id),
+      ].slice(0, 2)
+      : marriageCandidates(world, polity, first, year, 2);
     if (candidates.length !== 2) {
       throw new Error(`Для карты брака персонажа ${first.name} не подготовлены ровно два кандидата.`);
     }
@@ -923,174 +1011,181 @@ function drawCharacterEventCard(
 }
 
 /**
- * Формирует пул независимых карт персонажей.
- * Никакой агрегированной карты «событие жизни» здесь нет: смерть, рождение,
- * помолвка, брак, дружба, роман и черта имеют собственный ключ и вес.
+ * Добавляет в пул страны по одной записи на вид события, сохраняя индивидуальный
+ * вклад и накопительный множитель каждого персонажа. Цель выбирается
+ * пропорционально эффективным вкладам; связи не создают ключей на пару.
  */
-function characterCardOptions(world: World, polity: Polity, year: number): CardDrawOption[] {
+function countryCharacterEventOptions(world: World, polity: Polity, year: number): CardDrawOption[] {
   const members = countryPeople(world, polity);
   const tracked = members.filter((candidate) => trackedForCharacterCards(world, polity, candidate));
   const options: CardDrawOption[] = [];
-  const addedKeys = new Set<string>();
+  const scope = `country:${polity.id}`;
+  const equalContributions = (targets: Person[]): CharacterContribution[] =>
+    targets.map((target) => ({ target, weight: 1, baseWeight: 1 }));
 
-  const addPersonCard = (
-    key: string,
-    value: CardDrawOption['value'],
-    weight = 1,
-    baseWeight = 1,
-  ) => {
-    if (addedKeys.has(key)) return;
-    addedKeys.add(key);
-    options.push({ key, weight, baseWeight, value });
-  };
-
-  // Там, где дизайн-док говорит только «редко», «обычно» или «чаще», но не
-  // задаёт процент, отдельная карта получает базовый вес 1; численное отношение
-  // между такими событиями здесь не выдумывается.
-  // Смерть отслеживается для каждого живого именного персонажа страны,
-  // независимо от того, входит ли он в династию или пул семейных карт.
-  for (const candidate of members) {
-    const randomRisk = randomDeathChance(candidate.age);
-    if (randomRisk > 0) {
-      const key = `death:random:${candidate.id}`;
-      addPersonCard(key,
-        (candidateWorld, candidatePolity) =>
-          drawDeathCard(candidateWorld, candidatePolity!, candidate.id, year, 'random'),
-        randomRisk,
-        randomRisk);
-    }
-    const oldAgeRisk = oldAgeDeathChance(candidate.age);
-    if (oldAgeRisk > 0) {
-      const key = `death:oldAge:${candidate.id}`;
-      addPersonCard(key,
-        (candidateWorld, candidatePolity) =>
-          drawDeathCard(candidateWorld, candidatePolity!, candidate.id, year, 'oldAge'),
-        oldAgeRisk,
-        oldAgeRisk);
-    }
+  const randomDeaths = members
+    .map((target) => ({ target, weight: randomDeathChance(target.age) }))
+    .filter(({ weight }) => weight > 0)
+    .map(({ target, weight }) => ({ target, weight, baseWeight: weight }));
+  if (randomDeaths.length) {
+    options.push(characterContributionOption(world, scope, 'death:random', randomDeaths,
+      (candidateWorld, candidatePolity, target) =>
+        drawDeathCard(candidateWorld, candidatePolity!, target.id, year, 'random')));
   }
 
-  // Карты рождения создаются по каждой паре родителей отдельно. Наличие ребёнка
-  // возможно только у живых партнёров; их отношения проверяются повторно при
-  // создании карты и при её разыгрывании.
-  const birthPairs = new Set<string>();
-  for (const trackedPerson of tracked) {
-    for (const partner of livingPartners(world, trackedPerson)) {
-      const mother = trackedPerson.gender === 'female' ? trackedPerson : partner;
-      const father = trackedPerson.gender === 'male' ? trackedPerson : partner;
+  const oldAgeDeaths = members
+    .map((target) => ({ target, weight: oldAgeDeathChance(target.age) }))
+    .filter(({ weight }) => weight > 0)
+    .map(({ target, weight }) => ({ target, weight, baseWeight: weight }));
+  if (oldAgeDeaths.length) {
+    options.push(characterContributionOption(world, scope, 'death:oldAge', oldAgeDeaths,
+      (candidateWorld, candidatePolity, target) =>
+        drawDeathCard(candidateWorld, candidatePolity!, target.id, year, 'oldAge')));
+  }
+
+  // Один страновой шанс рождения складывает вклад каждого отслеживаемого
+  // персонажа, у которого есть подходящий живой партнёр. Партнёры остаются
+  // данными исхода, а не отдельными ключами или весами пар.
+  const birthPartners = new Map<number, Person[]>();
+  for (const target of tracked) {
+    const partners: Person[] = [];
+    for (const partner of livingPartners(world, target)) {
+      const mother = target.gender === 'female' ? target : partner;
+      const father = target.gender === 'male' ? target : partner;
       if (mother.gender !== 'female' || father.gender !== 'male' ||
           mother.age < 12 || mother.age > 45 || father.age < 12 ||
           mother.lastBirthYear === year || !arePartners(mother, father) || related(world, mother, father)) continue;
-      const key = `birth:${mother.id}:${father.id}`;
-      if (birthPairs.has(key)) continue;
-      birthPairs.add(key);
-      addPersonCard(key,
-        (candidateWorld, candidatePolity) =>
-          drawCharacterEventCard(candidateWorld, candidatePolity!, 'birth', [mother.id, father.id], year));
+      if (!partners.some((existing) => existing.id === partner.id)) partners.push(partner);
     }
+    if (partners.length) birthPartners.set(target.id, partners);
+  }
+  const birthTargets = [...birthPartners.keys()]
+    .map((id) => tracked.find((candidate) => candidate.id === id))
+    .filter((target): target is Person => !!target);
+  if (birthTargets.length) {
+    options.push(characterContributionOption(world, scope, 'birth', equalContributions(birthTargets),
+      (candidateWorld, candidatePolity, target) => {
+        const partners = birthPartners.get(target.id) ?? [];
+        const partner = randomItem(partners);
+        if (!partner) throw new Error(`У выбранной цели карты рождения ${target.name} не осталось подходящего партнёра.`);
+        const mother = target.gender === 'female' ? target : partner;
+        const father = target.gender === 'male' ? target : partner;
+        return drawCharacterEventCard(candidateWorld, candidatePolity!, 'birth', [mother.id, father.id], year);
+      }));
   }
 
-  // Семейные карты доступны только персонажам, которых отслеживает текущая форма
-  // правления. Все возможные пары добавляются отдельно, а не сворачиваются в один шанс.
-  for (let i = 0; i < tracked.length; i += 1) {
-    const candidate = tracked[i];
+  const marriageTargets = tracked.filter((candidate) => {
     const hasLivingSpouse = candidate.spouseIds.some((id) => person(world, id)?.alive);
     const betrothed = person(world, candidate.betrothedId);
-    if (!hasLivingSpouse && betrothed?.alive && betrothed.betrothedId === candidate.id &&
-        !betrothed.spouseIds.some((id) => person(world, id)?.alive) &&
-        candidate.age >= 12 && betrothed.age >= 12 &&
-        canMarry(polity, candidate) && canMarry(polity, betrothed)) {
-      const firstId = Math.min(candidate.id, betrothed.id);
-      const secondId = Math.max(candidate.id, betrothed.id);
-      addPersonCard(`marriage:betrothed:${firstId}:${secondId}`,
-        (candidateWorld, candidatePolity) =>
-          drawCharacterEventCard(candidateWorld, candidatePolity!, 'marriage',
-            [candidate.id, betrothed.id], year));
-    }
-
-    if (!hasLivingSpouse && candidate.betrothedId === null && canMarry(polity, candidate)) {
-      addPersonCard(`marriage:${candidate.id}`,
-        (candidateWorld, candidatePolity) =>
-          drawCharacterEventCard(candidateWorld, candidatePolity!, 'marriage', [candidate.id], year));
-    }
-    if (!hasLivingSpouse && candidate.betrothedId === null &&
-        candidate.age >= 8 && candidate.age < 20 && !polity.modifiers.includes('meritocracy')) {
-      const possibleBetrothed = tracked.filter((other) =>
-        other.id !== candidate.id && other.gender !== candidate.gender &&
-        other.age >= 8 && other.betrothedId === null &&
-        !other.spouseIds.some((id) => person(world, id)?.alive) &&
-        !related(world, candidate, other));
-      if (possibleBetrothed.length) {
-        for (const other of possibleBetrothed) {
-          addPersonCard(pairCardKey('engagement', candidate, other),
-            (candidateWorld, candidatePolity) =>
-              drawCharacterEventCard(candidateWorld, candidatePolity!, 'engagement',
-                [candidate.id, other.id], year));
-        }
-      } else {
-        addPersonCard(`engagement:${candidate.id}:new`,
-          (candidateWorld, candidatePolity) =>
-            drawCharacterEventCard(candidateWorld, candidatePolity!, 'engagement',
-              [candidate.id], year, true));
-      }
-    }
-
-    if (candidate.age >= 3 && candidate.age < 18 && candidate.traits.length === 0) {
-      addPersonCard(`trait:${candidate.id}`,
-        (candidateWorld, candidatePolity) =>
-          drawCharacterEventCard(candidateWorld, candidatePolity!, 'trait', [candidate.id], year));
-    }
-
-    for (let j = i + 1; j < tracked.length; j += 1) {
-      const other = tracked[j];
-      if (candidate.age >= 3 && other.age >= 3 &&
-          !candidate.friendIds.includes(other.id) && !other.friendIds.includes(candidate.id)) {
-        const key = pairCardKey('friendship', candidate, other);
-        addPersonCard(key,
-          (candidateWorld, candidatePolity) =>
-            drawCharacterEventCard(candidateWorld, candidatePolity!, 'friendship',
-              [candidate.id, other.id], year));
-      }
-      if (candidate.gender !== other.gender && candidate.age >= 12 && other.age >= 12 &&
-          !candidate.loverIds.includes(other.id) && !other.loverIds.includes(candidate.id) &&
-          !candidate.spouseIds.includes(other.id) && !other.spouseIds.includes(candidate.id) &&
-          !related(world, candidate, other)) {
-        const key = pairCardKey('romance', candidate, other);
-        addPersonCard(key,
-          (candidateWorld, candidatePolity) =>
-            drawCharacterEventCard(candidateWorld, candidatePolity!, 'romance',
-              [candidate.id, other.id], year));
-      }
-    }
+    const hasValidBetrothal = !!betrothed?.alive && betrothed.betrothedId === candidate.id &&
+      !betrothed.spouseIds.some((id) => person(world, id)?.alive) &&
+      candidate.age >= 12 && betrothed.age >= 12 &&
+      canMarry(polity, candidate) && canMarry(polity, betrothed);
+    return !hasLivingSpouse && (hasValidBetrothal ||
+      (candidate.betrothedId === null && canMarry(polity, candidate)));
+  });
+  if (marriageTargets.length) {
+    options.push(characterContributionOption(world, scope, 'marriage', equalContributions(marriageTargets),
+      (candidateWorld, candidatePolity, target) =>
+        drawCharacterEventCard(candidateWorld, candidatePolity!, 'marriage', [target.id], year)));
   }
 
-  // Условия срока полномочий создают отдельную карту для каждого истёкшего места.
+  const engagementTargets = tracked.filter((candidate) =>
+    !candidate.spouseIds.some((id) => person(world, id)?.alive) &&
+    candidate.betrothedId === null && candidate.age >= 8 && candidate.age < 20 &&
+    !polity.modifiers.includes('meritocracy'));
+  if (engagementTargets.length) {
+    options.push(characterContributionOption(world, scope, 'engagement', equalContributions(engagementTargets),
+      (candidateWorld, candidatePolity, target) => {
+        const candidates = tracked.filter((other) =>
+          other.id !== target.id && other.gender !== target.gender &&
+          other.age >= 8 && other.betrothedId === null &&
+          !other.spouseIds.some((id) => person(world, id)?.alive) &&
+          !related(world, target, other));
+        const selected = randomItem(candidates);
+        return selected
+          ? drawCharacterEventCard(candidateWorld, candidatePolity!, 'engagement', [target.id, selected.id], year)
+          : drawCharacterEventCard(candidateWorld, candidatePolity!, 'engagement', [target.id], year, true);
+      }));
+  }
+
+  const friendshipPartners = new Map<number, Person[]>();
+  for (const target of tracked) {
+    if (target.age < 3) continue;
+    const candidates = tracked.filter((other) =>
+      other.id !== target.id && other.age >= 3 &&
+      !target.friendIds.includes(other.id) && !other.friendIds.includes(target.id));
+    if (candidates.length) friendshipPartners.set(target.id, candidates);
+  }
+  const friendshipTargets = [...friendshipPartners.keys()]
+    .map((id) => tracked.find((candidate) => candidate.id === id))
+    .filter((target): target is Person => !!target);
+  if (friendshipTargets.length) {
+    options.push(characterContributionOption(world, scope, 'friendship', equalContributions(friendshipTargets),
+      (candidateWorld, candidatePolity, target) => {
+        const partner = randomItem(friendshipPartners.get(target.id) ?? []);
+        if (!partner) throw new Error(`У выбранной цели карты дружбы ${target.name} не осталось подходящего персонажа.`);
+        return drawCharacterEventCard(candidateWorld, candidatePolity!, 'friendship', [target.id, partner.id], year);
+      }));
+  }
+
+  const romancePartners = new Map<number, Person[]>();
+  for (const target of tracked) {
+    if (target.age < 12) continue;
+    const candidates = tracked.filter((other) =>
+      other.id !== target.id && other.gender !== target.gender && other.age >= 12 &&
+      !target.loverIds.includes(other.id) && !other.loverIds.includes(target.id) &&
+      !target.spouseIds.includes(other.id) && !other.spouseIds.includes(target.id) &&
+      !related(world, target, other));
+    if (candidates.length) romancePartners.set(target.id, candidates);
+  }
+  const romanceTargets = [...romancePartners.keys()]
+    .map((id) => tracked.find((candidate) => candidate.id === id))
+    .filter((target): target is Person => !!target);
+  if (romanceTargets.length) {
+    options.push(characterContributionOption(world, scope, 'romance', equalContributions(romanceTargets),
+      (candidateWorld, candidatePolity, target) => {
+        const partner = randomItem(romancePartners.get(target.id) ?? []);
+        if (!partner) throw new Error(`У выбранной цели романтической связи ${target.name} не осталось подходящего персонажа.`);
+        return drawCharacterEventCard(candidateWorld, candidatePolity!, 'romance', [target.id, partner.id], year);
+      }));
+  }
+
+  const traitTargets = tracked.filter((candidate) =>
+    candidate.age >= 3 && candidate.age < 18 && candidate.traits.length === 0);
+  if (traitTargets.length) {
+    options.push(characterContributionOption(world, scope, 'trait', equalContributions(traitTargets),
+      (candidateWorld, candidatePolity, target) =>
+        drawCharacterEventCard(candidateWorld, candidatePolity!, 'trait', [target.id], year)));
+  }
+
   const electionAllowed = (polity.government === 'republic' && polity.modifiers.includes('term')) ||
     polity.modifiers.includes('consulate');
   if (electionAllowed) {
-    const officeHolders = [polity.ruler, ...polity.coRulerIds
+    const electionTargets = [polity.ruler, ...polity.coRulerIds
       .map((id) => person(world, id))
-      .filter((holder): holder is Person => !!holder?.alive)];
-    for (const holder of officeHolders) {
-      const since = polity.seatSince[holder.id] ?? polity.rulerSince;
-      if (year - since < polity.termYears) continue;
-      addPersonCard(`election:${holder.id}`,
-        (candidateWorld, candidatePolity) =>
-          drawElectionCard(candidateWorld, candidatePolity!, holder.id, year));
+      .filter((holder): holder is Person => !!holder?.alive)]
+      .filter((holder) => year - (polity.seatSince[holder.id] ?? polity.rulerSince) >= polity.termYears);
+    if (electionTargets.length) {
+      options.push(characterContributionOption(world, scope, 'election', equalContributions(electionTargets),
+        (candidateWorld, candidatePolity, target) =>
+          drawElectionCard(candidateWorld, candidatePolity!, target.id, year)));
     }
   }
 
-  // Передача власти при жизни — самостоятельная карта старого племенного вождя,
-  // а не вероятность внутри общей карты персонажей.
   if (polity.government === 'tribal' && polity.ruler.age >= 66) {
-    addPersonCard(`succession:${polity.ruler.id}`, (candidateWorld, candidatePolity) => {
+    options.push(characterContributionOption(world, scope, 'succession', [{
+      target: polity.ruler,
+      weight: 1,
+      baseWeight: 1,
+    }], (candidateWorld, candidatePolity, target) => {
       const card = makeCard('succession', 0, candidatePolity!,
-        `Пожилой вождь ${polity.ruler.name} может передать власть при жизни.`, -1);
-      card.choices = leadershipOptions(candidateWorld, candidatePolity!, year, polity.ruler).slice(0, 2).map((ruler) => ({
-        label: ruler.name, detail: personDetail(candidateWorld, ruler), ruler, seatId: polity.ruler.id,
+        `Пожилой вождь ${target.name} может передать власть при жизни.`, -1);
+      card.choices = leadershipOptions(candidateWorld, candidatePolity!, year, target).slice(0, 2).map((ruler) => ({
+        label: ruler.name, detail: personDetail(candidateWorld, ruler), ruler, seatId: target.id,
       }));
       return card;
-    });
+    }));
   }
   return options;
 }
@@ -1463,10 +1558,6 @@ function drawFirstApplicable(
     if (CLIMATE_CARD_KEYS.has(option.key as ClimateCard)) {
       if (!climateOptions.has(option.key)) return false;
     }
-    if (option.key.startsWith('death:')) {
-      const personId = Number(option.key.slice(option.key.lastIndexOf(':') + 1));
-      if (!person(world, personId)?.alive) return false;
-    }
     return option.available?.(world, polity) ?? true;
   });
   if (!candidates.length) {
@@ -1474,7 +1565,11 @@ function drawFirstApplicable(
     return null;
   }
   const probabilities = normalizedCardProbabilities(
-    candidates.map((option) => ({ key: option.key, weight: option.weight })),
+    candidates.map((option) => ({
+      key: option.key,
+      weight: option.weight,
+      ...(option.adaptiveContributions ? { adaptiveMultiplier: 1 } : {}),
+    })),
     world.cardMultipliers,
     scope,
   );
@@ -1483,13 +1578,20 @@ function drawFirstApplicable(
     return null;
   }
   const drawnKey = weightedPick(probabilities.map((option) => ({ value: option.key, weight: option.probability })));
-  if (drawnKey === null) throw new Error(`Card draw produced no selection for ${scope} with a non-empty pool.`);
+  if (drawnKey === null) throw new Error(`Розыгрыш карт для пула «${scope}» не выбрал карту из непустого списка.`);
   const selected = candidates.find((option) => option.key === drawnKey);
-  if (!selected) throw new Error(`Card draw selected unknown option ${drawnKey} for ${scope}.`);
+  if (!selected) throw new Error(`Розыгрыш карт выбрал неизвестный ключ «${drawnKey}» в пуле «${scope}».`);
   const seed = Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
   const prepared = prepareSelectedCard(stagingWorld, selected, stagingPolity, seed);
   traceCardDraw(world, scope, year, polity, candidates, selected.key, prepared.card.type);
-  updateCardDrawMultipliers(scope, probabilities, selected.key, world.cardMultipliers);
+  updateCardDrawMultipliers(
+    scope,
+    probabilities,
+    selected.key,
+    world.cardMultipliers,
+    candidates,
+    selected.selectedAdaptiveKey?.() ?? null,
+  );
   return commitPreparedCard(world, prepared);
 }
 
@@ -1561,7 +1663,7 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const splitScale = country.modifiers.includes('confederation') ? 3 : country.modifiers.includes('federation') ? 2 : 1;
   const unrestScale = country.modifiers.includes('confederation') ? 1 / 3 : country.modifiers.includes('federation') ? 1 / 2 : 1;
   const options: CardDrawOption[] = [
-    ...characterCardOptions(world, country, year),
+    ...countryCharacterEventOptions(world, country, year),
     { key: 'expand', value: (w, p) => drawExpand(w, p as Country, expansionPlan),
       weight: expansionPlan.ink > 0 ? consulateScale : 0, baseWeight: 1,
       available: () => expansionPlan.ink > 0 },
