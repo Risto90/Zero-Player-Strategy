@@ -83,9 +83,9 @@ export interface LegendRow {
   id: number;
   name: string;
   color: string;
-  /** Population (countries, cultures, religions) or pixel count (biomes). */
+  /** Численность населения (государства, культуры, религии) или количество пикселей (биомы). */
   value: number;
-  /** Share of the total, 0–100. */
+  /** Доля от общего значения, 0–100. */
   percent: number;
   detail: string;
 }
@@ -95,7 +95,7 @@ export interface Legend {
   cultures: LegendRow[];
   religions: LegendRow[];
   origins: LegendRow[];
-  /** People who follow no religion. */
+  /** Люди, не исповедующие религию. */
   nonBelievers: LegendRow;
   biomes: LegendRow[];
   totalPopulation: number;
@@ -145,12 +145,12 @@ export interface GameSnapshot {
   selectedCountryId: number | null;
   selectedCityId: number | null;
   card: Card | null;
-  /** Country the active card belongs to, if any. */
+  /** Государство, к которому относится текущая карта, если оно есть. */
   cardCountry: Country | null;
   queuedCards: number;
   canPaint: boolean;
   cityPlacementAvailable: boolean;
-  /** The current card can be finished without asking the automatic strategy to act. */
+  /** Текущую карту можно завершить, не запуская автоматическую стратегию. */
   canCompleteCard: boolean;
   brushMode: BrushMode;
   brushOption: BrushOption;
@@ -160,13 +160,13 @@ export interface GameSnapshot {
   secondsLeft: number;
   paused: boolean;
   busy: boolean;
-  /** The year's changes are still being drawn; the timer waits for them. */
+  /** Изменения за год ещё отрисовываются; таймер ждёт завершения отрисовки. */
   drawing: boolean;
-  /** AI turn progress while the world moves, e.g. 3 of 12 countries done. */
+  /** Ход ИИ во время продвижения мира, например: обработано 3 из 12 государств. */
   progress: { done: number; total: number } | null;
-  /** Human-readable legacy shape used by the main game screen. */
+  /** Читаемый человеком прежний формат для основного игрового экрана. */
   log: string[];
-  /** Structured linked records for object profile pages. */
+  /** Структурированные связанные записи для страниц объектов. */
   chronicle: ChronicleEntry[];
   message: string;
   messageRecipient: NotificationRecipient;
@@ -210,7 +210,7 @@ interface SavedGame {
 }
 
 const OBSERVER_SECONDS = 3;
-/** Work is cut into slices of about this many milliseconds, so the screen never freezes. */
+/** Работа разбивается на отрезки такой длительности, чтобы экран не зависал. */
 const SLICE_MS = 12;
 const EMPTY_TEST_LEGEND: Legend = {
   countries: [],
@@ -222,7 +222,7 @@ const EMPTY_TEST_LEGEND: Legend = {
   totalPopulation: 0,
 };
 
-/** Save-file reads, writes and deletes run one at a time, in the order they were requested. */
+/** Чтение, запись и удаление сохранений выполняются по очереди в порядке запросов. */
 let fileQueue: Promise<unknown> = Promise.resolve();
 function onSaveFile<T>(op: () => Promise<T>): Promise<T> {
   const run = fileQueue.then(op, op);
@@ -230,7 +230,7 @@ function onSaveFile<T>(op: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** Lets the UI breathe between slices of work. */
+/** Даёт интерфейсу обновиться между отрезками работы. */
 export const nextFrame = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 export class Game {
@@ -259,7 +259,7 @@ export class Game {
   private pauseChangedDuringBusy = false;
   private busy = false;
   private resolvingAutomatically = false;
-  /** True from the end of a turn until the map view has shown the new map. */
+  /** Истина после завершения хода и до отображения обновлённой карты. */
   private drawing = false;
   private progress: { done: number; total: number } | null = null;
   private performanceTracking = false;
@@ -268,12 +268,12 @@ export class Game {
   private saving: Promise<void> | null = null;
   private saveAgain = false;
   private disposed = false;
-  /** Turned off by the test harness, which has no storage. */
+  /** Отключается тестовой средой, в которой нет хранилища. */
   static persist = true;
-  /** Set only by the browser notification campaign build to avoid unrelated map legend work. */
+  /** Включается только браузерной кампанией уведомлений, чтобы не выполнять лишнюю работу с легендой карты. */
   static notificationE2eFastMode = false;
   private static saveOwner: Game | null = null;
-  /** How to wait between slices; the harness can swap in an immediate one. */
+  /** Ожидание между отрезками; тестовая среда может заменить его немедленным продолжением. */
   static pause: () => Promise<void> = nextFrame;
   private log: ChronicleEntry[] = [];
   private message = '';
@@ -294,12 +294,12 @@ export class Game {
   ) {
     this.role = role;
     this.renderer = new MapRenderer(world, deferMapPreparation);
-    // The newest game owns the save file; older (discarded) games may no longer write it.
+    // Сохранением владеет последняя созданная игра; прежние отброшенные игры больше не могут его перезаписывать.
     if (!deferMapPreparation) Game.saveOwner = this;
     if (!deferMapPreparation) this.redrawAll();
   }
 
-  /** Repaints the whole map (e.g. for a newly opened map view); the timer waits until it is shown. */
+  /** Перерисовывает всю карту (например, при открытии её экрана); таймер ждёт её отображения. */
   redrawAll(): void {
     this.renderer.markAll();
     this.drawing = true;
@@ -435,14 +435,14 @@ export class Game {
     await onSaveFile(clearSaveBytes);
   }
 
-  // ---------- subscriptions ----------
+  // ---------- подписки ----------
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
 
-  /** Called whenever map pixels need repainting (read `renderer.flush()`). */
+  /** Вызывается, когда пиксели карты нужно перерисовать (см. `renderer.flush()`). */
   onMapChange(listener: () => void): () => void {
     this.mapListeners.add(listener);
     return () => this.mapListeners.delete(listener);
@@ -471,7 +471,7 @@ export class Game {
     }
   }
 
-  /** Returns all messages emitted after the caller's last processed sequence. */
+  /** Возвращает сообщения, созданные после последней обработанной вызывающим последовательности. */
   notificationsAfter(sequence: number): GameNotification[] {
     return this.notificationEvents.slice(Math.max(0, Math.floor(sequence)));
   }
@@ -485,14 +485,14 @@ export class Game {
     return { scope: 'all' };
   }
 
-  /** The map view calls this when every changed tile is on screen. */
+  /** Экран карты вызывает этот метод, когда все изменённые участки показаны. */
   mapDrawn(): void {
     if (!this.drawing) return;
     this.drawing = false;
     this.emit();
   }
 
-  // ---------- timer ----------
+  // ---------- таймер ----------
 
   start(): void {
     if (this.timer) return;
@@ -549,9 +549,9 @@ export class Game {
     this.scheduleSave();
   }
 
-  // ---------- brush ----------
+  // ---------- кисть ----------
 
-  /** The single command boundary used by both UI input and automatic strategy. */
+  /** Единая точка выполнения команд для интерфейса и автоматической стратегии. */
   dispatchAction(action: GameAction): boolean | number | void {
     switch (action.type) {
       case 'selectChoice': return this.applyChoice(action.index);
@@ -730,7 +730,7 @@ export class Game {
     return best;
   }
 
-  /** Predicts the population that the shared city-concentration rule can gather. */
+  /** Оценивает население, которое соберёт общее правило городской концентрации. */
   private expectedCityPopulation(
     pixel: number,
     nomadic: boolean,
@@ -890,7 +890,7 @@ export class Game {
     this.emit(true);
   }
 
-  // ---------- map view ----------
+  // ---------- экран карты ----------
 
   setMapMode(mode: MapMode): void {
     if (mode !== 'political' && this.selectedCountryId !== null) {
@@ -907,7 +907,7 @@ export class Game {
     this.emit(true);
   }
 
-  /** Shows a single culture or religion layer: its share at every point. */
+  /** Показывает слой одной культуры или религии: её долю в каждой точке. */
   showLayer(layer: EntityLayer | null): void {
     if (layer) {
       this.mapMode = layer.kind === 'culture'
@@ -1024,16 +1024,16 @@ export class Game {
     };
   }
 
-  /** All living named people in the country; ruling-dynasty membership is shown separately. */
+  /** Все живые именные персонажи государства; принадлежность к правящей династии показывается отдельно. */
   importantPeople(countryId: number): Person[] {
     const country = this.world.countries[countryId];
     if (!country) return [];
     return countryCharacters(this.world, country);
   }
 
-  // ---------- turns ----------
+  // ---------- ходы ----------
 
-  /** Ends the player's card and plays the rest of the year in slices, showing progress. */
+  /** Завершает карту игрока и проводит остаток года отрезками, показывая ход выполнения. */
   async nextTurn(automaticallyCompleteCard = false): Promise<void> {
     if (this.busy) return;
     if (this.card && !automaticallyCompleteCard && !this.canCompleteCardNormally()) return;
@@ -1174,7 +1174,7 @@ export class Game {
     return this.hasOpenCitySite(country);
   }
 
-  /** Shared card-level guard used by manual completion and automatic resolution. */
+  /** Общая проверка карты для ручного завершения и автоматического розыгрыша. */
   private cardCompletionBlocker(): string | null {
     const card = this.card;
     if (!card) return null;
@@ -1415,7 +1415,7 @@ export class Game {
     this.card = null;
   }
 
-  /** Writes the outcome to the log and drops entities the card created but never used. */
+  /** Записывает результат в летопись и удаляет сущности, созданные картой, но не использованные ею. */
   private finish(painter: CardPainter): void {
     const card = painter.card;
     const w = this.world;
@@ -1706,7 +1706,7 @@ export class Game {
     ], [chronicleReference('country', main.id), chronicleReference('country', incoming.id)]);
   }
 
-  /** If another country's sitting ruler inherits this throne, their former state joins it. */
+  /** Если правитель другого государства наследует этот престол, его прежнее государство присоединяется к новому. */
   private appointAndAnnex(country: Country, ruler: Person, year: number, seatId = country.ruler.id): void {
     const homes = this.world.countries.filter((other) => other.id !== country.id && other.pixels > 0 &&
       (other.ruler.id === ruler.id ||
@@ -1848,7 +1848,7 @@ export class Game {
     }
   }
 
-  /** Applies the design-doc partition law by painting contiguous areas for each heir. */
+  /** Применяет описанное в дизайн-доке разделение, выделяя каждому наследнику связную территорию. */
   private partitionCountry(source: Country, deceased: Person, preferred: Person): void {
     const w = this.world;
     const sourceCities = w.cities.filter((city) => city.countryId === source.id);
@@ -1882,7 +1882,7 @@ export class Game {
       const primary = heirs.find((p) => p.id === preferred.id) ?? heirs[0];
       heirs = [primary, ...heirs.filter((p) => p.id !== primary.id)];
     } else {
-      // Without another succession law, neither child has a prescribed priority.
+      // Без другого закона наследования ни один из детей не имеет установленного приоритета.
       for (let i = heirs.length - 1; i > 0; i -= 1) {
         const j = Math.floor(Math.random() * (i + 1));
         [heirs[i], heirs[j]] = [heirs[j], heirs[i]];
@@ -1969,7 +1969,7 @@ export class Game {
       if (!heir.formerRulerOf.includes(state.id)) heir.formerRulerOf.push(state.id);
       state.modifiers = [...source.modifiers]; state.previousRulerIds = [...source.previousRulerIds];
       state.dynastyClaims = [...source.dynastyClaims];
-      // Seats belong to each new country; never duplicate the old country's consuls.
+      // Места распределяются между новыми государствами; консулы прежнего государства не дублируются.
       state.coRulerIds = [];
       state.termYears = source.termYears; state.maxTerms = source.maxTerms; state.consulCount = source.consulCount;
       state.seatSince = { ...source.seatSince }; state.termCounts = { ...source.termCounts };
@@ -2030,8 +2030,8 @@ export class Game {
       return;
     }
 
-    // Grow one contiguous region at a time. A shared culture and faith gets
-    // the 4x priority from the design; a match on only one gets 2x.
+    // Каждая область расширяется по очереди как связная территория. Совпадение культуры и веры
+    // даёт приоритет ×4 согласно дизайн-доку; совпадение только одной из них — ×2.
     const available = new Uint8Array(MAP_PIXELS);
     for (const p of pixels) available[p] = 1;
     const reservedCityState = new Int16Array(MAP_PIXELS).fill(-1);
@@ -2174,7 +2174,7 @@ export class Game {
     }, ...this.log];
   }
 
-  // ---------- snapshot ----------
+  // ---------- снимок состояния ----------
 
   private buildSnapshot(): GameSnapshot {
     const w = this.world;
@@ -2342,30 +2342,30 @@ export class Game {
     };
   }
 
-  // ---------- saving ----------
+  // ---------- сохранение ----------
 
   private scheduleSave(): void {
     if (!Game.persist || this.disposed || this.busy) return;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      // Let the map finish drawing first: both share the JS thread.
+      // Сначала дождаться отрисовки карты: она и сохранение используют один поток JavaScript.
       if (this.drawing) this.scheduleSave();
       else void this.save();
     }, 1500);
   }
 
-  /** Saves right away (e.g. when the app goes to the background). */
+  /** Немедленно сохраняет игру (например, при переходе приложения в фон). */
   saveNow(): Promise<void> {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
     return this.save();
   }
 
-  /** Copies the world, traces its zones in slices and writes the file. One save at a time. */
+  /** Копирует мир, обходит его области отрезками и записывает файл. Одновременно выполняется одно сохранение. */
   async save(): Promise<void> {
     if (!Game.persist) return;
-    // A turn is applied in slices; never persist its transient automatic-event progress.
+    // Ход выполняется отрезками; промежуточный прогресс автоматических событий не сохраняется.
     if (this.busy) return this.saving ?? Promise.resolve();
     if (this.saving) {
       this.saveAgain = true;
@@ -2419,7 +2419,7 @@ export class Game {
     }
     const bytes = encodeSave({ ...head, world } satisfies SavedGame);
     try {
-      // Checked again inside the queue: a delete or a new game may have been requested meanwhile.
+      // Повторно проверяется в очереди: пока шло ожидание, мог поступить запрос на удаление или новую игру.
       await onSaveFile(async () => {
         if (this.ownsSave) await writeSaveBytes(bytes);
       });
@@ -2433,7 +2433,7 @@ export class Game {
     return !this.disposed && Game.saveOwner === this;
   }
 
-  /** Stops the game without saving; a save already in progress is abandoned. */
+  /** Останавливает игру без сохранения; уже начатое сохранение отменяется. */
   discard(): void {
     this.disposed = true;
     if (Game.saveOwner === this) Game.saveOwner = null;

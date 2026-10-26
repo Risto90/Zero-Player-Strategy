@@ -63,6 +63,25 @@ const second = normalizedCardProbabilities([
 updateCardDrawMultipliers('country:4', second, 'b', multipliers);
 closeTo(multipliers['country:4:b'], 1, 'the bonus resets when that card is eventually drawn');
 
+// Мировой адаптивный множитель накапливается геометрически и сбрасывается после выпадения карты.
+const worldMultipliers = {};
+const worldPool = [
+  { key: 'low', weight: 1 },
+  { key: 'high', weight: 3 },
+];
+for (const expected of [1.1, 1.21, 1.331]) {
+  const odds = normalizedCardProbabilities(worldPool, worldMultipliers, 'world');
+  updateCardDrawMultipliers('world', odds, 'low', worldMultipliers);
+  closeTo(worldMultipliers['world:high'], expected, `three misses compound to x${expected}`);
+}
+updateCardDrawMultipliers(
+  'world',
+  normalizedCardProbabilities(worldPool, worldMultipliers, 'world'),
+  'high',
+  worldMultipliers,
+);
+closeTo(worldMultipliers['world:high'], 1, 'the world multiplier resets after the card is drawn');
+
 const previousPersist = Game.persist;
 Game.persist = true;
 try {

@@ -68,6 +68,7 @@ type Polity = Country;
 type CardDrawOption = {
   key: string;
   weight: number;
+  baseWeight?: number;
   value: (world: World, polity: Polity | null) => Card | null;
 };
 type PreparedCard = {
@@ -80,6 +81,38 @@ type PreparedCard = {
   };
   nextPersonId: number;
 };
+
+export interface CardDrawTraceChoice {
+  key: string;
+  baseWeight: number;
+  programmedWeight: number;
+  programmedMultiplier: number | null;
+  adaptiveMultiplier: number;
+  baseProbability: number;
+  actualProbability: number;
+}
+
+export interface CardDrawTraceEvent {
+  year: number;
+  scope: string;
+  countryId: number | null;
+  countryType: Country['type'] | null;
+  government: Country['government'] | null;
+  modifiers: GovernmentModifierId[];
+  selectedKey: string | null;
+  cardType: CardType | null;
+  rejectedKeys: string[];
+  choices: CardDrawTraceChoice[];
+  finalChoices: CardDrawTraceChoice[];
+}
+
+let cardDrawTraceListener: ((event: CardDrawTraceEvent) => void) | null = null;
+
+export function setCardDrawTraceListener(
+  listener: ((event: CardDrawTraceEvent) => void) | null,
+): void {
+  cardDrawTraceListener = listener;
+}
 
 export function normalizedCardProbabilities(
   options: { key: string; weight: number }[],
@@ -94,6 +127,66 @@ export function normalizedCardProbabilities(
     .filter((option) => Number.isFinite(option.weight) && option.weight > 0);
   const total = adjusted.reduce((sum, option) => sum + option.weight, 0);
   return total > 0 ? adjusted.map((option) => ({ key: option.key, probability: option.weight / total })) : [];
+}
+
+function traceCardDraw(
+  world: World,
+  scope: string,
+  year: number,
+  polity: Polity | null,
+  options: CardDrawOption[],
+  selectedKey: string | null,
+  cardType: CardType | null,
+  rejectedKeys: string[],
+  finalOptions: CardDrawOption[] = options,
+): void {
+  const listener = cardDrawTraceListener;
+  if (!listener) return;
+  const makeChoices = (drawOptions: CardDrawOption[]) => {
+    const actual = normalizedCardProbabilities(
+      drawOptions.map((option) => ({ key: option.key, weight: option.weight })),
+      world.cardMultipliers,
+      scope,
+    );
+    // Адаптивный множитель учитывается и в базе; здесь убираются только множители правления.
+    const baseline = normalizedCardProbabilities(
+      drawOptions.map((option) => ({ key: option.key, weight: option.baseWeight ?? option.weight })),
+      world.cardMultipliers,
+      scope,
+    );
+    const actualByKey = new Map(actual.map((option) => [option.key, option.probability]));
+    const baselineByKey = new Map(baseline.map((option) => [option.key, option.probability]));
+    return drawOptions.map((option) => {
+      const baseWeight = option.baseWeight ?? option.weight;
+      return {
+        key: option.key,
+        baseWeight,
+        programmedWeight: option.weight,
+        programmedMultiplier: baseWeight > 0 ? option.weight / baseWeight : null,
+        adaptiveMultiplier: world.cardMultipliers[`${scope}:${option.key}`] ?? 1,
+        baseProbability: baselineByKey.get(option.key) ?? 0,
+        actualProbability: actualByKey.get(option.key) ?? 0,
+      };
+    });
+  };
+  const choices = makeChoices(options);
+  const finalChoices = finalOptions.length === options.length &&
+    finalOptions.every((option, index) => option === options[index])
+    ? choices
+    : makeChoices(finalOptions);
+  listener({
+    year,
+    scope,
+    countryId: polity?.id ?? null,
+    countryType: polity?.type ?? null,
+    government: polity?.government ?? null,
+    modifiers: polity ? [...polity.modifiers] : [],
+    selectedKey,
+    cardType,
+    rejectedKeys: [...rejectedKeys],
+    choices,
+    finalChoices,
+  });
 }
 
 export function updateCardDrawMultipliers(
@@ -152,9 +245,9 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
     : nomad.modifiers.includes('coRule') ? 0.5 : 1;
   const options: CardDrawOption[] = [
     ...lifeDrawOptions(world, nomad, year),
-    { key: 'nomadExpand', value: (_w, p) => drawNomadExpansionCard(_w, p as Country), weight: 4 * consulateScale },
-    { key: 'government', value: (_w, p) => drawGovernment(_w, p!, year), weight: governmentEventWeight(world, nomad, year, false, consulateScale) },
-    { key: 'revolt', value: (_w, p) => drawGovernment(_w, p!, year, true), weight: governmentEventWeight(world, nomad, year, true, consulateScale) },
+    { key: 'nomadExpand', value: (_w, p) => drawNomadExpansionCard(_w, p as Country), weight: 4 * consulateScale, baseWeight: 4 },
+    { key: 'government', value: (_w, p) => drawGovernment(_w, p!, year), weight: governmentEventWeight(world, nomad, year, false, consulateScale), baseWeight: 0.16 },
+    { key: 'revolt', value: (_w, p) => drawGovernment(_w, p!, year, true), weight: governmentEventWeight(world, nomad, year, true, consulateScale), baseWeight: 0.01 },
     { key: 'buildCity', value: (_w, p) => {
       const candidate = p as Country;
       const freeSite = (candidate.range ?? []).find((pixel) => _w.land[pixel] && _w.owner[pixel] === 0 && !_w.cityAt(pixel));
@@ -167,7 +260,7 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
     );
     }, weight: cityWeight },
   ];
-  return drawFirstApplicable(world, `country:${nomad.id}`, nomad, options);
+  return drawFirstApplicable(world, `country:${nomad.id}`, nomad, options, year);
 }
 
 function drawNomadExpansionCard(world: World, nomad: Country): Card | null {
@@ -1080,7 +1173,13 @@ function commitPreparedCard(world: World, prepared: PreparedCard): Card {
 }
 
 /** Проверяет варианты на изолированной копии мира и переносит новые сущности только выбранной карты. */
-function drawFirstApplicable(world: World, scope: string, polity: Polity | null, options: CardDrawOption[]): Card | null {
+function drawFirstApplicable(
+  world: World,
+  scope: string,
+  polity: Polity | null,
+  options: CardDrawOption[],
+  year: number,
+): Card | null {
   const climateOptions = availableClimateCards(world, polity, new Set(options.map((option) => option.key)));
   const stagingWorld = forkWorld(world, polity);
   const stagingPolity = polity ? stagingWorld.countries[polity.id] : null;
@@ -1095,27 +1194,41 @@ function drawFirstApplicable(world: World, scope: string, polity: Polity | null,
     }
     return true;
   });
-  if (!candidates.length) return null;
-  let remaining = [...candidates];
+  if (!candidates.length) {
+    traceCardDraw(world, scope, year, polity, [], null, null, []);
+    return null;
+  }
+  const initialCandidates = [...candidates];
+  let remaining = [...initialCandidates];
+  const rejectedKeys: string[] = [];
   while (remaining.length) {
     const probabilities = normalizedCardProbabilities(
       remaining.map((option) => ({ key: option.key, weight: option.weight })),
       world.cardMultipliers,
       scope,
     );
-    if (!probabilities.length) return null;
+    if (!probabilities.length) {
+      traceCardDraw(world, scope, year, polity, initialCandidates, null, null, rejectedKeys, remaining);
+      return null;
+    }
     const drawnKey = weightedPick(probabilities.map((option) => ({ value: option.key, weight: option.probability })));
-    if (drawnKey === null) return null;
+    if (drawnKey === null) {
+      traceCardDraw(world, scope, year, polity, initialCandidates, null, null, rejectedKeys, remaining);
+      return null;
+    }
     const selected = remaining.find((option) => option.key === drawnKey)!;
     const seed = Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
     const prepared = prepareSelectedCard(stagingWorld, selected, stagingPolity, seed);
     if (!prepared) {
+      rejectedKeys.push(selected.key);
       remaining = remaining.filter((option) => option !== selected);
       continue;
     }
+    traceCardDraw(world, scope, year, polity, initialCandidates, selected.key, prepared.card.type, rejectedKeys, remaining);
     updateCardDrawMultipliers(scope, probabilities, selected.key, world.cardMultipliers);
     return commitPreparedCard(world, prepared);
   }
+  traceCardDraw(world, scope, year, polity, initialCandidates, null, null, rejectedKeys, []);
   return null;
 }
 
@@ -1136,7 +1249,7 @@ export function drawWorldCard(world: World, year: number): Card | null {
     { key: 'coldCurrent', value: (w) => drawClimateCard(w, 'coldCurrent', null), weight: 0.3 },
     { key: 'faith', value: (w) => drawFaith(w, null, year), weight: living > 0 ? 0.25 * faithRoom(world) : 0 },
     { key: 'culture', value: (w) => drawCultureSplit(w, null, year), weight: living > 0 ? 0.3 : 0 },
-  ]);
+  ], year);
 }
 
 export function drawCountryCard(world: World, country: Country, year: number): Card | null {
@@ -1171,27 +1284,27 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const unrestScale = country.modifiers.includes('confederation') ? 1 / 3 : country.modifiers.includes('federation') ? 1 / 2 : 1;
   const options: CardDrawOption[] = [
     ...lifeDrawOptions(world, country, year),
-    { key: 'expand', value: (w, p) => drawExpand(w, p as Country), weight: 4 * consulateScale },
+    { key: 'expand', value: (w, p) => drawExpand(w, p as Country), weight: 4 * consulateScale, baseWeight: 4 },
     { key: 'buildCity', value: (w, p) => drawBuildCityCard(w, p as Country), weight: buildCityWeight },
     { key: 'upgradeCity', value: (w, p) => drawUpgradeCityCard(w, p as Country), weight: upgradeCityWeight },
     { key: 'waneCity', value: (w, p) => drawWaneCityCard(w, p as Country), weight: cityWaningWeight(world, country) },
     { key: 'moveCapital', value: (w, p) => drawMoveCapital(w, p as Country), weight: countryCities.length >= 3 ? 1 : 0 },
-    { key: 'colonization', value: (w, p) => drawColonization(w, p as Country), weight: Math.max(0, diversity.density * 0.12) * consulateScale },
-    { key: 'government', value: (w, p) => drawGovernment(w, p!, year), weight: governmentEventWeight(world, country, year, false, consulateScale) },
-    { key: 'revolt', value: (w, p) => drawGovernment(w, p!, year, true), weight: governmentEventWeight(world, country, year, true, consulateScale) },
-    { key: 'split', value: (w, p) => drawSplitCard(w, p as Country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale },
-    { key: 'uprising', value: (w, p) => drawSplitCard(w, p as Country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale },
-    { key: 'union', value: (w, p) => drawUnion(w, p as Country, year), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0 },
+    { key: 'colonization', value: (w, p) => drawColonization(w, p as Country), weight: Math.max(0, diversity.density * 0.12) * consulateScale, baseWeight: Math.max(0, diversity.density * 0.12) },
+    { key: 'government', value: (w, p) => drawGovernment(w, p!, year), weight: governmentEventWeight(world, country, year, false, consulateScale), baseWeight: 0.16 },
+    { key: 'revolt', value: (w, p) => drawGovernment(w, p!, year, true), weight: governmentEventWeight(world, country, year, true, consulateScale), baseWeight: 0.01 },
+    { key: 'split', value: (w, p) => drawSplitCard(w, p as Country, year), weight: (big ? 0.3 * (1 + largerThanCapital) : 0) * splitScale * consulateScale, baseWeight: big ? 0.3 * (1 + largerThanCapital) : 0 },
+    { key: 'uprising', value: (w, p) => drawSplitCard(w, p as Country, year, true), weight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) * unrestScale * consulateScale, baseWeight: Math.min(0.25, (diversity.cultureFragmentation + diversity.religionFragmentation) * 0.015) },
+    { key: 'union', value: (w, p) => drawUnion(w, p as Country, year), weight: country.modifiers.includes('confederation') ? 0.09 : country.modifiers.includes('federation') ? 0.06 : 0, baseWeight: 0 },
     { key: 'drought', value: (w, p) => drawClimateCard(w, 'drought', p as Country), weight: 0.8 },
     { key: 'rain', value: (w, p) => drawClimateCard(w, 'rain', p as Country), weight: 0.8 },
     { key: 'desertification', value: (w, p) => drawClimateCard(w, 'desertification', p as Country), weight: 0.45 },
     { key: 'swamping', value: (w, p) => drawClimateCard(w, 'swamping', p as Country), weight: 0.45 },
     { key: 'warmWind', value: (w, p) => drawClimateCard(w, 'warmWind', p as Country), weight: 0.25 },
     { key: 'coldWind', value: (w, p) => drawClimateCard(w, 'coldWind', p as Country), weight: 0.25 },
-    { key: 'faith', value: (w, p) => drawFaith(w, p as Country, year), weight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) * (country.modifiers.includes('theocracy') ? 2 : 1) },
+    { key: 'faith', value: (w, p) => drawFaith(w, p as Country, year), weight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) * (country.modifiers.includes('theocracy') ? 2 : 1), baseWeight: (country.religionId === null ? 0.1 : 0.03) * faithRoom(world) },
     { key: 'culture', value: (w, p) => drawCultureSplit(w, p as Country, year), weight: country.pixels >= 6000 ? 0.06 : 0 },
   ];
-  return drawFirstApplicable(world, `country:${country.id}`, country, options);
+  return drawFirstApplicable(world, `country:${country.id}`, country, options, year);
 }
 
 export function firstCreateCard(world: World, year: number): Card | null {

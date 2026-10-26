@@ -34,7 +34,7 @@ export function randomNameStyle(rng: () => number = Math.random): NameStyleId {
   return randomItem(NAME_STYLE_IDS, rng);
 }
 
-/** Deterministic style for old saves that predate per-culture name styles. */
+/** Детерминированный стиль для старых сохранений, созданных до появления стилей имён по культурам. */
 export function legacyNameStyleForCulture(cultureId: number): NameStyleId {
   const index = Math.abs(Math.floor(Number.isFinite(cultureId) ? cultureId : 0)) % NAME_STYLE_IDS.length;
   return NAME_STYLE_IDS[index];
@@ -63,10 +63,10 @@ export interface Person {
   spouseIds: number[];
   familyId: number;
   familyName: string;
-  /** Cultural origin of the family name; descendants inherit this even if their culture differs. */
+  /** Культурное происхождение фамилии; потомки наследуют его, даже если принадлежат к другой культуре. */
   familyCultureId?: number;
   cultureId: number;
-  /** Independent origin composition; cultural and religious identities remain separate. */
+  /** Самостоятельный состав происхождения; культурная и религиозная принадлежность остаются раздельными. */
   humanOrigin?: HumanOriginMix;
   religionId: number | null;
   countryId: number;
@@ -97,7 +97,7 @@ export interface PoliticalState {
   previousRulerIds: number[];
   dynastyClaims: number[];
   coRulerIds: number[];
-  /** One record per time a person held the ruler or co-ruler office. */
+  /** Отдельная запись для каждого периода, когда персонаж был правителем или соправителем. */
   rulerTerms: RulerTerm[];
   termYears: number;
   maxTerms: number;
@@ -105,7 +105,7 @@ export interface PoliticalState {
   seatSince: Record<number, number>;
   termCounts: Record<number, number>;
   barredRulerIds: number[];
-  /** Timed political pressure: repeat events extend and double strength. */
+  /** Временное политическое давление: повторные события продлевают срок и удваивают силу. */
   pressures: Record<string, { until: number; strength: number }>;
 }
 
@@ -211,7 +211,7 @@ export function personDeathStatus(person: Pick<Person, 'alive' | 'gender' | 'dea
     ? `${verb}, год смерти неизвестен`
     : `${verb} в ${person.deathYear} году`;
 }
-/** Repeatable syllable-built surname; the culture's fixed affix makes its sound pattern recognizable. */
+/** Фамилия из повторяемых слогов; закреплённый за культурой аффикс задаёт узнаваемое звучание. */
 export function familyNameForId(
   familyId: number,
   familyCultureId = 0,
@@ -348,7 +348,7 @@ export function deathChance(age: number): number {
   if (age <= 28) return 1 - Math.pow(0.99 * 0.99, 1 / 9);
   if (age <= 45) return 1 - Math.pow(0.99 * 0.95, 1 / 17);
   if (age <= 65) return 1 - Math.pow(0.99 * 0.85, 1 / 20);
-  // The design specifies an annual, increasing death risk for old age.
+  // Дизайн-док задаёт ежегодный возрастающий риск смерти в старости.
   return Math.min(1, (age - 56) / 100);
 }
 export function uniqueLeader(_countryId: number, year: number): Person {
