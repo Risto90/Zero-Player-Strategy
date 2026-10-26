@@ -493,7 +493,7 @@ export class CardPainter {
   }
 
   /** Actual ink consumed by an eligible raster change, including empty climate tiles. */
-  strategyInkCostAt(pixel: number): number {
+  strategyInkCostAt(pixel: number, knownImpact?: number): number {
     const card = this.card;
     const world = this.world;
     if (pixel < 0 || pixel >= MAP_PIXELS || card.ink <= 0 ||
@@ -541,7 +541,7 @@ export class CardPainter {
       return next === world.culture[pixel] ? 0 : 1;
     }
 
-    return this.strategyImpactAt(pixel) > 0 ? this.brushScaling(pixel).cost : 0;
+    return (knownImpact ?? this.strategyImpactAt(pixel)) > 0 ? this.brushScaling(pixel).cost : 0;
   }
 
   /** Ink cost of painting an otherwise eligible territory pixel. */

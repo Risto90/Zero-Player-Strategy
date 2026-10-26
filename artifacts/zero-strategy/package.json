@@ -39,6 +39,7 @@
     "test:auto-turn": "../api-server/node_modules/.bin/esbuild scripts/auto-turn.test.mjs --bundle --platform=node --format=esm --alias:expo-file-system=./scripts/expo-file-system.stub.mjs --outfile=/tmp/zero-strategy-auto-turn.test.mjs && node /tmp/zero-strategy-auto-turn.test.mjs",
     "test:nomads": "../api-server/node_modules/.bin/esbuild scripts/nomad-regressions.test.mjs --bundle --platform=node --format=esm --alias:expo-file-system=./scripts/expo-file-system.stub.mjs --outfile=/tmp/zero-strategy-nomad-regressions.test.mjs && node /tmp/zero-strategy-nomad-regressions.test.mjs",
     "test:browser-production": "node scripts/browser-production.test.mjs",
+    "test:browser-performance": "EXPO_PUBLIC_PERF_BENCHMARK=true pnpm run build && node scripts/browser-performance-benchmark.test.mjs",
     "test:browser-notification-campaign": "EXPO_PUBLIC_NOTIFICATION_E2E=true pnpm run build && node scripts/browser-notification-campaign.test.mjs"
   },
   "devDependencies": {

@@ -16,7 +16,14 @@ import type { MapTool, MapViewHandle } from '@/components/map/types';
 import colors, { fonts } from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { fmt } from '@/game/format';
-import { Game, hasPlayerActionCard, type GameSnapshot, type PixelInfo } from '@/game/game';
+import {
+  Game,
+  hasPlayerActionCard,
+  type AutomaticEventSample,
+  type AutomaticEventStageSample,
+  type GameSnapshot,
+  type PixelInfo,
+} from '@/game/game';
 import { AUTO_TURN_HOLD_MS } from '@/game/holdConfirmation';
 import { hasMapObjectList } from '@/game/mapModeCapabilities';
 import { scheduleMapLegend } from '@/game/mapLegendTimer';
@@ -42,6 +49,12 @@ declare global {
       getRoutedNotificationIds: () => number[];
       getDisplayableNotificationIds: () => number[];
       getActiveCountryIds: () => number[];
+    };
+    __ZERO_STRATEGY_PERFORMANCE_TEST__?: {
+      advanceTurn: () => Promise<void>;
+      getSnapshot: () => GameSnapshot;
+      takeSamples: () => AutomaticEventSample[];
+      takeStages: () => AutomaticEventStageSample[];
     };
   }
 }
@@ -310,6 +323,28 @@ function GameScreen({ game }: { game: Game }) {
       Game.persist = previousPersist;
       Game.pause = previousPause;
       Game.notificationE2eFastMode = previousFastMode;
+    };
+  }, [game]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || process.env.EXPO_PUBLIC_PERF_BENCHMARK !== 'true') return;
+    const previousPersist = Game.persist;
+    Game.persist = false;
+    game.stop();
+    game.setPerformanceTracking(true);
+    const bridge = {
+      advanceTurn: () => game.nextTurn(true),
+      getSnapshot: () => game.getSnapshot(),
+      takeSamples: () => game.takePerformanceSamples(),
+      takeStages: () => game.takePerformanceStageSamples(),
+    };
+    window.__ZERO_STRATEGY_PERFORMANCE_TEST__ = bridge;
+    return () => {
+      if (window.__ZERO_STRATEGY_PERFORMANCE_TEST__ === bridge) {
+        delete window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
+      }
+      game.setPerformanceTracking(false);
+      Game.persist = previousPersist;
     };
   }, [game]);
 

@@ -49,6 +49,35 @@ function personChronicleReferences(...people: (Person | null | undefined)[]): Ch
 export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
 type Slot = { scope: 'world' } | { scope: 'country'; countryId: number };
 
+export interface AutomaticEventSample {
+  year: number;
+  scope: 'world' | 'country';
+  countryId: number | null;
+  cardType: Card['type'] | null;
+  durationMs: number;
+  drawDurationMs: number;
+  resolutionDurationMs: number;
+}
+
+export interface AutomaticEventStageSample {
+  year: number;
+  cardType: Card['type'];
+  stage: string;
+  durationMs: number;
+}
+
+interface AutomaticTurnResult {
+  cardType: Card['type'] | null;
+  drawDurationMs: number;
+  resolutionDurationMs: number;
+}
+
+interface AutomaticTurnJob {
+  scope: 'world' | 'country';
+  countryId?: number;
+  run: () => AutomaticTurnResult;
+}
+
 export interface LegendRow {
   id: number;
   name: string;
@@ -231,6 +260,9 @@ export class Game {
   /** True from the end of a turn until the map view has shown the new map. */
   private drawing = false;
   private progress: { done: number; total: number } | null = null;
+  private performanceTracking = false;
+  private readonly performanceSamples: AutomaticEventSample[] = [];
+  private readonly performanceStageSamples: AutomaticEventStageSample[] = [];
   private saving: Promise<void> | null = null;
   private saveAgain = false;
   private disposed = false;
@@ -468,6 +500,37 @@ export class Game {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  /** Включает замер автоматических событий только для браузерного тестового стенда. */
+  setPerformanceTracking(enabled: boolean): void {
+    this.performanceTracking = enabled;
+    this.performanceSamples.length = 0;
+    this.performanceStageSamples.length = 0;
+  }
+
+  /** Возвращает замеры завершённых автоматических событий и очищает буфер. */
+  takePerformanceSamples(): AutomaticEventSample[] {
+    return this.performanceSamples.splice(0);
+  }
+
+  takePerformanceStageSamples(): AutomaticEventStageSample[] {
+    return this.performanceStageSamples.splice(0);
+  }
+
+  private measurePerformanceStage<T>(cardType: Card['type'], stage: string, run: () => T): T {
+    if (!this.performanceTracking) return run();
+    const startedAt = performance.now();
+    try {
+      return run();
+    } finally {
+      this.performanceStageSamples.push({
+        year: this.year,
+        cardType,
+        stage,
+        durationMs: performance.now() - startedAt,
+      });
+    }
   }
 
   private tick(): void {
@@ -1020,23 +1083,43 @@ export class Game {
       this.year += 1;
       advancePeople(this.world, this.year);
       refreshHeirs(this.world, this.year);
-      const jobs: (() => void)[] = [];
+      const jobs: AutomaticTurnJob[] = [];
       if (this.role === 'country' || this.role === 'observer') {
-        jobs.push(() => {
+        jobs.push({ scope: 'world', run: () => {
+          const drawStartedAt = this.performanceTracking ? performance.now() : 0;
           const card = drawWorldCard(this.world, this.year);
-          if (card) this.resolveAutomatically(card, { scope: 'world' });
-        });
+          const drawDurationMs = this.performanceTracking ? performance.now() - drawStartedAt : 0;
+          if (!card) return { cardType: null, drawDurationMs, resolutionDurationMs: 0 };
+          const resolutionStartedAt = this.performanceTracking ? performance.now() : 0;
+          this.resolveAutomatically(card, { scope: 'world' });
+          return {
+            cardType: card.type,
+            drawDurationMs,
+            resolutionDurationMs: this.performanceTracking ? performance.now() - resolutionStartedAt : 0,
+          };
+        } });
       }
       if (this.role !== 'all') {
         const ids = this.world.countries.filter(isActiveCountry).map((c) => c.id);
         for (const id of ids) {
           if (this.role === 'country' && id === this.focusCountryId) continue;
-          jobs.push(() => {
+          jobs.push({ scope: 'country', countryId: id, run: () => {
             const country = this.world.countries[id];
-            if (!country || !isActiveCountry(country)) return;
+            if (!country || !isActiveCountry(country)) {
+              return { cardType: null, drawDurationMs: 0, resolutionDurationMs: 0 };
+            }
+            const drawStartedAt = this.performanceTracking ? performance.now() : 0;
             const card = drawCountryCard(this.world, country, this.year);
-            if (card) this.resolveAutomatically(card, { scope: 'country', countryId: id });
-          });
+            const drawDurationMs = this.performanceTracking ? performance.now() - drawStartedAt : 0;
+            if (!card) return { cardType: null, drawDurationMs, resolutionDurationMs: 0 };
+            const resolutionStartedAt = this.performanceTracking ? performance.now() : 0;
+            this.resolveAutomatically(card, { scope: 'country', countryId: id });
+            return {
+              cardType: card.type,
+              drawDurationMs,
+              resolutionDurationMs: this.performanceTracking ? performance.now() - resolutionStartedAt : 0,
+            };
+          } });
         }
       }
       this.progress = { done: 0, total: jobs.length };
@@ -1044,7 +1127,22 @@ export class Game {
       let sliceStart = Date.now();
       for (let i = 0; i < jobs.length; i += 1) {
         if (this.disposed) return;
-        jobs[i]();
+        const job = jobs[i];
+        if (this.performanceTracking) {
+          const startedAt = performance.now();
+          const result = job.run();
+          this.performanceSamples.push({
+            year: this.year,
+            scope: job.scope,
+            countryId: job.countryId ?? null,
+            cardType: result.cardType,
+            durationMs: performance.now() - startedAt,
+            drawDurationMs: result.drawDurationMs,
+            resolutionDurationMs: result.resolutionDurationMs,
+          });
+        } else {
+          job.run();
+        }
         if (Date.now() - sliceStart >= SLICE_MS || i === jobs.length - 1) {
           this.progress = { done: i + 1, total: jobs.length };
           this.emit();
@@ -1235,7 +1333,10 @@ export class Game {
     if (!reuseActiveCard && card.choices && card.choices.length > 1) {
       this.dispatchAction({ type: 'selectChoice', index: this.automaticChoiceIndex(card) });
     }
-    if (!reuseActiveCard) this.startCard(card, undefined, false, activeRecipient);
+    if (!reuseActiveCard) {
+      this.measurePerformanceStage(card.type, 'подготовка кисти', () =>
+        this.startCard(card, undefined, false, activeRecipient));
+    }
     const territorial = card.type === 'create' || card.type === 'expand' || card.type === 'split' || card.type === 'colonization' || card.type === 'nomadExpand';
     const painter = this.painter;
     if (!painter) return;
@@ -1251,26 +1352,41 @@ export class Game {
       line: (ax, ay, bx, by, radius) => this.dispatchAction({ type: 'line', ax, ay, bx, by, radius }) as number,
       endStroke: () => this.dispatchAction({ type: 'endStroke' }),
     };
-    autoPaint(painter, actions);
-    this.afterPaint();
-    const targetCountry = card.type === 'buildCity' && card.targetCountryId !== null
-      ? this.world.countries[card.targetCountryId] : null;
-    if (targetCountry?.type === 'nomadic') {
-      const pixel = this.chooseAutomaticCitySite(targetCountry);
-      if (pixel >= 0) this.dispatchAction({ type: 'placeCity', x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH) });
-    } else if (card.type === 'create' || card.type === 'buildCity') {
-      const countryId = card.type === 'create' ? card.newCountryId : card.targetCountryId;
-      const country = countryId === null ? null : this.world.countries[countryId];
-      const hasCity = country ? this.world.cities.some((city) => city.countryId === country.id) : false;
-      const shouldPlace = card.type === 'create' ? !hasCity : !card.cityPlaced;
-      if (country && country.type === 'settled' && country.pixels > 0 && shouldPlace) {
-        const best = this.chooseAutomaticCitySite(country);
-        if (best >= 0) {
-          this.dispatchAction({ type: 'placeCity', x: best % MAP_WIDTH, y: Math.floor(best / MAP_WIDTH) });
+    const onMeasure = this.performanceTracking
+      ? (stage: string, durationMs: number) => {
+        this.performanceStageSamples.push({
+          year: this.year,
+          cardType: card.type,
+          stage,
+          durationMs,
+        });
+      }
+      : undefined;
+    this.measurePerformanceStage(card.type, 'автоматическая кисть', () => autoPaint(painter, actions, onMeasure));
+    this.measurePerformanceStage(card.type, 'обновление после покраски', () => this.afterPaint());
+    this.measurePerformanceStage(card.type, 'выбор места города', () => {
+      const targetCountry = card.type === 'buildCity' && card.targetCountryId !== null
+        ? this.world.countries[card.targetCountryId] : null;
+      if (targetCountry?.type === 'nomadic') {
+        const pixel = this.chooseAutomaticCitySite(targetCountry);
+        if (pixel >= 0) this.dispatchAction({ type: 'placeCity', x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH) });
+      } else if (card.type === 'create' || card.type === 'buildCity') {
+        const countryId = card.type === 'create' ? card.newCountryId : card.targetCountryId;
+        const country = countryId === null ? null : this.world.countries[countryId];
+        const hasCity = country ? this.world.cities.some((city) => city.countryId === country.id) : false;
+        const shouldPlace = card.type === 'create' ? !hasCity : !card.cityPlaced;
+        if (country && country.type === 'settled' && country.pixels > 0 && shouldPlace) {
+          const best = this.chooseAutomaticCitySite(country);
+          if (best >= 0) {
+            this.dispatchAction({ type: 'placeCity', x: best % MAP_WIDTH, y: Math.floor(best / MAP_WIDTH) });
+          }
         }
       }
+    });
+    if (complete) {
+      this.measurePerformanceStage(card.type, 'завершение карточки', () =>
+        this.dispatchAction({ type: 'completeCard' }));
     }
-    if (complete) this.dispatchAction({ type: 'completeCard' });
   }
 
   private automaticChoiceIndex(card: Card): number {

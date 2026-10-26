@@ -181,7 +181,7 @@ function scoreCenter(painter: CardPainter, pixel: number, radius: number): numbe
       if ((x - cx) ** 2 + (y - cy) ** 2 > r2) continue;
       const pixel = y * MAP_WIDTH + x;
       const impact = painter.strategyImpactAt(pixel);
-      ink += painter.strategyInkCostAt(pixel);
+       ink += painter.strategyInkCostAt(pixel, impact);
       score += impact;
       // A new country starts with exactly one seed pixel; later dabs grow it
       // through the normal territory rules.
@@ -199,7 +199,11 @@ function scoreCenter(painter: CardPainter, pixel: number, radius: number): numbe
  * The painter supplies the card-specific eligibility, impact and cost estimate;
  * all mutations still go through the caller's shared action dispatcher.
  */
-export function autoPaint(painter: CardPainter, actions: PaintActions): void {
+export function autoPaint(
+  painter: CardPainter,
+  actions: PaintActions,
+  onMeasure?: (stage: string, durationMs: number) => void,
+): void {
   const card = painter.card;
   if (card.hint < 0 && card.type !== 'create') return;
   const territorial = card.type === 'create' || card.type === 'expand' ||
@@ -207,48 +211,60 @@ export function autoPaint(painter: CardPainter, actions: PaintActions): void {
   const radius = territorial ? 10 : 16;
   const isWind = card.type === 'warmWind' || card.type === 'coldWind';
   if (territorial) {
+    let scoringDurationMs = 0;
+    let paintingDurationMs = 0;
     if (card.type === 'split' && card.newCountryId !== null &&
       painter.world.countries[card.newCountryId]?.pixels === 0 &&
       painter.strategyImpactAt(card.hint) > 0) {
       // Split cards carry the largest eligible city as their hint; it is the
       // required connected seed, so preserve that card-specific constraint.
+      const startedAt = onMeasure ? performance.now() : 0;
       actions.dab(
         (card.hint % MAP_WIDTH) + 0.5,
         Math.floor(card.hint / MAP_WIDTH) + 0.5,
         radius,
       );
+      if (onMeasure) paintingDurationMs += performance.now() - startedAt;
     }
     if (card.type === 'colonization' && card.hint >= 0 &&
       painter.strategyImpactAt(card.hint) > 0) {
       // The plan hint is guaranteed to be an anchor or border-connected
       // target. Paint it first so even a reduced fractional quota has a
       // reachable target before the general strategy re-scores the frontier.
+      const startedAt = onMeasure ? performance.now() : 0;
       actions.dab(
         (card.hint % MAP_WIDTH) + 0.5,
         Math.floor(card.hint / MAP_WIDTH) + 0.5,
         radius,
       );
+      if (onMeasure) paintingDurationMs += performance.now() - startedAt;
     }
     // Territory eligibility changes as the frontier grows, so re-score a small
     // bounded candidate set after each successful dab.
     for (let step = 0; step < MAX_TERRITORY_DABS && card.ink > 0; step += 1) {
+      const scoringStartedAt = onMeasure ? performance.now() : 0;
       const candidates = boundedCandidatePixels(painter)
         .map((pixel) => ({ pixel, score: scoreCenter(painter, pixel, radius) }))
         .filter((candidate) => candidate.score > 0)
         .sort((a, b) => b.score - a.score || a.pixel - b.pixel)
         .slice(0, MAX_SCORE_CENTERS);
+      if (onMeasure) scoringDurationMs += performance.now() - scoringStartedAt;
       if (!candidates.length) break;
       let spent = 0;
       for (const candidate of candidates.slice(0, 8)) {
+        const paintingStartedAt = onMeasure ? performance.now() : 0;
         spent = actions.dab(
           (candidate.pixel % MAP_WIDTH) + 0.5,
           Math.floor(candidate.pixel / MAP_WIDTH) + 0.5,
           radius,
         );
+        if (onMeasure) paintingDurationMs += performance.now() - paintingStartedAt;
         if (spent > 0) break;
       }
       if (spent <= 0) break;
     }
+    onMeasure?.('подбор центров кисти', scoringDurationMs);
+    onMeasure?.('обработка мазков кисти', paintingDurationMs);
   } else {
     const candidates = boundedCandidatePixels(painter)
       .map((pixel) => ({ pixel, score: scoreCenter(painter, pixel, radius) }))
