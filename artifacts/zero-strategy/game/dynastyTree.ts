@@ -1,4 +1,72 @@
 import type { Person } from './government';
+import { expectedHeirFor, rulers } from './succession';
+import type { World } from './world';
+
+export type DynastyCrownRole = 'ruler' | 'heir' | 'former';
+
+export interface DynastyCrownTargets {
+  role: DynastyCrownRole;
+  countries: World['countries'];
+}
+
+export function dynastyCrownTargets(
+  world: World,
+  visiblePersonIds: Set<number>,
+): Map<number, DynastyCrownTargets> {
+  const roles = new Map<number, Map<DynastyCrownRole, Map<number, World['countries'][number]>>>();
+  const add = (personId: number, role: DynastyCrownRole, country: World['countries'][number]) => {
+    if (!visiblePersonIds.has(personId)) return;
+    let personRoles = roles.get(personId);
+    if (!personRoles) {
+      personRoles = new Map();
+      roles.set(personId, personRoles);
+    }
+    let countries = personRoles.get(role);
+    if (!countries) {
+      countries = new Map();
+      personRoles.set(role, countries);
+    }
+    countries.set(country.id, country);
+  };
+
+  for (const country of world.countries) {
+    const leaders = rulers(world, country);
+    const currentLeaderIds = new Set(leaders.map((leader) => leader.id));
+    for (const leader of leaders) add(leader.id, 'ruler', country);
+
+    const heirs = country.modifiers.includes('consulate')
+      ? leaders
+        .map((leader) => expectedHeirFor(world, country, leader))
+        .filter((heir): heir is Person => !!heir)
+      : country.heir ? [country.heir] : [];
+    for (const heir of heirs) add(heir.id, 'heir', country);
+
+    const formerLeaderIds = new Set([
+      ...country.previousRulerIds,
+      ...(country.rulerTerms ?? [])
+        .filter((term) => term.endYear !== null)
+        .map((term) => term.personId),
+    ]);
+    for (const formerId of formerLeaderIds) {
+      if (!currentLeaderIds.has(formerId)) add(formerId, 'former', country);
+    }
+  }
+
+  const result = new Map<number, DynastyCrownTargets>();
+  const priority: DynastyCrownRole[] = ['ruler', 'heir', 'former'];
+  for (const [personId, personRoles] of roles) {
+    const role = priority.find((candidate) => (personRoles.get(candidate)?.size ?? 0) > 0);
+    if (!role) continue;
+    const countries = [...(personRoles.get(role)?.values() ?? [])]
+      .sort((first, second) => first.name.localeCompare(second.name, 'ru'));
+    result.set(personId, { role, countries });
+  }
+  return result;
+}
+
+export function toggleDynastySelection(selectedPersonId: number | null, clickedPersonId: number): number | null {
+  return selectedPersonId === clickedPersonId ? null : clickedPersonId;
+}
 
 export const DYNASTY_NODE_WIDTH = 152;
 export const DYNASTY_NODE_HEIGHT = 74;

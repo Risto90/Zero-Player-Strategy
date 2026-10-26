@@ -102,10 +102,7 @@ type IndexedCity = City & { x: number; y: number; radius: number };
 const BUCKET = 64;
 const MAX_CITY_RADIUS = 128;
 
-/**
- * A per-card spatial index. It avoids testing every city for every brush pixel,
- * which matters on the full-size world map and low-end Expo Go devices.
- */
+/** Пространственный индекс одной карты; ускоряет проверки городов и якорей на большой карте. */
 export class CityInfluenceIndex {
   private readonly centers = new Map<number, IndexedCity[]>();
   private readonly anchors = new Map<number, number[]>();

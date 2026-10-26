@@ -2,9 +2,11 @@ import { strict as assert } from 'node:assert';
 import {
   buildDynastyTree,
   centerDynastyPoint,
+  dynastyCrownTargets,
   dynastyPairKey,
   DYNASTY_NODE_GAP_X,
   DYNASTY_NODE_WIDTH,
+  toggleDynastySelection,
   zoomDynastyAtViewportCenter,
 } from '../game/dynastyTree.ts';
 
@@ -71,6 +73,51 @@ assert.equal(
   DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X,
   'супруг внука стоит рядом с ним, а не с основателями',
 );
+
+const crownPerson1 = character(51, 1);
+const crownPerson2 = character(52, 1);
+const crownPerson3 = character(53, 1);
+const crownWorld = {
+  people: [crownPerson1, crownPerson2, crownPerson3],
+  countries: [
+    {
+      id: 1,
+      name: 'Альфа',
+      ruler: crownPerson1,
+      coRulerIds: [],
+      modifiers: [],
+      heir: crownPerson2,
+      previousRulerIds: [crownPerson1.id, crownPerson3.id],
+      rulerTerms: [
+        { personId: crownPerson1.id, startYear: 10, endYear: null, office: 'ruler' },
+        { personId: crownPerson3.id, startYear: 1, endYear: 9, office: 'ruler' },
+      ],
+    },
+    {
+      id: 2,
+      name: 'Бета',
+      ruler: crownPerson1,
+      coRulerIds: [],
+      modifiers: [],
+      heir: null,
+      previousRulerIds: [crownPerson2.id],
+      rulerTerms: [],
+    },
+  ],
+};
+const crowns = dynastyCrownTargets(crownWorld, new Set([crownPerson1.id, crownPerson2.id, crownPerson3.id]));
+assert.equal(crowns.get(crownPerson1.id)?.role, 'ruler', 'действующий правитель важнее наследника и бывшего правителя');
+assert.deepEqual(
+  crowns.get(crownPerson1.id)?.countries.map((country) => country.id),
+  [1, 2],
+  'значок правителя открывает все страны, которыми персонаж правит',
+);
+assert.equal(crowns.get(crownPerson2.id)?.role, 'heir', 'ожидаемый наследник важнее бывшего правителя');
+assert.deepEqual(crowns.get(crownPerson2.id)?.countries.map((country) => country.id), [1]);
+assert.equal(crowns.get(crownPerson3.id)?.role, 'former', 'для бывшего правителя показывается чёрная корона');
+assert.deepEqual(crowns.get(crownPerson3.id)?.countries.map((country) => country.id), [1]);
+assert.equal(toggleDynastySelection(51, 51), null, 'повторное нажатие снимает выделение карточки');
+assert.equal(toggleDynastySelection(null, 51), 51, 'первое нажатие выделяет карточку');
 
 const viewport = { width: 400, height: 700 };
 const originalOffset = { x: -120, y: -80 };
