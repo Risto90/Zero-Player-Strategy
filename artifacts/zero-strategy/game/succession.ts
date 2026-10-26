@@ -8,7 +8,7 @@ function isMember(c: Country, p: Person): boolean {
   return p.countryId === c.id || c.ruler.id === p.id || c.coRulerIds.includes(p.id);
 }
 
-/** Генеалогическая ветвь не включает чужую семью лишь из-за записи в dynastyClaims. */
+/** Проверяет принадлежность к текущей династической ветви по записанным родителям. */
 function rulingLineageIds(world: World, leader: Person): Set<number> {
   const peopleById = new Map(world.people.map((p) => [p.id, p]));
   peopleById.set(leader.id, leader);
@@ -273,6 +273,39 @@ function isChildOfFormerRuler(
   });
 }
 
+interface ConsulateSuccessionOptions {
+  priority: Person[];
+  siblingIds: Set<number>;
+  childIds: Set<number>;
+}
+
+/** Отдельные источники преемников по сочетанию консулата и разделения. */
+function consulateSuccessionOptions(
+  world: World,
+  c: Country,
+  old: Person,
+  eligibility: CandidateEligibilityContext,
+): ConsulateSuccessionOptions {
+  if (!c.modifiers.includes('consulate') || !c.modifiers.includes('partition')) {
+    return { priority: [], siblingIds: new Set(), childIds: new Set() };
+  }
+  const consuls = rulers(world, c).filter((leader) => leader.alive);
+  const consulIds = new Set(consuls.map((leader) => leader.id));
+  const eligible = (p: Person) => candidateAllowedWithContext(
+    world, c, p, old, false, false, true, eligibility,
+  );
+  const siblings = world.people.filter((p) => p.alive && !consulIds.has(p.id) &&
+    consuls.some((leader) => leader.parents.some((parentId) => p.parents.includes(parentId))) &&
+    eligible(p));
+  const children = world.people.filter((p) => p.alive && !consulIds.has(p.id) &&
+    p.parents.some((parentId) => consulIds.has(parentId)) && eligible(p));
+  return {
+    priority: siblings.length ? siblings : children,
+    siblingIds: new Set(siblings.map((p) => p.id)),
+    childIds: new Set(children.map((p) => p.id)),
+  };
+}
+
 function candidateWeightNotes(
   world: World,
   c: Country,
@@ -424,7 +457,8 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
   const rulingLineage = rulingLineageIds(world, old);
   let family = c.government === 'tribal'
     ? world.people.filter((p) => p.id !== old.id && p.parents.some((id) => former.has(id)))
-    : world.people.filter((p) => p.id !== old.id && rulingLineage.has(p.id));
+    : world.people.filter((p) => p.id !== old.id && c.dynastyClaims.includes(p.familyId) &&
+      rulingLineage.has(p.id));
   if (c.government === 'tribal') family = family.filter((p) => p.parents.some((id) => former.has(id)));
   const children = world.people.filter((p) => p.parents.includes(old.id));
   let pool = family;
@@ -476,19 +510,10 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
     const direct = children.filter((p) => candidateAllowedWithContext(world, c, p, old, false, false, false, eligibility));
     pool = direct.length ? direct : family;
   } else pool = [...family].sort(ageOrder);
-  if (c.modifiers.includes('consulate') && c.modifiers.includes('partition')) {
-    const siblings = world.people.filter((p) => p.id !== old.id && p.alive &&
-      old.parents.some((parentId) => p.parents.includes(parentId)));
-    const siblingIds = new Set(siblings.map((p) => p.id));
-    const siblingPool = pool.filter((p) => siblingIds.has(p.id));
-    const sittingConsulIds = new Set(rulers(world, c).filter((p) => p.alive).map((p) => p.id));
-    const consulChildren = world.people.filter((p) => p.alive &&
-      p.parents.some((parentId) => sittingConsulIds.has(parentId)));
-    const consulChildIds = new Set(consulChildren.map((p) => p.id));
-    const childPool = pool.filter((p) => consulChildIds.has(p.id) && !siblingIds.has(p.id));
-    const preferred = [...siblingPool, ...childPool];
-    const preferredIds = new Set(preferred.map((p) => p.id));
-    pool = [...preferred, ...pool.filter((p) => !preferredIds.has(p.id))];
+  const consulateOptions = consulateSuccessionOptions(world, c, old, eligibility);
+  if (consulateOptions.priority.length) {
+    const preferredIds = new Set(consulateOptions.priority.map((p) => p.id));
+    pool = [...consulateOptions.priority, ...pool.filter((p) => !preferredIds.has(p.id))];
   }
   const tyrantSpouses = c.government === 'tyranny' && !children.some((p) =>
     candidateAllowedWithContext(world, c, p, old, false, false, false, eligibility))
