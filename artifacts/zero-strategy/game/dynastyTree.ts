@@ -226,14 +226,78 @@ export function buildDynastyTree(
 
   let maxRowSize = 1;
   const nodes: DynastyTreeNode[] = [];
-  for (const [generation, row] of byGeneration) {
-    row.sort((a, b) => a.bornAt - b.bornAt || a.id - b.id);
+  const xByPerson = new Map<number, number>();
+  const unionFind = (ids: number[]) => {
+    const parent = new Map(ids.map((id) => [id, id]));
+    const find = (id: number): number => {
+      const current = parent.get(id);
+      if (current === undefined || current === id) return id;
+      const root = find(current);
+      parent.set(id, root);
+      return root;
+    };
+    const union = (first: number, second: number) => {
+      const firstRoot = find(first);
+      const secondRoot = find(second);
+      if (firstRoot !== secondRoot) parent.set(secondRoot, firstRoot);
+    };
+    return { find, union };
+  };
+
+  for (const [generation, row] of [...byGeneration.entries()].sort(([a], [b]) => a - b)) {
+    const rowIds = row.map((person) => person.id);
+    const rowIdSet = new Set(rowIds);
+    const union = unionFind(rowIds);
+
+    for (const pair of visiblePairs) {
+      if (rowIdSet.has(pair.firstId) && rowIdSet.has(pair.secondId)) {
+        union.union(pair.firstId, pair.secondId);
+      }
+    }
+
+    const siblingGroups = new Map<string, number[]>();
+    for (const person of row) {
+      const visibleParents = [...new Set(person.parents.filter((parentId) => visibleSet.has(parentId)))].sort((a, b) => a - b);
+      if (!visibleParents.length) continue;
+      const key = visibleParents.join(':');
+      const siblings = siblingGroups.get(key);
+      if (siblings) siblings.push(person.id);
+      else siblingGroups.set(key, [person.id]);
+    }
+    for (const siblings of siblingGroups.values()) {
+      for (let index = 1; index < siblings.length; index += 1) union.union(siblings[0], siblings[index]);
+    }
+
+    const blocksByRoot = new Map<number, Person[]>();
+    for (const person of row) {
+      const root = union.find(person.id);
+      const block = blocksByRoot.get(root);
+      if (block) block.push(person);
+      else blocksByRoot.set(root, [person]);
+    }
+    const blocks = [...blocksByRoot.values()];
+    const blockPosition = (block: Person[]) => {
+      const parentPositions = block.flatMap((person) => person.parents
+        .filter((parentId) => visibleSet.has(parentId) && xByPerson.has(parentId))
+        .map((parentId) => xByPerson.get(parentId)! + DYNASTY_NODE_WIDTH / 2));
+      if (parentPositions.length) {
+        return parentPositions.reduce((sum, value) => sum + value, 0) / parentPositions.length;
+      }
+      return Math.min(...block.map((person) => person.bornAt));
+    };
+    blocks.sort((a, b) => blockPosition(a) - blockPosition(b) ||
+      Math.min(...a.map((person) => person.bornAt)) - Math.min(...b.map((person) => person.bornAt)));
+    for (const block of blocks) block.sort((a, b) => a.bornAt - b.bornAt || a.id - b.id);
+
+    const orderedRow = blocks.flat();
     maxRowSize = Math.max(maxRowSize, row.length);
-    row.forEach((person, index) => {
+    orderedRow.forEach((person, index) => {
+      const x = DYNASTY_MARGIN_X + index * (DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X);
+      xByPerson.set(person.id, x);
       nodes.push({
         person,
         generation,
-        x: DYNASTY_MARGIN_X + index * (DYNASTY_NODE_WIDTH + DYNASTY_NODE_GAP_X),
+        x,
         y: DYNASTY_MARGIN_Y + generation * (DYNASTY_NODE_HEIGHT + DYNASTY_NODE_GAP_Y),
         isDynastyMember: person.familyId === familyId,
         childrenIds: (childrenByParent.get(person.id) ?? []).filter((id) => includedIds.has(id)),

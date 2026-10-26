@@ -55,5 +55,8 @@ assert.match(dynastySource, /person\.alive \? `\$\{person\.age\} лет` : `\$\{
 assert.doesNotMatch(dynastySource, /жив\(а\)|умер(?:ла)?/u);
 assert.match(dynastySource, /gender-female/u);
 assert.match(dynastySource, /gender-male/u);
+assert.match(dynastySource, /setSelectedPersonId\(person\.id\)/u);
+assert.match(dynastySource, /selectedPersonId === pair\.firstId/u);
+assert.doesNotMatch(dynastySource, /pairFoldButton|fold-pair-/u);
 
 console.log('Проверки отображения возраста и года смерти пройдены.');

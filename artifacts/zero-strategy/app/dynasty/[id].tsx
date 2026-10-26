@@ -89,6 +89,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
   const insets = useSafeAreaInsets();
   const [collapsedPeople, setCollapsedPeople] = useState<Set<number>>(() => new Set());
   const [collapsedPairs, setCollapsedPairs] = useState<Set<string>>(() => new Set());
+  const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const panOffset = useRef({ x: 0, y: 0 });
@@ -169,12 +170,14 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
     centerOnPerson(width, height);
   };
 
-  const visiblePersonEdges = model.nodes.flatMap((childNode) => childNode.person.parents
-    .map((parentId) => {
-      const parentNode = nodesById.get(parentId);
-      return parentNode ? { parentNode, childNode } : null;
-    })
-    .filter((edge): edge is { parentNode: (typeof model.nodes)[number]; childNode: (typeof model.nodes)[number] } => !!edge));
+  const singleParentChildren = new Map<number, (typeof model.nodes)[number][]>();
+  for (const childNode of model.nodes) {
+    const parentIds = [...new Set(childNode.person.parents)].filter((parentId) => nodesById.has(parentId));
+    if (parentIds.length !== 1) continue;
+    const siblings = singleParentChildren.get(parentIds[0]);
+    if (siblings) siblings.push(childNode);
+    else singleParentChildren.set(parentIds[0], [childNode]);
+  }
 
   return (
     <View style={[styles.screen, { paddingTop: safeTop, paddingBottom: safeBottom }]}>
@@ -234,39 +237,84 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                 height={Math.max(viewport.height, model.height)}
                 style={StyleSheet.absoluteFill}
               >
-                {visiblePersonEdges.map(({ parentNode, childNode }) => {
-                  const startX = parentNode.x + DYNASTY_NODE_WIDTH / 2;
-                  const startY = parentNode.y + DYNASTY_NODE_HEIGHT;
-                  const endX = childNode.x + DYNASTY_NODE_WIDTH / 2;
-                  const endY = childNode.y;
-                  const bendY = startY + Math.max(18, (endY - startY) / 2);
-                  return (
-                    <Path
-                      key={`parent-${parentNode.person.id}-${childNode.person.id}`}
-                      d={`M ${startX} ${startY} C ${startX} ${bendY}, ${endX} ${bendY}, ${endX} ${endY}`}
-                      stroke={c.border}
-                      strokeWidth={2}
-                      fill="none"
-                    />
-                  );
-                })}
                 {model.pairs.map((pair) => {
                   const first = nodesById.get(pair.firstId);
                   const second = nodesById.get(pair.secondId);
                   if (!first || !second) return null;
                   const leftNode = first.x <= second.x ? first : second;
                   const rightNode = first.x <= second.x ? second : first;
-                  const startX = leftNode.x + DYNASTY_NODE_WIDTH;
-                  const endX = rightNode.x;
-                  const startY = first.y + DYNASTY_NODE_HEIGHT / 2;
-                  const endY = second.y + DYNASTY_NODE_HEIGHT / 2;
-                  return (
+                  const pairChildren = pair.childrenIds
+                    .map((id) => nodesById.get(id))
+                    .filter((node): node is (typeof model.nodes)[number] => !!node);
+                  const selected = selectedPersonId === pair.firstId ||
+                    selectedPersonId === pair.secondId ||
+                    (selectedPersonId !== null && pair.childrenIds.includes(selectedPersonId));
+                  const relationshipStartX = leftNode.x + DYNASTY_NODE_WIDTH;
+                  const relationshipEndX = rightNode.x;
+                  const relationshipStartY = leftNode.y + DYNASTY_NODE_HEIGHT / 2;
+                  const relationshipEndY = rightNode.y + DYNASTY_NODE_HEIGHT / 2;
+                  const relationshipColor = selected
+                    ? c.primary
+                    : pair.kind === 'love' ? c.primary : pair.kind === 'marriage' ? c.accent : c.border;
+                  const paths = [
                     <Path
                       key={`pair-${pair.firstId}-${pair.secondId}`}
-                      d={`M ${startX} ${startY} C ${(startX + endX) / 2} ${startY}, ${(startX + endX) / 2} ${endY}, ${endX} ${endY}`}
-                      stroke={pair.kind === 'love' ? c.primary : c.accent}
-                      strokeWidth={pair.kind === 'parents' ? 2 : 3}
+                      d={`M ${relationshipStartX} ${relationshipStartY} C ${(relationshipStartX + relationshipEndX) / 2} ${relationshipStartY}, ${(relationshipStartX + relationshipEndX) / 2} ${relationshipEndY}, ${relationshipEndX} ${relationshipEndY}`}
+                      stroke={relationshipColor}
+                      strokeWidth={selected ? 5 : pair.kind === 'parents' ? 2 : 3}
                       strokeDasharray={pair.kind === 'love' ? '5 4' : undefined}
+                      fill="none"
+                    />,
+                  ];
+                  if (pairChildren.length) {
+                    const parentBottom = Math.max(first.y, second.y) + DYNASTY_NODE_HEIGHT;
+                    const branchY = Math.min(...pairChildren.map((node) => node.y)) - 24;
+                    const parentCenterX = (first.x + second.x + DYNASTY_NODE_WIDTH) / 2;
+                    const childCenters = pairChildren.map((node) => node.x + DYNASTY_NODE_WIDTH / 2);
+                    const firstChildX = Math.min(...childCenters);
+                    const lastChildX = Math.max(...childCenters);
+                    let branchPath = `M ${parentCenterX} ${parentBottom} V ${branchY} H ${firstChildX} M ${firstChildX} ${branchY} V ${pairChildren[0].y}`;
+                    for (const childNode of pairChildren.slice(1)) {
+                      const childX = childNode.x + DYNASTY_NODE_WIDTH / 2;
+                      branchPath += ` M ${childX} ${branchY} V ${childNode.y}`;
+                    }
+                    if (firstChildX !== lastChildX) {
+                      branchPath += ` M ${firstChildX} ${branchY} H ${lastChildX}`;
+                    }
+                    paths.push(
+                      <Path
+                        key={`children-${pair.firstId}-${pair.secondId}`}
+                        d={branchPath}
+                        stroke={selected ? c.primary : c.border}
+                        strokeWidth={selected ? 4 : 2}
+                        fill="none"
+                      />,
+                    );
+                  }
+                  return paths;
+                })}
+                {[...singleParentChildren.entries()].map(([parentId, children]) => {
+                  const parentNode = nodesById.get(parentId);
+                  if (!parentNode || !children.length) return null;
+                  const selected = selectedPersonId === parentId ||
+                    (selectedPersonId !== null && children.some((node) => node.person.id === selectedPersonId));
+                  const childCenters = children.map((node) => node.x + DYNASTY_NODE_WIDTH / 2);
+                  const firstChildX = Math.min(...childCenters);
+                  const lastChildX = Math.max(...childCenters);
+                  const parentCenterX = parentNode.x + DYNASTY_NODE_WIDTH / 2;
+                  const parentBottom = parentNode.y + DYNASTY_NODE_HEIGHT;
+                  const branchY = Math.min(...children.map((node) => node.y)) - 24;
+                  let path = `M ${parentCenterX} ${parentBottom} V ${branchY} H ${firstChildX}`;
+                  if (firstChildX !== lastChildX) path += ` H ${lastChildX}`;
+                  for (const childNode of children) {
+                    path += ` M ${childNode.x + DYNASTY_NODE_WIDTH / 2} ${branchY} V ${childNode.y}`;
+                  }
+                  return (
+                    <Path
+                      key={`single-parent-${parentId}`}
+                      d={path}
+                      stroke={selected ? c.primary : c.border}
+                      strokeWidth={selected ? 4 : 2}
                       fill="none"
                     />
                   );
@@ -274,20 +322,42 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
               </Svg>
               {model.nodes.map((node) => {
                 const person = node.person;
-                const collapsed = collapsedPeople.has(person.id);
                 const externalChild = !node.isDynastyMember &&
                   person.parents.some((parentId) => nodesById.get(parentId)?.isDynastyMember);
+                const partnerBranchKeys = !node.isDynastyMember && !externalChild
+                  ? model.pairs
+                    .filter((pair) => pair.childrenIds.length > 0 &&
+                      (pair.firstId === person.id || pair.secondId === person.id) &&
+                      nodesById.get(pair.firstId === person.id ? pair.secondId : pair.firstId)?.isDynastyMember)
+                    .map((pair) => dynastyPairKey(pair.firstId, pair.secondId))
+                  : [];
+                const hasBranchControl = node.isDynastyMember
+                  ? node.childrenIds.length > 0
+                  : partnerBranchKeys.length > 0;
+                const collapsed = node.isDynastyMember
+                  ? collapsedPeople.has(person.id)
+                  : partnerBranchKeys.length > 0 && partnerBranchKeys.every((key) => collapsedPairs.has(key));
                 return (
-                  <View
+                  <Pressable
                     key={person.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Выбрать связи персонажа ${person.name}`}
+                    onPress={() => setSelectedPersonId(person.id)}
                     style={[
                       styles.personCard,
                       { left: node.x, top: node.y, width: DYNASTY_NODE_WIDTH, minHeight: DYNASTY_NODE_HEIGHT },
                       node.isDynastyMember ? styles.dynastyPersonCard : styles.partnerPersonCard,
+                      selectedPersonId === person.id && styles.selectedPersonCard,
                     ]}
                   >
                     <View style={styles.personTitleRow}>
-                      <Pressable onPress={() => openPerson(person.id)} style={styles.personNameButton}>
+                      <Pressable
+                        onPress={(event) => {
+                          event.stopPropagation();
+                          openPerson(person.id);
+                        }}
+                        style={styles.personNameButton}
+                      >
                         <Text numberOfLines={2} style={styles.personName}>{person.name}</Text>
                       </Pressable>
                       <MaterialCommunityIcons
@@ -295,11 +365,21 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                         size={17}
                         color={c.primary}
                       />
-                      {node.childrenIds.length > 0 && (
+                      {hasBranchControl && (
                         <Pressable
                           accessibilityRole="button"
                           accessibilityLabel={collapsed ? `Развернуть потомков ${person.name}` : `Свернуть потомков ${person.name}`}
-                          onPress={() => togglePerson(person.id)}
+                          onPress={(event) => {
+                            event.stopPropagation();
+                            if (node.isDynastyMember) {
+                              togglePerson(person.id);
+                            } else {
+                              for (const key of partnerBranchKeys) {
+                                const [firstId, secondId] = key.split(':').map(Number);
+                                togglePair(firstId, secondId);
+                              }
+                            }
+                          }}
                           style={styles.foldButton}
                         >
                           <Feather name={collapsed ? 'plus' : 'minus'} size={15} color={c.foreground} />
@@ -320,32 +400,15 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                       <Pressable
                         accessibilityRole="link"
                         accessibilityLabel={`Открыть династию ${person.familyName}`}
-                        onPress={() => openDynasty(person)}
+                        onPress={(event) => {
+                          event.stopPropagation();
+                          openDynasty(person);
+                        }}
                         style={styles.externalDynastyButton}
                       >
                         <Feather name="arrow-down" size={15} color={c.accent} />
                       </Pressable>
                     )}
-                  </View>
-                );
-              })}
-              {model.pairs.filter((pair) => pair.childrenIds.length > 0).map((pair) => {
-                const first = nodesById.get(pair.firstId);
-                const second = nodesById.get(pair.secondId);
-                if (!first || !second) return null;
-                const centerX = (first.x + DYNASTY_NODE_WIDTH / 2 + second.x + DYNASTY_NODE_WIDTH / 2) / 2;
-                const centerY = (first.y + DYNASTY_NODE_HEIGHT / 2 + second.y + DYNASTY_NODE_HEIGHT / 2) / 2;
-                const key = dynastyPairKey(pair.firstId, pair.secondId);
-                const collapsed = collapsedPairs.has(key);
-                return (
-                  <Pressable
-                    key={`fold-pair-${key}`}
-                    accessibilityRole="button"
-                    accessibilityLabel={collapsed ? 'Развернуть детей этой пары' : 'Свернуть детей этой пары'}
-                    onPress={() => togglePair(pair.firstId, pair.secondId)}
-                    style={[styles.pairFoldButton, { left: centerX - 15, top: centerY - 15 }]}
-                  >
-                    <Feather name={collapsed ? 'plus' : 'minus'} size={14} color={c.foreground} />
                   </Pressable>
                 );
               })}
@@ -386,6 +449,7 @@ const styles = StyleSheet.create({
   personCard: { position: 'absolute', padding: 9, gap: 4, backgroundColor: c.background, borderWidth: 1, borderColor: c.border, borderRadius: 4, zIndex: 1 },
   dynastyPersonCard: { borderTopWidth: 3, borderTopColor: c.primary },
   partnerPersonCard: { borderTopWidth: 3, borderTopColor: c.accent },
+  selectedPersonCard: { borderColor: c.primary, borderWidth: 2, backgroundColor: c.card, shadowColor: c.foreground, shadowOpacity: 0.18, shadowRadius: 5, elevation: 4 },
   personTitleRow: { minHeight: 27, flexDirection: 'row', alignItems: 'flex-start', gap: 4 },
   personNameButton: { flex: 1 },
   personName: { fontFamily: fonts.sansSemiBold, fontSize: 12, lineHeight: 16, color: c.accent, textDecorationLine: 'underline' },
@@ -393,7 +457,6 @@ const styles = StyleSheet.create({
   relationType: { fontFamily: fonts.sans, fontSize: 10, color: c.mutedForeground },
   foldButton: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center', borderRadius: 13, backgroundColor: c.muted },
   externalDynastyButton: { width: 28, height: 22, alignItems: 'center', justifyContent: 'center', marginTop: -2 },
-  pairFoldButton: { position: 'absolute', zIndex: 3, width: 30, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: 15, borderWidth: 1, borderColor: c.border, backgroundColor: c.card },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   note: { fontFamily: fonts.sans, fontSize: 13, color: c.mutedForeground },
 });

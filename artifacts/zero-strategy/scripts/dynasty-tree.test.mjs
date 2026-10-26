@@ -38,6 +38,18 @@ assert.deepEqual(
 assert.ok(fullTree.pairs.some((pair) => pair.firstId === 1 && pair.secondId === 2 && pair.childrenIds.includes(6)));
 assert.ok(fullTree.nodes.some((node) => node.person.id === 6 && !node.isDynastyMember));
 assert.equal(fullTree.nodes.find((node) => node.person.id === 6)?.childrenIds.length, 0);
+const positions = new Map(fullTree.nodes.map((node) => [node.person.id, node]));
+assert.equal(positions.get(3)?.y, positions.get(6)?.y, 'дети одного поколения находятся на одной высоте');
+assert.equal(
+  Math.abs((positions.get(3)?.x ?? 0) - (positions.get(6)?.x ?? 0)),
+  262,
+  'дети одной пары размещаются рядом, а не среди посторонних ветвей',
+);
+assert.equal(
+  Math.abs((positions.get(1)?.x ?? 0) - (positions.get(2)?.x ?? 0)),
+  262,
+  'супруги занимают соседние позиции в одном поколении',
+);
 
 const collapsedPerson = buildDynastyTree(people, 1, new Set([1]));
 assert.ok(collapsedPerson.nodes.some((node) => node.person.id === 1));
