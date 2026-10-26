@@ -23,9 +23,9 @@ export class ContourArea {
   readonly spans: readonly ContourSpan[];
   readonly size: number;
 
-  constructor(spans: readonly ContourSpan[] = []) {
-    const ordered = [...spans].filter((span) => span.end > span.start)
-      .sort((a, b) => a.y - b.y || a.start - b.start);
+  constructor(spans: readonly ContourSpan[] = [], alreadyOrdered = false) {
+    const ordered = spans.filter((span) => span.end > span.start);
+    if (!alreadyOrdered) ordered.sort((a, b) => a.y - b.y || a.start - b.start);
     const merged: ContourSpan[] = [];
     for (const span of ordered) {
       const previous = merged[merged.length - 1];
@@ -327,8 +327,7 @@ export class MapContours {
     if (!this.climateRegionsCache) {
       const land = this.layer('land').select((value) => value === 1,
         { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 }, 'land');
-      this.climateRegionsCache = this.climateIntersections(land).flatMap((region) =>
-        region.area.components().map((area) => ({ ...region, area })));
+      this.climateRegionsCache = this.climateIntersections(land);
     }
     return this.climateRegionsCache;
   }
@@ -373,6 +372,9 @@ export class MapContours {
         x = end;
       }
     }
-    return [...groups.values()].map(({ spans, ...values }) => ({ ...values, area: new ContourArea(spans) }));
+    return [...groups.values()].map(({ spans, ...values }) => ({
+      ...values,
+      area: new ContourArea(spans, true),
+    }));
   }
 }
