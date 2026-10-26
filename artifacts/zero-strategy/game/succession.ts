@@ -390,6 +390,7 @@ export function countryCandidates(world: World, c: Country): CountryCandidate[] 
     ? partnerCandidateIds([old, ...ordered], ordered)
     : new Set<number>();
   const fixedHeir = hasFixedHeir(c);
+  const consulateOptions = consulateSuccessionOptions(world, c, old, eligibility);
   const eligibleChildren = world.people.filter((p) =>
     p.parents.includes(old.id) && candidateAllowedWithContext(world, c, p, old, false, false, false, eligibility));
   const eligibleChildIds = new Set(eligibleChildren.map((child) => child.id));
@@ -399,6 +400,10 @@ export function countryCandidates(world: World, c: Country): CountryCandidate[] 
     const advantages: string[] = [];
     if (c.government === 'tribal') {
       basis.push('Живой ребёнок нынешнего или прежнего вождя: возможный кандидат, не гарантированное наследование.');
+    } else if (consulateOptions.siblingIds.has(p.id)) {
+      basis.push('Консулат с разделением: брат или сестра консула получает приоритет в преемстве.');
+    } else if (consulateOptions.childIds.has(p.id)) {
+      basis.push('Консулат с разделением: ребёнок консула рассматривается, если нет подходящих братьев или сестёр.');
     } else if (c.government === 'tyranny' && old.spouseIds.includes(p.id) &&
         !eligibleChildIds.has(p.id)) {
       basis.push('Супруг(а) правителя: допускается при отсутствии подходящего ребёнка для преемства.');
@@ -428,7 +433,7 @@ export function countryCandidates(world: World, c: Country): CountryCandidate[] 
       advantages.push('Партнёры стоят в линии перед связанным с ними правителем или кандидатом.');
     }
     if (c.modifiers.includes('communist')) {
-      basis.push('Коммунистический фильтр: член семьи должен быть атеистом и/или космополитом.');
+      basis.push('Коммунистический фильтр: кандидат должен быть атеистом и/или космополитом.');
     }
     if (c.modifiers.includes('coRule') && p.age < 20) {
       basis.push('Соправительство допускает кандидата от 12 лет.');
@@ -567,22 +572,43 @@ export function leadershipOptions(
     !!p && all.findIndex((x) => x?.id === p.id) === i);
   const fresh = () => newCitizen(world, c, year);
   const distinctFamily = unique(family);
-  // Новый кандидат начинает отдельную семью. Не создаём видимость родства
-  // с прежним правителем копированием его familyId.
-  const fallback = fresh;
+  /**
+   * Случайный вариант остаётся новым персонажем, если в стране нет живого жителя
+   * с теми же культурой, верой и полным составом происхождения. Совпадение
+   * заменяет только сам вариант и не добавляет жителя в список наследников.
+   */
+  const fallback = (
+    excludedIds: ReadonlySet<number> = new Set(),
+    eligible?: (p: Person) => boolean,
+    weight?: (p: Person) => number,
+  ): Person => {
+    const proposal = fresh();
+    const excluded = new Set([...rulers(world, c).map((leader) => leader.id), ...excludedIds]);
+    const proposalOrigin = normalizeHumanOriginMix(proposal.humanOrigin);
+    const matches = world.people.filter((p) => {
+      if (!p.alive || p.countryId !== c.id || excluded.has(p.id) || !eligible?.(p) && eligible) return false;
+      if (p.cultureId !== proposal.cultureId || p.religionId !== proposal.religionId) return false;
+      const origin = normalizeHumanOriginMix(p.humanOrigin);
+      return origin.ids.length === proposalOrigin.ids.length &&
+        origin.ids.every((id, index) => id === proposalOrigin.ids[index] &&
+          origin.shares[index] === proposalOrigin.shares[index]);
+    });
+    return weighted(matches.map((p) => ({ value: p, weight: weight?.(p) ?? 1 }))) ?? proposal;
+  };
   const republicanPartners = c.government === 'republic' && c.modifiers.includes('pornocracy')
     ? new Set(countryCandidates(world, c).filter((candidate) =>
       candidate.advantages.some((reason) => reason.startsWith('Порнократия:')))
       .map((candidate) => candidate.person.id))
     : new Set<number>();
-  const eligibleFamily = distinctFamily.filter((p) => candidateAllowed(world, c, p, old) ||
-    (c.modifiers.includes('pornocracy') && !isMember(c, p)));
-  const ensurePair = (first: Person | null, second: Person | null, fallback: () => Person): Person[] => {
+  const eligibleFamily = distinctFamily;
+  const ensurePair = (
+    first: Person | null,
+    second: Person | null,
+    makeFallback: (excludedIds?: ReadonlySet<number>) => Person,
+  ): Person[] => {
     const pair = unique([first, second]);
     while (pair.length < 2) {
-      let candidate = fallback();
-      for (let attempt = 0; attempt < 8 && pair.some((p) => p.id === candidate.id); attempt += 1) candidate = fallback();
-      pair.push(candidate);
+      pair.push(makeFallback(new Set(pair.map((p) => p.id))));
     }
     return pair.slice(0, 2);
   };
@@ -611,22 +637,18 @@ export function leadershipOptions(
     const second = eligibleFamily.find((p) => p.id !== first?.id) ?? null;
     return ensurePair(first, second, fallback);
   }
-  const make = () => {
-    const proposal = fallback();
-    const matching = communistPool(c, world.people.filter((p) => isMember(c, p) &&
-      p.cultureId === proposal.cultureId && p.religionId === proposal.religionId &&
-      candidateAllowed(world, c, p, old)));
-    if (matching.length && Math.random() < 0.5) return weighted(matching.map((p) => ({
-      value: p,
-      weight: candidateWeight(world, c, p, old, republicanPartners.has(p.id)),
-    })))!;
-    return proposal;
+  const make = (excludedIds: ReadonlySet<number> = new Set()) => {
+    return fallback(
+      excludedIds,
+      (p) => isMember(c, p) && candidateAllowed(world, c, p, old) &&
+        communistPool(c, [p]).length > 0,
+      (p) => candidateWeight(world, c, p, old, republicanPartners.has(p.id)),
+    );
   };
   const incumbent = c.modifiers.includes('continuous') && candidateAllowed(world, c, old, old) ? old : null;
   const a = incumbent ?? make();
-  let b = make();
-  for (let attempt = 0; b.id === a.id && attempt < 8; attempt += 1) b = make();
-  return ensurePair(a, b.id === a.id ? fallback() : b, fallback);
+  const b = make(new Set([a.id]));
+  return ensurePair(a, b, fallback);
 }
 export function appoint(world: World, c: Country, p: Person, year: number, seatId = c.ruler.id): void {
   const old = person(world, seatId) ?? c.ruler;
