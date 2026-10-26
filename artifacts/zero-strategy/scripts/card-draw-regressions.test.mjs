@@ -33,7 +33,7 @@ function makeFixture() {
 
 const closeTo = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-12, message);
 
-// Every eligible option participates in one normalized distribution.
+// Каждый подходящий вариант участвует в общем нормированном распределении.
 const distribution = normalizedCardProbabilities([
   { key: 'a', weight: 1 },
   { key: 'b', weight: 3 },
@@ -41,8 +41,14 @@ const distribution = normalizedCardProbabilities([
 ]);
 closeTo(distribution.reduce((sum, item) => sum + item.probability, 0), 1, 'normalized card odds total 100%');
 closeTo(distribution[0].probability, 0.25, 'base weight determines the normalized probability');
+const tinyChance = normalizedCardProbabilities([
+  { key: 'tiny', weight: 1e-200 },
+  { key: 'ordinary', weight: 1 },
+]);
+assert.ok(tinyChance.find((item) => item.key === 'tiny')?.probability > 0,
+  'любая положительная вероятность остаётся в распределении карт');
 
-// Only previously higher-chance cards build a persistent multiplier; the drawn card alone resets.
+// Постоянный множитель растёт только у карт с более высоким прежним шансом; множитель вытянутой карты сбрасывается.
 const multipliers = { 'country:4:a': 1.21, 'country:4:missing': 1.5 };
 updateCardDrawMultipliers('country:4', distribution, 'a', multipliers);
 closeTo(multipliers['country:4:b'], 1.1, 'a card with higher odds receives the 1.1 bonus');
@@ -101,7 +107,7 @@ try {
   assert.ok(nomadCard.inkTotal <= nomadCapacity,
     'nomad expansion ink is capped by connected new land or existing range density targets');
 
-  // Wind water costs half an ink, while country land costs one.
+  // Кисть ветра тратит на воду половину чернил, а на сушу страны — одно чернило.
   world.temperature.fill(100);
   let coastalLand = -1;
   let coastalSea = -1;

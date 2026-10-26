@@ -67,10 +67,9 @@ type Polity = Country;
 type CardDrawOption = {
   key: string;
   weight: number;
-  probeSeed?: number;
   value: (world: World, polity: Polity | null) => Card | null;
 };
-type ProbedCard = {
+type PreparedCard = {
   card: Card;
   additions: {
     countries: World['countries'];
@@ -1041,7 +1040,7 @@ function forkWorld(world: World, polity: Polity | null): World {
   return fork;
 }
 
-function probeOption(fork: World, option: CardDrawOption, candidate: Polity | null, seed: number): ProbedCard | null {
+function prepareSelectedCard(fork: World, option: CardDrawOption, candidate: Polity | null, seed: number): PreparedCard | null {
   const originalRandom = Math.random;
   const personIds = personIdSequence();
   const countryCount = fork.countries.length;
@@ -1076,7 +1075,7 @@ function probeOption(fork: World, option: CardDrawOption, candidate: Polity | nu
   }
 }
 
-function commitProbedCard(world: World, prepared: ProbedCard): Card {
+function commitPreparedCard(world: World, prepared: PreparedCard): Card {
   world.countries.push(...prepared.additions.countries);
   world.cultures.push(...prepared.additions.cultures);
   world.religions.push(...prepared.additions.religions);
@@ -1088,25 +1087,21 @@ function commitProbedCard(world: World, prepared: ProbedCard): Card {
 /** Проверяет варианты на изолированной копии мира и переносит новые сущности только выбранной карты. */
 function drawFirstApplicable(world: World, scope: string, polity: Polity | null, options: CardDrawOption[]): Card | null {
   const climateOptions = availableClimateCards(world, polity, new Set(options.map((option) => option.key)));
-  const probe = forkWorld(world, polity);
-  const probePolity = polity ? probe.countries[polity.id] : null;
-  const available: (CardDrawOption & { prepared?: ProbedCard })[] = [];
-  options.forEach((option, index) => {
-    if (!(option.weight > 0)) return;
-    const drawOption = { ...option, probeSeed: index + 1 };
+  const stagingWorld = forkWorld(world, polity);
+  const stagingPolity = polity ? stagingWorld.countries[polity.id] : null;
+  // Случайные части генератора запускаются только после взвешенного выбора, а не отбирают варианты заранее.
+  const candidates = options.filter((option) => {
     if (CLIMATE_CARD_KEYS.has(option.key as ClimateCard)) {
-      if (climateOptions.has(option.key)) available.push(drawOption);
-      return;
+      return climateOptions.has(option.key);
     }
     if (option.key.startsWith('death:')) {
-      available.push(drawOption);
-      return;
+      const personId = Number(option.key.slice('death:'.length));
+      return person(world, personId)?.alive ?? false;
     }
-    const prepared = probeOption(probe, drawOption, probePolity, drawOption.probeSeed);
-    if (prepared) available.push({ ...drawOption, prepared });
+    return true;
   });
-  if (!available.length) return null;
-  let remaining = [...available];
+  if (!candidates.length) return null;
+  let remaining = [...candidates];
   while (remaining.length) {
     const probabilities = normalizedCardProbabilities(
       remaining.map((option) => ({ key: option.key, weight: option.weight })),
@@ -1117,18 +1112,14 @@ function drawFirstApplicable(world: World, scope: string, polity: Polity | null,
     const drawnKey = weightedPick(probabilities.map((option) => ({ value: option.key, weight: option.probability })));
     if (drawnKey === null) return null;
     const selected = remaining.find((option) => option.key === drawnKey)!;
-    const prepared = selected.prepared ?? probeOption(
-      probe,
-      selected,
-      probePolity,
-      selected.probeSeed ?? 1,
-    );
+    const seed = Math.floor(Math.random() * 0x1_0000_0000) >>> 0;
+    const prepared = prepareSelectedCard(stagingWorld, selected, stagingPolity, seed);
     if (!prepared) {
       remaining = remaining.filter((option) => option !== selected);
       continue;
     }
     updateCardDrawMultipliers(scope, probabilities, selected.key, world.cardMultipliers);
-    return commitProbedCard(world, prepared);
+    return commitPreparedCard(world, prepared);
   }
   return null;
 }
