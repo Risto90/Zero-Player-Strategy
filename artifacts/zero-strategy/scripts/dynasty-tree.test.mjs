@@ -78,8 +78,9 @@ assert.equal(
 const crownPerson1 = character(51, 1);
 const crownPerson2 = character(52, 1);
 const crownPerson3 = character(53, 1);
+const crownPerson4 = character(54, 1);
 const crownWorld = {
-  people: [crownPerson1, crownPerson2, crownPerson3],
+  people: [crownPerson1, crownPerson2, crownPerson3, crownPerson4],
   countries: [
     {
       id: 1,
@@ -88,7 +89,7 @@ const crownWorld = {
       coRulerIds: [],
       modifiers: [],
       heir: crownPerson2,
-      previousRulerIds: [crownPerson1.id, crownPerson3.id],
+      previousRulerIds: [crownPerson1.id],
       rulerTerms: [
         { personId: crownPerson1.id, startYear: 10, endYear: null, office: 'ruler' },
         { personId: crownPerson3.id, startYear: 1, endYear: 9, office: 'ruler' },
@@ -101,12 +102,15 @@ const crownWorld = {
       coRulerIds: [],
       modifiers: [],
       heir: null,
-      previousRulerIds: [crownPerson2.id],
+      previousRulerIds: [crownPerson2.id, crownPerson4.id],
       rulerTerms: [],
     },
   ],
 };
-const crowns = dynastyCrownTargets(crownWorld, new Set([crownPerson1.id, crownPerson2.id, crownPerson3.id]));
+const crowns = dynastyCrownTargets(
+  crownWorld,
+  new Set([crownPerson1.id, crownPerson2.id, crownPerson3.id, crownPerson4.id]),
+);
 assert.equal(crowns.get(crownPerson1.id)?.role, 'ruler', 'действующий правитель важнее наследника и бывшего правителя');
 assert.deepEqual(
   crowns.get(crownPerson1.id)?.countries.map((country) => country.id),
@@ -117,6 +121,7 @@ assert.equal(crowns.get(crownPerson2.id)?.role, 'heir', 'ожидаемый на
 assert.deepEqual(crowns.get(crownPerson2.id)?.countries.map((country) => country.id), [1]);
 assert.equal(crowns.get(crownPerson3.id)?.role, 'former', 'для бывшего правителя показывается чёрная корона');
 assert.deepEqual(crowns.get(crownPerson3.id)?.countries.map((country) => country.id), [1]);
+assert.equal(crowns.has(crownPerson4.id), false, 'список прежних кандидатов не делает человека бывшим правителем');
 assert.equal(colors.light.crownGold, '#b8860b', 'у действующего правителя золотая корона');
 assert.equal(colors.light.crownSilver, '#8a8f98', 'у ожидаемого наследника серебряная корона');
 assert.equal(colors.light.crownBlack, '#17130f', 'у бывшего правителя чёрная корона');

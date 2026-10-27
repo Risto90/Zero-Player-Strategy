@@ -41,12 +41,11 @@ export function dynastyCrownTargets(
       : country.heir ? [country.heir] : [];
     for (const heir of heirs) add(heir.id, 'heir', country);
 
-    const formerLeaderIds = new Set([
-      ...country.previousRulerIds,
-      ...(country.rulerTerms ?? [])
+    const formerLeaderIds = new Set(
+      (country.rulerTerms ?? [])
         .filter((term) => term.endYear !== null)
         .map((term) => term.personId),
-    ]);
+    );
     for (const formerId of formerLeaderIds) {
       if (!currentLeaderIds.has(formerId)) add(formerId, 'former', country);
     }
