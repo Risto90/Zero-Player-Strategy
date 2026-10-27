@@ -2,7 +2,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import type { Game, GameSnapshot, LegendRow } from '@/game/game';
-import { CITY_COLORS, RAMPS } from '@/game/render';
+import { CITY_COLORS, RAMPS, SEA_DEPTH_RAMP } from '@/game/render';
 import type { MapMode } from '@/game/render';
 import { cityRankName } from '@/game/settlements';
 import type { CityRank } from '@/game/world';
@@ -92,7 +92,7 @@ function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
           <View style={styles.rampContents}>
             <Text style={styles.scaleLabel}>−11 км</Text>
             <LinearGradient colors={RAMPS.elevation as [string, string, ...string[]]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.ramp} />
-            <Text style={styles.scaleLabel}>+9 км</Text>
+            <Text style={styles.scaleLabel}>0 м</Text>
           </View>
           <View style={styles.fixedKeys}>
             <View style={styles.key}>
@@ -143,6 +143,14 @@ export function MapLegend({ game, snap }: { game: Game; snap: GameSnapshot }) {
     >
       <Text style={styles.title}>{MODE_LABELS[snap.mapMode]}</Text>
       <LegendContents game={game} snap={snap} />
+      {snap.mapMode !== 'elevation' && (
+        <View style={styles.depthLegend}>
+          <Text style={styles.scaleLabel}>Глубина моря</Text>
+          <LinearGradient colors={SEA_DEPTH_RAMP as unknown as [string, string, ...string[]]}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.depthRamp} />
+          <Text style={styles.scaleLabel}>−11 км</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -172,6 +180,8 @@ const styles = StyleSheet.create({
   hatchSwatch: { width: 18, height: 10, borderWidth: 1, backgroundColor: 'rgba(221,193,138,0.3)' },
   fixedKeys: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   elevationLegend: { gap: 4 },
+  depthLegend: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingTop: 2 },
+  depthRamp: { width: 42, height: 6, borderRadius: 2 },
   peakSwatch: { fontSize: 12, lineHeight: 13, fontFamily: fonts.sans, fontWeight: '700' },
   key: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: 180 },
   keyText: { flexShrink: 1, fontFamily: fonts.sans, fontSize: 9, color: c.secondaryForeground },

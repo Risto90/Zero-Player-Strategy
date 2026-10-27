@@ -16,14 +16,23 @@ import {
   useFont,
   type SkImage,
 } from '@shopify/react-native-skia';
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, type GestureResponderEvent, type LayoutChangeEvent } from 'react-native';
-import { makeMutable, useDerivedValue, useSharedValue, type SharedValue } from 'react-native-reanimated';
+import { makeMutable, useAnimatedReaction, useDerivedValue, useSharedValue, type SharedValue } from 'react-native-reanimated';
 import colors from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { STRIP_H, STRIPS } from '@/game/render';
-import { countryLabelViewportLayout, countryMapLabels, geographicVisibilityScale, volcanoVisibilityScale } from '@/game/mapLabels';
+import {
+  countryLabelViewportLayout,
+  countryMapLabels,
+  entityMapLabels,
+  geographicVisibilityScale,
+  shouldShowCityMarks,
+  shouldShowGeographyMarks,
+  volcanoVisibilityScale,
+} from '@/game/mapLabels';
 import { discoveredRiverPaths, riverVisibilityScale } from '@/game/geographyGeometry';
+import { terrainProjectedRiverPath, terrainProjectedY, terrainReliefPaths } from '@/game/terrainModel';
 import { cityInfluenceRadius } from '@/game/settlements';
 import type { GeographyFeature } from '@/game/geographyFeatures';
 import type { City, World } from '@/game/world';
@@ -152,9 +161,21 @@ function CountryLabelMark({ label, scale, ox, oy, width, height, color, font }: 
   color: string;
   font: ReturnType<typeof useFont>;
 }) {
+  const characters = [...label.text];
+  const measuredTextWidthFactor = font
+    ? (font.getTextWidth(label.text) + Math.max(0, characters.length - 1) * 1.2) / 8
+    : undefined;
   const layout = useDerivedValue(() =>
-    countryLabelViewportLayout(label, scale.value, ox.value, oy.value, width.value, height.value));
-  const visible = useDerivedValue(() => layout.value.visible ? 1 : 0);
+    countryLabelViewportLayout(label, scale.value, ox.value, oy.value, width.value, height.value, measuredTextWidthFactor));
+  const visibility = useSharedValue(false);
+  useAnimatedReaction(
+    () => layout.value.fontSize,
+    (fontSize) => {
+      if (fontSize < 9) visibility.value = false;
+      else if (!visibility.value && fontSize >= 11) visibility.value = true;
+    },
+  );
+  const visible = useDerivedValue(() => layout.value.territoryVisible && visibility.value ? 1 : 0);
   const shift = useDerivedValue(() => [
     { translateX: (layout.value.x - ox.value) / Math.max(scale.value, 0.0001) - label.x },
     { translateY: (layout.value.y - oy.value) / Math.max(scale.value, 0.0001) - label.y },
@@ -162,9 +183,8 @@ function CountryLabelMark({ label, scale, ox, oy, width, height, color, font }: 
   const textScale = useDerivedValue(() => [
     { scale: layout.value.fontSize / Math.max(scale.value * 8, 0.0001) },
   ]);
-  const characters = [...label.text];
   const tracking = 1.2;
-  const widths = characters.map(() => 4.8);
+  const widths = characters.map((character) => font?.getTextWidth(character) ?? 4.8);
   const textWidth = widths.reduce((sum, item) => sum + item, 0) + Math.max(0, characters.length - 1) * tracking;
   let cursor = label.x - textWidth / 2;
   return (
@@ -188,16 +208,18 @@ function CountryLabelMark({ label, scale, ox, oy, width, height, color, font }: 
   );
 }
 
-function GeographyPointMark({ feature, volcano, scale, baseScale, font, color }: {
+function GeographyPointMark({ feature, volcano, scale, baseScale, font, color, world, relief }: {
   feature: GeographyFeature;
   volcano: boolean;
   scale: SharedValue<number>;
   baseScale: SharedValue<number>;
   font: ReturnType<typeof useFont>;
   color: string;
+  world: World;
+  relief: boolean;
 }) {
   const x = feature.pixel % MAP_WIDTH;
-  const y = Math.floor(feature.pixel / MAP_WIDTH);
+  const y = relief ? terrainProjectedY(world, feature.pixel) : Math.floor(feature.pixel / MAP_WIDTH);
   const active = volcano && feature.active === true;
   const visible = useDerivedValue(() =>
     feature.discoveredBy.length > 0 &&
@@ -267,20 +289,30 @@ function RiverContourLayer({ strength, path, scale, baseScale }: {
   );
 }
 
-function MapAnnotations({ game, scale, baseScale, ox, oy, width, height }: {
+function MapAnnotations({ game, scale, labelScale, baseScale, ox, oy, width, height, labelRevision }: {
   game: MapViewProps['game'];
   scale: SharedValue<number>;
+  labelScale: number;
   baseScale: SharedValue<number>;
   ox: SharedValue<number>;
   oy: SharedValue<number>;
   width: SharedValue<number>;
   height: SharedValue<number>;
+  labelRevision: number;
 }) {
+  void labelRevision;
   const snapshot = game.getSnapshot();
-  const labels = countryMapLabels(game.world, 100, snapshot.mapMode, snapshot.selectedCountryId);
+  const labels = countryMapLabels(game.world, labelScale, snapshot.mapMode, snapshot.selectedCountryId);
+  const dataLabels = entityMapLabels(game.world, snapshot.mapMode, snapshot.layer, labelScale);
+  const showGeography = shouldShowGeographyMarks(snapshot.mapMode);
+  const relief = snapshot.mapMode === 'elevation';
   const riverPaths = useMemo(
-    () => discoveredRiverPaths(game.world),
-    [game.world, game.world.version, game.world.territoryVersion],
+    () => discoveredRiverPaths(game.world).map((segment) => relief ? ({
+      ...segment,
+      path: terrainProjectedRiverPath(game.world, segment.points),
+      contourPath: terrainProjectedRiverPath(game.world, segment.contourPoints, true),
+    }) : segment),
+    [game.world, game.world.version, game.world.territoryVersion, relief],
   );
   const riverContourGroups = useMemo(() => {
     const groups = new Map<1 | 2 | 3, string[]>();
@@ -303,21 +335,23 @@ function MapAnnotations({ game, scale, baseScale, ox, oy, width, height }: {
   const countryFont = useFont(require('@expo-google-fonts/ibm-plex-sans/700Bold/IBMPlexSans_700Bold.ttf'), 8);
   const smallFont = useFont(require('@expo-google-fonts/ibm-plex-sans/400Regular/IBMPlexSans_400Regular.ttf'), 6);
   const riverFont = useFont(require('@expo-google-fonts/ibm-plex-sans/400Regular/IBMPlexSans_400Regular.ttf'), 1);
+  const terrain = useMemo(() => terrainReliefPaths(game.world), [game.world]);
   return (
     <>
+      {relief && terrain.map((facet) => <Path key={facet.color} path={facet.path} color={facet.color} />)}
       {riverContourGroups.map(({ strength, path }) => <RiverContourLayer key={strength} strength={strength}
         path={path} scale={scale} baseScale={baseScale} />)}
-      {labels.map((label) => {
+      {[...labels, ...dataLabels].map((label) => {
         const pixel = Math.floor(label.y) * MAP_WIDTH + Math.floor(label.x);
         const color = label.selected ? '#e7c56e' : contrastColor(game.renderer.pixels[pixel] ?? 0xffeeeeee);
         return <CountryLabelMark key={label.key} label={label} scale={scale} ox={ox} oy={oy}
           width={width} height={height} color={color} font={countryFont} />;
       })}
-      {game.world.peaks.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`peak-${feature.id}`} feature={feature}
-        volcano={false} scale={scale} baseScale={baseScale} font={smallFont}
+      {showGeography && game.world.peaks.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`peak-${feature.id}`} feature={feature}
+        volcano={false} scale={scale} baseScale={baseScale} font={smallFont} world={game.world} relief={relief}
         color={contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
-      {game.world.volcanoes.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`volcano-${feature.id}`} feature={feature}
-        volcano scale={scale} baseScale={baseScale} font={smallFont}
+      {showGeography && game.world.volcanoes.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`volcano-${feature.id}`} feature={feature}
+        volcano scale={scale} baseScale={baseScale} font={smallFont} world={game.world} relief={relief}
         color={contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
       {riverNameSegments.map((segment) => <RiverNameMark key={`river-${segment.riverId}`} segment={segment}
         scale={scale} baseScale={baseScale} font={riverFont} />)}
@@ -407,6 +441,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const canPaintRef = useRef(canPaint);
   const inspectRef = useRef(onInspect);
   const activityRef = useRef(onMapActivity);
+  const labelRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastLabelRefreshAt = useRef(0);
+  const [labelRevision, setLabelRevision] = useState(0);
   toolRef.current = tool;
   canPaintRef.current = canPaint;
   inspectRef.current = onInspect;
@@ -427,6 +464,20 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const transform = useDerivedValue(() => [{ translateX: ox.value }, { translateY: oy.value }, { scale: scale.value }]);
   const sampling = useDerivedValue(() => (scale.value >= 1 ? NEAREST : LINEAR));
 
+  const scheduleLabelRefresh = useCallback(() => {
+    const now = Date.now();
+    if (now - lastLabelRefreshAt.current >= 100) {
+      lastLabelRefreshAt.current = now;
+      setLabelRevision((revision) => revision + 1);
+    }
+    if (labelRefreshTimer.current) clearTimeout(labelRefreshTimer.current);
+    labelRefreshTimer.current = setTimeout(() => {
+      labelRefreshTimer.current = null;
+      lastLabelRefreshAt.current = Date.now();
+      setLabelRevision((revision) => revision + 1);
+    }, 150);
+  }, []);
+
   const centerAtPixel = (pixel: number) => {
     const { width, height } = sizeRef.current;
     applyView(centerOnMapPoint(viewRef.current, pixel % MAP_WIDTH, Math.floor(pixel / MAP_WIDTH), width, height));
@@ -437,6 +488,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     scale.value = view.scale;
     ox.value = view.ox;
     oy.value = view.oy;
+    scheduleLabelRefresh();
   };
 
   useImperativeHandle(ref, () => ({
@@ -473,13 +525,20 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     };
     game.redrawAll();
     request();
-    const off = game.onMapChange(request);
+    const off = game.onMapChange(() => {
+      request();
+      scheduleLabelRefresh();
+    });
     return () => {
       alive = false;
       off();
       if (frame !== null) cancelAnimationFrame(frame);
     };
-  }, [game, strips]);
+  }, [game, strips, scheduleLabelRefresh]);
+
+  useEffect(() => () => {
+    if (labelRefreshTimer.current) clearTimeout(labelRefreshTimer.current);
+  }, []);
 
   const gestures = useMemo(
     () =>
@@ -543,9 +602,10 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           ))}
           <CityInfluenceLayer world={game.world} selectedCityId={game.getSnapshot().selectedCityId} active={game.getSnapshot().mapMode === 'cities'}
             scale={scale} baseScale={markerBaseScale} ox={ox} oy={oy} width={viewportWidth} height={viewportHeight} />
-          <MapAnnotations game={game} scale={scale} baseScale={markerBaseScale} ox={ox} oy={oy}
-            width={viewportWidth} height={viewportHeight} />
-          <CityMarkers world={game.world} scale={scale} baseScale={markerBaseScale} mapPixels={game.renderer.pixels} />
+          <MapAnnotations game={game} scale={scale} labelScale={viewRef.current.scale} baseScale={markerBaseScale} ox={ox} oy={oy}
+            width={viewportWidth} height={viewportHeight} labelRevision={labelRevision} />
+          {shouldShowCityMarks(game.getSnapshot().mapMode) &&
+            <CityMarkers world={game.world} scale={scale} baseScale={markerBaseScale} mapPixels={game.renderer.pixels} />}
         </Group>
         <Group opacity={cursorOpacity}>
           <Circle cx={cursorX} cy={cursorY} r={cursorR} style="stroke" strokeWidth={3} color="rgba(255,255,255,0.9)" />

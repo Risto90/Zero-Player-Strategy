@@ -33,25 +33,32 @@ function shade(color: number, factor: number): number {
   return (255 << 24) | (Math.round(b) << 16) | (Math.round(g) << 8) | Math.round(r);
 }
 
-const ELEVATION_COLORS: readonly [number, RGB][] = [
-  [-11000, [20, 48, 70]],
-  [-4000, [50, 101, 130]],
-  [-200, [132, 182, 190]],
-  [0, [220, 211, 178]],
-  [500, [118, 157, 105]],
-  [1500, [170, 157, 105]],
-  [3000, [148, 108, 78]],
-  [6000, [212, 203, 184]],
-  [8800, [247, 245, 238]],
+/** Морская батиметрия остаётся видна под всеми тематическими слоями карты. */
+export const SEA_DEPTH_RAMP = ['#17374d', '#24526b', '#39748a', '#8bb5b3'] as const;
+const SEA_DEPTH_STOPS: readonly [number, RGB][] = [
+  [0, hexToRgb(SEA_DEPTH_RAMP[3])],
+  [1000, hexToRgb(SEA_DEPTH_RAMP[2])],
+  [5000, hexToRgb(SEA_DEPTH_RAMP[1])],
+  [11000, hexToRgb(SEA_DEPTH_RAMP[0])],
 ];
 
-function elevationColor(height: number): number {
+function seaDepthColor(depthMeters: number): number {
+  const depth = Math.max(0, Math.min(11000, depthMeters));
   let stop = 1;
-  while (stop < ELEVATION_COLORS.length - 1 && height > ELEVATION_COLORS[stop][0]) stop += 1;
-  const [lowHeight, lowColor] = ELEVATION_COLORS[stop - 1];
-  const [highHeight, highColor] = ELEVATION_COLORS[stop];
-  const amount = Math.max(0, Math.min(1, (height - lowHeight) / (highHeight - lowHeight)));
-  return pack(mix(lowColor, highColor, amount));
+  while (stop < SEA_DEPTH_STOPS.length - 1 && depth > SEA_DEPTH_STOPS[stop][0]) stop += 1;
+  const [shallowDepth, shallowColor] = SEA_DEPTH_STOPS[stop - 1];
+  const [deepDepth, deepColor] = SEA_DEPTH_STOPS[stop];
+  return pack(mix(shallowColor, deepColor, (depth - shallowDepth) / (deepDepth - shallowDepth)));
+}
+
+const SEA_DEPTH_COLORS = Int32Array.from(
+  { length: 11001 },
+  (_, depth) => seaDepthColor(depth),
+);
+
+export function seaDepthPackedColor(elevation: number): number {
+  const depth = Math.max(0, Math.min(11000, -elevation));
+  return SEA_DEPTH_COLORS[depth];
 }
 
 /** Colour ramps for value layers (0–100). */
@@ -60,7 +67,7 @@ export const RAMPS: Record<'humidity' | 'temperature' | 'drainage' | 'density' |
   temperature: ['#eef1f4', '#8fb3cf', '#a9c48b', '#e0c065', '#c96a43'],
   drainage: ['#56756a', '#8aa38c', '#c8c4a0', '#c9a776', '#a8794c'],
   density: ['#efe8d2', '#d8c08c', '#c08a52', '#93512f', '#5e2a1d'],
-  elevation: ['#143046', '#326582', '#84b6be', '#dcd3b2', '#769d69', '#aa9d69', '#946c4e', '#d4cbb8', '#f7f5ee'],
+  elevation: [...SEA_DEPTH_RAMP],
 };
 
 export const CITY_COLORS = ['#a66f3d', '#bf6741', '#b2493e', '#8f3036', '#672433', '#431c2e'] as const;
@@ -471,8 +478,8 @@ export class MapRenderer {
       } else pixels.set(base.subarray(row + x0, row + x1), row + x0);
       for (let p = row + x0; p < row + x1; p += 1) {
         if (!land[p]) {
-          if (mode === 8) pixels[p] = elevationColor(w.elevation[p]);
-          else if (mode !== 6 && scalarContours) pixels[p] = base[p];
+          const depth = Math.max(0, Math.min(11000, -w.elevation[p]));
+          pixels[p] = SEA_DEPTH_COLORS[depth];
           continue;
         }
         const o = owner[p];
@@ -490,7 +497,7 @@ export class MapRenderer {
             color = origin ? this.originColors[origin - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
           }
         }
-        else if (mode === 8) color = elevationColor(w.elevation[p]);
+        else if (mode === 8) color = unclaimedPacked;
         else if (mode === 0) {
           color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
           if (!selected && this.nomadRaster[p] && ((p % MAP_WIDTH + Math.floor(p / MAP_WIDTH)) % 7 < 3)) {
@@ -512,7 +519,7 @@ export class MapRenderer {
         else if (mode === 3) color = this.compColor('religion', religion[p]);
         else if (mode === 4) color = ramp[Math.min(100, Math.round(Math.log1p(density[p] + this.nomadDensity[p]) * 12))];
         else color = scalarContours ? pixels[p] : ramp[values[p]];
-        // Country borders show in every mode; coasts are lightly outlined.
+        // На слое высот рельеф рисуется отдельной 3D-сеткой без политических границ.
         const bits = nb[p];
         const boundary = (
           ((bits & LEFT) !== 0 && owner[p - 1] !== o) ||
@@ -524,8 +531,8 @@ export class MapRenderer {
           !this.isSelectedCountryPixel(p - 1) || !this.isSelectedCountryPixel(p + 1) ||
           !this.isSelectedCountryPixel(p - MAP_WIDTH) || !this.isSelectedCountryPixel(p + MAP_WIDTH)
         );
-        if (boundary) color = shade(color, borderShade);
-        else if (bits & COAST) color = shade(color, 0.82);
+        if (mode !== 8 && boundary) color = shade(color, borderShade);
+        else if (mode !== 8 && (bits & COAST)) color = shade(color, 0.82);
         pixels[p] = mode === 0 && selected && selectedCountry
           ? selectedBoundary ? pack([250, 230, 177]) : countryColors[selectedCountry.id] ?? color
           : color;

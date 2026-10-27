@@ -1,6 +1,7 @@
-import { ContourArea, type ContourBounds } from './contours';
+import { ContourArea, type ContourBounds, type ContourSpan } from './contours';
 import { MAP_HEIGHT, MAP_WIDTH } from './config';
-import type { MapMode } from './render';
+import { HUMAN_ORIGINS } from './human';
+import type { EntityLayer, MapMode } from './render';
 import type { Country, World } from './world';
 
 export interface CountryMapLabel {
@@ -24,6 +25,17 @@ const nomadLabelCache = new WeakMap<World, {
   territoryVersion: number;
   labels: Map<number, LabelCore | null>;
 }>();
+const entityAreaCache = new WeakMap<World, {
+  version: number;
+  territoryVersion: number;
+  keys: Map<string, Map<number, ContourArea>>;
+}>();
+const entityLabelsCache = new WeakMap<World, {
+  version: number;
+  territoryVersion: number;
+  labels: Map<string, LabelCore[]>;
+}>();
+const labelVisibility = new Map<string, boolean>();
 
 function textWidthFactor(text: string): number {
   const count = [...text].length;
@@ -94,7 +106,7 @@ function labelCandidates(area: ContourArea): { x: number; y: number }[] {
 
 function makeLabel(
   area: ContourArea,
-  country: Country,
+  country: Pick<Country, 'id' | 'name'>,
   key: string,
   forceComponentLabel: boolean,
   requiredAreas: readonly ContourArea[] = [],
@@ -142,6 +154,16 @@ function makeLabel(
     ],
     countryBounds,
   };
+}
+
+function labelVisible(key: string, fontSize: number): boolean {
+  const wasVisible = labelVisibility.get(key) ?? false;
+  const visible = fontSize >= (wasVisible ? 9 : 11);
+  if (labelVisibility.size >= 2048 && !labelVisibility.has(key)) {
+    labelVisibility.delete(labelVisibility.keys().next().value!);
+  }
+  labelVisibility.set(key, visible);
+  return visible;
 }
 
 function countryArea(world: World, country: Country): ContourArea {
@@ -205,7 +227,10 @@ function selectedNomadLabel(world: World, countryId: number): LabelCore | null {
   return label;
 }
 
-function overlaps(a: CountryMapLabel, b: CountryMapLabel): boolean {
+function overlaps(
+  a: Pick<CountryMapLabel, 'x' | 'y' | 'width' | 'height'>,
+  b: Pick<CountryMapLabel, 'x' | 'y' | 'width' | 'height'>,
+): boolean {
   return Math.abs(a.x - b.x) * 2 < a.width + b.width &&
     Math.abs(a.y - b.y) * 2 < a.height + b.height;
 }
@@ -213,18 +238,21 @@ function overlaps(a: CountryMapLabel, b: CountryMapLabel): boolean {
 /** Подписи выбираются по областям контуров, включая отдельные части разделённых стран. */
 export function countryMapLabels(
   world: World,
-  scale: number,
+  scale: number | null,
   mode: MapMode,
   selectedCountryId: number | null,
 ): CountryMapLabel[] {
+  if (!shouldShowStateLabels(mode)) return [];
   const labels: CountryMapLabel[] = [];
-  if (mode === 'political' && selectedCountryId !== null) {
+  if (selectedCountryId !== null) {
     const selected = selectedNomadLabel(world, selectedCountryId);
-    if (selected && selected.fontSize * scale >= 7) labels.push({ ...selected, selected: true });
+    if (selected && (scale === null || labelVisible(selected.key, selected.fontSize * scale))) {
+      labels.push({ ...selected, selected: true });
+    }
   }
   const blocked = labels[0];
   for (const core of settledCountryLabels(world)) {
-    if (core.fontSize * scale < 7) continue;
+    if (scale !== null && !labelVisible(core.key, core.fontSize * scale)) continue;
     const label: CountryMapLabel = { ...core, selected: false };
     if (blocked && overlaps(label, blocked)) {
       const country = world.countries[core.countryId];
@@ -254,11 +282,171 @@ export function countryMapLabels(
   return labels.filter((label) => label.x >= 0 && label.x < MAP_WIDTH && label.y >= 0 && label.y < MAP_HEIGHT);
 }
 
+/**
+ * Подписи культур, религий и рас строятся по диапазонам значений контурного слоя,
+ * а не перебором отдельных точек карты. Без выбранного объекта подписываются
+ * преобладающие группы; при выборе — все участки, где присутствует эта группа.
+ */
+export function entityMapLabels(
+  world: World,
+  mode: MapMode,
+  selectedLayer: EntityLayer | null,
+  scale?: number,
+): CountryMapLabel[] {
+  const definition = mode === 'cultures'
+    ? { kind: 'culture' as const, contour: 'culture' as const, table: world.cultureTable, entities: world.cultures }
+    : mode === 'religions'
+      ? { kind: 'religion' as const, contour: 'religion' as const, table: world.religionTable, entities: world.religions }
+      : mode === 'origins'
+        ? {
+          kind: 'origin' as const,
+          contour: 'humanOrigins' as const,
+          table: world.humanOriginTable,
+          entities: HUMAN_ORIGINS.map((origin, id) => ({ id, name: origin.name })),
+        }
+        : null;
+  if (!definition) return [];
+  const selectedId = selectedLayer?.kind === definition.kind ? selectedLayer.id : null;
+  const cache = entityAreaCache.get(world);
+  const cacheKey = `${mode}:${selectedId ?? 'dominant'}`;
+  let areaGroups: Map<number, ContourArea>;
+  if (cache?.version === world.version && cache.territoryVersion === world.territoryVersion &&
+      cache.keys.has(cacheKey)) {
+    areaGroups = cache.keys.get(cacheKey)!;
+  } else {
+    let current = cache;
+    if (!current || current.version !== world.version || current.territoryVersion !== world.territoryVersion) {
+      current = {
+        version: world.version,
+        territoryVersion: world.territoryVersion,
+        keys: new Map(),
+      };
+      entityAreaCache.set(world, current);
+    }
+    areaGroups = new Map<number, ContourArea>();
+    const spansById = new Map<number, ContourSpan[]>();
+    const layer = world.contours.layer(definition.contour);
+    for (let y = 0; y < MAP_HEIGHT; y += 1) {
+      for (const span of layer.row(y)) {
+        const composition = definition.table.entries[span.value];
+        if (!composition?.ids.length) continue;
+        let targetId = selectedId;
+        if (targetId !== null) {
+          if (definition.table.shareOf(span.value, targetId) <= 0) continue;
+        } else {
+          let bestShare = 0;
+          targetId = -1;
+          for (let index = 0; index < composition.ids.length; index += 1) {
+            const share = composition.shares[index] ?? 0;
+            const entityId = composition.ids[index];
+            if (share > bestShare || (share === bestShare && entityId < targetId)) {
+              bestShare = share;
+              targetId = entityId;
+            }
+          }
+          if (bestShare <= 0 || targetId < 0) continue;
+        }
+        const spans = spansById.get(targetId) ?? [];
+        spans.push({ y, start: span.start, end: span.end });
+        spansById.set(targetId, spans);
+      }
+    }
+    if (mode === 'origins') {
+      // Кочевья не входят в слой оседлых контуров; их клетки добавляются отдельными контурами.
+      for (const country of world.countries) {
+        if (country.type !== 'nomadic') continue;
+        for (const cell of country.cells ?? []) {
+          if (!(cell.population > 0) || cell.pixel < 0 || cell.pixel >= MAP_WIDTH * MAP_HEIGHT || !world.land[cell.pixel]) continue;
+          const composition = definition.table.entries[cell.humanOriginMix];
+          if (!composition?.ids.length) continue;
+          let targetId = selectedId;
+          if (targetId !== null) {
+            if (definition.table.shareOf(cell.humanOriginMix, targetId) <= 0) continue;
+          } else {
+            let bestShare = 0;
+            targetId = -1;
+            for (let index = 0; index < composition.ids.length; index += 1) {
+              const share = composition.shares[index] ?? 0;
+              const entityId = composition.ids[index];
+              if (share > bestShare || (share === bestShare && entityId < targetId)) {
+                bestShare = share;
+                targetId = entityId;
+              }
+            }
+            if (bestShare <= 0 || targetId < 0) continue;
+          }
+          const y = Math.floor(cell.pixel / MAP_WIDTH);
+          const start = cell.pixel - y * MAP_WIDTH;
+          const spans = spansById.get(targetId) ?? [];
+          spans.push({ y, start, end: start + 1 });
+          spansById.set(targetId, spans);
+        }
+      }
+    }
+    for (const [id, spans] of spansById) areaGroups.set(id, new ContourArea(spans));
+    current.keys.set(cacheKey, areaGroups);
+    if (current.keys.size > 6) current.keys.delete(current.keys.keys().next().value!);
+  }
+
+  let labelCache = entityLabelsCache.get(world);
+  if (!labelCache || labelCache.version !== world.version || labelCache.territoryVersion !== world.territoryVersion) {
+    labelCache = { version: world.version, territoryVersion: world.territoryVersion, labels: new Map() };
+    entityLabelsCache.set(world, labelCache);
+  }
+  let cores = labelCache.labels.get(cacheKey);
+  if (!cores) {
+    const names = new Map<number, string>();
+    for (const entity of definition.entities) {
+      const name = 'name' in entity ? entity.name : '';
+      if (name) names.set(entity.id, name);
+    }
+    cores = [];
+    for (const [id, area] of areaGroups) {
+      const name = names.get(id);
+      if (!name || !area.size) continue;
+      const components = area.components().sort((a, b) => b.size - a.size);
+      for (let index = 0; index < components.length; index += 1) {
+        const key = `${definition.kind}-${id}-${index}`;
+        const core = makeLabel(components[index], { id, name }, key, true);
+        if (core) cores.push(core);
+      }
+    }
+    cores.sort((a, b) => b.width * b.height - a.width * a.height || a.key.localeCompare(b.key));
+    labelCache.labels.set(cacheKey, cores);
+    if (labelCache.labels.size > 6) labelCache.labels.delete(labelCache.labels.keys().next().value!);
+  }
+  const result: CountryMapLabel[] = [];
+  for (const core of cores) {
+    if (scale !== undefined && !labelVisible(core.key, core.fontSize * scale)) continue;
+    if (result.some((placed) => overlaps(core, placed))) continue;
+    result.push({ ...core, selected: false });
+  }
+  return result;
+}
+
+export function shouldShowCityMarks(mode: MapMode): boolean {
+  return mode === 'political' || mode === 'cities';
+}
+
+export function shouldShowGeographyMarks(mode: MapMode): boolean {
+  return mode === 'political' || mode === 'elevation';
+}
+
+export function shouldShowStateLabels(mode: MapMode): boolean {
+  return mode === 'political' || mode === 'cities';
+}
+
+/** Web-холст запоминает гистерезис между кадрами; нативный холст использует shared value. */
+export function labelVisibilityThreshold(key: string): number {
+  return labelVisibility.get(key) ? 9 : 11;
+}
+
 export interface CountryLabelViewportLayout {
   x: number;
   y: number;
   fontSize: number;
   letterSpacing: number;
+  territoryVisible: boolean;
   visible: boolean;
 }
 
@@ -271,6 +459,7 @@ export function countryLabelViewportLayout(
   viewportWidth: number,
   viewportHeight: number,
   measuredTextWidthFactor?: number,
+  visibilityThreshold = 11,
 ): CountryLabelViewportLayout {
   const bounds = label.countryBounds;
   const mapLeft = ox + bounds.x0 * scale;
@@ -282,22 +471,24 @@ export function countryLabelViewportLayout(
     ? measuredTextWidthFactor
     : textWidthFactor(label.text);
   const maxFont = Math.min(
-    Math.max(0, (viewportWidth - 12) / factor),
-    Math.max(0, (viewportHeight - 12) / 1.2),
+    Math.max(0, (viewportWidth - 16) / factor),
+    Math.max(0, (viewportHeight - 16) / 1.2),
   );
   const fontSize = Math.min(label.fontSize * scale, maxFont);
   const textWidth = factor * fontSize;
   const textHeight = fontSize * 1.2;
   const rawX = ox + label.x * scale;
   const rawY = oy + label.y * scale;
-  const x = Math.max(textWidth / 2 + 6, Math.min(viewportWidth - textWidth / 2 - 6, rawX));
-  const y = Math.max(textHeight / 2 + 6, Math.min(viewportHeight - textHeight / 2 - 6, rawY));
+  const x = Math.max(textWidth / 2 + 8, Math.min(viewportWidth - textWidth / 2 - 8, rawX));
+  const y = Math.max(textHeight / 2 + 8, Math.min(viewportHeight - textHeight / 2 - 8, rawY));
+  const territoryVisible = countryVisible && fontSize > 0;
   return {
     x,
     y,
     fontSize,
     letterSpacing: fontSize * 0.16,
-    visible: countryVisible && fontSize >= 7,
+    territoryVisible,
+    visible: territoryVisible && fontSize >= visibilityThreshold,
   };
 }
 

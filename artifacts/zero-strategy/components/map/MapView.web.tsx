@@ -5,11 +5,16 @@ import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
 import {
   countryLabelViewportLayout,
   countryMapLabels,
+  entityMapLabels,
   geographicVisibilityScale,
+  labelVisibilityThreshold,
   riverVisibilityScale,
+  shouldShowCityMarks,
+  shouldShowGeographyMarks,
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
 import { discoveredRiverPaths } from '@/game/geographyGeometry';
+import { terrainProjectedY, terrainReliefPaths } from '@/game/terrainModel';
 import { STRIP_H } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
@@ -86,6 +91,24 @@ const RIVER_COLORS: Record<number, string> = {
   2: '#377497',
   3: '#22537d',
 };
+const terrainPathCache = new WeakMap<MapViewProps['game']['world'], Path2D[]>();
+
+function drawTerrainRelief(ctx: CanvasRenderingContext2D, game: MapViewProps['game'], view: ViewTransform) {
+  let paths = terrainPathCache.get(game.world);
+  if (!paths) {
+    paths = terrainReliefPaths(game.world).map((facet) => new Path2D(facet.path));
+    terrainPathCache.set(game.world, paths);
+  }
+  const facets = terrainReliefPaths(game.world);
+  ctx.save();
+  ctx.translate(view.ox, view.oy);
+  ctx.scale(view.scale, view.scale);
+  facets.forEach((facet, index) => {
+    ctx.fillStyle = facet.color;
+    ctx.fill(paths![index]);
+  });
+  ctx.restore();
+}
 
 function drawRivers(
   ctx: CanvasRenderingContext2D,
@@ -106,7 +129,10 @@ function drawRivers(
     for (let index = 0; index < segment.contourPoints.length; index += 1) {
       const point = segment.contourPoints[index];
       const x = view.ox + point.x * view.scale;
-      const y = view.oy + point.y * view.scale;
+      const mapY = game.getSnapshot().mapMode === 'elevation'
+        ? terrainProjectedY(game.world, Math.floor(point.y) * MAP_WIDTH + Math.floor(point.x), point.y)
+        : point.y;
+      const y = view.oy + mapY * view.scale;
       if (index === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -173,7 +199,11 @@ function drawRiverNames(
     if (view.scale < 6 || segment.width * view.scale < fontSize || screenLength < textWidth + 4) continue;
     const midpoint = pointAlongPath(segment.points, segment.length / 2);
     const centerX = view.ox + midpoint.x * view.scale;
-    const centerY = view.oy + midpoint.y * view.scale;
+    const midpointPixel = Math.floor(midpoint.y) * MAP_WIDTH + Math.floor(midpoint.x);
+    const mapY = game.getSnapshot().mapMode === 'elevation'
+      ? terrainProjectedY(game.world, midpointPixel, midpoint.y)
+      : midpoint.y;
+    const centerY = view.oy + mapY * view.scale;
     if (centerX < -100 || centerY < -30 || centerX > width + 100 || centerY > height + 30) continue;
 
     let cursor = (screenLength - textWidth) / 2;
@@ -181,7 +211,11 @@ function drawRiverNames(
       const characterWidth = widths[index];
       const location = pointAlongPath(segment.points, (cursor + characterWidth / 2) / view.scale);
       const x = view.ox + location.x * view.scale;
-      const y = view.oy + location.y * view.scale;
+      const pointPixel = Math.floor(location.y) * MAP_WIDTH + Math.floor(location.x);
+      const pointY = game.getSnapshot().mapMode === 'elevation'
+        ? terrainProjectedY(game.world, pointPixel, location.y)
+        : location.y;
+      const y = view.oy + pointY * view.scale;
       let angle = location.angle;
       if (angle > Math.PI / 2 || angle < -Math.PI / 2) angle += Math.PI;
       ctx.save();
@@ -255,7 +289,11 @@ function drawMapLabels(
     });
   };
 
-  for (const label of countryMapLabels(game.world, view.scale, snapshot.mapMode, snapshot.selectedCountryId)) {
+  const labels = [
+    ...countryMapLabels(game.world, view.scale, snapshot.mapMode, snapshot.selectedCountryId),
+    ...entityMapLabels(game.world, snapshot.mapMode, snapshot.layer, view.scale),
+  ];
+  for (const label of labels) {
     const layout = countryLabelViewportLayout(
       label,
       view.scale,
@@ -264,6 +302,7 @@ function drawMapLabels(
       width,
       height,
       measuredCountryTextWidthFactor(ctx, label.text),
+      labelVisibilityThreshold(label.key),
     );
     if (!layout.visible) continue;
     const pixel = Math.floor(label.y) * MAP_WIDTH + Math.floor(label.x);
@@ -272,7 +311,7 @@ function drawMapLabels(
   }
 
   const ratio = view.scale / Math.max(baseScale, 0.0001);
-  for (const feature of [...game.world.peaks, ...game.world.volcanoes]) {
+  if (shouldShowGeographyMarks(snapshot.mapMode)) for (const feature of [...game.world.peaks, ...game.world.volcanoes]) {
     if (!feature.discoveredBy.length) continue;
     const isVolcano = game.world.volcanoes.includes(feature);
     const active = isVolcano && feature.active === true;
@@ -282,7 +321,10 @@ function drawMapLabels(
       : geographicVisibilityScale(baseScale, feature.elevation);
     if (view.scale < visibilityScale) continue;
     const x = view.ox + (feature.pixel % MAP_WIDTH) * view.scale;
-    const y = view.oy + Math.floor(feature.pixel / MAP_WIDTH) * view.scale;
+    const mapY = snapshot.mapMode === 'elevation'
+      ? terrainProjectedY(game.world, feature.pixel)
+      : Math.floor(feature.pixel / MAP_WIDTH);
+    const y = view.oy + mapY * view.scale;
     if (x < -24 || y < -30 || x > width + 24 || y > height + 30) continue;
     const size = Math.max(5, Math.min(11, 6 + ratio * 1.5));
     ctx.beginPath();
@@ -340,10 +382,11 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     ctx.fillRect(0, 0, width, height);
     ctx.imageSmoothingEnabled = view.scale < 1;
     ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
+    if (game.getSnapshot().mapMode === 'elevation') drawTerrainRelief(ctx, game, view);
     drawRivers(ctx, game, view, baseScaleRef.current);
     drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
     drawMapLabels(ctx, game, view, baseScaleRef.current, width, height);
-    for (const city of game.world.cities) {
+    if (shouldShowCityMarks(game.getSnapshot().mapMode)) for (const city of game.world.cities) {
       const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
       const zoomRank = cityVisibilityRank(city, hasPort);
       if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
