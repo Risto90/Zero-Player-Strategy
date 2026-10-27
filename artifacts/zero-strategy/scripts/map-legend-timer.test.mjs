@@ -43,7 +43,7 @@ for (const mode of ['political', 'cities', 'cultures', 'religions', 'origins']) 
   assert.equal(hasMapObjectList(mode), true, `${mode} must expose its object list`);
 }
 assert.doesNotMatch(screen, /case 'nomads'/, 'nomadic countries use the political list instead of a dedicated mode');
-for (const mode of ['biomes', 'humidity', 'temperature', 'drainage', 'density', 'rivers']) {
+for (const mode of ['biomes', 'humidity', 'temperature', 'drainage', 'density', 'elevation']) {
   assert.equal(hasMapObjectList(mode), false, `${mode} must not expose an object list`);
 }
 

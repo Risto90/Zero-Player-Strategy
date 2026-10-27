@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
+import { countryMapLabels, geographicVisibilityScale } from '@/game/mapLabels';
 import { STRIP_H } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
@@ -33,7 +34,7 @@ function drawCityInfluence(
     const centerY = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
     const radius = cityInfluenceRadius(game.world, city) * view.scale;
     if (centerX + radius < 0 || centerY + radius < 0 || centerX - radius > width || centerY - radius > height) continue;
-    const hasPort = game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0;
+    const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
     const selected = selectedCity?.id === city.id;
     if (!selected && !isCityVisibleAtZoom(view.scale, baseScale, cityVisibilityRank(city, hasPort))) continue;
     const color = game.world.countries[city.countryId]?.color ?? '#8f3036';
@@ -64,7 +65,117 @@ function drawCityInfluence(
   }
 }
 
-/** Browser preview of the map: a plain 2D canvas, same gestures as on the phone. */
+function mapTextColor(game: MapViewProps['game'], pixel: number): string {
+  const packed = game.renderer.pixels[pixel] ?? 0xffeeeeee;
+  const red = packed & 255;
+  const green = (packed >>> 8) & 255;
+  const blue = (packed >>> 16) & 255;
+  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+  return luminance > 0.56 ? '#28231e' : '#fff7df';
+}
+
+function drawMapLabels(
+  ctx: CanvasRenderingContext2D,
+  game: MapViewProps['game'],
+  view: ViewTransform,
+  baseScale: number,
+  width: number,
+  height: number,
+) {
+  const snapshot = game.getSnapshot();
+  const text = (value: string, x: number, y: number, size: number, color: string, maxWidth?: number) => {
+    if (x < -100 || y < -30 || x > width + 100 || y > height + 30) return;
+    ctx.font = `600 ${size}px "IBM Plex Sans", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = Math.max(1, size * 0.2);
+    ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.8)';
+    ctx.strokeText(value, x, y, maxWidth);
+    ctx.fillStyle = color;
+    ctx.fillText(value, x, y, maxWidth);
+  };
+
+  for (const label of countryMapLabels(game.world, view.scale, snapshot.mapMode, snapshot.selectedCountryId)) {
+    const x = view.ox + label.x * view.scale;
+    const y = view.oy + label.y * view.scale;
+    const pixel = Math.floor(label.y) * MAP_WIDTH + Math.floor(label.x);
+    const color = label.selected ? '#e7c56e' : mapTextColor(game, pixel);
+    text(label.text, x, y, Math.max(7, Math.min(18, label.fontSize * view.scale)), color,
+      Math.max(1, label.width * view.scale));
+  }
+
+  const ratio = view.scale / Math.max(baseScale, 0.0001);
+  for (const feature of [...game.world.peaks, ...game.world.volcanoes]) {
+    if (!feature.discoveredBy.length) continue;
+    const isVolcano = game.world.volcanoes.includes(feature);
+    const active = isVolcano && feature.active === true;
+    if (view.scale < geographicVisibilityScale(baseScale, feature.elevation, active)) continue;
+    const x = view.ox + (feature.pixel % MAP_WIDTH) * view.scale;
+    const y = view.oy + Math.floor(feature.pixel / MAP_WIDTH) * view.scale;
+    if (x < -24 || y < -30 || x > width + 24 || y > height + 30) continue;
+    const size = Math.max(5, Math.min(11, 6 + ratio * 1.5));
+    ctx.beginPath();
+    ctx.moveTo(x, y - size);
+    ctx.lineTo(x - size * 0.78, y + size * 0.62);
+    ctx.lineTo(x + size * 0.78, y + size * 0.62);
+    ctx.closePath();
+    ctx.fillStyle = active ? '#bd382c' : isVolcano ? '#b2763e' : '#594b3c';
+    ctx.strokeStyle = 'rgba(250,244,224,0.9)';
+    ctx.lineWidth = 1;
+    ctx.fill();
+    ctx.stroke();
+    if (feature.name) {
+      const pixel = feature.pixel;
+      text(feature.name, x, y + size + 6, 7, mapTextColor(game, pixel));
+    }
+  }
+
+  for (const river of game.world.riverFeatures) {
+    if (!river.name || !river.discoveredBy.length) continue;
+    let bestPath: { x: number; y: number }[] | null = null;
+    let bestLength = 0;
+    for (const path of river.paths) {
+      let length = 0;
+      for (let i = 1; i < path.length; i += 1) {
+        length += Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+      }
+      if (length > bestLength) {
+        bestLength = length;
+        bestPath = path;
+      }
+    }
+    if (!bestPath || bestLength * view.scale < Math.max(24, river.name.length * 6)) continue;
+    let accumulated = 0;
+    const half = bestLength / 2;
+    let midIndex = 1;
+    for (; midIndex < bestPath.length; midIndex += 1) {
+      accumulated += Math.hypot(bestPath[midIndex].x - bestPath[midIndex - 1].x, bestPath[midIndex].y - bestPath[midIndex - 1].y);
+      if (accumulated >= half) break;
+    }
+    const point = bestPath[Math.min(bestPath.length - 1, midIndex)];
+    const before = bestPath[Math.max(0, midIndex - 2)];
+    const after = bestPath[Math.min(bestPath.length - 1, midIndex + 2)];
+    const x = view.ox + point.x * view.scale;
+    const y = view.oy + point.y * view.scale;
+    let angle = Math.atan2(after.y - before.y, after.x - before.x);
+    if (angle > Math.PI / 2 || angle < -Math.PI / 2) angle += Math.PI;
+    if (x < -100 || y < -30 || x > width + 100 || y > height + 30) continue;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.font = '600 6px "IBM Plex Sans", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = 'rgba(245,243,231,0.9)';
+    ctx.strokeText(river.name, 0, 0);
+    ctx.fillStyle = '#255c78';
+    ctx.fillText(river.name, 0, 0);
+    ctx.restore();
+  }
+}
+
+/** Предварительный просмотр карты в браузере: холст 2D и те же жесты, что на телефоне. */
 export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect, onMapActivity }, ref) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -101,17 +212,48 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     ctx.imageSmoothingEnabled = view.scale < 1;
     ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
     drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
+    drawMapLabels(ctx, game, view, baseScaleRef.current, width, height);
     for (const city of game.world.cities) {
-      const hasPort = game.world.isCoastal(city.pixel) || game.world.rivers[city.pixel] > 0;
+      const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
       const zoomRank = cityVisibilityRank(city, hasPort);
       if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
       const icon = cityImagesRef.current[cityIconIndex(city, hasPort)];
       if (!icon?.complete || icon.naturalWidth === 0) continue;
-      const size = city.capital ? 40 : hasPort ? 30 + city.rank : 24 + city.rank;
+      const size = hasPort ? 30 + city.rank : 24 + city.rank;
       const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
       const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
       if (x + size < 0 || y + size < 0 || x - size > width || y - size > height) continue;
       ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
+      if (city.name) {
+        ctx.font = '600 9px "IBM Plex Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        const labelY = y - size / 2 - 2;
+        const textWidth = ctx.measureText(city.name).width;
+        const crownWidth = city.capital ? 8 : 0;
+        const labelLeft = x - (textWidth + crownWidth) / 2;
+        const labelCenter = labelLeft + crownWidth + textWidth / 2;
+        const color = mapTextColor(game, city.pixel);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)';
+        ctx.fillStyle = color;
+        if (city.capital) {
+          ctx.beginPath();
+          ctx.moveTo(labelLeft, labelY - 1);
+          ctx.lineTo(labelLeft + 1, labelY - 7);
+          ctx.lineTo(labelLeft + 3, labelY - 4);
+          ctx.lineTo(labelLeft + 5, labelY - 7);
+          ctx.lineTo(labelLeft + 7, labelY - 4);
+          ctx.lineTo(labelLeft + 9, labelY - 7);
+          ctx.lineTo(labelLeft + 10, labelY - 1);
+          ctx.closePath();
+          ctx.fillStyle = '#d0a239';
+          ctx.fill();
+          ctx.fillStyle = color;
+        }
+        ctx.strokeText(city.name, labelCenter, labelY);
+        ctx.fillText(city.name, labelCenter, labelY);
+      }
     }
     const cursor = cursorRef.current;
     if (cursor) {
@@ -194,7 +336,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     [game, applyView, requestDraw],
   );
 
-  // The offscreen image shares memory with the renderer's pixel buffer.
+  // Изображение вне экрана использует тот же буфер памяти, что и пиксели отрисовщика.
   useEffect(() => {
     const offscreen = document.createElement('canvas');
     offscreen.width = MAP_WIDTH;
@@ -233,7 +375,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     return () => observer.disconnect();
   }, [applyView]);
 
-  // Mouse wheel zoom.
+  // Масштабирование колёсиком мыши.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;

@@ -7,6 +7,7 @@ import { drawCountryCard, drawWorldCard, firstCreateCard } from './cards';
 import { BIOMES, BRUSH_SIZES, MAX_COUNTRIES, RANKS, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
 import { forEachNeighbour, type MapKind } from './geography';
 import { copyWorld, deserializeWorld, serializeSteps, type SavedWorld } from './persistence';
+import { generatePlaceName } from './cityNames';
 import { decodeSave, encodeSave } from './saveFile';
 import { clearSaveBytes, hasSaveBytes, readSaveBytes, writeSaveBytes } from './storage';
 import { fmt } from './format';
@@ -416,8 +417,10 @@ export class Game {
       }
       game.startCard(card, saved.painterState);
     }
-    const savedMapMode = saved.mapMode as MapMode | 'colonization' | 'nomads';
-    game.mapMode = savedMapMode === 'colonization' || savedMapMode === 'nomads' ? 'political' : savedMapMode;
+    const savedMapMode = saved.mapMode as MapMode | 'colonization' | 'nomads' | 'rivers';
+    game.mapMode = savedMapMode === 'rivers'
+      ? 'elevation'
+      : savedMapMode === 'colonization' || savedMapMode === 'nomads' ? 'political' : savedMapMode;
     game.paused = saved.paused ?? false;
     game.renderer.setView(game.mapMode, null);
     return game;
@@ -1156,6 +1159,7 @@ export class Game {
           sliceStart = Date.now();
         }
       }
+      if (this.world.discoverGeography()) this.renderer.markAll();
       this.queue = this.playerSlots();
       this.startNextPlayerCard();
     } finally {
@@ -1528,6 +1532,29 @@ export class Game {
             ...(oldCapital ? [chronicleReference('city', oldCapital.chronicleId)] : []),
           ]);
         }
+        break;
+      }
+      case 'nameGeography': {
+        if (!target || !card.geographyTarget) break;
+        const { kind, id } = card.geographyTarget;
+        const targetExists = w.unnamedGeographyForCountry(target.id)
+          .some((feature) => feature.kind === kind && feature.id === id);
+        if (!targetExists) break;
+        const usedNames = new Set<string>();
+        for (const name of [
+          ...w.cities.map((city) => city.name),
+          ...w.riverFeatures.map((feature) => feature.name),
+          ...w.peaks.map((feature) => feature.name),
+          ...w.volcanoes.map((feature) => feature.name),
+        ]) {
+          if (name) usedNames.add(name.toLocaleLowerCase('ru-RU'));
+        }
+        const name = generatePlaceName(w, target.cultureId, usedNames);
+        w.nameGeographyFeature(kind, id, name);
+        this.renderer.markAll();
+        const objectName = kind === 'river' ? 'река' : kind === 'peak' ? 'вершина' : 'вулкан';
+        this.addLog(`${target.name}: на карту нанесено название «${name}» (${objectName}).`,
+          [chronicleReference('country', target.id)]);
         break;
       }
       case 'nomadExpand': {

@@ -37,7 +37,27 @@ function styledName(style: NameStyleId, affix: { position: 'prefix' | 'suffix'; 
   }
 }
 
-/** City names are generated from the leading culture and never change after founding. */
+/** Создаёт уникальное название в принятой у выбранной культуры схеме. */
+export function generatePlaceName(world: World, cultureId: number, existing: Set<string>): string {
+  const culture = world.cultures[cultureId];
+  const style = culture?.nameStyleId ?? legacyNameStyleForCulture(cultureId);
+  const affix = culture?.surnameAffix ?? legacySurnameAffixForCulture(cultureId);
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const candidate = styledName(style, affix);
+    if (!existing.has(candidate.toLocaleLowerCase('ru-RU'))) {
+      const name = candidate.charAt(0).toLocaleUpperCase('ru-RU') + candidate.slice(1);
+      existing.add(name.toLocaleLowerCase('ru-RU'));
+      return name;
+    }
+  }
+  let candidate = stem(3) + syllable();
+  while (existing.has(candidate.toLocaleLowerCase('ru-RU'))) candidate += syllable();
+  candidate = candidate.charAt(0).toLocaleUpperCase('ru-RU') + candidate.slice(1);
+  existing.add(candidate.toLocaleLowerCase('ru-RU'));
+  return candidate;
+}
+
+/** Названия городов создаются по ведущей культуре и не меняются после основания. */
 export function generateCityIdentity(world: World, pixel: number): {
   name: string;
   namingCultureId: number;

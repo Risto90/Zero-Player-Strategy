@@ -8,8 +8,12 @@ import {
   Image as SkiaImage,
   Line,
   MipmapMode,
+  Path,
   Skia,
+  Text as SkiaText,
+  TextPath,
   useImage,
+  useFont,
   type SkImage,
 } from '@shopify/react-native-skia';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
@@ -18,7 +22,9 @@ import { makeMutable, useDerivedValue, useSharedValue, type SharedValue } from '
 import colors from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { STRIP_H, STRIPS } from '@/game/render';
+import { countryMapLabels, geographicVisibilityScale } from '@/game/mapLabels';
 import { cityInfluenceRadius } from '@/game/settlements';
+import type { GeographyFeature, RiverFeature } from '@/game/geographyFeatures';
 import type { City, World } from '@/game/world';
 import { circleHatchLines } from './cityInfluenceHatching';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
@@ -30,44 +36,83 @@ import { centerOnMapPoint, clampView, initialView, minScale, zoomAround } from '
 const NEAREST = { filter: FilterMode.Nearest, mipmap: MipmapMode.None };
 const LINEAR = { filter: FilterMode.Linear, mipmap: MipmapMode.None };
 
-type CityMarkerData = { city: City; iconIndex: number };
+type CityMarkerData = { city: City; iconIndex: number; labelColor: string };
 
-function CityMarker({ city, iconIndex, image, counterScale }: CityMarkerData & {
+function contrastColor(packed: number): string {
+  const red = packed & 255;
+  const green = (packed >>> 8) & 255;
+  const blue = (packed >>> 16) & 255;
+  return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255 > 0.56 ? '#28231e' : '#fff7df';
+}
+
+function CityMarker({ city, iconIndex, image, counterScale, labelColor, font }: CityMarkerData & {
   image: SkImage | null;
   counterScale: ReturnType<typeof useDerivedValue<{ scale: number }[]>>;
+  font: ReturnType<typeof useFont>;
 }) {
   const x = city.pixel % MAP_WIDTH;
   const y = Math.floor(city.pixel / MAP_WIDTH);
-  const size = iconIndex === 12 ? 40 : iconIndex >= 6 ? 30 + city.rank : 24 + city.rank;
+  const size = iconIndex >= 6 ? 30 + city.rank : 24 + city.rank;
+  const label = city.name ?? '';
+  const labelWidth = label.length * 5.2;
+  const labelY = y - size / 2 - 3;
+  const crown = useMemo(() => {
+    const left = x - labelWidth / 2 - 8;
+    return `M ${left} ${labelY - 7} L ${left + 1} ${labelY - 2} L ${left + 3} ${labelY - 5} L ${left + 5} ${labelY - 2} L ${left + 7} ${labelY - 5} L ${left + 9} ${labelY - 2} L ${left + 10} ${labelY - 7} L ${left + 9} ${labelY} L ${left + 1} ${labelY} Z`;
+  }, [x, labelWidth, labelY]);
   return (
     <Group origin={{ x, y }} transform={counterScale}>
       {image && <SkiaImage image={image} x={x - size / 2} y={y - size / 2} width={size} height={size} fit="contain" sampling={LINEAR} />}
+      {label && font && (
+        <>
+          {city.capital && <Path path={crown} color="#c5952e" />}
+          <SkiaText
+            x={x - labelWidth / 2 + (city.capital ? 4 : 0)}
+            y={labelY}
+            text={label}
+            font={font}
+            color={labelColor === '#fff7df' ? '#28231e' : '#fff7df'}
+            style="stroke"
+            strokeWidth={0.75}
+          />
+          <SkiaText
+            x={x - labelWidth / 2 + (city.capital ? 4 : 0)}
+            y={labelY}
+            text={label}
+            font={font}
+            color={labelColor}
+          />
+        </>
+      )}
     </Group>
   );
 }
 
-function CityMarkerLayer({ zoomRank, cities, scale, baseScale, images }: {
+function CityMarkerLayer({ zoomRank, cities, scale, baseScale, images, font }: {
   zoomRank: number;
   cities: CityMarkerData[];
   scale: SharedValue<number>;
   baseScale: SharedValue<number>;
   images: (SkImage | null)[];
+  font: ReturnType<typeof useFont>;
 }) {
   const visible = useDerivedValue(() => isCityVisibleAtZoom(scale.value, baseScale.value, zoomRank) ? 1 : 0);
   const counterScale = useDerivedValue(() => [{ scale: 1 / Math.max(scale.value, 0.08) }]);
   return (
     <Group opacity={visible}>
-      {cities.map(({ city, iconIndex }) => (
-        <CityMarker key={city.id} city={city} iconIndex={iconIndex} image={images[iconIndex]} counterScale={counterScale} />
+      {cities.map(({ city, iconIndex, labelColor }) => (
+        <CityMarker key={city.id} city={city} iconIndex={iconIndex} image={images[iconIndex]} counterScale={counterScale}
+          labelColor={labelColor} font={font} />
       ))}
     </Group>
   );
 }
 
-function CityMarkers({ world, scale, baseScale }: {
+function CityMarkers({ world, scale, baseScale, mapPixels }: {
   world: World;
   scale: SharedValue<number>;
   baseScale: SharedValue<number>;
+  mapPixels: Uint32Array;
 }) {
   const image0 = useImage(CITY_ICON_SOURCES[0]);
   const image1 = useImage(CITY_ICON_SOURCES[1]);
@@ -81,19 +126,150 @@ function CityMarkers({ world, scale, baseScale }: {
   const image9 = useImage(CITY_ICON_SOURCES[9]);
   const image10 = useImage(CITY_ICON_SOURCES[10]);
   const image11 = useImage(CITY_ICON_SOURCES[11]);
-  const image12 = useImage(CITY_ICON_SOURCES[12]);
-  const images = [image0, image1, image2, image3, image4, image5, image6, image7, image8, image9, image10, image11, image12];
+  const font = useFont(require('@expo-google-fonts/ibm-plex-sans/400Regular/IBMPlexSans_400Regular.ttf'), 9);
+  const images = [image0, image1, image2, image3, image4, image5, image6, image7, image8, image9, image10, image11];
   const byZoomRank = new Map<number, CityMarkerData[]>();
   for (const city of world.cities) {
-    const hasPort = world.isCoastal(city.pixel) || world.rivers[city.pixel] > 0;
+    const hasPort = world.isCoastal(city.pixel) || world.knownRivers[city.pixel] > 0;
     const zoomRank = cityVisibilityRank(city, hasPort);
     const list = byZoomRank.get(zoomRank) ?? [];
-    list.push({ city, iconIndex: cityIconIndex(city, hasPort) });
+    list.push({ city, iconIndex: cityIconIndex(city, hasPort), labelColor: contrastColor(mapPixels[city.pixel] ?? 0xffeeeeee) });
     byZoomRank.set(zoomRank, list);
   }
   return [...byZoomRank].map(([zoomRank, cities]) => (
-    <CityMarkerLayer key={zoomRank} zoomRank={zoomRank} cities={cities} scale={scale} baseScale={baseScale} images={images} />
+    <CityMarkerLayer key={zoomRank} zoomRank={zoomRank} cities={cities} scale={scale} baseScale={baseScale} images={images} font={font} />
   ));
+}
+
+function CountryLabelMark({ label, scale, ox, oy, width, height, color, font }: {
+  label: ReturnType<typeof countryMapLabels>[number];
+  scale: SharedValue<number>;
+  ox: SharedValue<number>;
+  oy: SharedValue<number>;
+  width: SharedValue<number>;
+  height: SharedValue<number>;
+  color: string;
+  font: ReturnType<typeof useFont>;
+}) {
+  const visible = useDerivedValue(() => {
+    const screenX = ox.value + label.x * scale.value;
+    const screenY = oy.value + label.y * scale.value;
+    return label.fontSize * scale.value >= 7 &&
+      screenX + label.width * scale.value / 2 >= 0 &&
+      screenX - label.width * scale.value / 2 <= width.value &&
+      screenY + label.height * scale.value / 2 >= 0 &&
+      screenY - label.height * scale.value / 2 <= height.value ? 1 : 0;
+  });
+  return (
+    <Group opacity={visible}>
+      <Group origin={{ x: label.x, y: label.y }} transform={[{ scale: label.fontSize / 8 }]}>
+        {font && (
+          <>
+            <SkiaText x={label.x - label.text.length * 4} y={label.y + 4} text={label.text} font={font}
+              color={color === '#fff7df' ? '#28231e' : '#fff7df'} style="stroke" strokeWidth={1.4} />
+            <SkiaText x={label.x - label.text.length * 4} y={label.y + 4} text={label.text} font={font} color={color} />
+          </>
+        )}
+      </Group>
+    </Group>
+  );
+}
+
+function GeographyPointMark({ feature, volcano, scale, baseScale, font, color }: {
+  feature: GeographyFeature;
+  volcano: boolean;
+  scale: SharedValue<number>;
+  baseScale: SharedValue<number>;
+  font: ReturnType<typeof useFont>;
+  color: string;
+}) {
+  const x = feature.pixel % MAP_WIDTH;
+  const y = Math.floor(feature.pixel / MAP_WIDTH);
+  const active = volcano && feature.active === true;
+  const visible = useDerivedValue(() =>
+    feature.discoveredBy.length > 0 &&
+    scale.value >= geographicVisibilityScale(baseScale.value, feature.elevation, active) ? 1 : 0);
+  const marker = `M ${x} ${y - 5} L ${x - 4} ${y + 3} L ${x + 4} ${y + 3} Z`;
+  const counterScale = useDerivedValue(() => [{ scale: 1 / Math.max(scale.value, 0.08) }]);
+  return (
+    <Group origin={{ x, y }} transform={counterScale} opacity={visible}>
+      <Path path={`M ${x} ${y - 5} L ${x - 4} ${y + 3} L ${x + 4} ${y + 3} Z`} color={active ? '#bd382c' : volcano ? '#b2763e' : '#594b3c'} />
+      {feature.name && font && (
+        <>
+          <SkiaText x={x - feature.name.length * 3} y={y + 11} text={feature.name} font={font}
+            color={color === '#fff7df' ? '#28231e' : '#fff7df'} style="stroke" strokeWidth={1.2} />
+          <SkiaText x={x - feature.name.length * 3} y={y + 11} text={feature.name} font={font} color={color} />
+        </>
+      )}
+    </Group>
+  );
+}
+
+function RiverNameMark({ river, scale, baseScale, font }: {
+  river: RiverFeature;
+  scale: SharedValue<number>;
+  baseScale: SharedValue<number>;
+  font: ReturnType<typeof useFont>;
+}) {
+  const path = useMemo(() => {
+    let best: { x: number; y: number }[] = [];
+    let bestLength = 0;
+    for (const points of river.paths) {
+      let length = 0;
+      for (let index = 1; index < points.length; index += 1) {
+        length += Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
+      }
+      if (length > bestLength) {
+        best = points;
+        bestLength = length;
+      }
+    }
+    if (best.length < 2) return null;
+    const path = best.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+    return { path, length: bestLength };
+  }, [river]);
+  const visible = useDerivedValue(() => path && river.name && river.discoveredBy.length > 0 &&
+    path.length * scale.value >= Math.max(30, river.name.length * 6) ? 1 : 0);
+  if (!path || !river.name) return null;
+  const fontSize = Math.max(6, 6 / Math.max(baseScale.value, 0.1));
+  return (
+    <Group opacity={visible}>
+      {font && <TextPath path={path.path} text={river.name} font={font} initialOffset={path.length * 0.2} color="#255c78" />}
+    </Group>
+  );
+}
+
+function MapAnnotations({ game, scale, baseScale, ox, oy, width, height }: {
+  game: MapViewProps['game'];
+  scale: SharedValue<number>;
+  baseScale: SharedValue<number>;
+  ox: SharedValue<number>;
+  oy: SharedValue<number>;
+  width: SharedValue<number>;
+  height: SharedValue<number>;
+}) {
+  const snapshot = game.getSnapshot();
+  const labels = countryMapLabels(game.world, 100, snapshot.mapMode, snapshot.selectedCountryId);
+  const countryFont = useFont(require('@expo-google-fonts/ibm-plex-sans/700Bold/IBMPlexSans_700Bold.ttf'), 8);
+  const smallFont = useFont(require('@expo-google-fonts/ibm-plex-sans/400Regular/IBMPlexSans_400Regular.ttf'), 6);
+  return (
+    <>
+      {labels.map((label) => {
+        const pixel = Math.floor(label.y) * MAP_WIDTH + Math.floor(label.x);
+        const color = label.selected ? '#e7c56e' : contrastColor(game.renderer.pixels[pixel] ?? 0xffeeeeee);
+        return <CountryLabelMark key={`country-${label.countryId}`} label={label} scale={scale} ox={ox} oy={oy}
+          width={width} height={height} color={color} font={countryFont} />;
+      })}
+      {game.world.peaks.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`peak-${feature.id}`} feature={feature}
+        volcano={false} scale={scale} baseScale={baseScale} font={smallFont}
+        color={contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
+      {game.world.volcanoes.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`volcano-${feature.id}`} feature={feature}
+        volcano scale={scale} baseScale={baseScale} font={smallFont}
+        color={contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
+      {game.world.riverFeatures.filter((river) => river.name && river.discoveredBy.length > 0).map((river) => <RiverNameMark key={`river-${river.id}`} river={river}
+        scale={scale} baseScale={baseScale} font={smallFont} />)}
+    </>
+  );
 }
 
 function CityInfluenceMark({ city, world, selected, scale, baseScale, ox, oy, width, height }: {
@@ -111,7 +287,7 @@ function CityInfluenceMark({ city, world, selected, scale, baseScale, ox, oy, wi
   const y = Math.floor(city.pixel / MAP_WIDTH);
   const radius = cityInfluenceRadius(world, city);
   const color = world.countries[city.countryId]?.color ?? '#8f3036';
-  const hasPort = world.isCoastal(city.pixel) || world.rivers[city.pixel] > 0;
+  const hasPort = world.isCoastal(city.pixel) || world.knownRivers[city.pixel] > 0;
   const zoomRank = cityVisibilityRank(city, hasPort);
   const lines = selected ? circleHatchLines(x, y, radius, 8) : [];
   const visible = useDerivedValue(() => {
@@ -169,7 +345,7 @@ function makeStrip(pixels: Uint32Array, strip: number): SkImage | null {
   );
 }
 
-/** Phone map: Skia canvas with pan, pinch zoom, brush painting and tap-to-inspect. */
+/** Карта телефона: холст Skia с перетаскиванием, масштабированием, кистью и осмотром точек. */
 export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect, onMapActivity }, ref) {
   const sizeRef = useRef({ width: 1, height: 1 });
   const viewRef = useRef<ViewTransform>({ scale: 1, ox: 0, oy: 0 });
@@ -222,18 +398,18 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     centerAtPixel,
   }));
 
-  // Repaint loop: renders dirty rows within a time budget each frame and uploads touched strips.
+  // Цикл перерисовки отрисовывает изменённые строки в пределах кадра и загружает затронутые полосы.
   useEffect(() => {
     let frame: number | null = null;
     let alive = true;
     const pump = () => {
       frame = null;
       if (!alive) return;
-      // The map is uploaded as full-width strips, each only once all its changed tiles are painted.
+      // Карта загружается полосами на всю ширину после отрисовки всех изменённых в них точек.
       for (const s of game.renderer.flushSome(PAINT_BUDGET_MS)) {
         const old = strips[s].value;
         strips[s].value = makeStrip(game.renderer.pixels, s);
-        // Free the GPU copy once the new strip has been on screen for a while.
+        // Копия для графического процессора освобождается после показа новой полосы.
         if (old) setTimeout(() => old.dispose(), 1000);
       }
       if (game.renderer.pending) frame = requestAnimationFrame(pump);
@@ -289,7 +465,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     } else applyView(clampView(viewRef.current, sizeRef.current.width, sizeRef.current.height));
   };
 
-  // Touch positions relative to the map: page coordinates minus the view's page offset.
+  // Координаты касаний относительно карты: из координат страницы вычитается смещение области просмотра.
   const offset = useRef({ x: 0, y: 0 });
   const touches = (event: GestureResponderEvent) =>
     event.nativeEvent.touches.map((t) => ({ id: Number(t.identifier), x: t.pageX - offset.current.x, y: t.pageY - offset.current.y }));
@@ -314,7 +490,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           ))}
           <CityInfluenceLayer world={game.world} selectedCityId={game.getSnapshot().selectedCityId} active={game.getSnapshot().mapMode === 'cities'}
             scale={scale} baseScale={markerBaseScale} ox={ox} oy={oy} width={viewportWidth} height={viewportHeight} />
-          <CityMarkers world={game.world} scale={scale} baseScale={markerBaseScale} />
+          <MapAnnotations game={game} scale={scale} baseScale={markerBaseScale} ox={ox} oy={oy}
+            width={viewportWidth} height={viewportHeight} />
+          <CityMarkers world={game.world} scale={scale} baseScale={markerBaseScale} mapPixels={game.renderer.pixels} />
         </Group>
         <Group opacity={cursorOpacity}>
           <Circle cx={cursorX} cy={cursorY} r={cursorR} style="stroke" strokeWidth={3} color="rgba(255,255,255,0.9)" />

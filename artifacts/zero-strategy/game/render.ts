@@ -5,7 +5,7 @@ import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS } from './human';
 import { ensureCityPopulationGroups } from './settlements';
 import type { World } from './world';
 
-export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'rivers' | 'cities' | 'origins';
+export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'elevation' | 'cities' | 'origins';
 export interface EntityLayer {
   kind: 'culture' | 'religion' | 'origin';
   id: number;
@@ -33,12 +33,34 @@ function shade(color: number, factor: number): number {
   return (255 << 24) | (Math.round(b) << 16) | (Math.round(g) << 8) | Math.round(r);
 }
 
+const ELEVATION_COLORS: readonly [number, RGB][] = [
+  [-11000, [20, 48, 70]],
+  [-4000, [50, 101, 130]],
+  [-200, [132, 182, 190]],
+  [0, [220, 211, 178]],
+  [500, [118, 157, 105]],
+  [1500, [170, 157, 105]],
+  [3000, [148, 108, 78]],
+  [6000, [212, 203, 184]],
+  [8800, [247, 245, 238]],
+];
+
+function elevationColor(height: number): number {
+  let stop = 1;
+  while (stop < ELEVATION_COLORS.length - 1 && height > ELEVATION_COLORS[stop][0]) stop += 1;
+  const [lowHeight, lowColor] = ELEVATION_COLORS[stop - 1];
+  const [highHeight, highColor] = ELEVATION_COLORS[stop];
+  const amount = Math.max(0, Math.min(1, (height - lowHeight) / (highHeight - lowHeight)));
+  return pack(mix(lowColor, highColor, amount));
+}
+
 /** Colour ramps for value layers (0–100). */
-export const RAMPS: Record<'humidity' | 'temperature' | 'drainage' | 'density', string[]> = {
+export const RAMPS: Record<'humidity' | 'temperature' | 'drainage' | 'density' | 'elevation', string[]> = {
   humidity: ['#c9a66b', '#d9cf98', '#9fbf8c', '#5f9c8f', '#2f6f86'],
   temperature: ['#eef1f4', '#8fb3cf', '#a9c48b', '#e0c065', '#c96a43'],
   drainage: ['#56756a', '#8aa38c', '#c8c4a0', '#c9a776', '#a8794c'],
   density: ['#efe8d2', '#d8c08c', '#c08a52', '#93512f', '#5e2a1d'],
+  elevation: ['#143046', '#326582', '#84b6be', '#dcd3b2', '#769d69', '#aa9d69', '#946c4e', '#d4cbb8', '#f7f5ee'],
 };
 
 export const CITY_COLORS = ['#a66f3d', '#bf6741', '#b2493e', '#8f3036', '#672433', '#431c2e'] as const;
@@ -69,7 +91,7 @@ function biomeOf(h: number, t: number, d: number): number {
   return b;
 }
 
-const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, humidity: 5, temperature: 6, drainage: 7, density: 4, rivers: 8, cities: 9, origins: 11 };
+const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, humidity: 5, temperature: 6, drainage: 7, density: 4, elevation: 8, cities: 9, origins: 11 };
 
 // Neighbour bits of `nb`: which of the 4 neighbours are land, plus whether the pixel touches water.
 const LEFT = 1;
@@ -424,7 +446,7 @@ export class MapRenderer {
     const temperature = w.temperature;
     const drainage = w.drainage;
     const density = w.density;
-      const rivers = w.rivers;
+    const rivers = w.knownRivers;
     const culture = w.culture;
     const religion = w.religion;
     const mode = MODE_CODE[this.mode];
@@ -450,7 +472,8 @@ export class MapRenderer {
       } else pixels.set(base.subarray(row + x0, row + x1), row + x0);
       for (let p = row + x0; p < row + x1; p += 1) {
         if (!land[p]) {
-          if (mode !== 6 && scalarContours) pixels[p] = base[p];
+          if (mode === 8) pixels[p] = elevationColor(w.elevation[p]);
+          else if (mode !== 6 && scalarContours) pixels[p] = base[p];
           continue;
         }
         const o = owner[p];
@@ -468,7 +491,7 @@ export class MapRenderer {
             color = origin ? this.originColors[origin - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
           }
         }
-        else if (mode === 8) color = unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+        else if (mode === 8) color = elevationColor(w.elevation[p]);
         else if (mode === 0) {
           color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
           if (!selected && this.nomadRaster[p] && ((p % MAP_WIDTH + Math.floor(p / MAP_WIDTH)) % 7 < 3)) {
@@ -504,11 +527,11 @@ export class MapRenderer {
         );
         if (boundary) color = shade(color, borderShade);
         else if (bits & COAST) color = shade(color, 0.82);
-        if (mode === 8 && rivers[p] > 0) {
-          color = rivers[p] >= 3 ? pack([34, 83, 125]) : rivers[p] === 2 ? pack([55, 116, 151]) : pack([102, 153, 174]);
-        } else if (mode !== 8 && rivers[p] > 0) {
+        if (rivers[p] > 0) {
           const river: RGB = rivers[p] >= 3 ? [34, 83, 125] : rivers[p] === 2 ? [55, 116, 151] : [102, 153, 174];
-          color = pack(mix([color & 255, (color >> 8) & 255, (color >> 16) & 255], river, rivers[p] >= 2 ? 0.72 : 0.58));
+          color = mode === 8
+            ? pack(river)
+            : pack(mix([color & 255, (color >> 8) & 255, (color >> 16) & 255], river, rivers[p] >= 2 ? 0.72 : 0.58));
         }
         pixels[p] = mode === 0 && selected && selectedCountry
           ? selectedBoundary ? pack([250, 230, 177]) : countryColors[selectedCountry.id] ?? color

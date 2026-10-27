@@ -2,7 +2,7 @@ import { MAP_PIXELS } from './config';
 import type { MapKind } from './geography';
 import { decodeEarthLand, fillOceanTemperature } from './geography';
 import { fillRings, rasterizeScalar, runSteps, traceCompositionSteps, traceScalarSteps, type EntityZones, type Steps, type TableView, type Zone } from './zones';
-import { World, type City, type Country, type Culture, type NomadCell, type Religion } from './world';
+import { World, type City, type Country, type Culture, type NomadCell, type Religion, type SavedGeographyState } from './world';
 import { generateCityIdentity } from './cityNames';
 import { ensureCityPopulationGroups } from './settlements';
 
@@ -41,6 +41,7 @@ export interface SavedWorld {
   humanOriginTable?: { ids: number[]; shares: number[] }[];
   people: World['people'];
   cardMultipliers?: Record<string, number>;
+  geography?: SavedGeographyState;
   /** Added when sea temperatures became part of climate layers. */
   climateWater?: boolean;
   layers: SavedLayers;
@@ -98,6 +99,7 @@ export interface WorldCopy {
   religions: Religion[];
   people: World['people'];
   cardMultipliers: Record<string, number>;
+  geography: SavedGeographyState;
 }
 
 function freezeTable(table: World['cultureTable']): TableView {
@@ -146,6 +148,7 @@ export function copyWorld(world: World): WorldCopy {
     religions: world.religions.map((r) => ({ ...r })),
     people: world.people.map((p) => ({ ...p, humanOrigin: p.humanOrigin ? { ids: [...p.humanOrigin.ids], shares: [...p.humanOrigin.shares] } : undefined, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
     cardMultipliers: { ...world.cardMultipliers },
+    geography: world.geographySaveState(),
   };
 }
 
@@ -173,6 +176,7 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     religions: copy.religions,
     people: copy.people,
     cardMultipliers: copy.cardMultipliers,
+    geography: copy.geography,
     climateWater: true,
     layers: { land, political, density, humidity, temperature, drainage, cultures, religions, humanOrigins },
     cultureTable: copy.cultureTable.entries.map((entry) => ({
@@ -331,6 +335,7 @@ export function deserializeWorld(saved: SavedWorld): World {
     if (!city.name) Object.assign(city, generateCityIdentity(world, city.pixel));
   }
   world.recountCountries();
+  world.restoreGeographyState(saved.geography);
   // A version-2 save from before the family system has rulers/heirs but no person registry.
   // Game.load supplies its saved year for migration after the map has been reconstructed.
   return world;

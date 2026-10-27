@@ -4,7 +4,7 @@ import { fractalField, mulberry32, valueNoise } from './random';
 
 export type MapKind = 'world' | 'random';
 
-/** Fixed seed: the real-world map and its climate are the same on every launch. */
+/** Фиксированное зерно сохраняет одинаковые карту мира и климат при каждом запуске. */
 export const WORLD_SEED = 20261023;
 
 export function latitudeOfRow(y: number): number {
@@ -13,7 +13,7 @@ export function latitudeOfRow(y: number): number {
 
 const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
-/** Plain base64 decoder (works the same in Hermes, browsers and Node). */
+/** Декодер base64, одинаково работающий в Hermes, браузерах и Node.js. */
 function decodeBase64(text: string): Uint8Array {
   const lookup = new Int16Array(128).fill(-1);
   for (let i = 0; i < BASE64.length; i += 1) lookup[BASE64.charCodeAt(i)] = i;
@@ -35,7 +35,7 @@ function decodeBase64(text: string): Uint8Array {
   return out.subarray(0, n);
 }
 
-/** Natural Earth coastlines, rasterized at build time (see scripts/build-earth.mjs). */
+/** Береговые линии Natural Earth, растеризованные во время сборки (см. scripts/build-earth.mjs). */
 export function decodeEarthLand(): Uint8Array {
   const bytes = decodeBase64(EARTH_LAND_RLE);
   const land = new Uint8Array(MAP_PIXELS);
@@ -65,7 +65,7 @@ async function yieldToUi(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-/** Cooperative equivalents keep Android's JS thread available while preserving loop order. */
+/** Кооперативные версии сохраняют порядок циклов и дают потоку JavaScript Android обрабатывать интерфейс. */
 async function fractalFieldCooperative(
   width: number,
   height: number,
@@ -113,7 +113,7 @@ async function fractalFieldCooperative(
   return out;
 }
 
-/** Fractal continents for a "new world"; the seed is stored with the game. */
+/** Фрактальные континенты случайного мира; его зерно сохраняется вместе с игрой. */
 export function makeRandomLand(seed: number): Uint8Array {
   const rng = mulberry32(seed);
   const field = fractalField(MAP_WIDTH, MAP_HEIGHT, seed, 5, 6);
@@ -140,7 +140,7 @@ export function makeRandomLand(seed: number): Uint8Array {
       score[i] = (field[i] * 0.9 + bump * 0.55) * edge;
     }
   }
-  // Pick the threshold that turns ~30% of the map into land.
+  // Подбирается порог, при котором сушей становится около 30% карты.
   const sample = Array.from({ length: 4000 }, () => score[Math.floor(rng() * MAP_PIXELS)]).sort((a, b) => b - a);
   const threshold = sample[Math.floor(sample.length * 0.3)];
   for (let i = 0; i < MAP_PIXELS; i += 1) land[i] = score[i] >= threshold ? 1 : 0;
@@ -185,14 +185,14 @@ export async function makeRandomLandCooperative(seed: number): Promise<Uint8Arra
 }
 
 export interface WaterInfo {
-  /** Water body id per pixel, -1 on land. */
+  /** Идентификатор водоёма для каждой точки; на суше хранится −1. */
   bodyOf: Int32Array;
   bodyCount: number;
-  /** Coastal land pixels touching each body. */
+  /** Точки суши на побережье каждого водоёма. */
   coastsOf: Int32Array[];
 }
 
-/** Labels connected seas (the map wraps east–west for water), and lists their coastal land pixels. */
+/** Размечает связанные водоёмы (карта замкнута с востока на запад) и перечисляет их прибрежные точки суши. */
 export function labelWater(land: Uint8Array): WaterInfo {
   const bodyOf = new Int32Array(MAP_PIXELS).fill(-1);
   const stack = new Int32Array(MAP_PIXELS);
@@ -287,7 +287,7 @@ export function forEachNeighbour(p: number, visit: (n: number) => void): void {
   if (p < MAP_PIXELS - MAP_WIDTH) visit(p + MAP_WIDTH);
 }
 
-/** Land distance (pixels, capped) to the nearest sea. */
+/** Расстояние по суше до ближайшего моря в точках карты с ограничением сверху. */
 function coastDistance(land: Uint8Array): Uint16Array {
   const dist = new Uint16Array(MAP_PIXELS).fill(65535);
   const queue = new Int32Array(MAP_PIXELS);
@@ -356,7 +356,7 @@ function interpolate(points: [number, number][], x: number): number {
   return points[points.length - 1][1];
 }
 
-/** Humidity by latitude: wet equator, dry subtropics, wet temperate belt, dry poles. */
+/** Влажность по широте: влажный экватор, сухие субтропики, влажный умеренный пояс, сухие полюса. */
 const HUMIDITY_BY_LAT: [number, number][] = [
   [0, 82],
   [12, 62],
@@ -371,7 +371,7 @@ export function quantize(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value / VALUE_STEP) * VALUE_STEP));
 }
 
-/** Fills sea temperatures when opening a save made before sea climate was persisted. */
+/** Заполняет температуру моря при открытии сохранения, созданного до сохранения морского климата. */
 export function fillOceanTemperature(land: Uint8Array, seed: number, temperature: Uint8Array): void {
   const noise = fractalField(MAP_WIDTH, MAP_HEIGHT, seed + 11, 9, 4);
   for (let y = 0; y < MAP_HEIGHT; y += 1) {
@@ -390,28 +390,33 @@ export interface Climate {
   drainage: Uint8Array;
 }
 
-/** River strength is deterministic map data: 1 = tributary, 2+ = major channel. */
-export function generateRivers(land: Uint8Array, seed: number, mapKind: MapKind): Uint8Array {
+/** Сила русла — детерминированные данные карты: 1 — приток, 2 и выше — крупная река. */
+export function generateRivers(
+  land: Uint8Array,
+  seed: number,
+  mapKind: MapKind,
+  tracedPaths?: { pixels: number[]; scaleRank: number }[],
+): Uint8Array {
   const rivers = new Uint8Array(MAP_PIXELS);
   if (mapKind === 'world') {
-    const major: [string, [number, number][]][] = [
-      ['Amazon', [[-74, -4], [-70, -4], [-66, -3], [-62, -3], [-58, -2], [-54, -1], [-50, -1], [-48, 0]]],
-      ['Nile', [[30, 2], [32, 8], [31, 15], [32, 22], [32, 27], [31, 30]]],
-      ['Congo', [[27, -10], [24, -7], [20, -5], [17, -4], [13, -5], [12, -6]]],
-      ['Mississippi', [[46, 48], [43, 45], [40, 42], [37, 38], [35, 34], [31, 30], [29, 29]]],
-      ['Paraná', [[-54, -20], [-56, -24], [-57, -28], [-56, -32], [-58, -35], [-58, -39]]],
-      ['Danube', [[10, 48], [15, 48], [20, 46], [24, 45], [28, 45]]],
-      ['Volga', [[38, 57], [43, 56], [47, 54], [49, 51], [48, 47]]],
-      ['Yangtze', [[91, 33], [97, 31], [103, 30], [109, 30], [115, 30], [121, 31]]],
-      ['Yellow River', [[96, 35], [101, 36], [106, 36], [111, 37], [116, 38], [119, 37]]],
-      ['Ganges', [[79, 31], [83, 29], [87, 27], [91, 26], [95, 23], [90, 22]]],
-      ['Indus', [[78, 32], [74, 30], [72, 27], [70, 24], [68, 23], [67, 24]]],
-      ['Mekong', [[95, 33], [100, 28], [103, 23], [105, 18], [106, 13], [105, 10]]],
-      ['Lena', [[127, 62], [124, 60], [123, 58], [126, 55], [128, 52], [130, 71]]],
-      ['Yenisei', [[92, 52], [91, 55], [90, 59], [89, 63], [91, 69]]],
-      ['Ob', [[85, 50], [82, 53], [77, 56], [73, 60], [72, 67]]],
-      ['Amur', [[106, 50], [113, 50], [120, 49], [127, 48], [134, 48]]],
-      ['Murray', [[146, -35], [143, -35], [140, -35], [138, -35]]],
+    const major: [number, number][][] = [
+      [[-74, -4], [-70, -4], [-66, -3], [-62, -3], [-58, -2], [-54, -1], [-50, -1], [-48, 0]],
+      [[30, 2], [32, 8], [31, 15], [32, 22], [32, 27], [31, 30]],
+      [[27, -10], [24, -7], [20, -5], [17, -4], [13, -5], [12, -6]],
+      [[46, 48], [43, 45], [40, 42], [37, 38], [35, 34], [31, 30], [29, 29]],
+      [[-54, -20], [-56, -24], [-57, -28], [-56, -32], [-58, -35], [-58, -39]],
+      [[10, 48], [15, 48], [20, 46], [24, 45], [28, 45]],
+      [[38, 57], [43, 56], [47, 54], [49, 51], [48, 47]],
+      [[91, 33], [97, 31], [103, 30], [109, 30], [115, 30], [121, 31]],
+      [[96, 35], [101, 36], [106, 36], [111, 37], [116, 38], [119, 37]],
+      [[79, 31], [83, 29], [87, 27], [91, 26], [95, 23], [90, 22]],
+      [[78, 32], [74, 30], [72, 27], [70, 24], [68, 23], [67, 24]],
+      [[95, 33], [100, 28], [103, 23], [105, 18], [106, 13], [105, 10]],
+      [[127, 62], [124, 60], [123, 58], [126, 55], [128, 52], [130, 71]],
+      [[92, 52], [91, 55], [90, 59], [89, 63], [91, 69]],
+      [[85, 50], [82, 53], [77, 56], [73, 60], [72, 67]],
+      [[106, 50], [113, 50], [120, 49], [127, 48], [134, 48]],
+      [[146, -35], [143, -35], [140, -35], [138, -35]],
     ];
     const toPixel = ([lon, lat]: [number, number]) => ({
       x: Math.max(0, Math.min(MAP_WIDTH - 1, Math.round(((lon + 180) / 360) * (MAP_WIDTH - 1)))),
@@ -445,7 +450,7 @@ export function generateRivers(land: Uint8Array, seed: number, mapKind: MapKind)
         if (land[q]) rivers[q] = 3;
       }
     };
-    for (const [, path] of major) {
+    for (const path of major) {
       for (let segment = 1; segment < path.length; segment += 1) {
         const a = toPixel(path[segment - 1]), b = toPixel(path[segment]);
         const steps = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
@@ -460,7 +465,7 @@ export function generateRivers(land: Uint8Array, seed: number, mapKind: MapKind)
     return rivers;
   }
 
-  // On invented maps, carve plausible branching channels from uplands towards the nearest coast.
+  // На случайных картах прокладываются русла от возвышенностей к побережью и существующим рекам.
   const rng = mulberry32(seed ^ 0x6d2b79f5);
   const wideWrap = Math.max(1, Math.ceil(MAP_WIDTH / 150));
   const detailWrap = Math.max(1, Math.ceil(MAP_WIDTH / 48));
@@ -482,24 +487,34 @@ export function generateRivers(land: Uint8Array, seed: number, mapKind: MapKind)
     }
   }
   sources.sort((a, b) => b.height - a.height);
-  const seen = new Uint8Array(MAP_PIXELS);
+  const network = new Uint8Array(MAP_PIXELS);
   for (const [sourceIndex, source] of sources.entries()) {
+    if (network[source.p]) continue;
     let p = source.p;
     const path: number[] = [];
-    for (let step = 0; step < 360 && land[p] && !seen[p]; step += 1) {
-      seen[p] = 1;
+    const pathSet = new Set<number>();
+    for (let step = 0; step < 360 && land[p] && !network[p] && !pathSet.has(p); step += 1) {
+      pathSet.add(p);
       path.push(p);
       const x = p % MAP_WIDTH, y = Math.floor(p / MAP_WIDTH);
-      let next = -1, best = Infinity, touchesOcean = false;
+      let next = -1, confluence = -1, best = Infinity, touchesOcean = false;
       for (let dy = -1; dy <= 1; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
         if (!dx && !dy) continue;
         const xx = x + dx, yy = y + dy;
         if (xx < 0 || xx >= MAP_WIDTH || yy < 0 || yy >= MAP_HEIGHT) continue;
         const n = yy * MAP_WIDTH + xx;
         if (!land[n]) { touchesOcean = true; continue; }
-        if (seen[n]) continue;
+        if (network[n]) {
+          confluence = n;
+          continue;
+        }
+        if (pathSet.has(n)) continue;
         const score = elevationAt(xx, yy) + rng() * 0.018;
         if (score < best) { best = score; next = n; }
+      }
+      if (confluence >= 0) {
+        path.push(confluence);
+        break;
       }
       if (touchesOcean || next < 0) break;
       p = next;
@@ -514,13 +529,17 @@ export function generateRivers(land: Uint8Array, seed: number, mapKind: MapKind)
         const q = yy * MAP_WIDTH + xx;
         if (land[q]) rivers[q] = Math.max(rivers[q], level);
       }
+      network[riverPixel] = 1;
     }
-    for (const riverPixel of path) seen[riverPixel] = 0;
+    if (path.length > 1) tracedPaths?.push({
+      pixels: [...new Set(path)],
+      scaleRank: level >= 3 ? 1 : level === 2 ? 4 : 7,
+    });
   }
   return rivers;
 }
 
-/** Deterministic climate for a seed: temperature by latitude, humidity by latitude and distance to sea. */
+/** Детерминированный климат по зерну: температура зависит от широты, влажность — от широты и расстояния до моря. */
 export function generateClimate(land: Uint8Array, seed: number): Climate {
   const humidity = new Uint8Array(MAP_PIXELS);
   const temperature = new Uint8Array(MAP_PIXELS);

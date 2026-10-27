@@ -5,7 +5,6 @@ import {
   forEachNeighbour,
   generateClimate,
   generateClimateCooperative,
-  generateRivers,
   labelWater,
   labelWaterCooperative,
   makeRandomLand,
@@ -19,6 +18,21 @@ import { initialGovernment, randomNameStyle, randomSurnameAffix, type Government
 import { generateCityIdentity } from './cityNames';
 import type { HumanOriginId } from './human';
 import { MapContours } from './contours';
+import { generateGeography, type GeographyFeature, type RiverFeature } from './geographyFeatures';
+
+export type GeographyObjectKind = 'river' | 'peak' | 'volcano';
+export interface GeographyNameTarget {
+  kind: GeographyObjectKind;
+  id: number;
+  pixel: number;
+  elevation: number;
+  active?: boolean;
+}
+export interface SavedGeographyState {
+  rivers: { id: number; name: string | null; discoveredBy: number[] }[];
+  peaks: { id: number; name: string | null; discoveredBy: number[] }[];
+  volcanoes: { id: number; name: string | null; discoveredBy: number[] }[];
+}
 
 export interface Country extends PoliticalState {
   id: number;
@@ -26,20 +40,20 @@ export interface Country extends PoliticalState {
   name: string;
   color: string;
   rank: string;
-  /** Population per pixel given to newly settled land. */
+  /** Население на каждую точку, передаваемое новой оседлой территории. */
   density: number;
   cultureId: number;
   religionId: number | null;
   foundedYear: number;
   parentId: number | null;
-  /** Pixel count, kept up to date while painting. */
+  /** Число точек, обновляемое во время рисования. */
   pixels: number;
-  /** Bounding box that contains all of the country's pixels (may be larger after losses). */
+  /** Границы области, содержащей все точки государства; после потерь они могут быть больше территории. */
   box: [number, number, number, number];
-  /** Overlapping land range and population cohorts for a nomadic country. */
+  /** Перекрывающийся ареал суши и группы населения кочевого государства. */
   range?: number[];
   cells?: NomadCell[];
-  /** Historical origin retained for chronicle context, never used as current residence. */
+  /** Историческое место происхождения для летописи; не используется как текущее место жительства. */
   sourceCountryId?: number | null;
 }
 
@@ -52,17 +66,17 @@ export type CityRank = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface City {
   id: number;
-  /** Stable chronicle identity; unlike id, this does not change when another city is removed. */
+  /** Постоянный идентификатор летописи, который не меняется при удалении другого города, в отличие от id. */
   chronicleId: number;
   countryId: number;
   pixel: number;
   rank: CityRank;
-  /** Total population in the city; rural density at the pixel remains in the density layer. */
+  /** Общее население города; плотность сельского населения в точке остаётся в слое населения. */
   population: number;
-  /** Urban culture × religion groups, independent of the rural mix at this pixel. */
+  /** Городские группы культуры и вероисповедания, не зависящие от сельского состава этой точки. */
   populationGroups?: CityPopulationGroup[];
   capital: boolean;
-  /** Fixed at founding from the leading culture at the city's pixel. */
+  /** Название, закреплённое при основании по преобладающей культуре точки города. */
   name?: string;
   namingCultureId?: number;
   namingStyleId?: NameStyleId;
@@ -86,11 +100,11 @@ export interface NomadCell {
 export interface Culture {
   id: number;
   name: string;
-  /** Race chosen for a culture founded together with a new country. */
+  /** Раса, выбранная для культуры, созданной вместе с новым государством. */
   foundingRaceId?: HumanOriginId;
-  /** Persistent naming convention selected when this culture was founded. */
+  /** Постоянная схема именования, выбранная при создании культуры. */
   nameStyleId?: NameStyleId;
-  /** One fixed family-name prefix or ending for this culture. */
+  /** Закреплённый префикс или суффикс фамилий этой культуры. */
   surnameAffix?: SurnameAffix;
   color: string;
   parentId: number | null;
@@ -100,14 +114,20 @@ export interface Culture {
 
 export type Religion = Culture;
 
-/** The whole map: static geography plus working rasters for every layer. */
+/** Весь мир: постоянные географические данные и рабочие растры всех слоёв. */
 export class World {
   readonly land: Uint8Array;
   readonly water: WaterInfo;
-  /** Land pixel indices, for random sampling. */
+  readonly elevation: Int16Array;
+  /** Индексы точек суши для случайной выборки. */
   readonly landIndex: Int32Array;
-  /** Deterministic hydrology layer; 0 = no river, 1 = tributary, 2–3 = large channel. */
+  /** Детерминированный слой рек: 0 — нет реки, 1 — приток, 2–3 — крупное русло. */
   readonly rivers: Uint8Array;
+  /** Отображаются только реки, уже обнаруженные хотя бы одним государством. */
+  readonly knownRivers = new Uint8Array(MAP_PIXELS);
+  riverFeatures: RiverFeature[];
+  peaks: GeographyFeature[];
+  volcanoes: GeographyFeature[];
   readonly riverPixelCount: number;
   readonly majorRiverPixelCount: number;
   readonly owner = new Uint16Array(MAP_PIXELS);
@@ -118,7 +138,7 @@ export class World {
   drainage: Uint8Array;
   readonly culture = new Uint16Array(MAP_PIXELS);
   readonly religion = new Uint16Array(MAP_PIXELS);
-  /** Human-origin composition is independent of culture and religion. */
+  /** Состав по происхождению не зависит от культуры и вероисповедания. */
   readonly humanOrigins = new Uint16Array(MAP_PIXELS);
   readonly cultureTable = new CompositionTable();
   readonly religionTable = new CompositionTable();
@@ -126,13 +146,16 @@ export class World {
   countries: Country[] = [];
   cities: City[] = [];
   nextCityChronicleId = 0;
-  /** Persistent per-draw card probability multipliers, keyed by scope and card identity. */
+  /** Постоянные множители вероятности карт в розыгрышах, привязанные к области действия и идентификатору карты. */
   cardMultipliers: Record<string, number> = {};
   cultures: Culture[] = [];
   religions: Religion[] = [];
   people: Person[] = [];
-  /** Bumped on every map change; caches compare against it. */
+  /** Увеличивается при каждом изменении карты; по нему обновляются кеши. */
   version = 0;
+  /** Увеличивается только при расширении территории государства или кочевого ареала. */
+  territoryVersion = 0;
+  private geographyScanVersion = 0;
   readonly contours = new MapContours(
     (name) => name === 'water' ? this.water.bodyOf : this[name],
     () => this.version,
@@ -145,22 +168,22 @@ export class World {
     climate: { humidity: Uint8Array; temperature: Uint8Array; drainage: Uint8Array } | null,
     prepared?: {
       water: WaterInfo;
-      rivers: Uint8Array;
       landIndex: Int32Array;
-      riverPixelCount: number;
-      majorRiverPixelCount: number;
     },
   ) {
     this.land = land;
     this.water = prepared?.water ?? labelWater(land);
-    this.rivers = prepared?.rivers ?? generateRivers(land, seed, mapKind);
-    let riverPixelCount = prepared?.riverPixelCount ?? 0;
-    let majorRiverPixelCount = prepared?.majorRiverPixelCount ?? 0;
-    if (!prepared) {
-      for (const strength of this.rivers) {
-        if (strength > 0) riverPixelCount += 1;
-        if (strength >= 2) majorRiverPixelCount += 1;
-      }
+    const geography = generateGeography(land, seed, mapKind);
+    this.elevation = geography.elevation;
+    this.rivers = geography.rivers;
+    this.riverFeatures = geography.riverFeatures;
+    this.peaks = geography.peaks;
+    this.volcanoes = geography.volcanoes;
+    let riverPixelCount = 0;
+    let majorRiverPixelCount = 0;
+    for (const strength of this.rivers) {
+      if (strength > 0) riverPixelCount += 1;
+      if (strength >= 2) majorRiverPixelCount += 1;
     }
     this.riverPixelCount = riverPixelCount;
     this.majorRiverPixelCount = majorRiverPixelCount;
@@ -193,18 +216,13 @@ export class World {
     const land = mapKind === 'world' ? decodeEarthLand() : await makeRandomLandCooperative(actualSeed);
     onProgress?.('Размечаем моря');
     const water = await labelWaterCooperative(land);
-    onProgress?.('Строим реки');
-    const rivers = generateRivers(land, actualSeed, mapKind);
+    onProgress?.('Строим рельеф и реки');
     onProgress?.('Рассчитываем климат');
     const climate = await generateClimateCooperative(land, actualSeed);
     onProgress?.('Индексируем сушу и реки');
     let landCount = 0;
-    let riverPixelCount = 0;
-    let majorRiverPixelCount = 0;
     for (let p = 0; p < MAP_PIXELS; p += 1) {
       if (land[p]) landCount += 1;
-      if (rivers[p] > 0) riverPixelCount += 1;
-      if (rivers[p] >= 2) majorRiverPixelCount += 1;
       if (p % 16_384 === 16_383) await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
     const landIndex = new Int32Array(landCount);
@@ -216,10 +234,7 @@ export class World {
     onProgress?.('Готовим игровой экран');
     return new World(mapKind, actualSeed, land, climate, {
       water,
-      rivers,
       landIndex,
-      riverPixelCount,
-      majorRiverPixelCount,
     });
   }
 
@@ -245,6 +260,7 @@ export class World {
   setOwner(p: number, id: number): void {
     const previous = this.owner[p];
     if (previous === id) return;
+    this.territoryVersion += 1;
     this.contours.synchronize();
     if (previous > 0) this.countries[previous - 1].pixels -= 1;
     this.owner[p] = id;
@@ -265,6 +281,147 @@ export class World {
         box[3] = Math.max(box[3], y);
       }
     }
+  }
+
+  markNomadicRangeExpanded(): void {
+    this.territoryVersion += 1;
+  }
+
+  unnamedGeographyForCountry(countryId: number): GeographyNameTarget[] {
+    const result: GeographyNameTarget[] = [];
+    for (const feature of this.riverFeatures) {
+      if (!feature.name && feature.discoveredBy.includes(countryId)) {
+        result.push({ kind: 'river', id: feature.id, pixel: feature.pixels[Math.floor(feature.pixels.length / 2)] ?? -1, elevation: 0 });
+      }
+    }
+    for (const feature of this.peaks) {
+      if (!feature.name && feature.discoveredBy.includes(countryId)) {
+        result.push({ kind: 'peak', id: feature.id, pixel: feature.pixel, elevation: feature.elevation });
+      }
+    }
+    for (const feature of this.volcanoes) {
+      if (!feature.name && feature.discoveredBy.includes(countryId)) {
+        result.push({
+          kind: 'volcano',
+          id: feature.id,
+          pixel: feature.pixel,
+          elevation: feature.elevation,
+          active: feature.active,
+        });
+      }
+    }
+    return result;
+  }
+
+  nameGeographyFeature(kind: GeographyObjectKind, id: number, name: string): void {
+    const feature = kind === 'river'
+      ? this.riverFeatures[id]
+      : kind === 'peak' ? this.peaks[id] : this.volcanoes[id];
+    if (!feature) throw new Error(`Не найден географический объект ${kind}:${id}.`);
+    if (feature.name) throw new Error(`Географический объект ${kind}:${id} уже получил имя.`);
+    feature.name = name;
+    this.version += 1;
+  }
+
+  geographySaveState(): SavedGeographyState {
+    const copy = (features: (GeographyFeature | RiverFeature)[]) => features.map((feature) => ({
+      id: feature.id,
+      name: feature.name,
+      discoveredBy: [...feature.discoveredBy],
+    }));
+    return {
+      rivers: copy(this.riverFeatures),
+      peaks: copy(this.peaks),
+      volcanoes: copy(this.volcanoes),
+    };
+  }
+
+  restoreGeographyState(state?: SavedGeographyState): void {
+    if (!state) {
+      this.geographyScanVersion = this.territoryVersion - 1;
+      return;
+    }
+    const restore = (
+      features: (GeographyFeature | RiverFeature)[],
+      saved: SavedGeographyState['rivers'],
+    ) => {
+      for (const value of saved) {
+        const feature = features[value.id];
+        if (!feature) continue;
+        feature.name = value.name;
+        feature.discoveredBy = value.discoveredBy.filter((id) => !!this.countries[id]);
+      }
+    };
+    restore(this.riverFeatures, state.rivers);
+    restore(this.peaks, state.peaks);
+    restore(this.volcanoes, state.volcanoes);
+    this.knownRivers.fill(0);
+    for (const feature of this.riverFeatures) {
+      if (feature.discoveredBy.length === 0) continue;
+      const strength = feature.scaleRank <= 2 ? 3 : feature.scaleRank <= 5 ? 2 : 1;
+      for (const pixel of feature.pixels) {
+        this.knownRivers[pixel] = Math.max(this.knownRivers[pixel], this.rivers[pixel] || strength);
+      }
+    }
+    this.geographyScanVersion = this.territoryVersion;
+  }
+
+  /** Выявляет географические объекты только после расширения территории в этом ходу. */
+  discoverGeography(): boolean {
+    if (this.geographyScanVersion === this.territoryVersion) return false;
+    this.geographyScanVersion = this.territoryVersion;
+
+    const nomadsAtPixel = new Map<number, number[]>();
+    for (const country of this.countries) {
+      if (country.type !== 'nomadic') continue;
+      for (const pixel of country.range ?? []) {
+        const ids = nomadsAtPixel.get(pixel) ?? [];
+        ids.push(country.id);
+        nomadsAtPixel.set(pixel, ids);
+      }
+    }
+
+    let discovered = false;
+    const checkArea = (pixels: number[], feature: GeographyFeature | RiverFeature): void => {
+      const known = new Set(feature.discoveredBy);
+      for (const pixel of pixels) {
+        const x = pixel % MAP_WIDTH;
+        const y = Math.floor(pixel / MAP_WIDTH);
+        for (let dy = -1; dy <= 1; dy += 1) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= MAP_HEIGHT) continue;
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const nx = (x + dx + MAP_WIDTH) % MAP_WIDTH;
+            const nearby = ny * MAP_WIDTH + nx;
+            const ownerId = this.owner[nearby] - 1;
+            if (ownerId >= 0) known.add(ownerId);
+            for (const nomadId of nomadsAtPixel.get(nearby) ?? []) known.add(nomadId);
+          }
+        }
+        if (known.size >= this.countries.length) break;
+      }
+      const nextDiscoverers = [...known].filter((id) => !!this.countries[id]);
+      if (nextDiscoverers.length === feature.discoveredBy.length &&
+        nextDiscoverers.every((id) => feature.discoveredBy.includes(id))) return;
+      feature.discoveredBy = nextDiscoverers;
+      if (feature.discoveredBy.length > 0) discovered = true;
+      if ('paths' in feature) {
+        const strength = feature.scaleRank <= 2 ? 3 : feature.scaleRank <= 5 ? 2 : 1;
+        for (const riverPixel of feature.pixels) {
+          this.knownRivers[riverPixel] = Math.max(
+            this.knownRivers[riverPixel],
+            this.rivers[riverPixel] || strength,
+          );
+        }
+      }
+    };
+
+    for (const feature of this.riverFeatures) checkArea(feature.pixels, feature);
+    for (const feature of this.peaks) checkArea([feature.pixel], feature);
+    for (const feature of this.volcanoes) checkArea([feature.pixel], feature);
+
+    if (discovered) this.version += 1;
+    return discovered;
   }
 
   cityAt(p: number): City | null {
@@ -305,7 +462,7 @@ export class World {
     this.version += 1;
   }
 
-  /** Visits every pixel of a country (scans its bounding box). */
+  /** Перебирает все точки государства в пределах его ограничивающей рамки. */
   forEachCountryPixel(country: Country, visit: (p: number) => void): void {
     if (country.pixels <= 0) return;
     const [x0, y0, x1, y1] = country.box;
@@ -318,7 +475,7 @@ export class World {
     }
   }
 
-  /** Recomputes counts and boxes from the owner raster (after loading). */
+  /** Пересчитывает население и рамки по растру владельцев после загрузки. */
   recountCountries(): void {
     for (const country of this.countries) {
       country.pixels = 0;
@@ -339,7 +496,7 @@ export class World {
     }
   }
 
-  // ---------- entities ----------
+  // ---------- сущности ----------
 
   private usedColors(items: { color: string }[]): Set<string> {
     return new Set(items.map((item) => item.color.toLowerCase()));
@@ -408,7 +565,7 @@ export class World {
     return religion;
   }
 
-  /** Removes an unused entity created for a card that ended up painting nothing (always the last one). */
+  /** Удаляет последнюю неиспользованную сущность, созданную картой, которая ничего не закрасила. */
   discardLast(list: 'countries' | 'cultures' | 'religions', id: number): void {
     const items = this[list] as { id: number }[];
     if (items.length > 0 && items[items.length - 1].id === id) {
@@ -461,7 +618,7 @@ function hslToHex(hue: number, saturation: number, lightness: number): string {
   return `#${channel(0)}${channel(8)}${channel(4)}`;
 }
 
-/** A color not yet used: first from the palette, then from an evenly spread generated sequence. */
+/** Неиспользованный цвет: сначала из палитры, затем из равномерно распределённой последовательности. */
 export function pickUniqueColor(palette: string[], used: Set<string>): string {
   const free = palette.filter((color) => !used.has(color.toLowerCase()));
   if (free.length > 0) return randomItem(free).toLowerCase();

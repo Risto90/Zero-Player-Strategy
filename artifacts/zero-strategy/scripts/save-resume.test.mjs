@@ -103,7 +103,7 @@ const previousPause = Game.pause;
 Game.persist = true;
 Game.pause = async () => {};
 try {
-  // Repeated ruler appointments survive the actual game save/load path.
+  // Повторные назначения правителя сохраняются при обычной загрузке и сохранении игры.
   await clearSaveBytes();
   const tenureFixture = makeFixture();
   const firstRuler = tenureFixture.country.ruler;
@@ -123,8 +123,8 @@ try {
   tenureGame.discard();
   tenureResumed.discard();
 
-  // Saves created before the colonization map mode was removed load on the
-  // ordinary political view while preserving the active card mechanics.
+  // Сохранения с прежним режимом колонизации открываются на обычной политической карте,
+  // сохраняя механику активной карты.
   await clearSaveBytes();
   const legacyModeGame = new Game(makeFixture().world, 'all');
   legacyModeGame.mapMode = 'colonization';
@@ -136,8 +136,20 @@ try {
   legacyModeGame.discard();
   legacyModeResumed.discard();
 
-  // Existing saves with the retired nomadic view also return to the combined
-  // political map, where nomadic ranges are now an overlay.
+  // Старый режим рек теперь открывается в новом режиме высот.
+  await clearSaveBytes();
+  const legacyRiverModeGame = new Game(makeFixture().world, 'all');
+  legacyRiverModeGame.mapMode = 'rivers';
+  await legacyRiverModeGame.saveNow();
+  const legacyRiverModeResumed = await Game.load();
+  assert.ok(legacyRiverModeResumed, 'сохранение со старым режимом рек загружается');
+  assert.equal(legacyRiverModeResumed.mapMode, 'elevation', 'старый режим рек преобразуется в высоты');
+  assert.equal(legacyRiverModeResumed.renderer.mode, 'elevation', 'отрисовщик использует новый режим высот');
+  legacyRiverModeGame.discard();
+  legacyRiverModeResumed.discard();
+
+  // Сохранения с прежним режимом кочевников также переходят на политическую карту,
+  // где ареалы кочевников теперь отображаются поверх неё.
   await clearSaveBytes();
   const legacyNomadModeGame = new Game(makeFixture().world, 'all');
   legacyNomadModeGame.mapMode = 'nomads';
@@ -149,7 +161,7 @@ try {
   legacyNomadModeGame.discard();
   legacyNomadModeResumed.discard();
 
-  // An explicit player pause survives a save and can be cleared through the same toggle.
+  // Пауза игрока сохраняется и снимается тем же переключателем после загрузки.
   await clearSaveBytes();
   const pausedGame = new Game(makeFixture().world, 'all');
   pausedGame.togglePause();
@@ -160,7 +172,7 @@ try {
   pausedGame.discard();
   pausedResumed.discard();
 
-  // Automatic turn processing is not written as a resumable interruption.
+  // Автоматический ход не сохраняется как прерываемая операция для продолжения.
   await clearSaveBytes();
   const processingGame = new Game(makeFixture().world, 'all');
   const savedYear = processingGame.year;
@@ -177,7 +189,7 @@ try {
   processingGame.discard();
   processingResumed.discard();
 
-  // A completed brush stroke must remain protected from a second application.
+  // Завершённый мазок защищён от повторного применения.
   await clearSaveBytes();
   const fixture = makeFixture();
   const uninterrupted = new Game(fixture.world, 'all');
@@ -230,7 +242,7 @@ try {
   ], 'a world-area event links to the country that owned the changed land');
   globalWeather.discard();
 
-  // Colonization logging depends on counts that are not reconstructible from the raster.
+  // Для летописи колонизации сохраняются счётчики, которые нельзя восстановить по растру.
   await clearSaveBytes();
   const colonizationFixture = makeFixture();
   const colonizationGame = new Game(colonizationFixture.world, 'all');
@@ -263,7 +275,7 @@ try {
   colonizationGame.discard();
   colonizationResumed.discard();
 
-  // A selected non-brush option remains selected and drives the same completion effect.
+  // Выбранный вариант карты без кисти сохраняется и даёт тот же эффект после завершения.
   await clearSaveBytes();
   const choiceFixture = makeFixture();
   const choiceGame = new Game(choiceFixture.world, 'all');
@@ -288,7 +300,7 @@ try {
   choiceGame.discard();
   choiceResumed.discard();
 
-  // A city card remains pending after load and completes only after the same placement.
+  // Карта города остаётся незавершённой после загрузки и завершается после того же размещения.
   await clearSaveBytes();
   const cityFixture = makeFixture();
   const cityGame = new Game(cityFixture.world, 'all');
@@ -322,7 +334,7 @@ try {
   cityGame.discard();
   cityResumed.discard();
 
-  // Creating a country also records the newly founded culture, but no unrelated profile.
+  // При создании государства сохраняется новая культура без посторонних профилей.
   const creationFixture = makeFixture();
   const newCulture = creationFixture.world.newCulture(null, 1000);
   const newCountry = creationFixture.world.newCountry({
@@ -406,7 +418,7 @@ try {
     'culture split does not mark the affected country important');
   cultureGame.discard();
 
-  // A city can wane or fall, and both marks stay scoped to that city's stable identity.
+  // У города может снизиться ранг или город может исчезнуть; обе записи привязаны к его постоянному идентификатору.
   const waningFixture = makeFixture();
   const waningCity = waningFixture.world.cities[1];
   waningCity.rank = 2;
@@ -450,7 +462,7 @@ try {
     'city fall is not country-important');
   cityFallGame.discard();
 
-  // A fallen city keeps its stable archive link after array-index IDs shift.
+  // Исчезнувший город сохраняет ссылку на архив после сдвига индексов массива.
   await clearSaveBytes();
   const fallenCityFixture = makeFixture();
   const fallenCity = fallenCityFixture.world.cities[1];
@@ -480,7 +492,7 @@ try {
   fallenCityGame.discard();
   fallenCityResumed.discard();
 
-  // Nomadic residents keep their current home through the persisted save/load path.
+  // Место проживания кочевников сохраняется в процессе сохранения и последующей загрузки.
   await clearSaveBytes();
   const nomadFixture = makeFixture();
   const [nomad] = dissolveCountryIntoNomadicCountries(nomadFixture.world, nomadFixture.country, 1001);
@@ -532,7 +544,7 @@ try {
   nomadGame.discard();
   nomadResumed.discard();
 
-  // Thousands of archived entries, including old important profile history, survive persistence.
+  // Тысячи архивных записей, включая важную историю старых профилей, сохраняются.
   await clearSaveBytes();
   const archiveFixture = makeFixture();
   const archiveGame = new Game(archiveFixture.world, 'all');
@@ -562,7 +574,7 @@ try {
   archiveGame.discard();
   archiveResumed.discard();
 
-  // Annexation moves all source-country links to the surviving country.
+  // При аннексии все ссылки исходного государства переходят к сохранившемуся.
   const mergeFixture = makeFixture();
   const absorbed = mergeFixture.world.newCountry({
     rank: 'тест',
@@ -598,7 +610,7 @@ try {
     'country absorption does not mark merged cities important');
   mergeGame.discard();
 
-  // Dissolution into nomadic successors retains the global entry and replaces its country link.
+  // При распаде на кочевые государства общая запись сохраняется, а ссылка на страну заменяется.
   const collapseFixture = makeFixture();
   collapseFixture.world.cities = [];
   const collapseGame = new Game(collapseFixture.world, 'all');

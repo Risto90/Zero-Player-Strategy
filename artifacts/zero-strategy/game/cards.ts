@@ -33,6 +33,7 @@ export const CARD_TITLES: Record<CardType, string> = {
   waneCity: 'Увядание города',
   moveCapital: 'Перенос столицы',
   nomadExpand: 'Расширение кочевья',
+  nameGeography: 'Именование объекта',
   drought: 'Засуха',
   rain: 'Ливни',
   desertification: 'Опустынивание',
@@ -323,6 +324,27 @@ function makeCard(type: CardType, ink: number, target: Polity | null, detail: st
   };
 }
 
+function drawGeographyNamingCard(
+  world: World,
+  country: Country,
+  available: ReturnType<World['unnamedGeographyForCountry']>,
+): Card | null {
+  const target = randomItem(available);
+  if (!target) return null;
+  const kind = target.kind === 'river'
+    ? 'река'
+    : target.kind === 'peak' ? 'горная вершина' : 'вулкан';
+  const card = makeCard(
+    'nameGeography',
+    0,
+    country,
+    `${country.name} присваивает название обнаруженному объекту: ${kind}.`,
+    -1,
+  );
+  card.geographyTarget = { kind: target.kind, id: target.id };
+  return card;
+}
+
 /**
  * Защита инварианта розыгрыша: генератор уже выбранной карты не может вернуть
  * пустой результат, чтобы отказаться от карты или запустить переброс.
@@ -334,6 +356,7 @@ function requireCard(card: Card | null, key: string): Card {
 
 function drawNomadicCountryCard(world: World, nomad: Country, year: number): Card | null {
   if (!nomad.range?.length) return null;
+  const nameableGeography = world.unnamedGeographyForCountry(nomad.id);
   const countryCount = world.countries.filter(isActiveCountry).length;
   const citySite = countryCount < MAX_COUNTRIES
     ? nomad.range.find((pixel) => world.land[pixel] && world.owner[pixel] === 0 && !world.cityAt(pixel))
@@ -348,6 +371,9 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
     : nomad.modifiers.includes('coRule') ? 0.5 : 1;
   const options: CardDrawOption[] = [
     ...countryCharacterEventOptions(world, nomad, year),
+    { key: 'nameGeography', value: (_w, p) =>
+      requireCard(drawGeographyNamingCard(_w, p as Country, nameableGeography), 'nameGeography'),
+    weight: nameableGeography.length, baseWeight: 1, available: () => nameableGeography.length > 0 },
     { key: 'nomadExpand', value: (_w, p) => requireCard(drawNomadExpansionCard(_w, p as Country), 'nomadExpand'),
       weight: consulateScale, baseWeight: 1,
       available: () => (nomad.range ?? []).some((pixel) => world.land[pixel]) },
@@ -1536,6 +1562,7 @@ export function drawWorldCard(world: World, year: number): Card | null {
 
 export function drawCountryCard(world: World, country: Country, year: number): Card | null {
   if (country.type === 'nomadic') return drawNomadicCountryCard(world, country, year);
+  const nameableGeography = world.unnamedGeographyForCountry(country.id);
   const diversity = demography(world, country);
   const countryCities = world.cities.filter((city) => city.countryId === country.id);
   const freeCitySite = firstFreeCitySite(world, country);
@@ -1582,6 +1609,9 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const unrestScale = country.modifiers.includes('confederation') ? 1 / 3 : country.modifiers.includes('federation') ? 1 / 2 : 1;
   const options: CardDrawOption[] = [
     ...countryCharacterEventOptions(world, country, year),
+    { key: 'nameGeography', value: (w, p) =>
+      requireCard(drawGeographyNamingCard(w, p as Country, nameableGeography), 'nameGeography'),
+    weight: nameableGeography.length, baseWeight: 1, available: () => nameableGeography.length > 0 },
     { key: 'expand', value: (w, p) => drawExpand(w, p as Country, expansionPlan),
       weight: expansionPlan.ink > 0 ? consulateScale : 0, baseWeight: 1,
       available: () => expansionPlan.ink > 0 },

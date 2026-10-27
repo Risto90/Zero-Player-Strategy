@@ -1,6 +1,6 @@
 import { CLIMATE_DELTA, CULTURE_CONVERSION, FAITH_CONVERSION, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, RANKS } from './config';
 import { forEachNeighbour } from './geography';
-import { type Country, type NomadCell, type World } from './world';
+import { type Country, type GeographyObjectKind, type NomadCell, type World } from './world';
 import type { GovernmentId, GovernmentModifierId, Person } from './government';
 import { GOVERNMENTS } from './government';
 import { ColonizationDonorHeap, colonizationPlan, transferColonizationPopulation } from './colonization';
@@ -19,7 +19,7 @@ import {
   randomHumanOriginId,
 } from './human';
 
-export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'waneCity' | 'moveCapital' | 'nomadExpand' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'trait' | 'revolt' | 'union';
+export type CardType = 'create' | 'expand' | 'colonization' | 'split' | 'buildCity' | 'upgradeCity' | 'waneCity' | 'moveCapital' | 'nomadExpand' | 'nameGeography' | 'drought' | 'rain' | 'desertification' | 'swamping' | 'warmCurrent' | 'coldCurrent' | 'warmWind' | 'coldWind' | 'faith' | 'culture' | 'government' | 'succession' | 'election' | 'marriage' | 'birth' | 'death' | 'trait' | 'revolt' | 'union';
 export interface CardChoice {
   label: string;
   detail: string;
@@ -42,7 +42,7 @@ export interface CharacterEvent {
   trait?: string;
   deathCause?: 'random' | 'oldAge';
 }
-/** 'respect': a pixel changes at most once per card. 'repeat': every new stroke applies again. */
+/** «respect»: точка меняется не более одного раза за карту; «repeat»: каждый новый мазок действует повторно. */
 export type BrushMode = 'respect' | 'repeat';
 export type BrushOption = 'density' | 'repeat' | null;
 
@@ -52,9 +52,9 @@ export interface Card {
   detail: string;
   ink: number;
   inkTotal: number;
-  /** Country the card belongs to (country cards) or acts on. */
+  /** Государство, которому принадлежит карта, или на которое она действует. */
   targetCountryId: number | null;
-  /** Entities created by the card. */
+  /** Сущности, созданные картой. */
   newCountryId: number | null;
   newCultureId: number | null;
   newReligionId: number | null;
@@ -66,9 +66,9 @@ export interface Card {
   choices: CardChoice[] | null;
   selectedChoice: number;
   characterEvent: CharacterEvent | null;
-  /** Exact land quota for one part of a multi-country inheritance partition. */
+  /** Точная квота суши для одной части раздела при наследовании. */
   splitRequiredPixels?: number;
-  /** Remaining manual inheritance parts; stored on the active card so saves can resume. */
+  /** Оставшиеся части ручного раздела наследства; сохраняются вместе с активной картой. */
   splitBatch?: {
     sourceCountryId: number;
     destinationIds: number[];
@@ -81,7 +81,8 @@ export interface Card {
   developmentOnly?: boolean;
   cityPlaced?: boolean;
   nomadDensityOnly?: boolean;
-  /** A pixel where the card certainly applies (used by automatic play). */
+  geographyTarget?: { kind: GeographyObjectKind; id: number };
+  /** Точка, где карта точно применима; используется при автоматическом розыгрыше. */
   hint: number;
 }
 
@@ -100,7 +101,7 @@ export interface Rect {
 }
 
 export interface CardPainterState {
-  /** Pixels already applied by this card, including repeated applications in changed. */
+  /** Точки, уже обработанные картой, включая повторные применения в changed. */
   cardTouched: Int32Array;
   changed: Int32Array;
   colonistsMoved: number;
@@ -116,7 +117,7 @@ export interface SplitTerritoryValidation {
   reason: string;
 }
 
-/** Shared transfer guard for card, inheritance, manual, and automatic partition painting. */
+/** Общая проверка переноса для карт, наследования и ручной или автоматической кисти раздела. */
 export function canAssignSplitPixel(
   world: World,
   sourceCountryId: number,
@@ -133,7 +134,7 @@ export function canAssignSplitPixel(
   return true;
 }
 
-/** One partition instrument shared by player strokes and automatic inheritance painting. */
+/** Единый инструмент раздела для мазков игрока и автоматической кисти наследования. */
 export class PartitionBrush {
   private readonly baselinePixels: number;
 
@@ -171,7 +172,7 @@ export class PartitionBrush {
   }
 }
 
-/** Validates the completed territory, independently of how it was painted. */
+/** Проверяет готовую территорию независимо от способа закрашивания. */
 export function validateSplitTerritory(
   world: World,
   sourceCountryId: number,
@@ -241,7 +242,7 @@ export function validateSplitPartition(
   return { valid: true, reason: '' };
 }
 
-/** Moves cities to their painted owners and assigns each new state its largest city as capital. */
+/** Передаёт города новым владельцам и назначает столицей нового государства его крупнейший город. */
 export function finalizeSplitCities(world: World, destinationCountryId: number): void {
   const cities = world.cities.filter((city) => world.owner[city.pixel] === destinationCountryId + 1);
   for (const city of cities) {
@@ -252,14 +253,14 @@ export function finalizeSplitCities(world: World, destinationCountryId: number):
   if (capital) capital.capital = true;
 }
 
-/** Applies one card to the world, brush dab by brush dab, spending its ink. */
+/** Применяет одну карту к миру мазок за мазком и расходует её чернила. */
 export class CardPainter {
-  /** Pixels changed by this card (for automatic play and logs). */
+  /** Точки, изменённые картой; используются автоматическим розыгрышем и летописью. */
   readonly changed: number[] = [];
   private readonly cardMask = new Uint8Array(MAP_PIXELS);
   private readonly strokeMask = new Uint8Array(MAP_PIXELS);
   private readonly dabMask = new Uint8Array(MAP_PIXELS);
-  /** Total population moved by a colonization card. */
+  /** Общее население, перемещённое картой колонизации. */
   colonistsMoved = 0;
   private readonly cardTouched: number[] = [];
   private strokeTouched: number[] = [];
@@ -300,7 +301,7 @@ export class CardPainter {
     if (card.type === 'create') {
       const culture = world.cultures[card.newCultureId ?? -1];
       if (!culture) throw new Error('A country creation card must reference its new culture.');
-      // Older in-progress saves may contain a creation card drawn before the founding race was stored.
+      // Старое сохранение может содержать карту основания, созданную до сохранения расы основателей.
       culture.foundingRaceId ??= randomHumanOriginId();
     }
     if (card.type === 'nomadExpand' && card.targetCountryId !== null) {
@@ -362,7 +363,7 @@ export class CardPainter {
     };
   }
 
-  /** Country whose territory grows: the new state for create/split, the owner for expand. */
+  /** Государство, чья территория растёт: новое при основании или разделе, владелец при расширении. */
   workingCountryId(): number | null {
     const card = this.card;
     if (card.type === 'create' || card.type === 'split') return card.newCountryId;
@@ -375,8 +376,8 @@ export class CardPainter {
   }
 
   /**
-   * Estimated immediate benefit for one changed pixel, before ink normalization.
-   * This is read-only and mirrors the card's real population/climate effect.
+   * Оценивает немедленную пользу изменения точки до нормирования на расход чернил.
+   * Метод только читает данные и повторяет реальное влияние карты на население и климат.
    */
   strategyImpactAt(pixel: number): number {
     const card = this.card;
@@ -490,12 +491,12 @@ export class CardPainter {
       return population * Math.max(0, source - target) / 100 * CULTURE_CONVERSION;
     }
 
-    // Drainage has no modeled direct population or climate-comfort effect. Do not
-    // invent a utility for it: leaving it unchanged is safer than arbitrary damage.
+    // Дренаж не имеет заданного прямого влияния на население или климатический комфорт.
+    // Не следует придумывать ему эффект: оставить показатель неизменным лучше, чем менять произвольно.
     return 0;
   }
 
-  /** Actual ink consumed by an eligible raster change, including empty climate tiles. */
+  /** Фактически потраченные чернила за допустимое изменение растра, включая пустые климатические точки. */
   strategyInkCostAt(pixel: number, knownImpact?: number): number {
     const card = this.card;
     const world = this.world;
@@ -511,7 +512,7 @@ export class CardPainter {
         if (onLand && world.owner[pixel] !== targetTag) return 0;
         if (!onLand && !this.seas.has(world.water.bodyOf[pixel])) return 0;
       } else if (card.type === 'warmCurrent' || card.type === 'coldCurrent') {
-        // Currents affect land and water throughout the world.
+        // Течения влияют на сушу и воду по всему миру.
         if (!onLand && world.water.bodyOf[pixel] < 0) return 0;
       } else if (!onLand || (card.targetCountryId !== null && world.owner[pixel] !== targetTag)) {
         return 0;
@@ -551,7 +552,7 @@ export class CardPainter {
       : this.brushScaling(pixel).cost;
   }
 
-  /** Ink cost of painting an otherwise eligible territory pixel. */
+  /** Стоимость закрашивания допустимой точки территории. */
   strategyTerritoryInkCostAt(pixel: number): number {
     if (pixel < 0 || pixel >= MAP_PIXELS || !this.world.land[pixel]) return 0;
     return this.brushScaling(pixel).cost;
@@ -751,7 +752,7 @@ export class CardPainter {
     }
   }
 
-  /** Maximum ink one colonization target can consume under its population limit. */
+  /** Максимум чернил для одной точки колонизации с учётом ограничения населения. */
   strategyColonizationInkCapacityAt(pixel: number, sourceDensity?: number): number {
     const countryId = this.card.targetCountryId;
     if (this.card.type !== 'colonization' || countryId === null || !this.canColonizePixel(pixel)) return 0;
@@ -781,7 +782,7 @@ export class CardPainter {
     this.dirtyTileKeys.clear();
   }
 
-  /** Roll back a wind stroke whose finger was released over water instead of home territory. */
+  /** Отменяет мазок ветра, если палец отпущен над водой вместо территории государства. */
   cancelStroke(): void {
     for (const change of this.strokeClimateChanges) {
       this.world.temperature[change.p] = change.value;
@@ -797,7 +798,7 @@ export class CardPainter {
     this.message = 'Ветер можно закончить только на суше своей страны. Проведите мазок от своего берега к своему берегу.';
   }
 
-  /** Clears scratch buffers; call once the card is finished. */
+  /** Очищает временные буферы после завершения карты. */
   dispose(): void {
     this.endStroke();
     for (const p of this.cardTouched) this.cardMask[p] = 0;
@@ -841,7 +842,7 @@ export class CardPainter {
     return result;
   }
 
-  /** City spheres scale brush ink and population strength without changing its base cost. */
+  /** Сферы городов меняют расход чернил и силу населения кисти, не меняя её базовую стоимость. */
   private brushScaling(pixel: number): { cost: number; strength: number } {
     const cardType = this.card.type;
     if (cardType === 'expand' || cardType === 'colonization' || cardType === 'nomadExpand') {
@@ -949,7 +950,7 @@ export class CardPainter {
     return { cost: Math.max(0.05, cost), strength: 1 / Math.max(0.05, cost) };
   }
 
-  /** Paints a line of dabs from (ax, ay) to (bx, by). Returns ink spent. */
+  /** Рисует линию мазков от (ax, ay) до (bx, by) и возвращает расход чернил. */
   line(ax: number, ay: number, bx: number, by: number, radius: number): number {
     const distance = Math.hypot(bx - ax, by - ay);
     const steps = Math.max(1, Math.ceil(distance / Math.max(1, radius * 0.5)));
@@ -961,7 +962,7 @@ export class CardPainter {
     return spent;
   }
 
-  /** Applies the card inside a circle. Returns ink spent. */
+  /** Применяет карту внутри круга и возвращает расход чернил. */
   dab(cx: number, cy: number, radius: number): number {
     const card = this.card;
     if (card.ink <= 0) {
@@ -996,7 +997,7 @@ export class CardPainter {
       return cultureMatch || faithMatch;
     };
 
-    // Extra population on already owned land ("density" brush).
+    // Дополнительное население на уже принадлежащей государству земле — кисть плотности.
     if (card.type !== 'split' && card.type !== 'colonization' && this.mode === 'repeat') {
       for (const p of pixels) {
         if (card.ink <= 0) break;
@@ -1008,7 +1009,7 @@ export class CardPainter {
       }
     }
 
-    // Grow only from existing territory (by land, or by any coast of a sea the country already touches).
+    // Рост возможен только от существующей территории: по суше или от побережья моря, которого уже касается государство.
     for (const p of pixels) this.dabMask[p] = 1;
     const queue: number[] = [];
     const enqueue = (p: number) => {
@@ -1128,6 +1129,7 @@ export class CardPainter {
       return;
     }
     let changed = false;
+    let rangeExpanded = false;
     const cells = nomad.cells ?? (nomad.cells = []);
     const range = nomad.range ?? (nomad.range = []);
     const cultureMix = this.nomadCultureMix(nomad);
@@ -1160,6 +1162,7 @@ export class CardPainter {
         const { cost, strength } = this.brushScaling(pixel);
         range.push(pixel);
         this.nomadRange.add(pixel);
+        rangeExpanded = true;
         let cell = this.nomadCells.get(pixel);
         if (!cell) {
           cell = { pixel, population: 0, cultureMix, religionMix, humanOriginMix };
@@ -1206,6 +1209,7 @@ export class CardPainter {
     }
     if (changed) {
       world.version += 1;
+      if (rangeExpanded) world.markNomadicRangeExpanded();
       this.message = this.nomadMode === 'range' ? 'Ареал кочевья расширен.' : 'Плотность кочевого населения увеличена.';
     }
   }

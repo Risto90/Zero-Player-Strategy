@@ -244,8 +244,11 @@ function colonizationContourFixture() {
       world.culture[pixel] = cultureMix;
     }
   }
+  const riverPixels = [];
   for (let y = 20; y <= 60; y += 1) {
-    world.rivers[(y0 + y) * MAP_WIDTH + x0 + 19] = 1;
+    const pixel = (y0 + y) * MAP_WIDTH + x0 + 19;
+    world.rivers[pixel] = 1;
+    riverPixels.push(pixel);
   }
   world.recountCountries();
   assert.ok(world.addCity(country.id, (y0 + 1) * MAP_WIDTH + x0 + 1, 1, true));
@@ -286,12 +289,18 @@ function colonizationContourFixture() {
     y0,
     betterTemperature,
     betterHumidity,
+    riverPixels,
     blockedPixel: (y0 + 60) * MAP_WIDTH + x0 + 36,
     preferredPixel: (y0 + 25) * MAP_WIDTH + x0 + 20,
   };
 }
 
 const colonizationFixtureData = colonizationContourFixture();
+const undiscoveredRiverPlan = colonizationPlan(colonizationFixtureData.world, colonizationFixtureData.country);
+assert.equal(undiscoveredRiverPlan.targets[colonizationFixtureData.preferredPixel], 0,
+  'an undiscovered river does not make its adjacent inland target available');
+for (const pixel of colonizationFixtureData.riverPixels) colonizationFixtureData.world.knownRivers[pixel] = 1;
+colonizationFixtureData.world.version += 1;
 const colonizationPlanData = colonizationPlan(
   colonizationFixtureData.world,
   colonizationFixtureData.country,

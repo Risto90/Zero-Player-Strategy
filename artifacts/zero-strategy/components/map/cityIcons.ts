@@ -13,7 +13,6 @@ export const CITY_ICON_SOURCES = [
   require('../../assets/images/port-rank-4.png'),
   require('../../assets/images/port-rank-5.png'),
   require('../../assets/images/port-rank-6.png'),
-  require('../../assets/images/capital.png'),
 ] as const;
 
 export function cityIconSource(index: number): number {

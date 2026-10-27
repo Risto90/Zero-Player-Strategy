@@ -19,7 +19,7 @@ const MODE_LABELS: Record<MapMode, string> = {
   temperature: 'Температура',
   drainage: 'Дренаж',
   density: 'Плотность',
-  rivers: 'Реки',
+  elevation: 'Высоты',
   cities: 'Города',
 };
 
@@ -86,16 +86,31 @@ function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
           <Text style={styles.scaleLabel}>Больше</Text>
         </View>
       );
-    case 'rivers':
+    case 'elevation':
       return (
-        <View style={styles.fixedKeys}>
-          <View style={styles.key}>
-            <View style={[styles.riverSwatch, { backgroundColor: '#6699ae' }]} />
-            <Text style={styles.keyText}>Притоки</Text>
+        <View style={styles.elevationLegend}>
+          <View style={styles.rampContents}>
+            <Text style={styles.scaleLabel}>−11 км</Text>
+            <LinearGradient colors={RAMPS.elevation as [string, string, ...string[]]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.ramp} />
+            <Text style={styles.scaleLabel}>+9 км</Text>
           </View>
-          <View style={styles.key}>
-            <View style={[styles.riverSwatch, { backgroundColor: '#22537d' }]} />
-            <Text style={styles.keyText}>Крупные реки</Text>
+          <View style={styles.fixedKeys}>
+            <View style={styles.key}>
+              <View style={[styles.riverSwatch, { backgroundColor: '#326582' }]} />
+              <Text style={styles.keyText}>Реки</Text>
+            </View>
+            <View style={styles.key}>
+              <Text style={[styles.peakSwatch, { color: '#55483c' }]}>▲</Text>
+              <Text style={styles.keyText}>Вершины</Text>
+            </View>
+            <View style={styles.key}>
+              <Text style={[styles.peakSwatch, { color: '#b36b39' }]}>▲</Text>
+              <Text style={styles.keyText}>Уснувшие вулканы</Text>
+            </View>
+            <View style={styles.key}>
+              <Text style={[styles.peakSwatch, { color: '#b43a2d' }]}>▲</Text>
+              <Text style={styles.keyText}>Действующие вулканы</Text>
+            </View>
           </View>
         </View>
       );
@@ -156,6 +171,8 @@ const styles = StyleSheet.create({
   modeDescription: { gap: 3 },
   hatchSwatch: { width: 18, height: 10, borderWidth: 1, backgroundColor: 'rgba(221,193,138,0.3)' },
   fixedKeys: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  elevationLegend: { gap: 4 },
+  peakSwatch: { fontSize: 12, lineHeight: 13, fontFamily: fonts.sans, fontWeight: '700' },
   key: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: 180 },
   keyText: { flexShrink: 1, fontFamily: fonts.sans, fontSize: 9, color: c.secondaryForeground },
   swatch: { width: 10, height: 10, borderWidth: 1, borderColor: 'rgba(44,30,23,0.5)', borderRadius: 2 },

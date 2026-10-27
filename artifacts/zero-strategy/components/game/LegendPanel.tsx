@@ -19,8 +19,9 @@ const VALUE_NOTE: Record<string, string> = {
   temperature: 'Средняя температура. От ледников до тропиков.',
   drainage: 'Как быстро уходит вода. Низкий дренаж заболачивает.',
   density: 'Плотность населения на освоенной земле.',
+  elevation: 'На карте Земли показан рельеф и батиметрия NOAA ETOPO 2022; на случайной карте высоты генерируются.',
 };
-const VALUE_TITLE: Record<string, string> = { humidity: 'Влажность', temperature: 'Температура', drainage: 'Дренаж', density: 'Население' };
+const VALUE_TITLE: Record<string, string> = { humidity: 'Влажность', temperature: 'Температура', drainage: 'Дренаж', density: 'Население', elevation: 'Высоты' };
 
 function normalizeSearchText(value: string) {
   return value.trim().toLocaleLowerCase().replace(/ё/g, 'е').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -197,14 +198,20 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
     sub = 'доля суши';
     body = <EntityRows rows={legend.biomes} unit="земель" activeId={null} showShare
       footer={<Text style={styles.note}>{BIOME_NOTE}</Text>} testPrefix="row-biome" />;
-  } else if (mapMode === 'rivers') {
-    title = 'Реки';
-    sub = `${fmt(game.world.majorRiverPixelCount)} крупных · ${fmt(game.world.riverPixelCount)} русловых участков`;
+  } else if (mapMode === 'elevation') {
+    title = 'Высоты';
+    sub = 'метры над уровнем моря';
     body = (
       <ScrollView contentContainerStyle={{ padding: 12 }} nestedScrollEnabled>
-        <Text style={styles.valueNote}>Синим отмечены русла рек. На случайной карте речные сети генерируются по рельефу; на карте мира показаны основные реки.</Text>
-        <View style={styles.riverLegendRow}><View style={[styles.riverSwatch, { backgroundColor: '#6699ae' }]} /><Text style={styles.valueNote}>Притоки</Text></View>
-        <View style={styles.riverLegendRow}><View style={[styles.riverSwatch, { backgroundColor: '#22537d' }]} /><Text style={styles.valueNote}>Крупные реки</Text></View>
+        <LinearGradient colors={RAMPS.elevation as [string, string, ...string[]]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.ramp} />
+        <View style={styles.rampLabels}>
+          {['−11 000 м', '0 м', '+8 800 м'].map((value) => <Text key={value} style={styles.rampLabel}>{value}</Text>)}
+        </View>
+        <Text style={styles.valueNote}>{VALUE_NOTE.elevation}</Text>
+        <View style={styles.riverLegendRow}><View style={[styles.riverSwatch, { backgroundColor: '#326582' }]} /><Text style={styles.valueNote}>Реки</Text></View>
+        <View style={styles.riverLegendRow}><Text style={styles.geoSymbol}>▲</Text><Text style={styles.valueNote}>Горные вершины</Text></View>
+        <View style={styles.riverLegendRow}><Text style={[styles.geoSymbol, { color: '#b36b39' }]}>▲</Text><Text style={styles.valueNote}>Уснувшие вулканы</Text></View>
+        <View style={styles.riverLegendRow}><Text style={[styles.geoSymbol, { color: '#b43a2d' }]}>▲</Text><Text style={styles.valueNote}>Действующие вулканы</Text></View>
       </ScrollView>
     );
   } else {
@@ -260,4 +267,5 @@ const styles = StyleSheet.create({
   valueNote: { marginTop: 8, fontFamily: fonts.sans, fontSize: 12, color: c.foreground, opacity: 0.78 },
   riverLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
   riverSwatch: { width: 20, height: 4, borderRadius: 2 },
+  geoSymbol: { fontFamily: fonts.sans, fontSize: 13, fontWeight: '700', color: '#55483c' },
 });

@@ -287,7 +287,7 @@ function geographicScope(world: World, country: Country): { scope: Uint8Array; a
   const riverSeeds: number[] = [];
   world.forEachCountryPixel(country, (p) => {
     world.seasOfPixel(p, seas);
-    if (world.rivers[p] > 0) riverSeeds.push(p);
+    if (world.knownRivers[p] > 0) riverSeeds.push(p);
   });
 
   // A coastal state can settle any coast on the seas it already touches.
@@ -311,7 +311,7 @@ function geographicScope(world: World, country: Country): { scope: Uint8Array; a
       scope[p] = 1;
       anchors[p] = 1;
       forEachNeighbour(p, (n) => {
-        if (world.rivers[n] > 0 && !riverSeen[n]) {
+        if (world.knownRivers[n] > 0 && !riverSeen[n]) {
           riverSeen[n] = 1;
           queue.push(n);
         } else if (world.land[n]) {

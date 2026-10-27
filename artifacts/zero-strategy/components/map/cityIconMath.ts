@@ -1,7 +1,6 @@
 import type { City } from '@/game/world';
 
 export function cityIconIndex(city: Pick<City, 'rank' | 'capital'>, hasPort: boolean): number {
-  if (city.capital) return 12;
   return city.rank - 1 + (hasPort ? 6 : 0);
 }
 
