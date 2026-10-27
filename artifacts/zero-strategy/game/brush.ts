@@ -558,8 +558,14 @@ export class CardPainter {
     return this.brushScaling(pixel).cost;
   }
 
-  /** Геометрия пригодных целей; детальные правила мазка остаются общими с игроком. */
-  strategyCandidateArea(bounds: ContourBounds): ContourArea {
+  /**
+   * Геометрия пригодных целей хранится как объединение/пересечение контуров слоёв.
+   * Это только ограничение области: стоимость, плотность и эффект применяет общий CardPainter.
+   */
+  strategyCandidateArea(
+    bounds: ContourBounds,
+    onMeasure?: (stage: string, durationMs: number) => void,
+  ): ContourArea {
     const world = this.world;
     let area = world.contours.layer('land').select((value) => value === 1, bounds, 'land');
     const type = this.card.type;
@@ -572,13 +578,27 @@ export class CardPainter {
     }
     if (type === 'colonization') {
       if (!this.colonizationTargetArea) {
+        const started = onMeasure ? performance.now() : 0;
         this.colonizationTargetArea = this.colonizationMask
-          ? ContourArea.fromMask(
+          ? ContourArea.fromBinaryMask(
               this.colonizationMask,
               this.colonizationBounds ?? { x0: 0, y0: 0, x1: -1, y1: -1 },
-              (_value, pixel) => this.canColonizePixel(pixel),
             )
           : new ContourArea();
+        if (this.cityInfluence && this.colonizationMask) {
+          const influence = this.cityInfluence.colonizationInfluenceAreas();
+          const cityPixels = ContourArea.pixels(world.cities.map((city) => city.pixel));
+          this.colonizationTargetArea = this.colonizationTargetArea.subtract(
+            cityPixels.union(influence.foreign.subtract(influence.own)),
+          );
+        } else if (this.colonizationMask) {
+          this.colonizationTargetArea = ContourArea.fromMask(
+            this.colonizationMask,
+            this.colonizationBounds ?? { x0: 0, y0: 0, x1: -1, y1: -1 },
+            (_value, pixel) => this.canColonizePixel(pixel),
+          );
+        }
+        if (onMeasure) onMeasure('контур допустимых целей колонизации', performance.now() - started);
       }
       area = area.intersect(this.colonizationTargetArea);
     }
@@ -622,25 +642,37 @@ export class CardPainter {
     return land;
   }
 
-  /** Контуры начала и окончания отделены от области, через которую разрешено провести кисть. */
-  strategyStrokeContours(bounds: ContourBounds): { paint: ContourArea; start: ContourArea; stop: ContourArea } {
+  /**
+   * Контуры начала, прохода и окончания задаются раздельно для проверки ручного мазка.
+   * ИИ использует эти же области и ту же кисть; не заменять правила пиксельным обходом или отдельной логикой.
+   */
+  strategyStrokeContours(
+    bounds: ContourBounds,
+    onMeasure?: (stage: string, durationMs: number) => void,
+  ): { paint: ContourArea; start: ContourArea; stop: ContourArea } {
     const world = this.world;
     const type = this.card.type;
     const land = world.contours.layer('land').select((value) => value === 1, bounds, 'land');
     if (type === 'colonization') {
-      const paint = this.strategyCandidateArea(bounds);
+      const paint = this.strategyCandidateArea(bounds, onMeasure);
       const targetBounds = this.colonizationBounds ?? { x0: 0, y0: 0, x1: -1, y1: -1 };
+      let started = onMeasure ? performance.now() : 0;
       const anchors = this.colonizationAnchors
-        ? ContourArea.fromMask(this.colonizationAnchors, targetBounds)
+        ? ContourArea.fromBinaryMask(this.colonizationAnchors, targetBounds)
         : new ContourArea();
+      if (onMeasure) {
+        onMeasure('контур речных и береговых якорей', performance.now() - started);
+        started = performance.now();
+      }
       const connected = this.colonizationConnected
-        ? ContourArea.fromMask(this.colonizationConnected, {
+        ? ContourArea.fromBinaryMask(this.colonizationConnected, {
             x0: Math.max(0, targetBounds.x0 - 1),
             y0: Math.max(0, targetBounds.y0 - 1),
             x1: Math.min(MAP_WIDTH - 1, targetBounds.x1 + 1),
             y1: Math.min(MAP_HEIGHT - 1, targetBounds.y1 + 1),
           })
         : new ContourArea();
+      if (onMeasure) onMeasure('контур связанной территории', performance.now() - started);
       const start = paint.intersect(anchors.union(connected.border()));
       return { paint, start, stop: paint };
     }
@@ -681,7 +713,10 @@ export class CardPainter {
     return this.seas;
   }
 
-  /** Общий инструмент заполнения контура: те же эффекты, связность и расход чернил, что у мазка. */
+  /**
+   * Общий инструмент заполнения контура: те же эффекты, связность и расход чернил, что у мазка.
+   * Контур должен оставаться геометрическим объектом до общего шага нанесения кисти.
+   */
   paintContour(area: ContourArea, seed?: number): number {
     return this.paintContours([area], seed);
   }

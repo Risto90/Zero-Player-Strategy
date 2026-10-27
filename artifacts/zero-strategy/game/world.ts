@@ -19,6 +19,7 @@ import { generateCityIdentity } from './cityNames';
 import type { HumanOriginId } from './human';
 import { MapContours } from './contours';
 import { generateGeography, type GeographyFeature, type RiverFeature } from './geographyFeatures';
+import { riverStrengthForRank } from './geographyGeometry';
 
 export type GeographyObjectKind = 'river' | 'peak' | 'volcano';
 export interface GeographyNameTarget {
@@ -156,6 +157,11 @@ export class World {
   /** Увеличивается только при расширении территории государства или кочевого ареала. */
   territoryVersion = 0;
   private geographyScanVersion = 0;
+  private geographyVersion = 0;
+  private readonly geographyNameCache = new Map<number, {
+    version: number;
+    targets: GeographyNameTarget[];
+  }>();
   readonly contours = new MapContours(
     (name) => name === 'water' ? this.water.bodyOf : this[name],
     () => this.version,
@@ -288,6 +294,8 @@ export class World {
   }
 
   unnamedGeographyForCountry(countryId: number): GeographyNameTarget[] {
+    const cached = this.geographyNameCache.get(countryId);
+    if (cached?.version === this.geographyVersion) return cached.targets;
     const result: GeographyNameTarget[] = [];
     for (const feature of this.riverFeatures) {
       if (!feature.name && feature.discoveredBy.includes(countryId)) {
@@ -310,6 +318,7 @@ export class World {
         });
       }
     }
+    this.geographyNameCache.set(countryId, { version: this.geographyVersion, targets: result });
     return result;
   }
 
@@ -320,6 +329,7 @@ export class World {
     if (!feature) throw new Error(`Не найден географический объект ${kind}:${id}.`);
     if (feature.name) throw new Error(`Географический объект ${kind}:${id} уже получил имя.`);
     feature.name = name;
+    this.geographyVersion += 1;
     this.version += 1;
   }
 
@@ -355,10 +365,12 @@ export class World {
     restore(this.riverFeatures, state.rivers);
     restore(this.peaks, state.peaks);
     restore(this.volcanoes, state.volcanoes);
+    this.geographyVersion += 1;
+    this.geographyNameCache.clear();
     this.knownRivers.fill(0);
     for (const feature of this.riverFeatures) {
       if (feature.discoveredBy.length === 0) continue;
-      const strength = feature.scaleRank <= 2 ? 3 : feature.scaleRank <= 5 ? 2 : 1;
+       const strength = riverStrengthForRank(feature.scaleRank);
       for (const pixel of feature.pixels) {
         this.knownRivers[pixel] = Math.max(this.knownRivers[pixel], this.rivers[pixel] || strength);
       }
@@ -406,7 +418,7 @@ export class World {
       feature.discoveredBy = nextDiscoverers;
       if (feature.discoveredBy.length > 0) discovered = true;
       if ('paths' in feature) {
-        const strength = feature.scaleRank <= 2 ? 3 : feature.scaleRank <= 5 ? 2 : 1;
+         const strength = riverStrengthForRank(feature.scaleRank);
         for (const riverPixel of feature.pixels) {
           this.knownRivers[riverPixel] = Math.max(
             this.knownRivers[riverPixel],
@@ -420,7 +432,11 @@ export class World {
     for (const feature of this.peaks) checkArea([feature.pixel], feature);
     for (const feature of this.volcanoes) checkArea([feature.pixel], feature);
 
-    if (discovered) this.version += 1;
+    if (discovered) {
+      this.geographyVersion += 1;
+      this.geographyNameCache.clear();
+      this.version += 1;
+    }
     return discovered;
   }
 

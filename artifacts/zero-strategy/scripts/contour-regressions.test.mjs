@@ -53,6 +53,8 @@ rectangle(11, 12, 15, 15).forEachPixel((pixel) => { mask[pixel] = 1; });
 const masked = ContourArea.fromMask(mask, bounds, (_value, pixel) => pixel % MAP_WIDTH < 14);
 assert.deepEqual(pixels(masked), pixels(rectangle(11, 12, 13, 15)),
   'Маска преобразуется в точные горизонтальные контуры с фильтром');
+assert.deepEqual(pixels(ContourArea.fromBinaryMask(mask, bounds)), pixels(ContourArea.fromMask(mask, bounds)),
+  'Бинарная маска преобразуется в те же контуры');
 const unchangedRow = layer.row(70);
 assert.equal(layer.select((v) => v === 20, bounds, '20').size, 81 * 81);
 values[10 * MAP_WIDTH + 20] = 40;

@@ -178,6 +178,8 @@ export function geographicVisibilityScale(baseScale: number, elevation: number, 
   return baseScale * (1 + relative * 1.4);
 }
 
+export { riverVisibilityScale } from './geographyGeometry';
+
 export function labelIsInMap(pixel: number): boolean {
   return pixel >= 0 && pixel < MAP_WIDTH * MAP_HEIGHT;
 }

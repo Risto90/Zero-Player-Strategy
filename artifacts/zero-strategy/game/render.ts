@@ -446,7 +446,6 @@ export class MapRenderer {
     const temperature = w.temperature;
     const drainage = w.drainage;
     const density = w.density;
-    const rivers = w.knownRivers;
     const culture = w.culture;
     const religion = w.religion;
     const mode = MODE_CODE[this.mode];
@@ -527,12 +526,6 @@ export class MapRenderer {
         );
         if (boundary) color = shade(color, borderShade);
         else if (bits & COAST) color = shade(color, 0.82);
-        if (rivers[p] > 0) {
-          const river: RGB = rivers[p] >= 3 ? [34, 83, 125] : rivers[p] === 2 ? [55, 116, 151] : [102, 153, 174];
-          color = mode === 8
-            ? pack(river)
-            : pack(mix([color & 255, (color >> 8) & 255, (color >> 16) & 255], river, rivers[p] >= 2 ? 0.72 : 0.58));
-        }
         pixels[p] = mode === 0 && selected && selectedCountry
           ? selectedBoundary ? pack([250, 230, 177]) : countryColors[selectedCountry.id] ?? color
           : color;

@@ -18,7 +18,10 @@ interface ValueSpan extends ContourSpan {
   value: number;
 }
 
-/** Точная площадь контура: непересекающиеся горизонтальные интервалы, конец исключён. */
+/**
+ * Площадь карты хранится интервалами контурных строк, а не списком ячеек.
+ * Геометрические операции должны работать со spans, не разворачивая области в пиксели.
+ */
 export class ContourArea {
   readonly spans: readonly ContourSpan[];
   readonly size: number;
@@ -54,11 +57,36 @@ export class ContourArea {
     return new ContourArea(spans);
   }
 
+  static fromBinaryMask(
+    mask: Uint8Array,
+    bounds: ContourBounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 },
+  ): ContourArea {
+    const spans: ContourSpan[] = [];
+    const x0 = Math.max(0, bounds.x0);
+    const x1 = Math.min(MAP_WIDTH - 1, bounds.x1);
+    for (let y = Math.max(0, bounds.y0); y <= Math.min(MAP_HEIGHT - 1, bounds.y1); y += 1) {
+      const row = y * MAP_WIDTH;
+      const rowEnd = row + x1 + 1;
+      let cursor = row + x0;
+      while (cursor < rowEnd) {
+        const start = mask.indexOf(1, cursor);
+        if (start < 0 || start >= rowEnd) break;
+        const end = mask.indexOf(0, start);
+        const stop = end < 0 || end > rowEnd ? rowEnd : end;
+        spans.push({ y, start: start - row, end: stop - row });
+        cursor = stop;
+      }
+    }
+    return new ContourArea(spans, true);
+  }
+
   static fromMask(
     mask: ArrayLike<number>,
     bounds: ContourBounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 },
     accepts: (value: number, pixel: number) => boolean = () => true,
   ): ContourArea {
+    // Это адаптер растровой маски на границе API, а не способ поиска областей:
+    // после преобразования выбор, пересечения и заливка должны работать только с интервалами контура.
     const spans: ContourSpan[] = [];
     const x0 = Math.max(0, bounds.x0);
     const x1 = Math.min(MAP_WIDTH - 1, bounds.x1);
@@ -75,6 +103,32 @@ export class ContourArea {
           start = -1;
         }
       }
+    }
+    return new ContourArea(spans, true);
+  }
+
+  static integerCircle(
+    cx: number,
+    cy: number,
+    radius: number,
+    bounds: ContourBounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 },
+  ): ContourArea {
+    if (radius < 0) return new ContourArea();
+    const spans: ContourSpan[] = [];
+    const y0 = Math.max(0, bounds.y0, Math.ceil(cy - radius));
+    const y1 = Math.min(MAP_HEIGHT - 1, bounds.y1, Math.floor(cy + radius));
+    const x0 = Math.max(0, bounds.x0);
+    const x1 = Math.min(MAP_WIDTH - 1, bounds.x1);
+    for (let y = y0; y <= y1; y += 1) {
+      const dy = y - cy;
+      const halfWidthSquared = radius * radius - dy * dy;
+      if (halfWidthSquared < 0) continue;
+      const halfWidth = Math.sqrt(halfWidthSquared);
+      let start = Math.max(x0, Math.ceil(cx - halfWidth));
+      let end = Math.min(x1 + 1, Math.floor(cx + halfWidth) + 1);
+      while (start < end && Math.hypot(start - cx, dy) > radius) start += 1;
+      while (end > start && Math.hypot(end - 1 - cx, dy) > radius) end -= 1;
+      if (end > start) spans.push({ y, start, end });
     }
     return new ContourArea(spans, true);
   }
@@ -313,7 +367,11 @@ export interface ClimateContour {
   area: ContourArea;
 }
 
-/** Растры остаются точным совместимым зеркалом; геометрические запросы идут через контуры. */
+/**
+ * Растры — точное совместимое зеркало слоёв; геометрия и пересечения запрашиваются через контуры.
+ * При изменении карты инвалидируются только изменённые строки — полный обход растра в каждом ходе
+ * уничтожает смысл индекса контуров и недопустим как замена этим запросам.
+ */
 export class MapContours {
   private readonly layers = new Map<ContourLayerName, ScalarContourLayer>();
   private knownVersion = -1;
@@ -379,7 +437,10 @@ export class MapContours {
     return this.climateRegionIds[pixel];
   }
 
-  /** Пересечение трёх слоёв выполняется по интервалам, не по всем точкам площади. */
+  /**
+   * Пересечение трёх слоёв выполняется по границам одинаковых значений.
+   * Не заменять проходом по пикселям: одинаковые климатические значения уже представлены одним span.
+   */
   climateIntersections(area: ContourArea): ClimateContour[] {
     const humidity = this.layer('humidity');
     const temperature = this.layer('temperature');

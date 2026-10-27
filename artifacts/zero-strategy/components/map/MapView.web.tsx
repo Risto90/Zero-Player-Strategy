@@ -2,7 +2,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
-import { countryMapLabels, geographicVisibilityScale } from '@/game/mapLabels';
+import { countryMapLabels, geographicVisibilityScale, riverVisibilityScale } from '@/game/mapLabels';
+import { discoveredRiverPaths } from '@/game/geographyGeometry';
 import { STRIP_H } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
@@ -74,6 +75,126 @@ function mapTextColor(game: MapViewProps['game'], pixel: number): string {
   return luminance > 0.56 ? '#28231e' : '#fff7df';
 }
 
+const RIVER_COLORS: Record<number, string> = {
+  1: '#6699ae',
+  2: '#377497',
+  3: '#22537d',
+};
+
+function drawRivers(
+  ctx: CanvasRenderingContext2D,
+  game: MapViewProps['game'],
+  view: ViewTransform,
+  baseScale: number,
+) {
+  const paths = discoveredRiverPaths(game.world);
+  if (paths.length === 0 || view.scale < baseScale) return;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const segment of paths) {
+    if (view.scale < riverVisibilityScale(baseScale, segment.strength)) continue;
+    const [minX, minY, maxX, maxY] = segment.bounds;
+    if (view.ox + maxX * view.scale < 0 || view.oy + maxY * view.scale < 0 ||
+      view.ox + minX * view.scale > ctx.canvas.clientWidth ||
+      view.oy + minY * view.scale > ctx.canvas.clientHeight) continue;
+    ctx.beginPath();
+    let started = false;
+    for (let index = 0; index < segment.points.length; index += 1) {
+      const point = segment.points[index];
+      const x = view.ox + point.x * view.scale;
+      const y = view.oy + point.y * view.scale;
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.strokeStyle = RIVER_COLORS[segment.strength];
+    ctx.globalAlpha = segment.strength === 1 ? 0.82 : 0.94;
+    ctx.lineWidth = Math.max(0.65, segment.strength * view.scale);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function pointAlongPath(points: { x: number; y: number }[], distance: number) {
+  let traversed = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const before = points[index - 1];
+    const after = points[index];
+    const length = Math.hypot(after.x - before.x, after.y - before.y);
+    if (traversed + length >= distance) {
+      const ratio = length > 0 ? (distance - traversed) / length : 0;
+      return {
+        x: before.x + (after.x - before.x) * ratio,
+        y: before.y + (after.y - before.y) * ratio,
+        angle: Math.atan2(after.y - before.y, after.x - before.x),
+      };
+    }
+    traversed += length;
+  }
+  const last = points[points.length - 1];
+  const before = points[points.length - 2];
+  return {
+    x: last.x,
+    y: last.y,
+    angle: Math.atan2(last.y - before.y, last.x - before.x),
+  };
+}
+
+function drawRiverNames(
+  ctx: CanvasRenderingContext2D,
+  game: MapViewProps['game'],
+  view: ViewTransform,
+  baseScale: number,
+  width: number,
+  height: number,
+) {
+  const byRiver = new Map<number, ReturnType<typeof discoveredRiverPaths>>();
+  for (const segment of discoveredRiverPaths(game.world)) {
+    if (!segment.name || view.scale < riverVisibilityScale(baseScale, segment.strength)) continue;
+    const paths = byRiver.get(segment.riverId) ?? [];
+    paths.push(segment);
+    byRiver.set(segment.riverId, paths);
+  }
+  ctx.font = '600 6px "IBM Plex Sans", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const segments of byRiver.values()) {
+    const segment = segments.reduce((best, item) => item.length > best.length ? item : best);
+    const widths = [...(segment.name ?? '')].map((character) => ctx.measureText(character).width);
+    const textWidth = widths.reduce((sum, item) => sum + item, 0);
+    const screenLength = segment.length * view.scale;
+    if (screenLength < Math.max(24, textWidth + 4)) continue;
+    const midpoint = pointAlongPath(segment.points, segment.length / 2);
+    const centerX = view.ox + midpoint.x * view.scale;
+    const centerY = view.oy + midpoint.y * view.scale;
+    if (centerX < -100 || centerY < -30 || centerX > width + 100 || centerY > height + 30) continue;
+
+    let cursor = (screenLength - textWidth) / 2;
+    for (let index = 0; index < widths.length; index += 1) {
+      const characterWidth = widths[index];
+      const location = pointAlongPath(segment.points, (cursor + characterWidth / 2) / view.scale);
+      const x = view.ox + location.x * view.scale;
+      const y = view.oy + location.y * view.scale;
+      let angle = location.angle;
+      if (angle > Math.PI / 2 || angle < -Math.PI / 2) angle += Math.PI;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = 'rgba(245,243,231,0.9)';
+      ctx.strokeText(segment.name![index], 0, 0);
+      ctx.fillStyle = '#255c78';
+      ctx.fillText(segment.name![index], 0, 0);
+      ctx.restore();
+      cursor += characterWidth;
+    }
+  }
+}
+
 function drawMapLabels(
   ctx: CanvasRenderingContext2D,
   game: MapViewProps['game'],
@@ -130,49 +251,7 @@ function drawMapLabels(
     }
   }
 
-  for (const river of game.world.riverFeatures) {
-    if (!river.name || !river.discoveredBy.length) continue;
-    let bestPath: { x: number; y: number }[] | null = null;
-    let bestLength = 0;
-    for (const path of river.paths) {
-      let length = 0;
-      for (let i = 1; i < path.length; i += 1) {
-        length += Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
-      }
-      if (length > bestLength) {
-        bestLength = length;
-        bestPath = path;
-      }
-    }
-    if (!bestPath || bestLength * view.scale < Math.max(24, river.name.length * 6)) continue;
-    let accumulated = 0;
-    const half = bestLength / 2;
-    let midIndex = 1;
-    for (; midIndex < bestPath.length; midIndex += 1) {
-      accumulated += Math.hypot(bestPath[midIndex].x - bestPath[midIndex - 1].x, bestPath[midIndex].y - bestPath[midIndex - 1].y);
-      if (accumulated >= half) break;
-    }
-    const point = bestPath[Math.min(bestPath.length - 1, midIndex)];
-    const before = bestPath[Math.max(0, midIndex - 2)];
-    const after = bestPath[Math.min(bestPath.length - 1, midIndex + 2)];
-    const x = view.ox + point.x * view.scale;
-    const y = view.oy + point.y * view.scale;
-    let angle = Math.atan2(after.y - before.y, after.x - before.x);
-    if (angle > Math.PI / 2 || angle < -Math.PI / 2) angle += Math.PI;
-    if (x < -100 || y < -30 || x > width + 100 || y > height + 30) continue;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angle);
-    ctx.font = '600 6px "IBM Plex Sans", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.lineWidth = 1.6;
-    ctx.strokeStyle = 'rgba(245,243,231,0.9)';
-    ctx.strokeText(river.name, 0, 0);
-    ctx.fillStyle = '#255c78';
-    ctx.fillText(river.name, 0, 0);
-    ctx.restore();
-  }
+  drawRiverNames(ctx, game, view, baseScale, width, height);
 }
 
 /** Предварительный просмотр карты в браузере: холст 2D и те же жесты, что на телефоне. */
@@ -211,6 +290,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     ctx.fillRect(0, 0, width, height);
     ctx.imageSmoothingEnabled = view.scale < 1;
     ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
+    drawRivers(ctx, game, view, baseScaleRef.current);
     drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
     drawMapLabels(ctx, game, view, baseScaleRef.current, width, height);
     for (const city of game.world.cities) {

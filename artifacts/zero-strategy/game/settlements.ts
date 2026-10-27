@@ -1,4 +1,5 @@
 import { MAP_HEIGHT, MAP_WIDTH, RANKS } from './config';
+import { ContourArea, type ContourSpan } from './contours';
 import { quantizeShares } from './composition';
 import { combineHumanOriginTableMixes, combineHumanOrigins, humanOriginMixToTable, expectedOriginsForPopulation, humanOriginMixFromTable, defaultHumanOriginMix, type HumanOriginMix } from './human';
 import { cityPopulationGroupsAtPixel, type City, type CityPopulationGroup, type CityRank, type NomadCell, type Country, type World } from './world';
@@ -50,7 +51,7 @@ export function cityRankName(rank: CityRank): string {
   return ['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][rank - 1];
 }
 
-/** The city replaces its pixel's rural population in totals; its urban part is the excess. */
+/** Город заменяет сельское население своей точки; городское население — это превышение над ним. */
 export function populationAtPixel(world: World, pixel: number): number {
   return world.cityAt(pixel)?.population ?? world.density[pixel];
 }
@@ -103,8 +104,8 @@ const BUCKET = 64;
 const MAX_CITY_RADIUS = 128;
 
 /**
- * A per-card spatial index. It avoids testing every city for every brush pixel,
- * which matters on the full-size world map and low-end Expo Go devices.
+ * Пространственный индекс на одну карту: не проверяет все города для каждой точки кисти.
+ * Контурные зоны влияния для колонизации точно повторяют радиус и окно соседних корзин метода at().
  */
 export class CityInfluenceIndex {
   private readonly centers = new Map<number, IndexedCity[]>();
@@ -148,6 +149,29 @@ export class CityInfluenceIndex {
         bucket.push(p);
         this.anchors.set(anchorKey, bucket);
     }
+  }
+
+  colonizationInfluenceAreas(): { own: ContourArea; foreign: ContourArea } {
+    const ownSpans: ContourSpan[] = [];
+    const foreignSpans: ContourSpan[] = [];
+    for (const cities of this.centers.values()) {
+      for (const city of cities) {
+        const bx = Math.floor(city.x / BUCKET);
+        const by = Math.floor(city.y / BUCKET);
+        const bounds = {
+          x0: Math.max(0, (bx - 2) * BUCKET),
+          y0: Math.max(0, (by - 2) * BUCKET),
+          x1: Math.min(MAP_WIDTH - 1, (bx + 3) * BUCKET - 1),
+          y1: Math.min(MAP_HEIGHT - 1, (by + 3) * BUCKET - 1),
+        };
+        const spans = ContourArea.integerCircle(city.x, city.y, city.radius, bounds).spans;
+        (city.countryId === this.countryId ? ownSpans : foreignSpans).push(...spans);
+      }
+    }
+    return {
+      own: new ContourArea(ownSpans),
+      foreign: new ContourArea(foreignSpans),
+    };
   }
 
   at(pixel: number, needAnchor = false): CityInfluence {
@@ -481,8 +505,8 @@ export function applyDensityGrowth(world: World, pixel: number, amount: number, 
 }
 
 /**
- * Applies an ordinary density loss. Nearby cities in the same state release
- * residents proportionally, up to their populations above the rank minimum.
+ * Применяет обычную убыль плотности. Близлежащие города того же государства
+ * пропорционально освобождают жителей, не опускаясь ниже минимума своего ранга.
  */
 export function applyDensityLoss(world: World, pixel: number, requested: number): number {
   const loss = Math.min(Math.max(0, requested), world.density[pixel]);

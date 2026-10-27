@@ -6,6 +6,7 @@ import {
 } from './data/earthGeography';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from './config';
 import { generateRivers, type MapKind } from './geography';
+import { riverStrengthForRank } from './geographyGeometry';
 
 export interface GeographyFeature {
   id: number;
@@ -140,7 +141,7 @@ function rasterizeRiverPoint(x: number, y: number): number | null {
 function rasterizeRiverPaths(features: RiverFeature[], land: Uint8Array): Uint8Array {
   const rivers = new Uint8Array(MAP_PIXELS);
   for (const feature of features) {
-    const strength = feature.scaleRank <= 2 ? 3 : feature.scaleRank <= 5 ? 2 : 1;
+    const strength = riverStrengthForRank(feature.scaleRank);
     const pixels = new Set<number>();
     for (const path of feature.paths) {
       for (let point = 1; point < path.length; point += 1) {

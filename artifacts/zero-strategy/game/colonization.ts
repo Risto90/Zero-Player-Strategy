@@ -36,7 +36,7 @@ export interface ColonizationTransfer {
 
 let cached: { world: World; version: number; countryId: number; plan: ColonizationPlan } | null = null;
 
-/** Keeps the currently densest colonizer pixels at the top as each settlement changes density. */
+/** Поддерживает наверху участки колонизатора с наибольшей текущей плотностью населения. */
 export class ColonizationDonorHeap {
   private readonly heap: number[] = [];
 
@@ -50,7 +50,7 @@ export class ColonizationDonorHeap {
     return this.heap[0] ?? -1;
   }
 
-  /** The caller must have just read this pixel from peek(); its changed density is reinserted. */
+  /** Вызывать только для точки, только что полученной из peek(); после изменения плотности она вставляется заново. */
   refreshTop(donor: number): void {
     const root = this.pop();
     if (root !== donor) throw new Error('Colonization donor heap changed before transfer.');
@@ -290,7 +290,7 @@ function geographicScope(world: World, country: Country): { scope: Uint8Array; a
     if (world.knownRivers[p] > 0) riverSeeds.push(p);
   });
 
-  // A coastal state can settle any coast on the seas it already touches.
+  // Прибрежное государство может заселять берега морей, которых уже касается.
   for (const sea of seas) {
     for (const p of world.water.coastsOf[sea] ?? []) {
       scope[p] = 1;
@@ -298,7 +298,7 @@ function geographicScope(world: World, country: Country): { scope: Uint8Array; a
     }
   }
 
-  // Find the connected river network already inside the country.
+  // Находит связанную речную сеть, уже проходящую по территории государства.
   const riverSeen = new Uint8Array(MAP_PIXELS);
   const riverPixels: number[] = [];
   for (const seed of riverSeeds) {
@@ -322,7 +322,7 @@ function geographicScope(world: World, country: Country): { scope: Uint8Array; a
     }
   }
 
-  // Approximate each river's catchment as a land corridor around its connected channel.
+  // Представляет речной бассейн как сухопутный коридор вокруг связанного русла.
   if (riverPixels.length > 0) {
     const distance = new Uint8Array(MAP_PIXELS).fill(255);
     const queue: number[] = [];

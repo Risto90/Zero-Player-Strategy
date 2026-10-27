@@ -8,6 +8,7 @@ import { MAP_HEIGHT, MAP_WIDTH, RANKS } from '../game/config.ts';
 import { forEachNeighbour } from '../game/geography.ts';
 import { World } from '../game/world.ts';
 import { colonizationPlan } from '../game/colonization.ts';
+import { CityInfluenceIndex } from '../game/settlements.ts';
 
 function withSeed(seed, callback) {
   const previous = Math.random;
@@ -325,6 +326,32 @@ assert.equal(colonizationPainter.strategyImpactAt(colonizationFixtureData.blocke
   'чужая городская сфера без пересечения со своей запрещает колонизацию точки');
 assert.equal(colonizationArea.contains(colonizationFixtureData.blockedPixel), false,
   'ИИ исключает запрещённую городскую область ещё при выборе контуров');
+const influenceIndex = new CityInfluenceIndex(
+  colonizationFixtureData.world,
+  colonizationFixtureData.country.id,
+);
+const influenceAreas = influenceIndex.colonizationInfluenceAreas();
+for (const city of colonizationFixtureData.world.cities) {
+  const cx = city.pixel % MAP_WIDTH;
+  const cy = Math.floor(city.pixel / MAP_WIDTH);
+  for (let y = cy - 90; y <= cy + 90; y += 5) {
+    for (let x = cx - 90; x <= cx + 90; x += 5) {
+      if (x < 0 || x >= MAP_WIDTH || y < 0 || y >= MAP_HEIGHT) continue;
+      const pixel = y * MAP_WIDTH + x;
+      const influence = influenceIndex.at(pixel);
+      assert.equal(influenceAreas.own.contains(pixel), influence.ownRankSum > 0,
+        'контур своей городской сферы совпадает с индексом кисти');
+      assert.equal(influenceAreas.foreign.contains(pixel), influence.foreignRankSum > 0,
+        'контур чужой городской сферы совпадает с индексом кисти');
+    }
+  }
+}
+const overlapPixel = (colonizationFixtureData.y0 + 30) * MAP_WIDTH +
+  colonizationFixtureData.x0 + 21;
+assert.ok(influenceAreas.own.contains(overlapPixel) && influenceAreas.foreign.contains(overlapPixel),
+  'точка находится одновременно в своей и чужой городских сферах');
+assert.equal(colonizationArea.contains(overlapPixel), true,
+  'своя городская сфера разрешает колонизацию точки внутри чужой сферы');
 const colonizationActions = {
   beginStroke: (x, y) => colonizationPainter.dab(x, y, 10),
   dab: (x, y, radius) => colonizationPainter.dab(x, y, radius),

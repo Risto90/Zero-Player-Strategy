@@ -18,7 +18,11 @@ export interface PaintActions {
   contours?(areas: readonly ContourArea[]): number;
 }
 
-/** ИИ выбирает связные пересечения климатических контуров, а не перебирает круговые мазки. */
+/**
+ * ИИ выбирает связные пересечения климатических контуров, а не перебирает круговые мазки.
+ * Контуры отвечают за поиск подходящей области; фактическую заливку выполняет тот же CardPainter,
+ * что и ручной ввод. Не подменять выбор или заливку отдельной пиксельной кистью.
+ */
 class ContourTerritoryStrategy {
   constructor(
     private readonly painter: CardPainter,
@@ -30,8 +34,12 @@ class ContourTerritoryStrategy {
     const { world, card } = this.painter;
     const started = this.onMeasure ? performance.now() : 0;
     const bounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
-    const { paint, start } = this.painter.strategyStrokeContours(bounds);
+    const contourStarted = this.onMeasure ? performance.now() : 0;
+    const { paint, start } = this.painter.strategyStrokeContours(bounds, this.onMeasure);
+    this.onMeasure?.('подготовка областей кисти', performance.now() - contourStarted);
+    const climateStarted = this.onMeasure ? performance.now() : 0;
     const regions = world.contours.climateIntersections(paint);
+    this.onMeasure?.('климатические пересечения', performance.now() - climateStarted);
     const regionIds = new Map<string, number>();
     regions.forEach((region, id) => {
       regionIds.set(`${region.humidity}:${region.temperature}:${region.drainage}`, id);
@@ -66,12 +74,16 @@ class ContourTerritoryStrategy {
         efficiency,
       });
     };
-    if (choosingFirst) {
+    const candidateStarted = this.onMeasure ? performance.now() : 0;
+    if (choosingFirst || isColonization) {
+      // Выбирается представитель пересечения контуров, а не перебираются все точки карты.
+      // Расход и эффект по-прежнему применяет общий CardPainter при заливке области.
       regions.forEach((region, id) => {
         const first = region.area.intersect(start).spans[0];
         if (first) consider(first.y * MAP_WIDTH + first.start, id);
       });
     } else start.forEachPixel((pixel) => consider(pixel));
+    this.onMeasure?.('представители климатических контуров', performance.now() - candidateStarted);
     this.onMeasure?.('подготовка контурного плана', performance.now() - started);
     let paintingMs = 0, frontierMs = 0;
     while (card.ink > 0 && candidates.size > 0) {
@@ -97,6 +109,7 @@ class ContourTerritoryStrategy {
         candidates.clear();
       }
       // Меняется только граница закрашенного контура; весь доступный мир повторно не вычисляется.
+      // Сохранять локальное обновление: повторный перебор всех точек карты возвращает долгие ходы.
       for (let index = changedStart; index < this.painter.changed.length; index += 1) {
         forEachNeighbour(this.painter.changed[index], (pixel) => consider(pixel));
       }

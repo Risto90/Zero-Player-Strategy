@@ -23,8 +23,9 @@ import colors from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { STRIP_H, STRIPS } from '@/game/render';
 import { countryMapLabels, geographicVisibilityScale } from '@/game/mapLabels';
+import { discoveredRiverPaths, riverVisibilityScale } from '@/game/geographyGeometry';
 import { cityInfluenceRadius } from '@/game/settlements';
-import type { GeographyFeature, RiverFeature } from '@/game/geographyFeatures';
+import type { GeographyFeature } from '@/game/geographyFeatures';
 import type { City, World } from '@/game/world';
 import { circleHatchLines } from './cityInfluenceHatching';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
@@ -205,36 +206,35 @@ function GeographyPointMark({ feature, volcano, scale, baseScale, font, color }:
   );
 }
 
-function RiverNameMark({ river, scale, baseScale, font }: {
-  river: RiverFeature;
+function RiverNameMark({ segment, scale, baseScale, font }: {
+  segment: ReturnType<typeof discoveredRiverPaths>[number];
   scale: SharedValue<number>;
   baseScale: SharedValue<number>;
   font: ReturnType<typeof useFont>;
 }) {
-  const path = useMemo(() => {
-    let best: { x: number; y: number }[] = [];
-    let bestLength = 0;
-    for (const points of river.paths) {
-      let length = 0;
-      for (let index = 1; index < points.length; index += 1) {
-        length += Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
-      }
-      if (length > bestLength) {
-        best = points;
-        bestLength = length;
-      }
-    }
-    if (best.length < 2) return null;
-    const path = best.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
-    return { path, length: bestLength };
-  }, [river]);
-  const visible = useDerivedValue(() => path && river.name && river.discoveredBy.length > 0 &&
-    path.length * scale.value >= Math.max(30, river.name.length * 6) ? 1 : 0);
-  if (!path || !river.name) return null;
-  const fontSize = Math.max(6, 6 / Math.max(baseScale.value, 0.1));
+  const visible = useDerivedValue(() => segment.name &&
+    scale.value >= riverVisibilityScale(baseScale.value, segment.strength) &&
+    segment.length * scale.value >= Math.max(30, segment.name.length * 6) ? 1 : 0);
+  if (!segment.name) return null;
   return (
     <Group opacity={visible}>
-      {font && <TextPath path={path.path} text={river.name} font={font} initialOffset={path.length * 0.2} color="#255c78" />}
+      {font && <TextPath path={segment.path} text={segment.name} font={font} initialOffset={segment.length * 0.2} color="#255c78" />}
+    </Group>
+  );
+}
+
+function RiverStrokeLayer({ strength, path, scale, baseScale }: {
+  strength: 1 | 2 | 3;
+  path: string;
+  scale: SharedValue<number>;
+  baseScale: SharedValue<number>;
+}) {
+  const visible = useDerivedValue(() =>
+    scale.value >= riverVisibilityScale(baseScale.value, strength) ? 1 : 0);
+  const color = strength === 3 ? '#22537d' : strength === 2 ? '#377497' : '#6699ae';
+  return (
+    <Group opacity={visible}>
+      <Path path={path} style="stroke" color={color} strokeWidth={strength} />
     </Group>
   );
 }
@@ -250,10 +250,34 @@ function MapAnnotations({ game, scale, baseScale, ox, oy, width, height }: {
 }) {
   const snapshot = game.getSnapshot();
   const labels = countryMapLabels(game.world, 100, snapshot.mapMode, snapshot.selectedCountryId);
+  const riverPaths = useMemo(
+    () => discoveredRiverPaths(game.world),
+    [game.world, game.world.version, game.world.territoryVersion],
+  );
+  const riverStrokeGroups = useMemo(() => {
+    const groups = new Map<1 | 2 | 3, string[]>();
+    for (const segment of riverPaths) {
+      const group = groups.get(segment.strength) ?? [];
+      group.push(segment.path);
+      groups.set(segment.strength, group);
+    }
+    return [...groups].map(([strength, paths]) => ({ strength, path: paths.join(' ') }));
+  }, [riverPaths]);
+  const riverNameSegments = useMemo(() => {
+    const longest = new Map<number, typeof riverPaths[number]>();
+    for (const segment of riverPaths) {
+      if (!segment.name) continue;
+      const previous = longest.get(segment.riverId);
+      if (!previous || segment.length > previous.length) longest.set(segment.riverId, segment);
+    }
+    return [...longest.values()];
+  }, [riverPaths]);
   const countryFont = useFont(require('@expo-google-fonts/ibm-plex-sans/700Bold/IBMPlexSans_700Bold.ttf'), 8);
   const smallFont = useFont(require('@expo-google-fonts/ibm-plex-sans/400Regular/IBMPlexSans_400Regular.ttf'), 6);
   return (
     <>
+      {riverStrokeGroups.map(({ strength, path }) => <RiverStrokeLayer key={strength} strength={strength}
+        path={path} scale={scale} baseScale={baseScale} />)}
       {labels.map((label) => {
         const pixel = Math.floor(label.y) * MAP_WIDTH + Math.floor(label.x);
         const color = label.selected ? '#e7c56e' : contrastColor(game.renderer.pixels[pixel] ?? 0xffeeeeee);
@@ -266,7 +290,7 @@ function MapAnnotations({ game, scale, baseScale, ox, oy, width, height }: {
       {game.world.volcanoes.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`volcano-${feature.id}`} feature={feature}
         volcano scale={scale} baseScale={baseScale} font={smallFont}
         color={contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
-      {game.world.riverFeatures.filter((river) => river.name && river.discoveredBy.length > 0).map((river) => <RiverNameMark key={`river-${river.id}`} river={river}
+      {riverNameSegments.map((segment) => <RiverNameMark key={`river-${segment.riverId}`} segment={segment}
         scale={scale} baseScale={baseScale} font={smallFont} />)}
     </>
   );

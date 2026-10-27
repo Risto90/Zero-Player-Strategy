@@ -598,16 +598,21 @@ for (const selectedIndex of [0, 1]) {
   let game;
   try {
     game = Game.create('random', 'observer');
-    const firstCityId = game.world.cities.length;
+    const seenCities = new Set(game.world.cities);
+    let builtCityCount = 0;
     let expandedCityRankCount = 0;
     for (let year = 0; year < 100; year += 1) {
-      const ranks = game.world.cities.map((city) => city.rank);
+      const ranks = new Map(game.world.cities.map((city) => [city, city.rank]));
       await game.nextTurn();
-      for (let i = 0; i < ranks.length; i += 1) {
-        expandedCityRankCount += Math.max(0, game.world.cities[i].rank - ranks[i]);
+      for (const city of game.world.cities) {
+        if (!seenCities.has(city)) {
+          seenCities.add(city);
+          builtCityCount += 1;
+        }
+        const oldRank = ranks.get(city);
+        if (oldRank !== undefined) expandedCityRankCount += Math.max(0, city.rank - oldRank);
       }
     }
-    const builtCityCount = game.world.cities.length - firstCityId;
     assert.equal(game.getSnapshot().year, 1100, 'the fixed-seed observer simulation advances exactly 100 years');
     assert.ok(builtCityCount > 0, 'the long simulation should build cities');
     assert.ok(expandedCityRankCount > 0, 'the long simulation should expand city ranks');
