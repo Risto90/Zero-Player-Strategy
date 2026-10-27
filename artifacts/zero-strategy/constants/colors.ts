@@ -23,6 +23,9 @@ const colors = {
     border: '#c9b9a6',
     input: '#c0ad97',
     mapBackdrop: '#b9cdd0',
+    crownGold: '#b8860b',
+    crownSilver: '#8a8f98',
+    crownBlack: '#17130f',
   },
   radius: 6,
 };

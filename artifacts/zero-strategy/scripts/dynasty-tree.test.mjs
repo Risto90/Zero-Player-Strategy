@@ -9,6 +9,7 @@ import {
   toggleDynastySelection,
   zoomDynastyAtViewportCenter,
 } from '../game/dynastyTree.ts';
+import colors from '../constants/colors.ts';
 
 function character(id, familyId, options = {}) {
   return {
@@ -116,6 +117,9 @@ assert.equal(crowns.get(crownPerson2.id)?.role, 'heir', 'ожидаемый на
 assert.deepEqual(crowns.get(crownPerson2.id)?.countries.map((country) => country.id), [1]);
 assert.equal(crowns.get(crownPerson3.id)?.role, 'former', 'для бывшего правителя показывается чёрная корона');
 assert.deepEqual(crowns.get(crownPerson3.id)?.countries.map((country) => country.id), [1]);
+assert.equal(colors.light.crownGold, '#b8860b', 'у действующего правителя золотая корона');
+assert.equal(colors.light.crownSilver, '#8a8f98', 'у ожидаемого наследника серебряная корона');
+assert.equal(colors.light.crownBlack, '#17130f', 'у бывшего правителя чёрная корона');
 assert.equal(toggleDynastySelection(51, 51), null, 'повторное нажатие снимает выделение карточки');
 assert.equal(toggleDynastySelection(null, 51), 51, 'первое нажатие выделяет карточку');
 
