@@ -15,12 +15,15 @@ import Svg, { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import colors, { fonts } from '@/constants/colors';
 import type { Person } from '@/game/government';
+import { countryProfileRoute } from '@/game/profileRoutes';
 import {
   buildDynastyTree,
   centerDynastyPoint,
+  dynastyCrownTargets,
   dynastyPairKey,
   DYNASTY_NODE_HEIGHT,
   DYNASTY_NODE_WIDTH,
+  toggleDynastySelection,
   zoomDynastyAtViewportCenter,
 } from '@/game/dynastyTree';
 import { useGameSnapshot } from '@/game/useGame';
@@ -28,6 +31,18 @@ import type { Game } from '@/game/game';
 import { continueSavedGame, currentGame } from '@/game/session';
 
 const c = colors.light;
+
+const crownColor: Record<import('@/game/dynastyTree').DynastyCrownRole, string> = {
+  ruler: c.crownGold,
+  heir: c.crownSilver,
+  former: c.crownBlack,
+};
+
+const crownRoleLabel: Record<import('@/game/dynastyTree').DynastyCrownRole, string> = {
+  ruler: 'правит',
+  heir: 'первый наследник',
+  former: 'правил',
+};
 
 export default function DynastyPage() {
   const { id: rawId, person: rawFocusId } = useLocalSearchParams<{ id: string; person?: string }>();
@@ -114,6 +129,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
   const [collapsedPeople, setCollapsedPeople] = useState<Set<number>>(() => new Set());
   const [collapsedPairs, setCollapsedPairs] = useState<Set<string>>(() => new Set());
   const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
+  const [expandedCrownPersonId, setExpandedCrownPersonId] = useState<number | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const scale = useRef(new Animated.Value(1)).current;
@@ -131,6 +147,10 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
     [game.world.version, familyId, collapsedPeople, collapsedPairs],
   );
   const nodesById = useMemo(() => new Map(model.nodes.map((node) => [node.person.id, node])), [model.nodes]);
+  const crowns = useMemo(
+    () => dynastyCrownTargets(game.world, new Set(model.nodes.map((node) => node.person.id))),
+    [game.world.version, model.nodes],
+  );
   const familyName = familyMembers[0]?.familyName ?? model.nodes.find((node) => node.isDynastyMember)?.person.familyName ?? 'Династия';
   const safeTop = insets.top + (Platform.OS === 'web' ? 67 : 0);
   const safeBottom = insets.bottom + (Platform.OS === 'web' ? 34 : 0);
@@ -192,15 +212,20 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponder: (event, gesture) =>
       (event.nativeEvent.touches?.length ?? 0) > 1 || Math.abs(gesture.dx) + Math.abs(gesture.dy) > 5,
-    onMoveShouldSetPanResponderCapture: (event) => (event.nativeEvent.touches?.length ?? 0) > 1,
     onPanResponderGrant: (event, gesture) => {
       panStart.current = panOffset.current;
       dragGestureOrigin.current = { x: gesture.dx, y: gesture.dy };
+      previousTouchCount.current = event.nativeEvent.touches?.length ?? 0;
       const distance = distanceBetweenTouches(event);
       if (distance > 0) pinchStart.current = { distance, scale: scaleValue.current };
     },
     onPanResponderMove: (event, gesture) => {
       const touchCount = event.nativeEvent.touches?.length ?? 0;
+      if (touchCount === 0) {
+        pinchStart.current = null;
+        previousTouchCount.current = 0;
+        return;
+      }
       if (touchCount > 1) {
         const distance = distanceBetweenTouches(event);
         if (distance > 0) {
@@ -262,6 +287,10 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
       pathname: '/dynasty/[id]',
       params: { id: String(person.familyId), person: String(person.id) },
     });
+  };
+  const openCountry = (countryId: number) => {
+    setExpandedCrownPersonId(null);
+    router.push(countryProfileRoute(countryId));
   };
 
   const onViewportLayout = (width: number, height: number) => {
@@ -426,6 +455,8 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
               </Svg>
               {model.nodes.map((node) => {
                 const person = node.person;
+                const crown = crowns.get(person.id);
+                const crownExpanded = expandedCrownPersonId === person.id;
                 const externalChild = !node.isDynastyMember &&
                   person.parents.some((parentId) => nodesById.get(parentId)?.isDynastyMember);
                 const partnerBranchKeys = !node.isDynastyMember && !externalChild
@@ -445,8 +476,12 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                   <View
                     key={person.id}
                     onClick={() => {
-                      setSelectedPersonId(person.id);
-                      centerOnPerson(person.id);
+                      if (selectedPersonId === person.id) {
+                        setSelectedPersonId((current) => toggleDynastySelection(current, person.id));
+                      } else {
+                        setSelectedPersonId((current) => toggleDynastySelection(current, person.id));
+                        centerOnPerson(person.id);
+                      }
                     }}
                     style={[
                       styles.personCard,
@@ -456,6 +491,25 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                     ]}
                   >
                     <View style={styles.personTitleRow}>
+                      {crown && (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={crown.countries.length === 1
+                            ? `Открыть страну, где ${person.name} ${crownRoleLabel[crown.role]}`
+                            : `Выбрать страну, где ${person.name} ${crownRoleLabel[crown.role]}`}
+                          onPress={(event) => {
+                            event.stopPropagation();
+                            if (crown.countries.length === 1) {
+                              openCountry(crown.countries[0].id);
+                            } else {
+                              setExpandedCrownPersonId((current) => current === person.id ? null : person.id);
+                            }
+                          }}
+                          style={styles.crownButton}
+                        >
+                          <MaterialCommunityIcons name="crown" size={12} color={crownColor[crown.role]} />
+                        </Pressable>
+                      )}
                       <Pressable
                         onPress={(event) => {
                           event.stopPropagation();
@@ -494,6 +548,25 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                     <Text style={styles.personLife}>
                       {person.alive ? `${person.age} лет` : `${Math.floor(person.bornAt)}—${person.deathYear ?? '…'}`}
                     </Text>
+                    {crownExpanded && crown && crown.countries.length > 1 && (
+                      <View style={styles.crownMenu}>
+                        {crown.countries.map((country) => (
+                          <Pressable
+                            key={country.id}
+                            accessibilityRole="link"
+                            onPress={(event) => {
+                              event.stopPropagation();
+                              openCountry(country.id);
+                            }}
+                            style={styles.crownMenuRow}
+                          >
+                            <Text numberOfLines={1} style={styles.crownMenuText}>
+                              {country.rank} {country.name} · {crownRoleLabel[crown.role]}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    )}
                     {!node.isDynastyMember && (
                       <Text style={styles.relationType}>
                         {person.parents.some((parentId) => nodesById.get(parentId)?.isDynastyMember)
@@ -557,6 +630,10 @@ const styles = StyleSheet.create({
   partnerPersonCard: { borderTopWidth: 3, borderTopColor: c.accent },
   selectedPersonCard: { borderColor: c.primary, borderWidth: 2, backgroundColor: c.card, shadowColor: c.foreground, shadowOpacity: 0.18, shadowRadius: 5, elevation: 4 },
   personTitleRow: { minHeight: 18, flexDirection: 'row', alignItems: 'flex-start', gap: 2 },
+  crownButton: { width: 14, height: 14, alignItems: 'center', justifyContent: 'center' },
+  crownMenu: { marginTop: 2, paddingHorizontal: 4, paddingVertical: 2, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, borderRadius: 3, zIndex: 3, elevation: 3 },
+  crownMenuRow: { minHeight: 19, justifyContent: 'center' },
+  crownMenuText: { fontFamily: fonts.sans, fontSize: 8, color: c.foreground },
   personNameButton: { flex: 1 },
   personName: { fontFamily: fonts.sansSemiBold, fontSize: 10, lineHeight: 12, color: c.accent, textDecorationLine: 'underline' },
   personLife: { fontFamily: fonts.sans, fontSize: 9, color: c.foreground },
