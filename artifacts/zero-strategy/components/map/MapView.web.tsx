@@ -198,6 +198,22 @@ function drawRiverNames(
   }
 }
 
+const countryTextWidthFactorCache = new Map<string, number>();
+
+function measuredCountryTextWidthFactor(ctx: CanvasRenderingContext2D, value: string): number {
+  const cached = countryTextWidthFactorCache.get(value);
+  if (cached !== undefined) return cached;
+  const characters = [...value];
+  ctx.save();
+  ctx.font = '600 100px "IBM Plex Sans", sans-serif';
+  const glyphWidth = characters.reduce((sum, character) => sum + ctx.measureText(character).width, 0);
+  ctx.restore();
+  const factor = (glyphWidth + Math.max(0, characters.length - 1) * 16) / 100;
+  if (countryTextWidthFactorCache.size >= 4096) countryTextWidthFactorCache.clear();
+  countryTextWidthFactorCache.set(value, factor);
+  return factor;
+}
+
 function drawMapLabels(
   ctx: CanvasRenderingContext2D,
   game: MapViewProps['game'],
@@ -240,7 +256,15 @@ function drawMapLabels(
   };
 
   for (const label of countryMapLabels(game.world, view.scale, snapshot.mapMode, snapshot.selectedCountryId)) {
-    const layout = countryLabelViewportLayout(label, view.scale, view.ox, view.oy, width, height);
+    const layout = countryLabelViewportLayout(
+      label,
+      view.scale,
+      view.ox,
+      view.oy,
+      width,
+      height,
+      measuredCountryTextWidthFactor(ctx, label.text),
+    );
     if (!layout.visible) continue;
     const pixel = Math.floor(label.y) * MAP_WIDTH + Math.floor(label.x);
     const color = label.selected ? '#e7c56e' : mapTextColor(game, pixel);

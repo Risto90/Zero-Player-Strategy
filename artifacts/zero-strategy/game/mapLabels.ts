@@ -270,6 +270,7 @@ export function countryLabelViewportLayout(
   oy: number,
   viewportWidth: number,
   viewportHeight: number,
+  measuredTextWidthFactor?: number,
 ): CountryLabelViewportLayout {
   const bounds = label.countryBounds;
   const mapLeft = ox + bounds.x0 * scale;
@@ -277,7 +278,9 @@ export function countryLabelViewportLayout(
   const mapTop = oy + bounds.y0 * scale;
   const mapBottom = oy + (bounds.y1 + 1) * scale;
   const countryVisible = mapRight > 0 && mapLeft < viewportWidth && mapBottom > 0 && mapTop < viewportHeight;
-  const factor = textWidthFactor(label.text);
+  const factor = measuredTextWidthFactor && Number.isFinite(measuredTextWidthFactor) && measuredTextWidthFactor > 0
+    ? measuredTextWidthFactor
+    : textWidthFactor(label.text);
   const maxFont = Math.min(
     Math.max(0, (viewportWidth - 12) / factor),
     Math.max(0, (viewportHeight - 12) / 1.2),

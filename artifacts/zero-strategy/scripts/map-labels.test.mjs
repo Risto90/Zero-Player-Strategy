@@ -76,6 +76,12 @@ const fitted = countryLabelViewportLayout(viewportLabel, 100, -5000, -5000, 320,
 assert.ok(fitted.fontSize <= 140, 'country labels do not grow beyond the visible viewport');
 assert.ok(fitted.x >= 6 && fitted.x <= 314 && fitted.y >= 6 && fitted.y <= 174,
   'country labels remain inside the visible viewport');
+const measuredWidthFactor = 1.1;
+const fittedMeasured = countryLabelViewportLayout(viewportLabel, 100, -5000, -5000, 320, 180, measuredWidthFactor);
+const measuredTextWidth = fittedMeasured.fontSize * measuredWidthFactor;
+assert.ok(fittedMeasured.x - measuredTextWidth / 2 >= 6 &&
+  fittedMeasured.x + measuredTextWidth / 2 <= 314,
+  'country labels fit the viewport using the rendered glyph width');
 assert.equal(countryLabelViewportLayout(viewportLabel, 1, 10000, 10000, 320, 180).visible, false,
   'a country label is hidden when its territory is outside the viewport');
 assert.ok(MAP_HEIGHT * MAP_WIDTH === MAP_PIXELS, 'map annotations use the full map dimensions');
