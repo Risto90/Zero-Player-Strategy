@@ -5,7 +5,9 @@ export function cityIconIndex(city: Pick<City, 'rank' | 'capital'>, hasPort: boo
 }
 
 export function cityVisibilityRank(city: Pick<City, 'rank' | 'capital'>, hasPort: boolean): number {
-  return Math.min(6, city.rank + (city.capital ? 2 : hasPort ? 1 : 0));
+  // Порт и столица независимо сдвигают появление на один ранг:
+  // столица-порт поэтому видна на два ранга раньше обычного города.
+  return Math.min(6, city.rank + Number(hasPort) + Number(city.capital));
 }
 
 /** Relative to the map's initial phone zoom; rank 6 is visible immediately. */

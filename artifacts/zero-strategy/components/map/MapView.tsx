@@ -22,7 +22,7 @@ import { makeMutable, useDerivedValue, useSharedValue, type SharedValue } from '
 import colors from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
 import { STRIP_H, STRIPS } from '@/game/render';
-import { countryMapLabels, geographicVisibilityScale } from '@/game/mapLabels';
+import { countryLabelViewportLayout, countryMapLabels, geographicVisibilityScale, volcanoVisibilityScale } from '@/game/mapLabels';
 import { discoveredRiverPaths, riverVisibilityScale } from '@/game/geographyGeometry';
 import { cityInfluenceRadius } from '@/game/settlements';
 import type { GeographyFeature } from '@/game/geographyFeatures';
@@ -152,25 +152,37 @@ function CountryLabelMark({ label, scale, ox, oy, width, height, color, font }: 
   color: string;
   font: ReturnType<typeof useFont>;
 }) {
-  const visible = useDerivedValue(() => {
-    const screenX = ox.value + label.x * scale.value;
-    const screenY = oy.value + label.y * scale.value;
-    return label.fontSize * scale.value >= 7 &&
-      screenX + label.width * scale.value / 2 >= 0 &&
-      screenX - label.width * scale.value / 2 <= width.value &&
-      screenY + label.height * scale.value / 2 >= 0 &&
-      screenY - label.height * scale.value / 2 <= height.value ? 1 : 0;
-  });
+  const layout = useDerivedValue(() =>
+    countryLabelViewportLayout(label, scale.value, ox.value, oy.value, width.value, height.value));
+  const visible = useDerivedValue(() => layout.value.visible ? 1 : 0);
+  const shift = useDerivedValue(() => [
+    { translateX: (layout.value.x - ox.value) / Math.max(scale.value, 0.0001) - label.x },
+    { translateY: (layout.value.y - oy.value) / Math.max(scale.value, 0.0001) - label.y },
+  ]);
+  const textScale = useDerivedValue(() => [
+    { scale: layout.value.fontSize / Math.max(scale.value * 8, 0.0001) },
+  ]);
+  const characters = [...label.text];
+  const tracking = 1.2;
+  const widths = characters.map(() => 4.8);
+  const textWidth = widths.reduce((sum, item) => sum + item, 0) + Math.max(0, characters.length - 1) * tracking;
+  let cursor = label.x - textWidth / 2;
   return (
     <Group opacity={visible}>
-      <Group origin={{ x: label.x, y: label.y }} transform={[{ scale: label.fontSize / 8 }]}>
-        {font && (
-          <>
-            <SkiaText x={label.x - label.text.length * 4} y={label.y + 4} text={label.text} font={font}
-              color={color === '#fff7df' ? '#28231e' : '#fff7df'} style="stroke" strokeWidth={1.4} />
-            <SkiaText x={label.x - label.text.length * 4} y={label.y + 4} text={label.text} font={font} color={color} />
-          </>
-        )}
+      <Group transform={shift}>
+        <Group origin={{ x: label.x, y: label.y }} transform={textScale}>
+          {font && characters.map((character, index) => {
+            const x = cursor;
+            cursor += widths[index] + tracking;
+            return (
+              <Group key={`${label.key}-glyph-${index}`}>
+                <SkiaText x={x} y={label.y + 4} text={character} font={font}
+                  color={color === '#fff7df' ? '#28231e' : '#fff7df'} style="stroke" strokeWidth={1.4} />
+                <SkiaText x={x} y={label.y + 4} text={character} font={font} color={color} />
+              </Group>
+            );
+          })}
+        </Group>
       </Group>
     </Group>
   );
@@ -189,8 +201,12 @@ function GeographyPointMark({ feature, volcano, scale, baseScale, font, color }:
   const active = volcano && feature.active === true;
   const visible = useDerivedValue(() =>
     feature.discoveredBy.length > 0 &&
-    scale.value >= geographicVisibilityScale(baseScale.value, feature.elevation, active) ? 1 : 0);
-  const marker = `M ${x} ${y - 5} L ${x - 4} ${y + 3} L ${x + 4} ${y + 3} Z`;
+    (!volcano || (active && scale.value >= volcanoVisibilityScale(
+      baseScale.value,
+      feature.activityIntervalYears,
+      feature.eruptionIntensity,
+    ))) &&
+    scale.value >= geographicVisibilityScale(baseScale.value, feature.elevation) ? 1 : 0);
   const counterScale = useDerivedValue(() => [{ scale: 1 / Math.max(scale.value, 0.08) }]);
   return (
     <Group origin={{ x, y }} transform={counterScale} opacity={visible}>
@@ -212,18 +228,30 @@ function RiverNameMark({ segment, scale, baseScale, font }: {
   baseScale: SharedValue<number>;
   font: ReturnType<typeof useFont>;
 }) {
-  const visible = useDerivedValue(() => segment.name &&
-    scale.value >= riverVisibilityScale(baseScale.value, segment.strength) &&
-    segment.length * scale.value >= Math.max(30, segment.name.length * 6) ? 1 : 0);
+  const visible = useDerivedValue(() => {
+    if (!segment.name || scale.value < Math.max(6, riverVisibilityScale(baseScale.value, segment.strength))) return 0;
+    const fontSize = Math.max(6, scale.value);
+    return segment.width * scale.value >= fontSize &&
+      segment.length * scale.value >= Math.max(30, segment.name.length * fontSize * 0.72) ? 1 : 0;
+  });
   if (!segment.name) return null;
   return (
     <Group opacity={visible}>
-      {font && <TextPath path={segment.path} text={segment.name} font={font} initialOffset={segment.length * 0.2} color="#255c78" />}
+      {font && (
+        <>
+          <TextPath path={segment.path} text={segment.name} font={font}
+            initialOffset={Math.max(0, (segment.length - segment.name.length * 0.72) / 2)}
+            color="#fff" style="stroke" strokeWidth={0.28} />
+          <TextPath path={segment.path} text={segment.name} font={font}
+            initialOffset={Math.max(0, (segment.length - segment.name.length * 0.72) / 2)}
+            color="#17130f" />
+        </>
+      )}
     </Group>
   );
 }
 
-function RiverStrokeLayer({ strength, path, scale, baseScale }: {
+function RiverContourLayer({ strength, path, scale, baseScale }: {
   strength: 1 | 2 | 3;
   path: string;
   scale: SharedValue<number>;
@@ -234,7 +262,7 @@ function RiverStrokeLayer({ strength, path, scale, baseScale }: {
   const color = strength === 3 ? '#22537d' : strength === 2 ? '#377497' : '#6699ae';
   return (
     <Group opacity={visible}>
-      <Path path={path} style="stroke" color={color} strokeWidth={strength} />
+      <Path path={path} color={color} />
     </Group>
   );
 }
@@ -254,11 +282,11 @@ function MapAnnotations({ game, scale, baseScale, ox, oy, width, height }: {
     () => discoveredRiverPaths(game.world),
     [game.world, game.world.version, game.world.territoryVersion],
   );
-  const riverStrokeGroups = useMemo(() => {
+  const riverContourGroups = useMemo(() => {
     const groups = new Map<1 | 2 | 3, string[]>();
     for (const segment of riverPaths) {
       const group = groups.get(segment.strength) ?? [];
-      group.push(segment.path);
+      group.push(segment.contourPath);
       groups.set(segment.strength, group);
     }
     return [...groups].map(([strength, paths]) => ({ strength, path: paths.join(' ') }));
@@ -274,14 +302,15 @@ function MapAnnotations({ game, scale, baseScale, ox, oy, width, height }: {
   }, [riverPaths]);
   const countryFont = useFont(require('@expo-google-fonts/ibm-plex-sans/700Bold/IBMPlexSans_700Bold.ttf'), 8);
   const smallFont = useFont(require('@expo-google-fonts/ibm-plex-sans/400Regular/IBMPlexSans_400Regular.ttf'), 6);
+  const riverFont = useFont(require('@expo-google-fonts/ibm-plex-sans/400Regular/IBMPlexSans_400Regular.ttf'), 1);
   return (
     <>
-      {riverStrokeGroups.map(({ strength, path }) => <RiverStrokeLayer key={strength} strength={strength}
+      {riverContourGroups.map(({ strength, path }) => <RiverContourLayer key={strength} strength={strength}
         path={path} scale={scale} baseScale={baseScale} />)}
       {labels.map((label) => {
         const pixel = Math.floor(label.y) * MAP_WIDTH + Math.floor(label.x);
         const color = label.selected ? '#e7c56e' : contrastColor(game.renderer.pixels[pixel] ?? 0xffeeeeee);
-        return <CountryLabelMark key={`country-${label.countryId}`} label={label} scale={scale} ox={ox} oy={oy}
+        return <CountryLabelMark key={label.key} label={label} scale={scale} ox={ox} oy={oy}
           width={width} height={height} color={color} font={countryFont} />;
       })}
       {game.world.peaks.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`peak-${feature.id}`} feature={feature}
@@ -291,7 +320,7 @@ function MapAnnotations({ game, scale, baseScale, ox, oy, width, height }: {
         volcano scale={scale} baseScale={baseScale} font={smallFont}
         color={contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
       {riverNameSegments.map((segment) => <RiverNameMark key={`river-${segment.riverId}`} segment={segment}
-        scale={scale} baseScale={baseScale} font={smallFont} />)}
+        scale={scale} baseScale={baseScale} font={riverFont} />)}
     </>
   );
 }

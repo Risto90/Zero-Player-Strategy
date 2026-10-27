@@ -2,7 +2,13 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
-import { countryMapLabels, geographicVisibilityScale, riverVisibilityScale } from '@/game/mapLabels';
+import {
+  countryLabelViewportLayout,
+  countryMapLabels,
+  geographicVisibilityScale,
+  riverVisibilityScale,
+  volcanoVisibilityScale,
+} from '@/game/mapLabels';
 import { discoveredRiverPaths } from '@/game/geographyGeometry';
 import { STRIP_H } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
@@ -90,8 +96,6 @@ function drawRivers(
   const paths = discoveredRiverPaths(game.world);
   if (paths.length === 0 || view.scale < baseScale) return;
   ctx.save();
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
   for (const segment of paths) {
     if (view.scale < riverVisibilityScale(baseScale, segment.strength)) continue;
     const [minX, minY, maxX, maxY] = segment.bounds;
@@ -99,22 +103,18 @@ function drawRivers(
       view.ox + minX * view.scale > ctx.canvas.clientWidth ||
       view.oy + minY * view.scale > ctx.canvas.clientHeight) continue;
     ctx.beginPath();
-    let started = false;
-    for (let index = 0; index < segment.points.length; index += 1) {
-      const point = segment.points[index];
+    for (let index = 0; index < segment.contourPoints.length; index += 1) {
+      const point = segment.contourPoints[index];
       const x = view.ox + point.x * view.scale;
       const y = view.oy + point.y * view.scale;
-      if (!started) {
-        ctx.moveTo(x, y);
-        started = true;
-      } else {
-        ctx.lineTo(x, y);
-      }
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
+    ctx.closePath();
     ctx.strokeStyle = RIVER_COLORS[segment.strength];
     ctx.globalAlpha = segment.strength === 1 ? 0.82 : 0.94;
-    ctx.lineWidth = Math.max(0.65, segment.strength * view.scale);
-    ctx.stroke();
+    ctx.fillStyle = RIVER_COLORS[segment.strength];
+    ctx.fill();
   }
   ctx.restore();
 }
@@ -159,15 +159,18 @@ function drawRiverNames(
     paths.push(segment);
     byRiver.set(segment.riverId, paths);
   }
-  ctx.font = '600 6px "IBM Plex Sans", sans-serif';
+  const fontSize = Math.max(6, view.scale);
+  ctx.font = `600 ${fontSize}px "IBM Plex Sans", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (const segments of byRiver.values()) {
     const segment = segments.reduce((best, item) => item.length > best.length ? item : best);
-    const widths = [...(segment.name ?? '')].map((character) => ctx.measureText(character).width);
-    const textWidth = widths.reduce((sum, item) => sum + item, 0);
+    const characters = [...(segment.name ?? '')];
+    const widths = characters.map((character) => ctx.measureText(character).width);
+    const tracking = fontSize * 0.1;
+    const textWidth = widths.reduce((sum, item) => sum + item, 0) + Math.max(0, characters.length - 1) * tracking;
     const screenLength = segment.length * view.scale;
-    if (screenLength < Math.max(24, textWidth + 4)) continue;
+    if (view.scale < 6 || segment.width * view.scale < fontSize || screenLength < textWidth + 4) continue;
     const midpoint = pointAlongPath(segment.points, segment.length / 2);
     const centerX = view.ox + midpoint.x * view.scale;
     const centerY = view.oy + midpoint.y * view.scale;
@@ -184,13 +187,13 @@ function drawRiverNames(
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(angle);
-      ctx.lineWidth = 1.6;
-      ctx.strokeStyle = 'rgba(245,243,231,0.9)';
-      ctx.strokeText(segment.name![index], 0, 0);
-      ctx.fillStyle = '#255c78';
-      ctx.fillText(segment.name![index], 0, 0);
+      ctx.lineWidth = Math.max(1.2, fontSize * 0.24);
+      ctx.strokeStyle = '#fff';
+      ctx.strokeText(characters[index], 0, 0);
+      ctx.fillStyle = '#17130f';
+      ctx.fillText(characters[index], 0, 0);
       ctx.restore();
-      cursor += characterWidth;
+      cursor += characterWidth + tracking;
     }
   }
 }
@@ -215,14 +218,33 @@ function drawMapLabels(
     ctx.fillStyle = color;
     ctx.fillText(value, x, y, maxWidth);
   };
+  const trackedCountryLabel = (value: string, x: number, y: number, size: number, tracking: number, color: string) => {
+    const characters = [...value];
+    ctx.font = `600 ${size}px "IBM Plex Sans", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const widths = characters.map((character) => ctx.measureText(character).width);
+    const totalWidth = widths.reduce((sum, charWidth) => sum + charWidth, 0) +
+      Math.max(0, characters.length - 1) * tracking;
+    let cursor = x - totalWidth / 2;
+    ctx.lineWidth = Math.max(1, size * 0.2);
+    ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)';
+    ctx.fillStyle = color;
+    characters.forEach((character, index) => {
+      const charWidth = widths[index];
+      const center = cursor + charWidth / 2;
+      ctx.strokeText(character, center, y);
+      ctx.fillText(character, center, y);
+      cursor += charWidth + tracking;
+    });
+  };
 
   for (const label of countryMapLabels(game.world, view.scale, snapshot.mapMode, snapshot.selectedCountryId)) {
-    const x = view.ox + label.x * view.scale;
-    const y = view.oy + label.y * view.scale;
+    const layout = countryLabelViewportLayout(label, view.scale, view.ox, view.oy, width, height);
+    if (!layout.visible) continue;
     const pixel = Math.floor(label.y) * MAP_WIDTH + Math.floor(label.x);
     const color = label.selected ? '#e7c56e' : mapTextColor(game, pixel);
-    text(label.text, x, y, Math.max(7, Math.min(18, label.fontSize * view.scale)), color,
-      Math.max(1, label.width * view.scale));
+    trackedCountryLabel(label.text, layout.x, layout.y, layout.fontSize, layout.letterSpacing, color);
   }
 
   const ratio = view.scale / Math.max(baseScale, 0.0001);
@@ -230,7 +252,11 @@ function drawMapLabels(
     if (!feature.discoveredBy.length) continue;
     const isVolcano = game.world.volcanoes.includes(feature);
     const active = isVolcano && feature.active === true;
-    if (view.scale < geographicVisibilityScale(baseScale, feature.elevation, active)) continue;
+    if (isVolcano && !active) continue;
+    const visibilityScale = active
+      ? volcanoVisibilityScale(baseScale, feature.activityIntervalYears, feature.eruptionIntensity)
+      : geographicVisibilityScale(baseScale, feature.elevation);
+    if (view.scale < visibilityScale) continue;
     const x = view.ox + (feature.pixel % MAP_WIDTH) * view.scale;
     const y = view.oy + Math.floor(feature.pixel / MAP_WIDTH) * view.scale;
     if (x < -24 || y < -30 || x > width + 24 || y > height + 30) continue;

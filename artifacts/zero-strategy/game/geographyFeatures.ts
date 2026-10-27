@@ -4,6 +4,7 @@ import {
   EARTH_RIVERS_BASE64,
   EARTH_VOLCANOES_BASE64,
 } from './data/earthGeography';
+import { EARTH_VOLCANO_ACTIVITY_BASE64, EARTH_VOLCANO_ACTIVITY_COUNT } from './data/earthVolcanoActivity';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from './config';
 import { generateRivers, type MapKind } from './geography';
 import { riverStrengthForRank } from './geographyGeometry';
@@ -15,6 +16,8 @@ export interface GeographyFeature {
   name: string | null;
   discoveredBy: number[];
   active?: boolean;
+  activityIntervalYears?: number;
+  eruptionIntensity?: number;
 }
 
 export interface RiverFeature {
@@ -74,6 +77,10 @@ function pointFeatureRows(encoded: string, isVolcano: boolean): GeographyFeature
   const bytes = decodeBase64(encoded);
   const cursor = { value: 0 };
   const count = readUnsigned(bytes, cursor);
+  const activityBytes = isVolcano ? decodeBase64(EARTH_VOLCANO_ACTIVITY_BASE64) : null;
+  if (isVolcano && (count !== EARTH_VOLCANO_ACTIVITY_COUNT || activityBytes?.length !== count * 2)) {
+    throw new Error('Повреждены встроенные данные активности вулканов.');
+  }
   const result: GeographyFeature[] = [];
   let x = 0;
   let y = 0;
@@ -90,6 +97,10 @@ function pointFeatureRows(encoded: string, isVolcano: boolean): GeographyFeature
       name: null,
       discoveredBy: [],
       ...(active === undefined ? {} : { active }),
+      ...(active === undefined || !activityBytes ? {} : {
+        activityIntervalYears: activityBytes[id * 2],
+        eruptionIntensity: activityBytes[id * 2 + 1],
+      }),
     });
   }
   return result;
@@ -281,13 +292,18 @@ function randomPointFeatures(elevation: Int16Array, land: Uint8Array, seed: numb
     const candidate = candidates[Math.floor(random() * candidates.length)];
     if (!candidate || candidate.elevation < 900 || used.has(candidate.pixel)) continue;
     used.add(candidate.pixel);
+    const active = random() < 0.45;
     volcanoes.push({
       id: volcanoes.length,
       pixel: candidate.pixel,
       elevation: candidate.elevation,
       name: null,
       discoveredBy: [],
-      active: random() < 0.45,
+      active,
+      ...(active ? {
+        activityIntervalYears: Math.round(1 + random() * 120),
+        eruptionIntensity: Math.max(1, Math.ceil(random() * 8)),
+      } : {}),
     });
   }
   return { peaks, volcanoes };
