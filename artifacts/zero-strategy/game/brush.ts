@@ -275,6 +275,7 @@ export class CardPainter {
   readonly changed: number[] = [];
   private readonly cardMask = new Uint8Array(MAP_PIXELS);
   private readonly strokeMask = new Uint8Array(MAP_PIXELS);
+  private cardMaskContour: ContourArea | null = null;
   private readonly dabMask = new Uint8Array(MAP_PIXELS);
   /** Общее население, перемещённое картой колонизации. */
   colonistsMoved = 0;
@@ -657,6 +658,109 @@ export class CardPainter {
       return land.intersect(owners.select((value) => value === this.card.targetCountryId! + 1, bounds));
     }
     return land;
+  }
+
+  /** Точная область точек, для которых эта карта ещё может потратить чернила. */
+  strategyLayerCandidateArea(bounds: ContourBounds): ContourArea {
+    const world = this.world;
+    const card = this.card;
+    const type = card.type;
+    if (card.ink <= 0) return new ContourArea();
+
+    const land = world.contours.layer('land').select((value) => value === 1, bounds, 'land');
+    const owners = world.contours.layer('owner');
+    const waterLayer = world.contours.layer('water');
+    const targetTag = card.targetCountryId === null ? null : card.targetCountryId + 1;
+    let area: ContourArea;
+
+    if (isCurrent(type)) {
+      const water = waterLayer.select((value) => value >= 0, bounds, 'all-water');
+      area = land.union(water);
+    } else if (isWind(type)) {
+      const seaKey = [...this.seas].sort((a, b) => a - b).join(',');
+      const water = waterLayer.select(
+        (value) => this.seas.has(value),
+        bounds,
+        `wind-seas:${seaKey}`,
+      );
+      if (card.ink + 1e-9 < 0.5) return new ContourArea();
+      if (targetTag === null) {
+        area = water;
+      } else {
+        const ownLand = land.intersect(owners.select(
+          (value) => value === targetTag,
+          bounds,
+          `wind-owner:${targetTag}`,
+        ));
+        area = card.ink + 1e-9 < 1 ? water : ownLand.union(water);
+      }
+    } else if (type === 'faith' || type === 'culture') {
+      const ownerArea = targetTag === null
+        ? owners.select((value) => value > 0, bounds, 'inhabited')
+        : owners.select((value) => value === targetTag, bounds, `owner:${targetTag}`);
+      area = land.intersect(ownerArea);
+    } else {
+      area = targetTag === null
+        ? land
+        : land.intersect(owners.select((value) => value === targetTag, bounds, `owner:${targetTag}`));
+    }
+
+    let changingLayer: 'humidity' | 'temperature' | 'drainage' | 'culture' | 'religion' | null = null;
+    let canChangeValue: ((value: number) => boolean) | null = null;
+    let valueKey = '';
+    if (type === 'rain' || type === 'drought') {
+      changingLayer = 'humidity';
+      canChangeValue = type === 'rain' ? (value) => value < 100 : (value) => value > 0;
+      valueKey = `ai:${type}`;
+    } else if (type === 'desertification' || type === 'swamping') {
+      changingLayer = 'drainage';
+      canChangeValue = type === 'desertification' ? (value) => value < 100 : (value) => value > 0;
+      valueKey = `ai:${type}`;
+    } else if (isCurrent(type) || isWind(type)) {
+      changingLayer = 'temperature';
+      canChangeValue = type === 'warmCurrent' || type === 'warmWind'
+        ? (value) => value < 100
+        : (value) => value > 0;
+      valueKey = `ai:${type}`;
+    } else if (type === 'faith') {
+      changingLayer = 'religion';
+      canChangeValue = (value) => world.religionTable.convert(
+        value,
+        card.newReligionId as number,
+        FAITH_CONVERSION,
+        null,
+      ) !== value;
+      valueKey = `ai:faith:${card.newReligionId}`;
+    } else if (type === 'culture') {
+      changingLayer = 'culture';
+      canChangeValue = (value) => world.cultureTable.convert(
+        value,
+        card.newCultureId as number,
+        CULTURE_CONVERSION,
+        card.sourceCultureId,
+      ) !== value;
+      valueKey = `ai:culture:${card.newCultureId}:${card.sourceCultureId ?? 'all'}`;
+    }
+
+    if (changingLayer && canChangeValue) {
+      area = area.intersect(
+        world.contours.layer(changingLayer).select(canChangeValue, bounds, valueKey),
+      );
+    }
+
+    if (this.mode === 'respect') {
+      this.cardMaskContour ??= ContourArea.fromBinaryMask(this.cardMask, {
+        x0: 0,
+        y0: 0,
+        x1: MAP_WIDTH - 1,
+        y1: MAP_HEIGHT - 1,
+      });
+      area = area.subtract(this.cardMaskContour);
+    }
+    if (this.strokeTouched.length) {
+      area = area.subtract(ContourArea.pixels(this.strokeTouched));
+    }
+    return area;
   }
 
   /**
