@@ -166,6 +166,7 @@ export class MapRenderer {
   private readonly originColors = HUMAN_ORIGINS.map((origin) => pack(hexToRgb(HUMAN_ORIGIN_COLORS[origin.id])));
   private cityColors = CITY_COLORS.map((color) => pack(hexToRgb(color)));
   private colorKey = '';
+  private colorSyncVersion = -1;
   /** Цвет для каждого идентификатора состава; ноль означает, что цвет ещё не вычислен. */
   private compCache = { culture: new Int32Array(256), religion: new Int32Array(256) };
   private readonly unclaimed = hexToRgb(PALETTE.unclaimedLand);
@@ -526,6 +527,8 @@ export class MapRenderer {
 
   private syncEntityColors(): void {
     const w = this.world;
+    if (this.colorSyncVersion === w.version) return;
+    this.colorSyncVersion = w.version;
     // Повторно созданные сущности могут получить другие цвета при прежнем идентификаторе.
     const key = `${w.countries.map((c) => c.color).join()}|${w.cultures.map((c) => c.color).join()}|${w.religions.map((c) => c.color).join()}`;
     if (key !== this.colorKey) {
