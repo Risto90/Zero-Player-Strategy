@@ -357,12 +357,20 @@ class ObserverPerformanceBenchmark {
         profile.samples?.forEach((id, index) => {
           samples.set(id, (samples.get(id) ?? 0) + (profile.timeDeltas?.[index] ?? 0));
         });
-        console.log('Профиль процессора:', [...samples].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([id, microseconds]) => ({
-          function: nodes.get(id).callFrame.functionName,
-          milliseconds: Math.round(microseconds / 1000),
-          line: nodes.get(id).callFrame.lineNumber,
-          parent: profile.nodes.find((node) => node.children?.includes(id))?.callFrame.functionName,
-        })));
+        console.log('Профиль процессора:', [...samples].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([id, microseconds]) => {
+          const frame = nodes.get(id).callFrame;
+          const parentFrame = profile.nodes.find((node) => node.children?.includes(id))?.callFrame;
+          const location = (item) => item
+            ? `${item.url}:${item.lineNumber + 1}:${item.columnNumber + 1}`
+            : null;
+          return {
+            функция: frame.functionName,
+            миллисекунд: Math.round(microseconds / 1000),
+            источник: location(frame),
+            родитель: parentFrame?.functionName ?? null,
+            источникРодителя: location(parentFrame),
+          };
+        }));
       }
       this.summarize();
     } finally {
