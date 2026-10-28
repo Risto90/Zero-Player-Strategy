@@ -263,7 +263,9 @@ function fillPaths(
       if (!accepts(pixel)) continue;
       const paint = game.renderer.vectorPaintAt(pixel);
       const color = vectorColorFor(game, paint);
-      const key = `${paint.key}:${color}`;
+      const key = paint.key.startsWith('sea-depth:')
+        ? `sea-depth-color:${color}`
+        : `${paint.key}:${color}`;
       const area = areas.get(key) ?? { color, spans: [] };
       const previous = area.spans[area.spans.length - 1];
       if (previous && previous.y === span.y && previous.end === span.start) previous.end = span.end;
