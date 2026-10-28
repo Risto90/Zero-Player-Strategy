@@ -114,6 +114,9 @@ class ObserverPerformanceBenchmark {
       Boolean(document.querySelector('[data-testid="map-canvas"]')),
     );
     await this.waitForIdle(180_000);
+    if (process.env.PERF_SCREENSHOT_PATH) {
+      await this.page.screenshot({ path: process.env.PERF_SCREENSHOT_PATH });
+    }
   }
 
   async waitForIdle(timeoutMs) {
