@@ -124,7 +124,8 @@ class ObserverPerformanceBenchmark {
         return {
           mode: snapshot?.mapMode,
           rootTag: root?.tagName,
-          svgLayers: Array.from(root?.querySelectorAll('svg') ?? []).map((svg) => ({
+          svgLayers: Array.from(document.querySelectorAll('svg')).map((svg) => ({
+            insideMapCanvas: !!root?.contains(svg),
             viewBox: svg.getAttribute('viewBox'),
             display: getComputedStyle(svg).display,
             paths: svg.querySelectorAll('path').length,
