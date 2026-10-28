@@ -13,6 +13,7 @@ export interface MapViewProps {
   /** 'brush' paints with the active card (when it can be painted); 'hand' pans and inspects. */
   tool: MapTool;
   canPaint: boolean;
+  avoidToolOverlay?: boolean;
   onInspect?: (info: PixelInfo | null) => void;
   onMapActivity?: () => void;
 }

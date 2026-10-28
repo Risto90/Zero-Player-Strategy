@@ -490,6 +490,7 @@ function GameScreen({ game }: { game: Game }) {
               game={game}
               tool={tool}
               canPaint={canBrush}
+              avoidToolOverlay={showTools}
               onInspect={(info) => setInspect({ info })}
               onMapActivity={showZoomForAWhile}
             />

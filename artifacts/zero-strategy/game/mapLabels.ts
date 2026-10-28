@@ -2,6 +2,11 @@ import { ContourArea, type ContourBounds, type ContourSpan } from './contours';
 import { MAP_HEIGHT, MAP_WIDTH } from './config';
 import { cityLabelFontSize, cityVisibilityRank, isCityVisibleAtZoom } from './cityVisibility';
 import { HUMAN_ORIGINS } from './human';
+import {
+  fitLabelToVisibleContour,
+  type LabelAvoidanceRect,
+  type LabelGeometryPoint,
+} from './labelGeometry';
 import type { EntityLayer, MapMode } from './render';
 import type { Country, World } from './world';
 
@@ -17,6 +22,8 @@ export interface CountryMapLabel {
   selected: boolean;
   bounds: [number, number, number, number];
   countryBounds: ContourBounds;
+  rings: readonly Int32Array[];
+  allowBridge: boolean;
 }
 
 type LabelCore = Omit<CountryMapLabel, 'selected'>;
@@ -24,7 +31,7 @@ const labelCache = new WeakMap<World, { version: number; territoryVersion: numbe
 const nomadLabelCache = new WeakMap<World, {
   version: number;
   territoryVersion: number;
-  labels: Map<number, LabelCore | null>;
+  labels: Map<number, LabelCore[]>;
 }>();
 const entityAreaCache = new WeakMap<World, {
   version: number;
@@ -43,117 +50,169 @@ function textWidthFactor(text: string): number {
   return Math.max(1, count * 0.62 + Math.max(0, count - 1) * 0.16);
 }
 
-function contourAreaBounds(area: ContourArea): ContourBounds {
-  return area.bounds;
+function labelLineVariants(text: string): string[][] {
+  const variants = [[text]];
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  for (const lineCount of [2, 3]) {
+    if (words.length < lineCount) continue;
+    const lines: string[] = [];
+    let remaining = [...words];
+    for (let lineIndex = 0; lineIndex < lineCount - 1; lineIndex += 1) {
+      const linesLeft = lineCount - lineIndex;
+      const targetLength = remaining.reduce((sum, word) => sum + word.length, 0) / linesLeft;
+      let current: string[] = [];
+      let currentLength = 0;
+      const maxTake = remaining.length - (linesLeft - 1);
+      while (current.length < maxTake) {
+        const next = remaining[0];
+        if (current.length > 0 &&
+            Math.abs(currentLength - targetLength) <= Math.abs(currentLength + next.length + 1 - targetLength)) break;
+        current.push(remaining.shift()!);
+        currentLength += next.length + (current.length > 1 ? 1 : 0);
+      }
+      lines.push(current.join(' '));
+    }
+    lines.push(remaining.join(' '));
+    variants.push(lines);
+  }
+  return variants;
 }
 
-function labelTouchesComponent(
-  area: ContourArea,
+function pointToSegmentDistance(
   x: number,
   y: number,
-  width: number,
-  height: number,
-): boolean {
-  const bounds = area.bounds;
-  return x + width / 2 >= bounds.x0 &&
-    x - width / 2 <= bounds.x1 + 1 &&
-    y + height / 2 >= bounds.y0 &&
-    y - height / 2 <= bounds.y1 + 1;
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax, dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared > 0
+    ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / lengthSquared))
+    : 0;
+  return Math.hypot(x - (ax + dx * t), y - (ay + dy * t));
 }
 
-function labelCoverage(area: ContourArea, x: number, y: number, width: number, height: number): number {
-  const left = x - width / 2;
-  const right = x + width / 2;
-  const top = y - height / 2;
-  const bottom = y + height / 2;
-  let covered = 0;
-  let low = 0;
-  let high = area.spans.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    if (area.spans[middle].y < top) low = middle + 1;
-    else high = middle;
+/** Расстояние между границами вычисляется по векторным кольцам после быстрой проверки bbox. */
+function contourDistance(first: ContourArea, second: ContourArea, limit: number): number {
+  const a = first.bounds, b = second.bounds;
+  const dx = Math.max(0, a.x0 - b.x1 - 1, b.x0 - a.x1 - 1);
+  const dy = Math.max(0, a.y0 - b.y1 - 1, b.y0 - a.y1 - 1);
+  if (Math.hypot(dx, dy) > limit) return Infinity;
+
+  const firstRings = first.rings();
+  const secondRings = second.rings();
+  let closest = Infinity;
+  for (const firstRing of firstRings) {
+    for (let firstIndex = 0; firstIndex < firstRing.length; firstIndex += 2) {
+      const firstX = firstRing[firstIndex], firstY = firstRing[firstIndex + 1];
+      for (const secondRing of secondRings) {
+        for (let secondIndex = 0; secondIndex < secondRing.length; secondIndex += 2) {
+          const next = (secondIndex + 2) % secondRing.length;
+          closest = Math.min(closest, pointToSegmentDistance(
+            firstX,
+            firstY,
+            secondRing[secondIndex],
+            secondRing[secondIndex + 1],
+            secondRing[next],
+            secondRing[next + 1],
+          ));
+          if (closest <= 0.01) return 0;
+        }
+      }
+    }
   }
-  for (let index = low; index < area.spans.length; index += 1) {
-    const span = area.spans[index];
-    if (span.y > bottom) break;
-    covered += Math.max(0, Math.min(right, span.end) - Math.max(left, span.start));
+  for (const secondRing of secondRings) {
+    for (let secondIndex = 0; secondIndex < secondRing.length; secondIndex += 2) {
+      const secondX = secondRing[secondIndex], secondY = secondRing[secondIndex + 1];
+      for (const firstRing of firstRings) {
+        for (let firstIndex = 0; firstIndex < firstRing.length; firstIndex += 2) {
+          const next = (firstIndex + 2) % firstRing.length;
+          closest = Math.min(closest, pointToSegmentDistance(
+            secondX,
+            secondY,
+            firstRing[firstIndex],
+            firstRing[firstIndex + 1],
+            firstRing[next],
+            firstRing[next + 1],
+          ));
+          if (closest <= 0.01) return 0;
+        }
+      }
+    }
   }
-  return covered / Math.max(1, width * height);
+  return closest;
 }
 
-function labelCandidates(area: ContourArea): { x: number; y: number }[] {
-  if (!area.spans.length) return [];
-  const bounds = area.bounds;
-  let weightedX = 0;
-  let weightedY = 0;
-  let total = 0;
-  for (const span of area.spans) {
-    const length = span.end - span.start;
-    weightedX += (span.start + span.end - 1) * 0.5 * length;
-    weightedY += span.y * length;
-    total += length;
-  }
-  const candidates = [{ x: weightedX / total, y: weightedY / total }];
-  const widest = [...area.spans]
-    .sort((a, b) => (b.end - b.start) - (a.end - a.start))
-    .slice(0, 24);
-  for (const span of widest) candidates.push({ x: (span.start + span.end - 1) / 2, y: span.y });
-  candidates.push({ x: (bounds.x0 + bounds.x1) / 2, y: (bounds.y0 + bounds.y1) / 2 });
-  const unique = new Map<string, { x: number; y: number }>();
-  for (const point of candidates) unique.set(`${Math.round(point.x)}:${Math.round(point.y)}`, point);
-  return [...unique.values()];
+function nearbyComponentGroups(
+  components: readonly ContourArea[],
+  text: string,
+): { index: number; areas: ContourArea[] }[] {
+  if (!components.length) return [];
+  const largest = components[0].bounds;
+  const hRef = Math.min(
+    42,
+    (largest.x1 - largest.x0 + 1) / textWidthFactor(text),
+    (largest.y1 - largest.y0 + 1) / 1.25,
+  );
+  const mergeDistance = 2 * Math.max(11, hRef);
+  const groups: { index: number; areas: ContourArea[] }[] = [];
+  components.forEach((component, index) => {
+    const connected = groups.filter((group) =>
+      group.areas.some((area) => contourDistance(component, area, mergeDistance) <= mergeDistance));
+    if (!connected.length) {
+      groups.push({ index, areas: [component] });
+      return;
+    }
+    const target = connected[0];
+    target.index = Math.min(target.index, index);
+    target.areas.push(component);
+    for (const extra of connected.slice(1)) {
+      target.index = Math.min(target.index, extra.index);
+      target.areas.push(...extra.areas);
+      groups.splice(groups.indexOf(extra), 1);
+    }
+  });
+  return groups.sort((a, b) => a.index - b.index);
 }
 
 function makeLabel(
   area: ContourArea,
   country: Pick<Country, 'id' | 'name'>,
   key: string,
-  forceComponentLabel: boolean,
   requiredAreas: readonly ContourArea[] = [],
 ): LabelCore | null {
   if (!area.size || !country.name) return null;
-  const countryBounds = contourAreaBounds(area);
+  const countryBounds = area.bounds;
   const areaWidth = countryBounds.x1 - countryBounds.x0 + 1;
   const areaHeight = countryBounds.y1 - countryBounds.y0 + 1;
   const widthFactor = textWidthFactor(country.name);
   const maximumFont = Math.min(42, areaWidth / widthFactor, areaHeight / 1.25);
-  const candidates = labelCandidates(area);
-  let best: { x: number; y: number; fontSize: number; width: number; height: number } | null = null;
-
-  for (const point of candidates) {
-    const localMax = Math.min(maximumFont, areaWidth / widthFactor, areaHeight / 1.25);
-    for (let fontSize = localMax; fontSize >= 0.25; fontSize -= Math.max(0.1, localMax / 24)) {
-      const width = widthFactor * fontSize;
-      const height = fontSize * 1.2;
-      if (requiredAreas.some((required) =>
-        !labelTouchesComponent(required, point.x, point.y, width, height) ||
-        labelCoverage(required, point.x, point.y, width, height) <= 0)) continue;
-      if (labelCoverage(area, point.x, point.y, width, height) < 0.5) continue;
-      if (!best || fontSize > best.fontSize) best = { ...point, fontSize, width, height };
-      break;
-    }
-  }
-
-  if (!best && forceComponentLabel) {
-    const fallback = candidates[0];
-    const fontSize = Math.min(4, maximumFont);
-    if (fontSize <= 0) return null;
-    best = { ...fallback, fontSize, width: widthFactor * fontSize, height: fontSize * 1.2 };
-  }
-  if (!best) return null;
+  if (!(maximumFont > 0)) return null;
+  const fontSize = maximumFont;
+  const width = widthFactor * fontSize;
+  const height = fontSize * 1.2;
+  const x = (countryBounds.x0 + countryBounds.x1 + 1) / 2;
+  const y = (countryBounds.y0 + countryBounds.y1 + 1) / 2;
   return {
     countryId: country.id,
     key,
     text: country.name,
-    ...best,
+    x,
+    y,
+    fontSize,
+    width,
+    height,
     bounds: [
-      best.x - best.width / 2,
-      best.y - best.height / 2,
-      best.x + best.width / 2,
-      best.y + best.height / 2,
+      x - width / 2,
+      y - height / 2,
+      x + width / 2,
+      y + height / 2,
     ],
     countryBounds,
+    rings: area.rings(),
+    allowBridge: requiredAreas.length > 1,
   };
 }
 
@@ -185,47 +244,44 @@ function settledCountryLabels(world: World): LabelCore[] {
     const area = countryArea(world, country);
     if (!area.size) continue;
     const components = area.components().sort((a, b) => b.size - a.size);
-    if (components.length <= 1) {
-      const label = makeLabel(area, country, `country-${country.id}-0`, true);
+    for (const group of nearbyComponentGroups(components, country.name)) {
+      const groupArea = group.areas.slice(1).reduce((combined, component) => combined.union(component), group.areas[0]);
+      const label = makeLabel(
+        groupArea,
+        country,
+        `country-${country.id}-cluster-${group.index}`,
+        group.areas,
+      );
       if (label) labels.push(label);
-      continue;
     }
-
-    // Одна подпись допустима, только если больше половины её площади остаётся внутри страны.
-    const shared = makeLabel(area, country, `country-${country.id}-all`, false, components);
-    if (shared && labelCoverage(area, shared.x, shared.y, shared.width, shared.height) > 0.5) {
-      labels.push(shared);
-      continue;
-    }
-    components.forEach((component, index) => {
-      const label = makeLabel(component, country, `country-${country.id}-part-${index}`, true);
-      if (label) labels.push(label);
-    });
   }
   labelCache.set(world, { version: world.version, territoryVersion: world.territoryVersion, labels });
   return labels;
 }
 
-function selectedNomadLabel(world: World, countryId: number): LabelCore | null {
+function selectedNomadLabels(world: World, countryId: number): LabelCore[] {
   let cache = nomadLabelCache.get(world);
   if (!cache || cache.version !== world.version || cache.territoryVersion !== world.territoryVersion) {
     cache = { version: world.version, territoryVersion: world.territoryVersion, labels: new Map() };
     nomadLabelCache.set(world, cache);
   }
-  if (cache.labels.has(countryId)) return cache.labels.get(countryId) ?? null;
+  if (cache.labels.has(countryId)) return cache.labels.get(countryId) ?? [];
   const country = world.countries[countryId];
   if (!country || country.type !== 'nomadic' || !country.range?.length || !country.name) {
-    cache.labels.set(countryId, null);
-    return null;
+    cache.labels.set(countryId, []);
+    return [];
   }
   const area = ContourArea.pixels(country.range).intersect(
     ContourArea.rectangle({ x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 }),
   );
   const components = area.components().sort((a, b) => b.size - a.size);
-  const label = makeLabel(area, country, `nomad-${countryId}`, false) ??
-    (components[0] ? makeLabel(components[0], country, `nomad-${countryId}`, true) : null);
-  cache.labels.set(countryId, label);
-  return label;
+  const labels = nearbyComponentGroups(components, country.name).flatMap((group) => {
+    const groupArea = group.areas.slice(1).reduce((combined, component) => combined.union(component), group.areas[0]);
+    const label = makeLabel(groupArea, country, `nomad-${countryId}-cluster-${group.index}`, group.areas);
+    return label ? [label] : [];
+  });
+  cache.labels.set(countryId, labels);
+  return labels;
 }
 
 function overlaps(
@@ -242,13 +298,13 @@ export function countryMapLabels(
   scale: number | null,
   mode: MapMode,
   selectedCountryId: number | null,
+  resolveCollisions = true,
 ): CountryMapLabel[] {
   if (!shouldShowStateLabels(mode)) return [];
   const labels: CountryMapLabel[] = [];
   const nomads = world.countries
     .filter((country) => country.type === 'nomadic')
-    .map((country) => ({ country, core: selectedNomadLabel(world, country.id) }))
-    .filter((entry): entry is { country: Country; core: LabelCore } => entry.core !== null)
+    .flatMap((country) => selectedNomadLabels(world, country.id).map((core) => ({ country, core })))
     .sort((a, b) =>
       Number(b.country.id === selectedCountryId) - Number(a.country.id === selectedCountryId) ||
       b.core.fontSize - a.core.fontSize ||
@@ -256,35 +312,13 @@ export function countryMapLabels(
   for (const { country, core } of nomads) {
     if (scale !== null && !labelVisible(core.key, core.fontSize * scale)) continue;
     const label: CountryMapLabel = { ...core, selected: country.id === selectedCountryId };
-    if (!labels.some((placed) => overlaps(label, placed))) labels.push(label);
+    if (!resolveCollisions || !labels.some((placed) => overlaps(label, placed))) labels.push(label);
   }
   const settled = [...settledCountryLabels(world)].sort((a, b) => b.fontSize - a.fontSize || a.countryId - b.countryId);
   for (const core of settled) {
     if (scale !== null && !labelVisible(core.key, core.fontSize * scale)) continue;
     const label: CountryMapLabel = { ...core, selected: false };
-    if (labels.some((placed) => overlaps(label, placed))) {
-      const country = world.countries[core.countryId];
-      const area = country ? countryArea(world, country) : null;
-      const candidates = (area ? labelCandidates(area) : [])
-        .filter((point) => area && labelCoverage(area, point.x, point.y, label.width, label.height) > 0.5)
-        .map((point) => ({ ...label, ...point }))
-        .filter((candidate) => labels.every((placed) => !overlaps(candidate, placed)))
-        .sort((a, b) => {
-          const centerX = (core.countryBounds.x0 + core.countryBounds.x1) / 2;
-          const centerY = (core.countryBounds.y0 + core.countryBounds.y1) / 2;
-          return Math.hypot(a.x - centerX, a.y - centerY) - Math.hypot(b.x - centerX, b.y - centerY);
-        });
-      if (candidates.length) {
-        label.x = candidates[0].x;
-        label.y = candidates[0].y;
-        label.bounds = [
-          label.x - label.width / 2,
-          label.y - label.height / 2,
-          label.x + label.width / 2,
-          label.y + label.height / 2,
-        ];
-      } else continue;
-    }
+    if (resolveCollisions && labels.some((placed) => overlaps(label, placed))) continue;
     labels.push(label);
   }
   return labels.filter((label) => label.x >= 0 && label.x < MAP_WIDTH && label.y >= 0 && label.y < MAP_HEIGHT);
@@ -300,6 +334,7 @@ export function entityMapLabels(
   mode: MapMode,
   selectedLayer: EntityLayer | null,
   scale?: number,
+  resolveCollisions = true,
 ): CountryMapLabel[] {
   const definition = mode === 'cultures'
     ? { kind: 'culture' as const, contour: 'culture' as const, table: world.cultureTable, entities: world.cultures }
@@ -413,9 +448,10 @@ export function entityMapLabels(
       const name = names.get(id);
       if (!name || !area.size) continue;
       const components = area.components().sort((a, b) => b.size - a.size);
-      for (let index = 0; index < components.length; index += 1) {
-        const key = `${definition.kind}-${id}-${index}`;
-        const core = makeLabel(components[index], { id, name }, key, true);
+      for (const group of nearbyComponentGroups(components, name)) {
+        const groupArea = group.areas.slice(1).reduce((combined, component) => combined.union(component), group.areas[0]);
+        const key = `${definition.kind}-${id}-cluster-${group.index}`;
+        const core = makeLabel(groupArea, { id, name }, key, group.areas);
         if (core) cores.push(core);
       }
     }
@@ -426,7 +462,7 @@ export function entityMapLabels(
   const result: CountryMapLabel[] = [];
   for (const core of cores) {
     if (scale !== undefined && !labelVisible(core.key, core.fontSize * scale)) continue;
-    if (result.some((placed) => overlaps(core, placed))) continue;
+    if (resolveCollisions && result.some((placed) => overlaps(core, placed))) continue;
     result.push({ ...core, selected: false });
   }
   return result;
@@ -446,6 +482,7 @@ export function visibleCityLabelIds(
   oy: number,
   viewportWidth: number,
   viewportHeight: number,
+  occupiedLabels: readonly { left: number; top: number; right: number; bottom: number }[] = [],
 ): Set<number> {
   const visible = new Set<number>();
   if (!shouldShowCityMarks(mode)) return visible;
@@ -481,6 +518,7 @@ export function visibleCityLabelIds(
       occupied.set(key, bucket);
     }
   };
+  for (const rect of occupiedLabels) occupy(rect);
 
   const candidates = world.cities
     .map((city) => {
@@ -545,13 +583,18 @@ export function labelVisibilityThreshold(key: string): number {
 export interface CountryLabelViewportLayout {
   x: number;
   y: number;
+  worldX: number;
+  worldY: number;
+  lines: string[];
   fontSize: number;
   letterSpacing: number;
+  angle: number;
+  path: LabelGeometryPoint[] | null;
   territoryVisible: boolean;
   visible: boolean;
 }
 
-/** Масштабирует подпись вверх и удерживает её в окне, не показывая страну вне видимой карты. */
+/** Повторно размещает подпись по видимой части контура, не смещая её за пределы своей территории. */
 export function countryLabelViewportLayout(
   label: CountryMapLabel,
   scale: number,
@@ -561,35 +604,81 @@ export function countryLabelViewportLayout(
   viewportHeight: number,
   measuredTextWidthFactor?: number,
   visibilityThreshold = 11,
+  measureLineWidthFactor?: (text: string) => number,
+  obstacles: readonly LabelAvoidanceRect[] = [],
 ): CountryLabelViewportLayout {
-  const bounds = label.countryBounds;
-  const mapLeft = ox + bounds.x0 * scale;
-  const mapRight = ox + (bounds.x1 + 1) * scale;
-  const mapTop = oy + bounds.y0 * scale;
-  const mapBottom = oy + (bounds.y1 + 1) * scale;
-  const countryVisible = mapRight > 0 && mapLeft < viewportWidth && mapBottom > 0 && mapTop < viewportHeight;
+  const worldBounds = label.countryBounds;
+  const screenLeft = ox + worldBounds.x0 * scale;
+  const screenRight = ox + (worldBounds.x1 + 1) * scale;
+  const screenTop = oy + worldBounds.y0 * scale;
+  const screenBottom = oy + (worldBounds.y1 + 1) * scale;
+  if (screenRight <= 8 || screenLeft >= viewportWidth - 8 ||
+      screenBottom <= 8 || screenTop >= viewportHeight - 8) {
+    return {
+      x: 0,
+      y: 0,
+      worldX: 0,
+      worldY: 0,
+      lines: [],
+      fontSize: 0,
+      letterSpacing: 0,
+      angle: 0,
+      path: null,
+      territoryVisible: false,
+      visible: false,
+    };
+  }
   const factor = measuredTextWidthFactor && Number.isFinite(measuredTextWidthFactor) && measuredTextWidthFactor > 0
     ? measuredTextWidthFactor
     : textWidthFactor(label.text);
-  const maxFont = Math.min(
-    Math.max(0, (viewportWidth - 16) / factor),
-    Math.max(0, (viewportHeight - 16) / 1.2),
-  );
-  const fontSize = Math.min(label.fontSize * scale, maxFont);
-  const textWidth = factor * fontSize;
-  const textHeight = fontSize * 1.2;
-  const rawX = ox + label.x * scale;
-  const rawY = oy + label.y * scale;
-  const x = Math.max(textWidth / 2 + 8, Math.min(viewportWidth - textWidth / 2 - 8, rawX));
-  const y = Math.max(textHeight / 2 + 8, Math.min(viewportHeight - textHeight / 2 - 8, rawY));
-  const territoryVisible = countryVisible && fontSize > 0;
+  const visibleCore = label.rings.some((ring) => ring.length >= 6);
+  const viewportCap = Math.max(visibilityThreshold, Math.min(48, Math.min(viewportWidth, viewportHeight) * 0.045));
+  const maxFont = Math.min(viewportCap, Math.max(visibilityThreshold, label.fontSize * scale * 1.5));
+  let fitted: ReturnType<typeof fitLabelToVisibleContour> = null;
+  let fittedLines = [label.text];
+  if (visibleCore) {
+    for (const lines of labelLineVariants(label.text)) {
+      const longestLine = lines.reduce((longest, line) => {
+        const width = measureLineWidthFactor?.(line) ?? textWidthFactor(line);
+        const longestWidth = measureLineWidthFactor?.(longest) ?? textWidthFactor(longest);
+        return width > longestWidth ? line : longest;
+      });
+      const candidate = fitLabelToVisibleContour({
+      rings: label.rings,
+      scale,
+      ox,
+      oy,
+      viewportWidth,
+      viewportHeight,
+      glyphWidthFactor: measureLineWidthFactor?.(longestLine) ??
+        (lines.length === 1 ? factor : textWidthFactor(longestLine)),
+      glyphCount: [...longestLine].length,
+      lineCount: lines.length,
+      maxFontSize: maxFont,
+      allowBridge: label.allowBridge,
+      obstacles,
+      });
+      if (candidate && (!fitted || candidate.fontSize > fitted.fontSize + 0.1 ||
+          (Math.abs(candidate.fontSize - fitted.fontSize) <= 0.1 && lines.length < fittedLines.length))) {
+        fitted = candidate;
+        fittedLines = lines;
+      }
+    }
+  }
+  const fontSize = fitted?.fontSize ?? 0;
+  const visible = fitted ? labelVisible(label.key, fontSize) : false;
   return {
-    x,
-    y,
+    x: fitted?.x ?? 0,
+    y: fitted?.y ?? 0,
+    worldX: fitted?.worldX ?? 0,
+    worldY: fitted?.worldY ?? 0,
+    lines: fitted ? fittedLines : [],
     fontSize,
-    letterSpacing: fontSize * 0.16,
-    territoryVisible,
-    visible: territoryVisible && fontSize >= visibilityThreshold,
+    letterSpacing: fitted?.letterSpacing ?? 0,
+    angle: fitted?.angle ?? 0,
+    path: fitted?.path ?? null,
+    territoryVisible: visibleCore,
+    visible: visible && fontSize >= visibilityThreshold,
   };
 }
 

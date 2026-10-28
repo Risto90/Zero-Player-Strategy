@@ -132,7 +132,7 @@ function drawRivers(
   ctx.restore();
 }
 
-function pointAlongPath(points: { x: number; y: number }[], distance: number) {
+function pointAlongPath(points: readonly { x: number; y: number }[], distance: number) {
   let traversed = 0;
   for (let index = 1; index < points.length; index += 1) {
     const before = points[index - 1];
@@ -157,6 +157,133 @@ function pointAlongPath(points: { x: number; y: number }[], distance: number) {
   };
 }
 
+function polylineLength(points: readonly ScreenPoint[]): number {
+  let length = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    length += Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
+  }
+  return length;
+}
+
+function clipLineSegment(
+  from: ScreenPoint,
+  to: ScreenPoint,
+  width: number,
+  height: number,
+): [ScreenPoint, ScreenPoint] | null {
+  const left = 8, top = 8, right = width - 8, bottom = height - 8;
+  const dx = to.x - from.x, dy = to.y - from.y;
+  let start = 0, end = 1;
+  const p = [-dx, dx, -dy, dy];
+  const q = [from.x - left, right - from.x, from.y - top, bottom - from.y];
+  for (let index = 0; index < 4; index += 1) {
+    if (Math.abs(p[index]) < 1e-9) {
+      if (q[index] < 0) return null;
+      continue;
+    }
+    const t = q[index] / p[index];
+    if (p[index] < 0) start = Math.max(start, t);
+    else end = Math.min(end, t);
+    if (start > end) return null;
+  }
+  return [
+    { x: from.x + dx * start, y: from.y + dy * start },
+    { x: from.x + dx * end, y: from.y + dy * end },
+  ];
+}
+
+function visibleRiverPaths(points: readonly (ScreenPoint | null)[], width: number, height: number): ScreenPoint[][] {
+  const paths: ScreenPoint[][] = [];
+  let current: ScreenPoint[] = [];
+  const finish = () => {
+    if (current.length > 1 && polylineLength(current) > 0) paths.push(current);
+    current = [];
+  };
+  for (let index = 1; index < points.length; index += 1) {
+    const from = points[index - 1], to = points[index];
+    if (!from || !to) {
+      finish();
+      continue;
+    }
+    const clipped = clipLineSegment(from, to, width, height);
+    if (!clipped) {
+      finish();
+      continue;
+    }
+    const [start, end] = clipped;
+    const last = current[current.length - 1];
+    if (last && Math.hypot(last.x - start.x, last.y - start.y) > 0.75) finish();
+    if (!current.length) current.push(start);
+    current.push(end);
+  }
+  finish();
+  return paths;
+}
+
+function smoothRiverPath(points: readonly ScreenPoint[]): ScreenPoint[] {
+  if (points.length < 5) return [...points];
+  let smoothed = [...points];
+  for (let pass = 0; pass < 2; pass += 1) {
+    const next = [smoothed[0]];
+    for (let index = 1; index < smoothed.length - 1; index += 1) {
+      next.push({
+        x: smoothed[index - 1].x * 0.2 + smoothed[index].x * 0.6 + smoothed[index + 1].x * 0.2,
+        y: smoothed[index - 1].y * 0.2 + smoothed[index].y * 0.6 + smoothed[index + 1].y * 0.2,
+      });
+    }
+    next.push(smoothed[smoothed.length - 1]);
+    smoothed = next;
+  }
+  return smoothed;
+}
+
+function riverTextPath(points: readonly ScreenPoint[], textWidth: number): ScreenPoint[] | null {
+  const length = polylineLength(points);
+  if (length < textWidth) return null;
+  const start = (length - textWidth) / 2;
+  const end = start + textWidth;
+  const firstPoint = pointAlongPath(points, start);
+  const result: ScreenPoint[] = [{ x: firstPoint.x, y: firstPoint.y }];
+  let traversed = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    traversed += Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
+    if (traversed > start && traversed < end) result.push(points[index]);
+  }
+  const lastPoint = pointAlongPath(points, end);
+  result.push({ x: lastPoint.x, y: lastPoint.y });
+  return result;
+}
+
+function riverTextPathIsReadable(points: readonly ScreenPoint[], fontSize: number): boolean {
+  if (points.length < 2) return false;
+  let previousAngle: number | null = null;
+  let totalTurn = 0;
+  let minimumRadius = Infinity;
+  for (let index = 1; index < points.length; index += 1) {
+    const angle = Math.atan2(points[index].y - points[index - 1].y, points[index].x - points[index - 1].x);
+    if (previousAngle !== null) {
+      let turn = angle - previousAngle;
+      while (turn > Math.PI) turn -= Math.PI * 2;
+      while (turn < -Math.PI) turn += Math.PI * 2;
+      totalTurn += Math.abs(turn);
+      const segmentLength = Math.hypot(points[index].x - points[index - 1].x,
+        points[index].y - points[index - 1].y);
+      if (Math.abs(turn) > 0.001) minimumRadius = Math.min(minimumRadius, segmentLength / Math.abs(turn));
+    }
+    previousAngle = angle;
+  }
+  const chord = Math.hypot(points.at(-1)!.x - points[0].x, points.at(-1)!.y - points[0]!.y);
+  return totalTurn <= (120 * Math.PI) / 180 &&
+    minimumRadius >= 3 * fontSize &&
+    polylineLength(points) / Math.max(1, chord) <= 1.25;
+}
+
+type LabelScreenBounds = { left: number; top: number; right: number; bottom: number };
+
+function labelBoundsOverlap(a: LabelScreenBounds, b: LabelScreenBounds): boolean {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+}
+
 function drawRiverNames(
   ctx: CanvasRenderingContext2D,
   game: MapViewProps['game'],
@@ -165,6 +292,8 @@ function drawRiverNames(
   width: number,
   height: number,
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
+  occupiedLabels: LabelScreenBounds[] = [],
+  additionalObstacles: readonly LabelScreenBounds[] = [],
 ) {
   const byRiver = new Map<number, ReturnType<typeof discoveredRiverPaths>>();
   for (const segment of discoveredRiverPaths(game.world)) {
@@ -173,58 +302,111 @@ function drawRiverNames(
     paths.push(segment);
     byRiver.set(segment.riverId, paths);
   }
-  const fontSize = Math.max(6, view.scale);
-  ctx.font = `600 ${fontSize}px "IBM Plex Sans", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (const segments of byRiver.values()) {
-    const segment = segments.reduce((best, item) => item.length > best.length ? item : best);
-    const points = projectMapPoint
-      ? segment.points.map((point) => projectMapPoint(point.x, point.y))
-      : segment.points.map((point) => ({
-        x: view.ox + point.x * view.scale,
-        y: view.oy + point.y * view.scale,
-      }));
-    if (points.some((point) => point === null)) continue;
-    const screenPoints = points as ScreenPoint[];
-    let screenLength = 0;
-    for (let index = 1; index < screenPoints.length; index += 1) {
-      screenLength += Math.hypot(
-        screenPoints[index].x - screenPoints[index - 1].x,
-        screenPoints[index].y - screenPoints[index - 1].y,
-      );
+    let visibleSegment: ReturnType<typeof discoveredRiverPaths>[number] | null = null;
+    let screenPoints: ScreenPoint[] | null = null;
+    let visibleLength = 0;
+    for (const segment of segments) {
+      const projectedPoints = projectMapPoint
+        ? segment.points.map((point) => projectMapPoint(point.x, point.y))
+        : segment.points.map((point) => ({
+          x: view.ox + point.x * view.scale,
+          y: view.oy + point.y * view.scale,
+        }));
+      for (const path of visibleRiverPaths(projectedPoints, width, height)) {
+        const smoothed = smoothRiverPath(path);
+        const length = polylineLength(smoothed);
+        if (length > visibleLength) {
+          visibleSegment = segment;
+          screenPoints = smoothed;
+          visibleLength = length;
+        }
+      }
     }
+    if (!visibleSegment || !screenPoints) continue;
+    const segment = visibleSegment;
+    const screenLength = polylineLength(screenPoints);
     const characters = [...(segment.name ?? '')];
-    const widths = characters.map((character) => ctx.measureText(character).width);
-    const tracking = fontSize * 0.1;
-    const textWidth = widths.reduce((sum, item) => sum + item, 0) + Math.max(0, characters.length - 1) * tracking;
     const screenWidth = projectMapPoint
       ? segment.width * (screenLength / Math.max(1, segment.length))
       : segment.width * view.scale;
-    if (view.scale < 6 || screenWidth < fontSize || screenLength < textWidth + 4) continue;
-    const midpoint = pointAlongPath(screenPoints, screenLength / 2);
+    const maximumFont = Math.min(18, Math.max(11, screenWidth * 0.8));
+    let chosen: { size: number; widths: number[]; tracking: number; textWidth: number; path: ScreenPoint[] } | null = null;
+    for (let size = maximumFont; size >= 11; size -= 1) {
+      ctx.font = `600 ${size}px "IBM Plex Sans", sans-serif`;
+      const widths = characters.map((character) => ctx.measureText(character).width);
+      const glyphWidth = widths.reduce((sum, item) => sum + item, 0);
+      const available = screenLength - 2 * size;
+      const gaps = Math.max(0, characters.length - 1);
+      const tracking = gaps > 0
+        ? Math.max(0, Math.min(size * 0.45, (available * 0.75 - glyphWidth) / gaps))
+        : 0;
+      const textWidth = glyphWidth + gaps * tracking;
+      if (available <= 0 || textWidth > available * 0.9) continue;
+      const path = riverTextPath(screenPoints, textWidth);
+      if (!path || !riverTextPathIsReadable(path, size)) continue;
+      chosen = { size, widths, tracking, textWidth, path };
+      break;
+    }
+    if (!chosen) continue;
+    ctx.font = `600 ${chosen.size}px "IBM Plex Sans", sans-serif`;
+    const midpoint = pointAlongPath(chosen.path, chosen.textWidth / 2);
     const centerX = midpoint.x;
     const centerY = midpoint.y;
-    if (centerX < -100 || centerY < -30 || centerX > width + 100 || centerY > height + 30) continue;
-
-    let cursor = (screenLength - textWidth) / 2;
-    for (let index = 0; index < widths.length; index += 1) {
-      const characterWidth = widths[index];
-      const location = pointAlongPath(screenPoints, cursor + characterWidth / 2);
-      const x = location.x;
-      const y = location.y;
+    if (centerX < 8 || centerY < 8 || centerX > width - 8 || centerY > height - 8) continue;
+    let cursor = 0;
+    const glyphs: {
+      character: string;
+      x: number;
+      y: number;
+      angle: number;
+      bounds: LabelScreenBounds;
+    }[] = [];
+    for (let index = 0; index < chosen.widths.length; index += 1) {
+      const characterWidth = chosen.widths[index];
+      const location = pointAlongPath(chosen.path, cursor + characterWidth / 2);
       let angle = location.angle;
-      if (angle > Math.PI / 2 || angle < -Math.PI / 2) angle += Math.PI;
+      if (angle > Math.PI / 2) angle -= Math.PI;
+      else if (angle <= -Math.PI / 2) angle += Math.PI;
+      const pad = chosen.size * 0.3;
+      const extentX = (
+        Math.abs(Math.cos(angle)) * characterWidth +
+        Math.abs(Math.sin(angle)) * chosen.size
+      ) / 2 + pad;
+      const extentY = (
+        Math.abs(Math.sin(angle)) * characterWidth +
+        Math.abs(Math.cos(angle)) * chosen.size
+      ) / 2 + pad;
+      glyphs.push({
+        character: characters[index],
+        x: location.x,
+        y: location.y,
+        angle,
+        bounds: {
+          left: location.x - extentX,
+          top: location.y - extentY,
+          right: location.x + extentX,
+          bottom: location.y + extentY,
+        },
+      });
+      cursor += characterWidth + chosen.tracking;
+    }
+    const obstacles = [...occupiedLabels, ...additionalObstacles];
+    if (glyphs.some((glyph) => obstacles.some((other) => labelBoundsOverlap(glyph.bounds, other)))) continue;
+    occupiedLabels.push(...glyphs.map((glyph) => glyph.bounds));
+
+    for (const glyph of glyphs) {
       ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(angle);
-      ctx.lineWidth = Math.max(1.2, fontSize * 0.24);
+      ctx.translate(glyph.x, glyph.y);
+      ctx.rotate(glyph.angle);
+      ctx.lineWidth = Math.max(1.2, chosen.size * 0.24);
       ctx.strokeStyle = '#fff';
-      ctx.strokeText(characters[index], 0, 0);
+      ctx.strokeText(glyph.character, 0, 0);
       ctx.fillStyle = '#17130f';
-      ctx.fillText(characters[index], 0, 0);
+      ctx.fillText(glyph.character, 0, 0);
       ctx.restore();
-      cursor += characterWidth + tracking;
     }
   }
 }
@@ -239,7 +421,7 @@ function measuredCountryTextWidthFactor(ctx: CanvasRenderingContext2D, value: st
   ctx.font = '600 100px "IBM Plex Sans", sans-serif';
   const glyphWidth = characters.reduce((sum, character) => sum + ctx.measureText(character).width, 0);
   ctx.restore();
-  const factor = (glyphWidth + Math.max(0, characters.length - 1) * 16) / 100;
+  const factor = glyphWidth / 100;
   if (countryTextWidthFactorCache.size >= 4096) countryTextWidthFactorCache.clear();
   countryTextWidthFactorCache.set(value, factor);
   return factor;
@@ -253,8 +435,10 @@ function drawMapLabels(
   width: number,
   height: number,
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
-) {
+  avoidToolOverlay = false,
+): LabelScreenBounds[] {
   const snapshot = game.getSnapshot();
+  const ratio = view.scale / Math.max(baseScale, 0.0001);
   const text = (value: string, x: number, y: number, size: number, color: string, maxWidth?: number) => {
     if (x < -100 || y < -30 || x > width + 100 || y > height + 30) return;
     ctx.font = `600 ${size}px "IBM Plex Sans", sans-serif`;
@@ -266,49 +450,99 @@ function drawMapLabels(
     ctx.fillStyle = color;
     ctx.fillText(value, x, y, maxWidth);
   };
-  const trackedCountryLabel = (value: string, x: number, y: number, size: number, tracking: number, color: string) => {
-    const characters = [...value];
+  const trackedCountryLabel = (
+    value: string,
+    x: number,
+    y: number,
+    size: number,
+    tracking: number,
+    color: string,
+    angle: number,
+    path: ScreenPoint[] | null,
+    lines: string[] = [value],
+  ) => {
+    const displayLines = lines.length ? lines : [value];
     ctx.font = `600 ${size}px "IBM Plex Sans", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const widths = characters.map((character) => ctx.measureText(character).width);
-    const totalWidth = widths.reduce((sum, charWidth) => sum + charWidth, 0) +
-      Math.max(0, characters.length - 1) * tracking;
-    let cursor = x - totalWidth / 2;
+    const lineMetrics = displayLines.map((line) => {
+      const characters = [...line];
+      const widths = characters.map((character) => ctx.measureText(character).width);
+      const totalWidth = widths.reduce((sum, charWidth) => sum + charWidth, 0) +
+        Math.max(0, characters.length - 1) * tracking;
+      return { characters, widths, totalWidth };
+    });
     ctx.lineWidth = Math.max(1, size * 0.2);
     ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)';
     ctx.fillStyle = color;
-    characters.forEach((character, index) => {
-      const charWidth = widths[index];
-      const center = cursor + charWidth / 2;
-      ctx.strokeText(character, center, y);
-      ctx.fillText(character, center, y);
-      cursor += charWidth + tracking;
+    const drawGlyph = (character: string, glyphX: number, glyphY: number, glyphAngle: number) => {
+      ctx.save();
+      ctx.translate(glyphX, glyphY);
+      ctx.rotate(glyphAngle);
+      ctx.strokeText(character, 0, 0);
+      ctx.fillText(character, 0, 0);
+      ctx.restore();
+    };
+    if (path && path.length >= 2 && lineMetrics.length === 1) {
+      const { characters, widths, totalWidth } = lineMetrics[0];
+      const pathLength = path.slice(1).reduce((sum, point, index) =>
+        sum + Math.hypot(point.x - path[index].x, point.y - path[index].y), 0);
+      let cursor = Math.max(0, (pathLength - totalWidth) / 2);
+      characters.forEach((character, index) => {
+        const charWidth = widths[index];
+        const location = pointAlongPath(path, cursor + charWidth / 2);
+        let glyphAngle = location.angle;
+        if (glyphAngle > Math.PI / 2) glyphAngle -= Math.PI;
+        else if (glyphAngle <= -Math.PI / 2) glyphAngle += Math.PI;
+        drawGlyph(character, location.x, location.y, glyphAngle);
+        cursor += charWidth + tracking;
+      });
+      return;
+    }
+
+    lineMetrics.forEach(({ characters, widths, totalWidth }, lineIndex) => {
+      let cursor = -totalWidth / 2;
+      const normalOffset = (lineIndex - (lineMetrics.length - 1) / 2) * size * 1.2;
+      const lineX = x - Math.sin(angle) * normalOffset;
+      const lineY = y + Math.cos(angle) * normalOffset;
+      characters.forEach((character, index) => {
+        const charWidth = widths[index];
+        const along = cursor + charWidth / 2;
+        drawGlyph(
+          character,
+          lineX + Math.cos(angle) * along,
+          lineY + Math.sin(angle) * along,
+          angle,
+        );
+        cursor += charWidth + tracking;
+      });
     });
   };
 
-  const labels = [
-    ...countryMapLabels(game.world, view.scale, snapshot.mapMode, snapshot.selectedCountryId),
-    ...entityMapLabels(game.world, snapshot.mapMode, snapshot.layer, view.scale),
-  ];
-  for (const label of labels) {
-    const layout = countryLabelViewportLayout(
-      label,
-      view.scale,
-      view.ox,
-      view.oy,
-      width,
-      height,
-      measuredCountryTextWidthFactor(ctx, label.text),
-      labelVisibilityThreshold(label.key),
-    );
-    if (!layout.visible) continue;
-    const pixel = Math.floor(label.y) * MAP_WIDTH + Math.floor(label.x);
-    const color = label.selected ? '#e7c56e' : mapTextColor(game, pixel);
-    trackedCountryLabel(label.text, layout.x, layout.y, layout.fontSize, layout.letterSpacing, color);
+  const cityIconBounds: LabelScreenBounds[] = [];
+  if (shouldShowCityMarks(snapshot.mapMode)) for (const city of game.world.cities) {
+    const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
+    if (!isCityVisibleAtZoom(view.scale, baseScale, cityVisibilityRank(city, hasPort))) continue;
+    const size = hasPort ? 30 + city.rank : 24 + city.rank;
+    const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
+    const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
+    if (x + size < 0 || y + size < 0 || x - size > width || y - size > height) continue;
+    cityIconBounds.push({
+      left: x - size / 2 - 2,
+      top: y - size / 2 - 2,
+      right: x + size / 2 + 2,
+      bottom: y + size / 2 + 2,
+    });
   }
 
-  const ratio = view.scale / Math.max(baseScale, 0.0001);
+  const featureMarks: {
+    feature: (typeof game.world.peaks)[number] | (typeof game.world.volcanoes)[number];
+    active: boolean;
+    isVolcano: boolean;
+    x: number;
+    y: number;
+    size: number;
+  }[] = [];
   if (shouldShowGeographyMarks(snapshot.mapMode)) for (const feature of [...game.world.peaks, ...game.world.volcanoes]) {
     if (!feature.discoveredBy.length) continue;
     const isVolcano = game.world.volcanoes.includes(feature);
@@ -325,7 +559,112 @@ function drawMapLabels(
     const x = projected?.x ?? view.ox + mapX * view.scale;
     const y = projected?.y ?? view.oy + mapY * view.scale;
     if (x < -24 || y < -30 || x > width + 24 || y > height + 30) continue;
-    const size = Math.max(5, Math.min(11, 6 + ratio * 1.5));
+    featureMarks.push({
+      feature,
+      active,
+      isVolcano,
+      x,
+      y,
+      size: Math.max(5, Math.min(11, 6 + ratio * 1.5)),
+    });
+  }
+  const uiOverlayBounds: LabelScreenBounds[] = [
+    { left: Math.max(0, width - 120), top: 0, right: width, bottom: 44 },
+    { left: Math.max(0, width - 58), top: 44, right: width, bottom: 188 },
+    ...(avoidToolOverlay
+      ? [{ left: 0, top: 0, right: Math.min(width, width < 420 ? 200 : 280), bottom: 140 }]
+      : []),
+  ];
+  const occupiedLabels: LabelScreenBounds[] = [
+    ...uiOverlayBounds,
+    ...featureMarks.map(({ x, y, size }) => ({
+      left: x - size * 0.85 - 2,
+      top: y - size - 2,
+      right: x + size * 0.85 + 2,
+      bottom: y + size * 0.62 + 2,
+    })),
+  ];
+
+  const labels = [
+    ...countryMapLabels(game.world, null, snapshot.mapMode, snapshot.selectedCountryId, false),
+    ...entityMapLabels(game.world, snapshot.mapMode, snapshot.layer, undefined, false),
+  ];
+  const pendingLabels: {
+    label: (typeof labels)[number];
+    layout: ReturnType<typeof countryLabelViewportLayout>;
+    color: string;
+    bounds: LabelScreenBounds;
+  }[] = [];
+  for (const label of labels) {
+    const layout = countryLabelViewportLayout(
+      label,
+      view.scale,
+      view.ox,
+      view.oy,
+      width,
+      height,
+      measuredCountryTextWidthFactor(ctx, label.text),
+      labelVisibilityThreshold(label.key),
+      (line) => measuredCountryTextWidthFactor(ctx, line),
+      [...occupiedLabels, ...cityIconBounds],
+    );
+    if (!layout.visible) continue;
+    const mapX = Math.max(0, Math.min(MAP_WIDTH - 1, Math.floor(layout.worldX)));
+    const mapY = Math.max(0, Math.min(MAP_HEIGHT - 1, Math.floor(layout.worldY)));
+    const pixel = mapY * MAP_WIDTH + mapX;
+    const color = label.selected ? '#e7c56e' : mapTextColor(game, pixel);
+    const textWidth = Math.max(...layout.lines.map((line) =>
+      measuredCountryTextWidthFactor(ctx, line) * layout.fontSize +
+      Math.max(0, [...line].length - 1) * layout.letterSpacing));
+    const textHeight = layout.fontSize * 1.2 * layout.lines.length;
+    let extentX: number;
+    let extentY: number;
+    if (layout.path?.length) {
+      const pathX = layout.path.map((point) => point.x);
+      const pathY = layout.path.map((point) => point.y);
+      extentX = (Math.max(...pathX) - Math.min(...pathX) + textHeight) / 2;
+      extentY = (Math.max(...pathY) - Math.min(...pathY) + textHeight) / 2;
+    } else {
+      extentX = (Math.abs(Math.cos(layout.angle)) * textWidth +
+        Math.abs(Math.sin(layout.angle)) * textHeight) / 2;
+      extentY = (Math.abs(Math.sin(layout.angle)) * textWidth +
+        Math.abs(Math.cos(layout.angle)) * textHeight) / 2;
+    }
+    const margin = layout.fontSize * 0.3;
+    pendingLabels.push({
+      label,
+      layout,
+      color,
+      bounds: {
+        left: layout.x - extentX - margin,
+        top: layout.y - extentY - margin,
+        right: layout.x + extentX + margin,
+        bottom: layout.y + extentY + margin,
+      },
+    });
+  }
+  pendingLabels.sort((a, b) =>
+    Number(b.label.selected) - Number(a.label.selected) ||
+    b.layout.fontSize - a.layout.fontSize ||
+    a.label.key.localeCompare(b.label.key));
+  for (const pending of pendingLabels) {
+    if ([...occupiedLabels, ...cityIconBounds].some((bounds) =>
+      labelBoundsOverlap(pending.bounds, bounds))) continue;
+    occupiedLabels.push(pending.bounds);
+    trackedCountryLabel(
+      pending.label.text,
+      pending.layout.x,
+      pending.layout.y,
+      pending.layout.fontSize,
+      pending.layout.letterSpacing,
+      pending.color,
+      pending.layout.angle,
+      pending.layout.path,
+      pending.layout.lines,
+    );
+  }
+
+  for (const { feature, active, isVolcano, x, y, size } of featureMarks) {
     ctx.beginPath();
     ctx.moveTo(x, y - size);
     ctx.lineTo(x - size * 0.78, y + size * 0.62);
@@ -338,17 +677,34 @@ function drawMapLabels(
     ctx.stroke();
     if (feature.name) {
       const pixel = feature.pixel;
-      text(feature.name, x, y + size + 6, 7, mapTextColor(game, pixel));
+      const labelY = y + size + 6;
+      ctx.font = '600 7px "IBM Plex Sans", sans-serif';
+      const labelWidth = ctx.measureText(feature.name).width;
+      const labelBounds = {
+        left: x - labelWidth / 2 - 2,
+        top: labelY - 7 * 0.6,
+        right: x + labelWidth / 2 + 2,
+        bottom: labelY + 7 * 0.6,
+      };
+      if (![...occupiedLabels, ...cityIconBounds].some((bounds) =>
+        labelBoundsOverlap(labelBounds, bounds))) {
+        text(feature.name, x, labelY, 7, mapTextColor(game, pixel));
+        occupiedLabels.push(labelBounds);
+      }
     }
   }
 
-  drawRiverNames(ctx, game, view, baseScale, width, height, projectMapPoint);
+  drawRiverNames(ctx, game, view, baseScale, width, height, projectMapPoint, occupiedLabels, cityIconBounds);
+  return occupiedLabels;
 }
 
 type ScreenPoint = { x: number; y: number };
 
 /** Браузерная карта: растровые слои, управление жестами и 3D-рельеф высот. */
-export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect, onMapActivity }, ref) {
+export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
+  { game, tool, canPaint, avoidToolOverlay = false, onInspect, onMapActivity },
+  ref,
+) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -427,7 +783,16 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         game.world,
       ) ?? null
       : undefined;
-    drawMapLabels(ctx, game, view, baseScaleRef.current, width, height, projectMapPoint);
+    const occupiedMapLabels = drawMapLabels(
+      ctx,
+      game,
+      view,
+      baseScaleRef.current,
+      width,
+      height,
+      projectMapPoint,
+      avoidToolOverlay,
+    );
     const cityLabelIds = visibleCityLabelIds(
       game.world,
       mapMode,
@@ -437,6 +802,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       view.oy,
       width,
       height,
+      occupiedMapLabels,
     );
     if (shouldShowCityMarks(mapMode)) for (const city of game.world.cities) {
       const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
