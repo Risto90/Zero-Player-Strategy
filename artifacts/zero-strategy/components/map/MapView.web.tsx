@@ -1,7 +1,10 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { useFonts } from 'expo-font';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
+import { cityLabelFontSize } from '@/game/cityVisibility';
 import { Terrain3DRenderer } from './Terrain3DRenderer';
 import {
   countryLabelViewportLayout,
@@ -12,7 +15,7 @@ import {
   riverVisibilityScale,
   shouldShowCityMarks,
   shouldShowGeographyMarks,
-  visibleCityLabelLayouts,
+  visibleCityLabelIds,
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
 import { discoveredRiverPaths } from '@/game/geographyGeometry';
@@ -25,9 +28,43 @@ import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { centerOnMapPoint, clampView, initialView, minScale, toMap, zoomAround } from './viewMath';
 
+import { renderFlagSpec } from '@/game/flagRenderer';
+
+const crownGlyph = String.fromCodePoint(Number(MaterialCommunityIcons.getRawGlyphMap().crown));
+const crownFontFamily = MaterialCommunityIcons.getFontFamily();
+
+function drawGoldCrown(ctx: CanvasRenderingContext2D, x: number, y: number, size: number): void {
+  ctx.save();
+  ctx.font = `${size}px "${crownFontFamily}"`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = Math.max(1, size * 0.12);
+  ctx.strokeStyle = 'rgba(35,30,24,0.8)';
+  ctx.strokeText(crownGlyph, x, y);
+  ctx.fillStyle = colors.light.crownGold;
+  ctx.fillText(crownGlyph, x, y);
+  ctx.restore();
+}
+
 function rgba(hex: string, alpha: number) {
   const value = Number.parseInt(hex.slice(1), 16);
   return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+}
+
+function cachedSvgImage(
+  svg: string,
+  cache: Map<string, HTMLImageElement>,
+  onLoad: () => void,
+): HTMLImageElement | null {
+  let image = cache.get(svg);
+  if (!image) {
+    image = new window.Image();
+    image.onload = onLoad;
+    image.onerror = () => cache.delete(svg);
+    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    cache.set(svg, image);
+  }
+  return image.complete && image.naturalWidth > 0 ? image : null;
 }
 
 function drawCityInfluence(
@@ -643,24 +680,17 @@ function drawMapLabels(
     });
   }
   pendingLabels.sort((a, b) =>
-    Number(b.label.allFragments) - Number(a.label.allFragments) ||
     Number(b.label.selected) - Number(a.label.selected) ||
-    Number(Boolean(a.label.fragmentOnly)) - Number(Boolean(b.label.fragmentOnly)) ||
+    Number(b.label.allFragments) - Number(a.label.allFragments) ||
     b.layout.fontSize - a.layout.fontSize ||
     a.label.key.localeCompare(b.label.key));
   const labeledWholeCountryIds = new Set<number>();
-  const placedClusterKeys = new Set<string>();
   for (const pending of pendingLabels) {
     if (!pending.label.allFragments && labeledWholeCountryIds.has(pending.label.countryId)) continue;
-    if (pending.label.fragmentOnly && pending.label.clusterKey &&
-        placedClusterKeys.has(pending.label.clusterKey)) continue;
     if ([...occupiedLabels, ...cityIconBounds].some((bounds) =>
       labelBoundsOverlap(pending.bounds, bounds))) continue;
     occupiedLabels.push(pending.bounds);
     if (pending.label.allFragments) labeledWholeCountryIds.add(pending.label.countryId);
-    else if (!pending.label.fragmentOnly && pending.label.clusterKey) {
-      placedClusterKeys.add(pending.label.clusterKey);
-    }
     trackedCountryLabel(
       pending.label.text,
       pending.layout.x,
@@ -715,6 +745,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   { game, tool, canPaint, avoidToolOverlay = false, onInspect, onMapActivity },
   ref,
 ) {
+  const [iconFontsLoaded] = useFonts(MaterialCommunityIcons.font);
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -723,6 +754,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<ImageData | null>(null);
   const cityImagesRef = useRef<(HTMLImageElement | null)[]>([]);
+  const svgImagesRef = useRef(new Map<string, HTMLImageElement>());
+  const redrawRef = useRef<() => void>(() => {});
   const viewRef = useRef<ViewTransform>({ scale: 1, ox: 0, oy: 0 });
   const sizeRef = useRef({ width: 1, height: 1, dpr: 1 });
   const baseScaleRef = useRef(1);
@@ -803,7 +836,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       projectMapPoint,
       avoidToolOverlay,
     );
-    const cityLabelLayouts = visibleCityLabelLayouts(
+    const cityLabelIds = visibleCityLabelIds(
       game.world,
       mapMode,
       view.scale,
@@ -813,60 +846,59 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       width,
       height,
       occupiedMapLabels,
-      (text, fontSize) => {
-        ctx.save();
-        ctx.font = `600 ${fontSize}px "IBM Plex Sans", sans-serif`;
-        const measured = ctx.measureText(text).width;
-        ctx.restore();
-        return measured;
-      },
     );
     if (shouldShowCityMarks(mapMode)) for (const city of game.world.cities) {
       const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
       const zoomRank = cityVisibilityRank(city, hasPort);
       if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
       const icon = cityImagesRef.current[cityIconIndex(city, hasPort)];
+      if (!icon?.complete || icon.naturalWidth === 0) continue;
       const size = hasPort ? 30 + city.rank : 24 + city.rank;
       const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
       const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
       if (x + size < 0 || y + size < 0 || x - size > width || y - size > height) continue;
-      if (icon?.complete && icon.naturalWidth > 0) {
-        ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
-      }
-      const cityLabel = cityLabelLayouts.get(city.id);
-      if (city.name && cityLabel) {
-        const labelFontSize = cityLabel.fontSize;
+      ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
+      if (city.name && cityLabelIds.has(city.id)) {
+        const labelFontSize = cityLabelFontSize(view.scale, baseScaleRef.current);
         ctx.font = `600 ${labelFontSize}px "IBM Plex Sans", sans-serif`;
-        ctx.textAlign = 'center';
+        ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        const labelX = cityLabel.x;
-        const labelY = cityLabel.y;
+        const labelY = y - size / 2 - Math.max(3, labelFontSize * 0.3) - labelFontSize / 2;
         const textWidth = ctx.measureText(city.name).width;
-        const crownWidth = city.capital ? labelFontSize * 1.1 : 0;
-        const labelLeft = labelX - (textWidth + crownWidth) / 2;
-        const labelCenter = labelLeft + crownWidth + textWidth / 2;
+        const flagSvg = city.emblemSpec ? renderFlagSpec(city.emblemSpec) : null;
+        const flagImage = flagSvg
+          ? cachedSvgImage(flagSvg, svgImagesRef.current, () => redrawRef.current())
+          : null;
+        const flagAspect = city.emblemSpec
+          ? Math.max(0.5, Math.min(2.6, city.emblemSpec.outline.aspect))
+          : 1;
+        const flagHeight = flagSvg ? Math.max(8, labelFontSize * 1.1) : 0;
+        const flagWidth = flagSvg ? flagHeight * flagAspect : 0;
+        const crownSize = city.capital ? labelFontSize * 1.45 : 0;
+        const markWidth = flagSvg ? Math.max(flagWidth, crownSize) : crownSize;
+        const gap = markWidth ? Math.max(4, labelFontSize * 0.35) : 0;
+        const labelWidth = textWidth + markWidth + gap;
+        const labelLeft = x - labelWidth / 2;
+        const textX = labelLeft + markWidth + gap;
         const color = mapTextColor(game, city.pixel);
         ctx.lineWidth = Math.max(1, labelFontSize * 0.22);
         ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)';
         ctx.fillStyle = color;
-        if (city.capital) {
-          const crownSize = labelFontSize * 1.1;
-          const crownBaseY = labelY + labelFontSize * 0.34;
-          ctx.beginPath();
-          ctx.moveTo(labelLeft, crownBaseY - 1);
-          ctx.lineTo(labelLeft + crownSize * 0.1, crownBaseY - crownSize * 0.75);
-          ctx.lineTo(labelLeft + crownSize * 0.3, crownBaseY - crownSize * 0.35);
-          ctx.lineTo(labelLeft + crownSize * 0.5, crownBaseY - crownSize * 0.75);
-          ctx.lineTo(labelLeft + crownSize * 0.7, crownBaseY - crownSize * 0.35);
-          ctx.lineTo(labelLeft + crownSize * 0.9, crownBaseY - crownSize * 0.75);
-          ctx.lineTo(labelLeft + crownSize, crownBaseY - 1);
-          ctx.closePath();
-          ctx.fillStyle = '#d0a239';
-          ctx.fill();
-          ctx.fillStyle = color;
+        if (flagSvg && flagImage) {
+          ctx.drawImage(flagImage, labelLeft + (markWidth - flagWidth) / 2, labelY - flagHeight / 2, flagWidth, flagHeight);
+          if (city.capital && iconFontsLoaded) {
+            drawGoldCrown(
+              ctx,
+              labelLeft + markWidth / 2,
+              labelY - flagHeight / 2 - crownSize / 2 - 2,
+              crownSize,
+            );
+          }
+        } else if (city.capital && iconFontsLoaded) {
+          drawGoldCrown(ctx, labelLeft + markWidth / 2, labelY, crownSize);
         }
-        ctx.strokeText(city.name, labelCenter, labelY);
-        ctx.fillText(city.name, labelCenter, labelY);
+        ctx.strokeText(city.name, textX, labelY);
+        ctx.fillText(city.name, textX, labelY);
       }
     }
     const cursor = cursorRef.current;
@@ -883,11 +915,12 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     }
     if (game.renderer.pending) frameRef.current = requestAnimationFrame(draw);
     else game.mapDrawn();
-  }, [game]);
+  }, [game, iconFontsLoaded]);
 
   const requestDraw = useCallback(() => {
     if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
   }, [draw]);
+  redrawRef.current = requestDraw;
 
   const mapMode = game.getSnapshot().mapMode;
   useEffect(() => {

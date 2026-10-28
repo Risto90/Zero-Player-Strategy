@@ -1,9 +1,9 @@
-import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { pct } from '@/game/format';
 import type { HumanOriginShare } from '@/game/human';
 import { raceProfileRoute } from '@/game/profileRoutes';
+import { openProfile } from '@/game/profileNavigation';
 
 const c = colors.light;
 
@@ -12,7 +12,7 @@ export function OriginComposition({ rows }: { rows: HumanOriginShare[] | null })
     <View style={styles.list} testID="human-origin-composition">
       {rows?.length
         ? rows.map((row) => (
-          <Pressable key={row.id} onPress={() => router.push(raceProfileRoute(row.id))}
+          <Pressable key={row.id} onPress={() => openProfile(raceProfileRoute(row.id))}
             accessibilityRole="link" accessibilityLabel={`Открыть карточку расы: ${row.name}`}
             style={styles.row} testID={`link-race-profile-${row.id}`}>
             <View style={[styles.swatch, { backgroundColor: row.color }]} />

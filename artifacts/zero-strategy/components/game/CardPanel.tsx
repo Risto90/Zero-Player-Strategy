@@ -1,9 +1,9 @@
 import { Feather } from '@expo/vector-icons';
-import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { personDeathStatus } from '@/game/government';
 import type { Game, GameSnapshot } from '@/game/game';
+import { openProfile } from '@/game/profileNavigation';
 
 const c = colors.light;
 
@@ -42,7 +42,7 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
               {card.characterEvent.personIds.map((id) => {
                 const person = game.world.people.find((item) => item.id === id);
                 return person ? (
-                  <Pressable key={id} onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(id) } })}
+                  <Pressable key={id} onPress={() => openProfile({ pathname: '/person/[id]', params: { id: String(id) } })}
                     testID={`link-card-person-${id}`}>
                     <Text style={[styles.choiceDetail, styles.personLink]}>{person.name}{personDeathStatus(person) ? ` · ${personDeathStatus(person)}` : ''}</Text>
                   </Pressable>
@@ -68,7 +68,7 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
                   }
                   return (
                     <View key={`${choice.label}-${index}`} style={style}>
-                      <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(candidate.id) } })}
+                      <Pressable onPress={() => openProfile({ pathname: '/person/[id]', params: { id: String(candidate.id) } })}
                         accessibilityRole="link" testID={`link-choice-person-${index}`}>
                         <Text style={[styles.choiceTitle, styles.personLink]}>{choice.label}{personDeathStatus(candidate) ? ` · ${personDeathStatus(candidate)}` : ''}</Text>
                       </Pressable>

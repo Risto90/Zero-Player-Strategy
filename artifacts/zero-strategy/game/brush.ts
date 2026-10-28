@@ -50,6 +50,9 @@ export interface Card {
   type: CardType;
   title: string;
   detail: string;
+  /** Источник события для оформления записи летописи после завершения карты. */
+  chronicleScope?: 'world' | 'country';
+  chronicleCountryId?: number;
   ink: number;
   inkTotal: number;
   /** Государство, которому принадлежит карта, или на которое она действует. */

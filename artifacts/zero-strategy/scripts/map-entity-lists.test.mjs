@@ -6,7 +6,9 @@ import { MAP_WIDTH } from '../game/config.ts';
 import { MapRenderer, hexToRgb } from '../game/render.ts';
 import { cityInfluenceRadius } from '../game/settlements.ts';
 import { World } from '../game/world.ts';
+import { ATHEIST_FLAG_SVG } from '../game/atheistFlag.ts';
 import { hasMapObjectList } from '../game/mapModeCapabilities.ts';
+import { clearProfileHistory, hasVisitedProfilePath, rememberProfilePath } from '../game/profileRouteHistory.ts';
 import { circleHatchLines } from '../components/map/cityInfluenceHatching.ts';
 import {
   cityProfileRoute,
@@ -21,50 +23,120 @@ const legendPanel = readFileSync(resolve(root, 'components/game/LegendPanel.tsx'
 const modes = readFileSync(resolve(root, 'components/game/ModeTabs.tsx'), 'utf8');
 const rendererSource = readFileSync(resolve(root, 'game/render.ts'), 'utf8');
 const webMap = readFileSync(resolve(root, 'components/map/MapView.web.tsx'), 'utf8');
+const profileMarks = readFileSync(resolve(root, 'components/profiles/EntityMarks.tsx'), 'utf8');
+const emblemPreview = readFileSync(resolve(root, 'components/profiles/EmblemPreview.tsx'), 'utf8');
+const atheistFlagFile = readFileSync(resolve(root, 'assets/images/atheist-flag.svg'), 'utf8');
 
 assert.match(legendPanel, /function EntityRow/u);
 assert.match(legendPanel, /function EntityRows/u);
 assert.match(legendPanel, /styles\.rowBar[\s\S]*row\.percent[\s\S]*backgroundColor: row\.color/u,
-  'the shared row keeps the original proportional, entity-colored background bar');
+  'общая строка сохраняет исходную пропорциональную полосу цвета сущности');
 assert.doesNotMatch(legendPanel, /ShareDiagram|react-native-svg/u,
-  'share visualization uses the established horizontal bar, not a replacement chart');
+  'доли по-прежнему показываются исходной горизонтальной полосой, а не другой диаграммой');
 for (const name of ['countryProfileRoute', 'cultureProfileRoute', 'religionProfileRoute', 'raceProfileRoute', 'cityProfileRoute']) {
   assert.match(legendPanel, new RegExp(name));
 }
 assert.match(legendPanel, /showShare=\{false\} showSwatch=\{false\}/u,
-  'city rows show only their name and absolute population, with no share diagram');
+  'строки городов не показывают долю населения и цветовой квадрат');
 assert.match(legendPanel, /profileRouteForId=\{cityProfileRoute\}/u,
-  'cities open their profile from the separate trailing button');
-assert.match(legendPanel, /game\.selectCity\(row\.id\)/u, 'city-row selection drives the map selection');
-assert.match(legendPanel, /game\.showCountryOnMap\(row\.id\)/u, 'country rows select both settled and nomadic countries');
-assert.doesNotMatch(modes, /id: 'nomads'/u, 'the map mode menu has no separate nomadic mode');
-assert.doesNotMatch(rendererSource, /'nomads'\s*:/u, 'the map renderer exposes no nomadic mode');
+  'значок города в списке ведёт в его карточку');
+assert.match(legendPanel, /trailingMarkForId=\{\(id\) => \{[\s\S]*<CityIconLink city=\{city\} hasPort=\{hasPort\} size=\{32\}/u,
+  'значок города размером 32 пикселя заменяет отдельную кнопку перехода');
+assert.match(legendPanel, /<EntityCrownLink[\s\S]*country\.emblemSpec/u,
+  'в строке столицы корона и флаг страны находятся перед названием');
+assert.match(legendPanel, /afterNameMarkForId=\{\(id\) => \{[\s\S]*<EntityFlagLink spec=\{city\.emblemSpec\} href=\{cityProfileRoute/u,
+  'собственный герб города показывается после названия и ведёт в карточку города');
+assert.match(legendPanel, /<EntityFlagLink spec=\{country\.emblemSpec\} href=\{countryProfileRoute\(id\)/u,
+  'в строках карты показываются ссылки на флаги стран вместо цветовых квадратов');
+assert.match(profileMarks, /export function ProfileEntityList/u,
+  'карточки используют общий генератор списков стран, религий и городов');
+assert.match(profileMarks, /<CityIconLink city=\{item\.city\} hasPort=\{item\.hasPort\}/u,
+  'значки городов в списках карточек являются ссылками');
+assert.match(profileMarks, /<Text style=\{styles\.cityName\}[^>]*>\{item\.city\.name/u,
+  'в общих списках карточек снова отображается название каждого города');
+assert.match(profileMarks, /item\.city\.capital && item\.country[\s\S]*<EntityCrownLink/u,
+  'в общих списках городов корона показывается у столицы');
+assert.match(emblemPreview, /data:image\/svg\+xml/u,
+  'флаг на странице сущности остаётся изображением с браузерным контекстным меню');
+assert.match(emblemPreview, /createElement\('img'/u,
+  'большой флаг карточки является обычным изображением браузера');
+assert.match(emblemPreview, /onError:[\s\S]*setFailedImageUri/u,
+  'если браузер не показывает встроенное изображение, остаётся видимый SVG');
+assert.doesNotMatch(emblemPreview, /showSaveFilePicker|createObjectURL|downloadFlag/u,
+  'сохранение флага не использует отдельный диалог или загрузчик');
+assert.match(webMap, /renderFlagSpec\(city\.emblemSpec\)/u, 'в браузерных подписях карты отображаются сохранённые флаги городов');
+assert.match(webMap, /MaterialCommunityIcons\.getRawGlyphMap\(\)\.crown/u,
+  'браузерная карта использует тот же значок короны, что и карточки персонажей');
+assert.match(webMap, /if \(city\.capital && iconFontsLoaded\) \{[\s\S]*drawGoldCrown\([\s\S]*labelY - flagHeight \/ 2 - crownSize \/ 2/u,
+  'у столицы с гербом золотая корона остаётся над гербом');
+assert.match(webMap, /else if \(city\.capital && iconFontsLoaded\) \{\s*drawGoldCrown\(ctx, labelLeft \+ markWidth \/ 2, labelY, crownSize\)/u,
+  'корона столицы без собственного герба занимает место перед названием');
+assert.doesNotMatch(webMap, /labelY - labelFontSize \/ 2 - crownHeight/u,
+  'корона не располагается над названием города');
+assert.doesNotMatch(webMap, /countryCrownSvg|countryCrownIconSvg/u,
+  'процедурная корона больше не используется');
+for (const route of [
+  'app/country/[id].tsx',
+  'app/city/[id].tsx',
+  'app/culture/[id].tsx',
+  'app/religion/[id].tsx',
+]) {
+  assert.match(readFileSync(resolve(root, route), 'utf8'), /ProfileEntityList/u,
+    `${route}: используется общий генератор списков сущностей`);
+}
+assert.equal(atheistFlagFile.replace(/\s+/gu, ''), ATHEIST_FLAG_SVG.replace(/\s+/gu, ''),
+  'сохранённый файл флага атеистов совпадает с данными отрисовки');
+assert.match(ATHEIST_FLAG_SVG, /width="100" height="200"/u,
+  'высота постоянного вымпела атеистов вдвое больше ширины');
+assert.equal((ATHEIST_FLAG_SVG.match(/<path\b/gu) ?? []).length, 1,
+  'у флага атеистов нет эмблем');
+assert.match(profileMarks, /<MaterialCommunityIcons name="crown" size=\{size\} color=\{colors\.light\.crownGold\}/u,
+  'корона в списках использует золотой квадратный значок');
+assert.doesNotMatch(profileMarks, /countryCrownIconSvg/u,
+  'в списках не осталось процедурных вариантов короны');
+
+clearProfileHistory();
+rememberProfilePath('/person/12');
+rememberProfilePath('/country/3');
+rememberProfilePath('/city/7');
+assert.equal(hasVisitedProfilePath('/country/3'), true, 'к ранее открытой карточке страны можно вернуться');
+rememberProfilePath('/country/3/candidates');
+assert.equal(hasVisitedProfilePath('/country/3/candidates'), false, 'вложенная страница страны не считается карточкой сущности');
+rememberProfilePath('/country/3');
+assert.equal(hasVisitedProfilePath('/city/7'), false, 'повторное открытие страны удаляет последующий город из истории');
+assert.equal(hasVisitedProfilePath('/person/12'), true, 'страница персонажа остаётся предыдущей карточкой');
+rememberProfilePath('/play');
+assert.equal(hasVisitedProfilePath('/person/12'), false, 'при возврате к карте устаревшая история карточек очищается');
+assert.match(legendPanel, /game\.selectCity\(row\.id\)/u, 'выбор строки города выделяет его на карте');
+assert.match(legendPanel, /game\.showCountryOnMap\(row\.id\)/u, 'строки стран выделяют оседлые и кочевые страны');
+assert.doesNotMatch(modes, /id: 'nomads'/u, 'в меню карты нет отдельного режима кочевников');
+assert.doesNotMatch(rendererSource, /'nomads'\s*:/u, 'отрисовщик карты не содержит отдельного режима кочевников');
 assert.equal(
   existsSync(resolve(root, 'components/map/MapView.tsx')),
   false,
-  'the browser-only project has no separate native map implementation',
+  'в браузерном проекте нет отдельной нативной реализации карты',
 );
-assert.match(webMap, /cityInfluenceRadius\(game\.world, city\)/u, 'the web map draws calculated city spheres');
-assert.match(webMap, /if \(selected\) \{[\s\S]*circleHatchLines/u, 'only the selected city is hatched on web');
+assert.match(webMap, /cityInfluenceRadius\(game\.world, city\)/u, 'браузерная карта показывает рассчитанные сферы городов');
+assert.match(webMap, /if \(selected\) \{[\s\S]*circleHatchLines/u, 'на браузерной карте штрихуется только выбранный город');
 assert.match(webMap, /ctx\.arc\(centerX, centerY, radius, 0, Math\.PI \* 2\)[\s\S]*ctx\.clip\(\)/u,
-  'the selected web hatch is clipped to the calculated circular radius');
-assert.match(webMap, /centerX \+ radius < 0/u, 'web sphere outlines are culled to the viewport');
+  'штриховка на браузерной карте обрезается по рассчитанному кругу');
+assert.match(webMap, /centerX \+ radius < 0/u, 'контуры сфер за пределами окна браузера не рисуются');
 const hatch = circleHatchLines(30, 40, 50, 8);
-assert.ok(hatch.length > 10, 'a full circle receives evenly spaced hatch lines');
+assert.ok(hatch.length > 10, 'полный круг получает равномерно расположенные линии штриховки');
 for (const line of hatch) {
   assert.ok(Math.abs(Math.hypot(line.x1 - 30, line.y1 - 40) - 50) < 1e-8,
-    'each hatch segment starts at the circle boundary');
+    'каждый отрезок штриховки начинается на границе круга');
   assert.ok(Math.abs(Math.hypot(line.x2 - 30, line.y2 - 40) - 50) < 1e-8,
-    'each hatch segment ends at the circle boundary');
+    'каждый отрезок штриховки заканчивается на границе круга');
 }
 const hatchMidpoints = hatch.map((line) => ({
   x: (line.x1 + line.x2) / 2,
   y: (line.y1 + line.y2) / 2,
 }));
 assert.ok(hatchMidpoints.some(({ x, y }) => Math.abs(Math.hypot(x - 30, y - 40)) < 1e-8),
-  'the hatch crosses the circle center');
+  'штриховка проходит через центр круга');
 assert.ok(hatchMidpoints.some(({ x, y }) => Math.abs(Math.hypot(x - 30, y - 40) - 50) < 1e-8),
-  'hatch lines reach the full radius instead of stopping short of the circle edge');
+  'линии штриховки доходят до края круга, а не обрываются раньше');
 assert.equal(hasMapObjectList('political'), true);
 assert.equal(hasMapObjectList('cities'), true);
 assert.equal(hasMapObjectList('cultures'), true);
@@ -97,7 +169,7 @@ const inside = world.landIndex.find((pixel) => {
   }
   return true;
 });
-assert.notEqual(inside, undefined, 'test map has a non-coastal, river-free land patch');
+assert.notEqual(inside, undefined, 'на тестовой карте найден участок суши без берега и рек');
 const center = inside;
 const patch = [];
 for (let dy = -2; dy <= 2; dy += 1) for (let dx = -2; dx <= 2; dx += 1) patch.push(center + dy * MAP_WIDTH + dx);
@@ -143,39 +215,39 @@ const stripePixel = center;
 game.setMapMode('political');
 game.renderer.flush();
 assert.equal(game.renderer.pixels[stripePixel], blend(settled.color, nomad.color, 0.48),
-  'unselected nomadic land uses a translucent hatch over the settled political fill');
+  'невыбранная кочевая территория штрихуется поверх заливки оседлой страны');
 game.showCountryOnMap(nomad.id);
-assert.equal(game.getSnapshot().mapMode, 'political', 'selecting a nomadic country uses political mode');
+assert.equal(game.getSnapshot().mapMode, 'political', 'выбор кочевой страны включает политический режим');
 assert.equal(game.getSnapshot().selectedCountryId, nomad.id);
 game.renderer.flush();
-assert.equal(game.renderer.pixels[center], packed(nomad.color), 'the selected nomadic country is drawn solid on top');
+assert.equal(game.renderer.pixels[center], packed(nomad.color), 'выбранная кочевая страна отображается сплошным цветом');
 game.showCountryOnMap(nomad.id);
-assert.equal(game.getSnapshot().selectedCountryId, null, 'selecting the same country again removes the selection');
+assert.equal(game.getSnapshot().selectedCountryId, null, 'повторный выбор страны снимает выделение');
 game.showCountryOnMap(settled.id);
 assert.equal(game.getSnapshot().selectedCountryId, settled.id);
 game.renderer.flush();
-assert.equal(game.renderer.pixels[center], packed(settled.color), 'the selected settled country is drawn solid on top');
+assert.equal(game.renderer.pixels[center], packed(settled.color), 'выбранная оседлая страна отображается сплошным цветом');
 game.setMapMode('cultures');
-assert.equal(game.getSnapshot().selectedCountryId, null, 'changing map mode removes the country selection');
+assert.equal(game.getSnapshot().selectedCountryId, null, 'смена режима карты снимает выделение страны');
 
 game.showLayer({ kind: 'culture', id: culture.id });
 assert.equal(game.getSnapshot().mapMode, 'cultures');
 assert.equal(game.getSnapshot().layer?.kind, 'culture');
 game.showLayer(null);
-assert.equal(game.getSnapshot().layer, null, 'the active culture layer can be cleared');
+assert.equal(game.getSnapshot().layer, null, 'активный слой культуры можно отключить');
 game.selectCity(city.id);
 assert.equal(game.getSnapshot().mapMode, 'cities');
 assert.equal(game.getSnapshot().selectedCityId, city.id);
-assert.ok(cityInfluenceRadius(world, city) > 0, 'the selected city sphere uses its existing calculated radius');
+assert.ok(cityInfluenceRadius(world, city) > 0, 'сфера выбранного города использует рассчитанный радиус');
 game.selectCity(city.id);
-assert.equal(game.getSnapshot().selectedCityId, null, 'the selected city can be deselected');
+assert.equal(game.getSnapshot().selectedCityId, null, 'выделение выбранного города можно снять');
 game.setMapMode('political');
-assert.equal(game.getSnapshot().selectedCityId, null, 'changing map mode clears city selection');
+assert.equal(game.getSnapshot().selectedCityId, null, 'смена режима карты снимает выделение города');
 game.selectCity(laterCity.id);
 world.removeCity(city.id);
 game.setMapMode('cities');
-assert.equal(game.getSnapshot().selectedCityId, laterCity.id, 'the selected city stays selected if an earlier city is removed');
+assert.equal(game.getSnapshot().selectedCityId, laterCity.id, 'выделение сохраняется, если удалён город с меньшим ID');
 game.selectCity(laterCity.id);
-assert.equal(game.getSnapshot().selectedCityId, null, 'selection still clears after city ids shift');
+assert.equal(game.getSnapshot().selectedCityId, null, 'выделение снимается после сдвига ID городов');
 
-console.log('Unified entity rows, map selections, nomadic overlays, and city influence checks passed.');
+console.log('Проверены общие строки сущностей, выделение на карте, кочевые территории и сферы городов.');

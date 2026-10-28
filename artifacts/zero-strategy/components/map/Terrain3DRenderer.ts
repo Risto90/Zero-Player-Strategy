@@ -87,7 +87,7 @@ function mapPosition(world: World, x: number, y: number, carveRiver = false): TH
  * а не каждый пиксель. Эта геометрия служит только 3D-отрисовке.
  */
 export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
-  const sampledHeights = new Float64Array(TERRAIN_CONTOUR_COLUMNS * TERRAIN_CONTOUR_ROWS);
+  const sampledHeights = new Array<number>(TERRAIN_CONTOUR_COLUMNS * TERRAIN_CONTOUR_ROWS);
   let maximumHeight = 0;
   for (let row = 0; row < TERRAIN_CONTOUR_ROWS; row += 1) {
     const mapY = Math.round(row / (TERRAIN_CONTOUR_ROWS - 1) * (MAP_HEIGHT - 1));
@@ -110,7 +110,7 @@ export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
   if (levels[levels.length - 1] < maximumHeight) levels.push(maximumHeight);
   const heightContours = contours()
     .size([TERRAIN_CONTOUR_COLUMNS, TERRAIN_CONTOUR_ROWS])
-    .thresholds(levels)(Array.from(sampledHeights)) as ContourGeometry[];
+    .thresholds(levels)(sampledHeights) as ContourGeometry[];
   const positions: number[] = [];
   const elevationUvs: number[] = [];
   const indices: number[] = [];

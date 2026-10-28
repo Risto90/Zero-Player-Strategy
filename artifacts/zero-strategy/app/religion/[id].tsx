@@ -1,4 +1,4 @@
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { useMemo } from 'react';
 import { Text, View } from 'react-native';
 import { useGameSnapshot } from '@/game/useGame';
@@ -6,8 +6,10 @@ import { currentGame } from '@/game/session';
 import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt } from '@/game/format';
 import { cityComposition } from '@/game/settlements';
-import { cityProfileRoute, countryProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
-import { MissingProfile, ProfileFact, ProfileLayout, ProfileLink, ProfileSection, ProfileScrollList } from '@/components/profiles/ProfileLayout';
+import { countryProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
+import { MissingProfile, ProfileFact, ProfileIntro, ProfileLayout, ProfileSection } from '@/components/profiles/ProfileLayout';
+import { EmblemPreview } from '@/components/profiles/EmblemPreview';
+import { ProfileEntityList } from '@/components/profiles/EntityMarks';
 
 export default function ReligionPage() {
   const { id: rawId } = useLocalSearchParams<{ id: string }>();
@@ -29,39 +31,56 @@ export default function ReligionPage() {
     branches: game.world.religions.filter((child) => child.parentId === id),
   }), [game, id, game.world.version]);
   const population = snapshot.legend.religions.find((row) => row.id === id)?.value ?? 0;
+  const relationItems = [
+    ...(religion.parentId !== null && game.world.religions[religion.parentId] ? [{
+      kind: 'religion' as const,
+      key: `parent-${religion.parentId}`,
+      name: game.world.religions[religion.parentId].name,
+      note: 'Исходная вера',
+      spec: game.world.religions[religion.parentId].emblemSpec,
+      href: religionProfileRoute(religion.parentId),
+    }] : []),
+    ...branches.map((child) => ({
+      kind: 'religion' as const,
+      key: `branch-${child.id}`,
+      name: child.name,
+      note: 'Ветвь',
+      spec: child.emblemSpec,
+      href: religionProfileRoute(child.id),
+    })),
+  ];
   const details = (
     <>
-      <View style={styles.facts}>
-        <ProfileFact><Text style={{ color: religion.color }}>■ </Text>Население · {fmt(population)} чел.</ProfileFact>
-        <ProfileFact>Возникла в {religion.foundedYear} году</ProfileFact>
-        {religion.traits?.length ? <ProfileFact>Традиции · {religion.traits.join(', ')}</ProfileFact> : null}
-      </View>
+      <ProfileIntro mark={<EmblemPreview spec={religion.emblemSpec} label={`Флаг ${religion.name}`} />}>
+        <View style={styles.facts}>
+          <ProfileFact><Text style={{ color: religion.color }}>■ </Text>Население · {fmt(population)} чел.</ProfileFact>
+          <ProfileFact>Возникла в {religion.foundedYear} году</ProfileFact>
+          {religion.styleProfile && (
+            <ProfileFact>Стилевой профиль · {religion.styleProfile.profileId}, эпоха {religion.styleProfile.era}</ProfileFact>
+          )}
+          {religion.traits?.length ? <ProfileFact>Традиции · {religion.traits.join(', ')}</ProfileFact> : null}
+        </View>
+      </ProfileIntro>
       <ProfileSection title="РОДСТВО">
-        {religion.parentId !== null && game.world.religions[religion.parentId] && (
-          <ProfileLink title={`${game.world.religions[religion.parentId].name} · исходная вера`}
-            onPress={() => router.push(religionProfileRoute(religion.parentId!))} />
-        )}
-        {branches.length ? branches.map((child) => (
-          <ProfileLink key={child.id} title={`${child.name} · ветвь`}
-            onPress={() => router.push(religionProfileRoute(child.id))} />
-        )) : <ProfileFact>Другие ветви не зарегистрированы.</ProfileFact>}
+        <ProfileEntityList items={relationItems} emptyText="Другие ветви не зарегистрированы." />
       </ProfileSection>
       <ProfileSection title={`СТРАНЫ · ${countries.length}`}>
-        <ProfileScrollList>
-          {countries.length ? countries.map((country) => (
-            <ProfileLink key={country.id} title={`${country.rank} ${country.name}`}
-              onPress={() => router.push(countryProfileRoute(country.id))} />
-          )) : <ProfileFact>Сейчас вера не входит в состав стран.</ProfileFact>}
-        </ProfileScrollList>
+        <ProfileEntityList emptyText="Сейчас вера не входит в состав стран." items={countries.map((country) => ({
+          kind: 'country' as const,
+          key: String(country.id),
+          name: `${country.rank} ${country.name}`,
+          spec: country.emblemSpec,
+          href: countryProfileRoute(country.id),
+        }))} />
       </ProfileSection>
       <ProfileSection title={`ГОРОДА · ${cities.length}`}>
-        <ProfileScrollList>
-          {cities.length ? cities.map((city) => (
-            <ProfileLink key={city.id} title={city.name ?? 'Город'}
-              note={game.world.countries[city.countryId]?.name ?? 'Страна распущена'}
-              onPress={() => router.push(cityProfileRoute(city.id))} />
-          )) : <ProfileFact>Городов нет.</ProfileFact>}
-        </ProfileScrollList>
+        <ProfileEntityList emptyText="Городов нет." items={cities.map((city) => ({
+          kind: 'city' as const,
+          key: String(city.id),
+          city,
+          hasPort: game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0,
+          country: game.world.countries[city.countryId],
+        }))} />
       </ProfileSection>
     </>
   );
@@ -69,6 +88,7 @@ export default function ReligionPage() {
     subtitle="Религия" details={details}
     chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('religion', religion.id)])}
     archive={snapshot.chronicle}
+    world={game.world}
     initialReference={chronicleReference('religion', religion.id)}
     objectOptions={historyObjectOptions}
   />;

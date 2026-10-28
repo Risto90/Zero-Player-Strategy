@@ -1,9 +1,10 @@
 - [Zero Strategy balance](zero-strategy-balance.md) — split/faith weights kept low until merge/conquest exists; simulate 150 years in Node to check.
-- [Браузерная реализация](delivery-target.md) — Zero Strategy существует только в браузере; нативные экраны и мобильные варианты кода нужно удалять.
+- [Браузерная реализация](delivery-target.md) — Zero Strategy только браузерная; на телефоне используется браузер, нативной версии нет.
 - [Entity list share bars](entity-list-share-bars.md) — preserve the existing horizontal, entity-colored proportion fill in shared list rows; cities omit it.
 - [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
 - [Map redraw and timer](map-redraw-timer.md) — timer starts only after full redraw; every world mutation must mark its renderer area.
 - [Династии, родословная и должности](zero-strategy-dynasty-rules.md) — родословная задаёт династию; кандидатов определяют конкретные модификаторы, а замена случайных вариантов не создаёт наследников.
+- [Гербы династий](dynasty-heraldry.md) — порог 3 разных правителя и 15 членов; герб сохраняется, а переходы центрируют древо на персонаже или старшем живом члене.
 - [Розыгрыш карт](card-draw-eligibility.md) — только описанные карты в мировом и страновом пулах; индивидуальные шансы персонажей сохраняют множитель ×1,1.
 - [Unified country residence](nomad-current-homes.md) — characters keep one current countryId; nomadic countries live in the shared country collection.
 - [Design-doc fidelity](design-doc-fidelity.md) — implement only mechanics specified for this game; clarify missing numerical rules instead of inventing them.

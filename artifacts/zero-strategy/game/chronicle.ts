@@ -5,6 +5,8 @@ export interface ChronicleReference {
   id: number;
 }
 
+export type ChronicleScope = 'world' | 'country';
+
 export interface ChronicleObjectOption {
   reference: ChronicleReference;
   label: string;
@@ -15,6 +17,20 @@ export interface ChronicleEntry {
   text: string;
   objects: ChronicleReference[];
   importantObjects: ChronicleReference[];
+  scope?: ChronicleScope;
+  scopeCountryId?: number;
+}
+
+export interface ChronicleMentionCandidate {
+  reference: ChronicleReference;
+  name: string;
+}
+
+export interface ChronicleMention {
+  reference: ChronicleReference;
+  name: string;
+  start: number;
+  end: number;
 }
 
 export const CHRONICLE_OBJECT_HISTORY_LIMIT = 100;
@@ -52,6 +68,47 @@ export function chronicleObjectOptions(world: import('./world').World): Chronicl
 
 export function chronicleReference(type: ChronicleObjectType, id: number): ChronicleReference {
   return { type, id };
+}
+
+/** Находит только те имена, для которых запись уже содержит явную ссылку на сущность. */
+export function findChronicleMentions(text: string, candidates: ChronicleMentionCandidate[]): ChronicleMention[] {
+  const normalizedText = text.toLocaleLowerCase('ru-RU').replace(/ё/gu, 'е');
+  const normalizedCandidates = candidates.flatMap((candidate) => {
+    const name = candidate.name.trim();
+    if (!name) return [];
+    return [{ ...candidate, name, normalizedName: name.toLocaleLowerCase('ru-RU').replace(/ё/gu, 'е') }];
+  });
+  const mentions: ChronicleMention[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    let match: { candidate: typeof normalizedCandidates[number]; start: number } | null = null;
+    for (const candidate of normalizedCandidates) {
+      let start = normalizedText.indexOf(candidate.normalizedName, cursor);
+      while (start >= 0) {
+        const before = start > 0 ? text[start - 1] : '';
+        const after = text[start + candidate.name.length] ?? '';
+        const hasWordBoundary = (!before || !/[\p{L}\p{N}]/u.test(before)) &&
+          (!after || !/[\p{L}\p{N}]/u.test(after));
+        if (hasWordBoundary) break;
+        start = normalizedText.indexOf(candidate.normalizedName, start + 1);
+      }
+      if (start < 0) continue;
+      if (!match || start < match.start ||
+        (start === match.start && candidate.name.length > match.candidate.name.length)) {
+        match = { candidate, start };
+      }
+    }
+    if (!match) break;
+    const end = match.start + match.candidate.name.length;
+    mentions.push({
+      reference: match.candidate.reference,
+      name: text.slice(match.start, end),
+      start: match.start,
+      end,
+    });
+    cursor = end;
+  }
+  return mentions;
 }
 
 /** Old saves contain plain strings. Keep their wording and year, but never guess object links. */
@@ -111,6 +168,11 @@ export function migrateChronicle(
       objects,
       importantObjects: [...new Map(importantObjects.map((reference) =>
         [`${reference.type}:${reference.id}`, reference])).values()],
+      ...(candidate.scope === 'world' || candidate.scope === 'country' ? { scope: candidate.scope } : {}),
+      ...(candidate.scope === 'country' && Number.isInteger(candidate.scopeCountryId) &&
+        Number(candidate.scopeCountryId) >= 0
+        ? { scopeCountryId: Number(candidate.scopeCountryId) }
+        : {}),
     }];
   });
 }
@@ -132,18 +194,28 @@ export function filterChronicle(entries: ChronicleEntry[], references: Chronicle
 /** Filter the archive without changing its newest-first order or limiting the matching history. */
 export function searchChronicle(
   entries: ChronicleEntry[],
-  filters: { text?: string; year?: string; reference?: ChronicleReference | null },
+  filters: {
+    text?: string;
+    year?: string;
+    reference?: ChronicleReference | null;
+    references?: readonly ChronicleReference[];
+    years?: readonly number[];
+  },
 ): ChronicleEntry[] {
   const terms = normalizeChronicleSearch(filters.text ?? '').split(/\s+/u).filter(Boolean);
   const yearQuery = (filters.year ?? '').trim();
   const year = yearQuery === '' ? null : /^-?\d+$/u.test(yearQuery) ? Number(yearQuery) : Number.NaN;
-  const reference = filters.reference;
   if (yearQuery !== '' && !Number.isSafeInteger(year)) return [];
+  const referenceHistories = (filters.references ?? []).map((reference) =>
+    new Set(filterChronicle(entries, [reference])));
+  const years = new Set(filters.years ?? []);
+  if (year !== null) years.add(year);
 
   return entries.filter((entry) => {
-    if (year !== null && entry.year !== year) return false;
-    if (reference && !entry.objects.some((item) =>
-      item.type === reference.type && item.id === reference.id)) return false;
+    if (years.size && !years.has(entry.year)) return false;
+    if (filters.reference && !entry.objects.some((item) =>
+      item.type === filters.reference?.type && item.id === filters.reference?.id)) return false;
+    if (referenceHistories.some((history) => !history.has(entry))) return false;
     if (terms.length) {
       const text = normalizeChronicleSearch(entry.text);
       if (!terms.every((term) => text.includes(term))) return false;

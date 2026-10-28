@@ -2,9 +2,14 @@ import { MAP_PIXELS } from './config';
 import type { MapKind } from './geography';
 import { decodeEarthLand, fillOceanTemperature } from './geography';
 import { fillRings, rasterizeScalar, runSteps, traceCompositionSteps, traceScalarSteps, type EntityZones, type Steps, type TableView, type Zone } from './zones';
-import { World, type City, type Country, type Culture, type NomadCell, type Religion, type SavedGeographyState } from './world';
+import { World, type City, type Country, type Culture, type DynastyHeraldry, type NomadCell, type Religion, type SavedGeographyState } from './world';
 import { generateCityIdentity } from './cityNames';
 import { ensureCityPopulationGroups } from './settlements';
+import {
+  cultureTags,
+  ensureFlagIdentity,
+  ensureStyleProfile,
+} from './flagIdentity';
 
 /**
  * Saved map: every layer is stored as closed-curve zones, never as per-pixel values.
@@ -40,6 +45,7 @@ export interface SavedWorld {
   religionTable?: { ids: number[]; shares: number[] }[];
   humanOriginTable?: { ids: number[]; shares: number[] }[];
   people: World['people'];
+  dynastyEmblems?: Record<number, DynastyHeraldry>;
   cardMultipliers?: Record<string, number>;
   geography?: SavedGeographyState;
   /** Added when sea temperatures became part of climate layers. */
@@ -98,8 +104,26 @@ export interface WorldCopy {
   cultures: Culture[];
   religions: Religion[];
   people: World['people'];
+  dynastyEmblems: Record<number, DynastyHeraldry>;
   cardMultipliers: Record<string, number>;
   geography: SavedGeographyState;
+}
+
+function copyFlagged<T extends { emblemSpec?: Country['emblemSpec']; flagIdentity?: Country['flagIdentity']; styleProfile?: Country['styleProfile'] }>(entity: T): T {
+  return {
+    ...entity,
+    ...(entity.emblemSpec ? { emblemSpec: JSON.parse(JSON.stringify(entity.emblemSpec)) } : {}),
+    ...(entity.flagIdentity ? {
+      flagIdentity: { ...entity.flagIdentity, tags: [...entity.flagIdentity.tags] },
+    } : {}),
+    ...(entity.styleProfile ? {
+      styleProfile: {
+        ...entity.styleProfile,
+        tags: [...entity.styleProfile.tags],
+        identity: { ...entity.styleProfile.identity, tags: [...entity.styleProfile.identity.tags] },
+      },
+    } : {}),
+  };
 }
 
 function freezeTable(table: World['cultureTable']): TableView {
@@ -132,6 +156,7 @@ export function copyWorld(world: World): WorldCopy {
     humanOriginTable: freezeTable(world.humanOriginTable),
     countries: world.countries.map((c) => ({
       ...c,
+      ...copyFlagged(c),
       box: [...c.box] as Country['box'],
       ...(c.range ? { range: [...c.range] } : {}),
       ...(c.cells ? { cells: c.cells.map((cell) => ({ ...cell })) } : {}),
@@ -141,12 +166,14 @@ export function copyWorld(world: World): WorldCopy {
     })),
     cities: world.cities.map((city) => ({
       ...city,
+      ...copyFlagged(city),
       populationGroups: city.populationGroups?.map((group) => ({ ...group })),
     })),
     nextCityChronicleId: world.nextCityChronicleId,
-    cultures: world.cultures.map((c) => ({ ...c })),
-    religions: world.religions.map((r) => ({ ...r })),
+    cultures: world.cultures.map((c) => copyFlagged(c)),
+    religions: world.religions.map((r) => copyFlagged(r)),
     people: world.people.map((p) => ({ ...p, humanOrigin: p.humanOrigin ? { ids: [...p.humanOrigin.ids], shares: [...p.humanOrigin.shares] } : undefined, parents: [...p.parents], spouseIds: [...p.spouseIds], loverIds: [...p.loverIds], traits: [...p.traits], formerRulerOf: [...p.formerRulerOf] })),
+    dynastyEmblems: Object.fromEntries(Object.entries(world.dynastyEmblems).map(([id, emblem]) => [id, copyFlagged(emblem)])),
     cardMultipliers: { ...world.cardMultipliers },
     geography: world.geographySaveState(),
   };
@@ -175,6 +202,7 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     cultures: copy.cultures,
     religions: copy.religions,
     people: copy.people,
+    dynastyEmblems: copy.dynastyEmblems,
     cardMultipliers: copy.cardMultipliers,
     geography: copy.geography,
     climateWater: true,
@@ -280,6 +308,9 @@ export function deserializeWorld(saved: SavedWorld): World {
     if (city.pixel >= 0 && city.pixel < MAP_PIXELS) world.cityIdAt[city.pixel] = city.id;
   }
   world.people = saved.people ?? [];
+  world.dynastyEmblems = Object.fromEntries(
+    Object.entries(saved.dynastyEmblems ?? {}).map(([id, emblem]) => [Number(id), { ...emblem }]),
+  );
   for (const person of world.people) {
     const legacyId = (person as typeof person & { nomadId?: number }).nomadId;
     let currentCountryId = legacyId == null ? undefined : legacyNomadIds.get(legacyId);
@@ -302,6 +333,43 @@ export function deserializeWorld(saved: SavedWorld): World {
   world.cardMultipliers = multipliers;
   world.cultures = saved.cultures.map((c) => ({ ...c }));
   world.religions = saved.religions.map((r) => ({ ...r }));
+  for (const culture of world.cultures) {
+    ensureStyleProfile(
+      world.seed,
+      culture,
+      'culture',
+      'culture-style',
+      cultureTags(culture.id),
+      culture.parentId === null ? null : world.cultures[culture.parentId] ?? null,
+    );
+  }
+  for (const religion of world.religions) {
+    ensureStyleProfile(
+      world.seed,
+      religion,
+      'religion',
+      'religion-symbol',
+      [],
+      religion.parentId === null ? null : world.religions[religion.parentId] ?? null,
+    );
+    ensureFlagIdentity(
+      world.seed,
+      religion,
+      'religion',
+      'religion-symbol',
+      religion.styleProfile,
+      religion.parentId === null ? null : world.religions[religion.parentId] ?? null,
+    );
+  }
+  for (const country of world.countries) {
+    ensureFlagIdentity(
+      world.seed,
+      country,
+      'country',
+      'country-flag',
+      world.cultures[country.cultureId]?.styleProfile,
+    );
+  }
   rasterizeScalar(layers.political, world.owner);
   rasterizeScalar(layers.density, world.density);
   for (const layer of layers.cultures) {
@@ -333,6 +401,18 @@ export function deserializeWorld(saved: SavedWorld): World {
     if (!Number.isFinite(city.population)) city.population = world.density[city.pixel];
     ensureCityPopulationGroups(world, city);
     if (!city.name) Object.assign(city, generateCityIdentity(world, city.pixel));
+    if (city.rank >= 2 && city.rank <= 6) {
+      const country = world.countries[city.countryId];
+      ensureFlagIdentity(
+        world.seed,
+        city,
+        'city',
+        'city-coat',
+        world.cultures[country?.cultureId ?? -1]?.styleProfile,
+        undefined,
+        city.rank,
+      );
+    }
   }
   world.recountCountries();
   world.restoreGeographyState(saved.geography);

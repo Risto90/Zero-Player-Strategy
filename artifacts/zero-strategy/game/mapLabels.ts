@@ -25,9 +25,6 @@ export interface CountryMapLabel {
   rings: readonly Int32Array[];
   allowBridge: boolean;
   allFragments?: boolean;
-  clusterKey?: string;
-  fragmentOnly?: boolean;
-  bridgeComponentBounds?: readonly ContourBounds[];
 }
 
 type LabelCore = Omit<CountryMapLabel, 'selected'>;
@@ -187,9 +184,6 @@ function makeLabel(
   key: string,
   requiredAreas: readonly ContourArea[] = [],
   allFragments = false,
-  allowBridge = requiredAreas.length > 1,
-  clusterKey?: string,
-  fragmentOnly = false,
 ): LabelCore | null {
   if (!area.size || !country.name) return null;
   const countryBounds = area.bounds;
@@ -220,13 +214,8 @@ function makeLabel(
     ],
     countryBounds,
     rings: area.rings(),
-    allowBridge,
+    allowBridge: requiredAreas.length > 1,
     allFragments,
-    clusterKey,
-    fragmentOnly,
-    bridgeComponentBounds: allFragments || clusterKey
-      ? requiredAreas.map((requiredArea) => requiredArea.bounds)
-      : undefined,
   };
 }
 
@@ -267,38 +256,19 @@ function settledCountryLabels(world: World): LabelCore[] {
         `country-${country.id}-all-fragments`,
         components,
         true,
-        true,
       );
       if (bridgeLabel) labels.push(bridgeLabel);
     }
     for (const group of groups) {
       const groupArea = group.areas.slice(1).reduce((combined, component) => combined.union(component), group.areas[0]);
-      const clusterKey = `country-${country.id}-cluster-${group.index}`;
       const label = makeLabel(
         groupArea,
         country,
-        clusterKey,
+        `country-${country.id}-cluster-${group.index}`,
         group.areas,
         groups.length === 1 && components.length > 1,
-        true,
-        clusterKey,
       );
       if (label) labels.push(label);
-    }
-    if (components.length > 1) for (let index = 0; index < components.length; index += 1) {
-      const group = groups.find((candidate) => candidate.areas.includes(components[index]));
-      const clusterKey = `country-${country.id}-cluster-${group?.index ?? index}`;
-      const fragmentLabel = makeLabel(
-        components[index],
-        country,
-        `country-${country.id}-fragment-${index}`,
-        [components[index]],
-        false,
-        true,
-        clusterKey,
-        true,
-      );
-      if (fragmentLabel) labels.push(fragmentLabel);
     }
   }
   labelCache.set(world, { version: world.version, territoryVersion: world.territoryVersion, labels });
@@ -331,32 +301,20 @@ function selectedNomadLabels(world: World, countryId: number): LabelCore[] {
       `nomad-${countryId}-all-fragments`,
       components,
       true,
-      true,
     );
     if (bridgeLabel) labels.push(bridgeLabel);
   }
   labels.push(...groups.flatMap((group) => {
     const groupArea = group.areas.slice(1).reduce((combined, component) => combined.union(component), group.areas[0]);
-    const clusterKey = `nomad-${countryId}-cluster-${group.index}`;
-    const label = makeLabel(groupArea, country, clusterKey, group.areas,
-      groups.length === 1 && components.length > 1, true, clusterKey);
+    const label = makeLabel(
+      groupArea,
+      country,
+      `nomad-${countryId}-cluster-${group.index}`,
+      group.areas,
+      groups.length === 1 && components.length > 1,
+    );
     return label ? [label] : [];
   }));
-  if (components.length > 1) for (let index = 0; index < components.length; index += 1) {
-    const group = groups.find((candidate) => candidate.areas.includes(components[index]));
-    const clusterKey = `nomad-${countryId}-cluster-${group?.index ?? index}`;
-    const fragmentLabel = makeLabel(
-      components[index],
-      country,
-      `nomad-${countryId}-fragment-${index}`,
-      [components[index]],
-      false,
-      true,
-      clusterKey,
-      true,
-    );
-    if (fragmentLabel) labels.push(fragmentLabel);
-  }
   cache.labels.set(countryId, labels);
   return labels;
 }
@@ -552,16 +510,8 @@ export function shouldShowCityMarks(mode: MapMode): boolean {
   return mode === 'political' || mode === 'cities';
 }
 
-export interface CityLabelLayout {
-  x: number;
-  y: number;
-  fontSize: number;
-  width: number;
-  height: number;
-}
-
-/** Подбирает свободное место рядом с каждым видимым городским значком. */
-export function visibleCityLabelLayouts(
+/** Подбирает подписи только для видимых значков города, не допуская наложения названий. */
+export function visibleCityLabelIds(
   world: World,
   mode: MapMode,
   scale: number,
@@ -571,10 +521,8 @@ export function visibleCityLabelLayouts(
   viewportWidth: number,
   viewportHeight: number,
   occupiedLabels: readonly { left: number; top: number; right: number; bottom: number }[] = [],
-  measureTextWidth: (text: string, fontSize: number) => number =
-    (text, fontSize) => [...text].length * 0.62 * fontSize,
-): Map<number, CityLabelLayout> {
-  const visible = new Map<number, CityLabelLayout>();
+): Set<number> {
+  const visible = new Set<number>();
   if (!shouldShowCityMarks(mode)) return visible;
 
   const cellSize = 64;
@@ -588,14 +536,10 @@ export function visibleCityLabelLayouts(
     }
     return keys;
   };
-  const isFree = (
-    rect: { left: number; top: number; right: number; bottom: number },
-    ignored?: { left: number; top: number; right: number; bottom: number },
-  ) => {
+  const isFree = (rect: { left: number; top: number; right: number; bottom: number }) => {
     const checked = new Set<object>();
     for (const key of keysFor(rect)) {
       for (const other of occupied.get(key) ?? []) {
-        if (other === ignored) continue;
         if (checked.has(other)) continue;
         checked.add(other);
         if (rect.left < other.right && rect.right > other.left && rect.top < other.bottom && rect.bottom > other.top) {
@@ -614,116 +558,56 @@ export function visibleCityLabelLayouts(
   };
   for (const rect of occupiedLabels) occupy(rect);
 
-  const visibleCities = world.cities
+  const candidates = world.cities
     .map((city) => {
       const hasPort = world.isCoastal(city.pixel) || world.knownRivers[city.pixel] > 0;
       return { city, hasPort, zoomRank: cityVisibilityRank(city, hasPort) };
     })
-    .filter(({ zoomRank }) => isCityVisibleAtZoom(scale, baseScale, zoomRank))
+    .filter(({ city, zoomRank }) => city.name && isCityVisibleAtZoom(scale, baseScale, zoomRank))
     .sort((a, b) =>
       Number(b.city.capital) - Number(a.city.capital) ||
       b.city.rank - a.city.rank ||
       a.zoomRank - b.zoomRank ||
       a.city.id - b.city.id);
 
-  const iconBoundsByCity = new Map<number, { left: number; top: number; right: number; bottom: number }>();
-  const iconBoundsByPixel = new Map<number, { left: number; top: number; right: number; bottom: number }>();
-  for (const { city, hasPort } of visibleCities) {
-    const x = ox + (city.pixel % MAP_WIDTH) * scale;
-    const y = oy + Math.floor(city.pixel / MAP_WIDTH) * scale;
-    const iconSize = hasPort ? 30 + city.rank : 24 + city.rank;
-    if (x + iconSize < 0 || y + iconSize < 0 || x - iconSize > viewportWidth || y - iconSize > viewportHeight) continue;
-    const samePointIcon = iconBoundsByPixel.get(city.pixel);
-    if (samePointIcon) {
-      iconBoundsByCity.set(city.id, samePointIcon);
-      continue;
-    }
-    const iconBounds = {
-      left: x - iconSize / 2 - 2,
-      top: y - iconSize / 2 - 2,
-      right: x + iconSize / 2 + 2,
-      bottom: y + iconSize / 2 + 2,
-    };
-    iconBoundsByCity.set(city.id, iconBounds);
-    iconBoundsByPixel.set(city.pixel, iconBounds);
-    occupy(iconBounds);
-  }
-
-  const labeledPixels = new Set<number>();
-  for (const { city, hasPort } of visibleCities) {
-    if (!city.name || labeledPixels.has(city.pixel)) continue;
-    const widthPerFontSize = measureTextWidth(city.name, 1) + (city.capital ? 1.1 : 0);
-    const fontSize = Math.min(
-      cityLabelFontSize(scale, baseScale),
-      Math.max(0, viewportWidth - 16) / Math.max(1, widthPerFontSize),
-    );
+  for (const { city, hasPort } of candidates) {
+    let fontSize = cityLabelFontSize(scale, baseScale);
+    const nameUnits = [...(city.name ?? '')].length * 0.62;
+    const flagAspect = city.emblemSpec
+      ? Math.max(0.5, Math.min(2.6, city.emblemSpec.outline.aspect))
+      : 0;
+    const flagUnits = flagAspect ? Math.max(flagAspect * 1.1, Number(city.capital) * 1.45) + 0.35 : 0;
+    const textUnits = nameUnits + flagUnits;
+    fontSize = Math.min(fontSize, Math.max(0, viewportWidth - 16) / Math.max(1, textUnits));
     if (fontSize < 8) continue;
 
     const x = ox + (city.pixel % MAP_WIDTH) * scale;
     const y = oy + Math.floor(city.pixel / MAP_WIDTH) * scale;
     const iconSize = hasPort ? 30 + city.rank : 24 + city.rank;
-    const width = measureTextWidth(city.name, fontSize) + (city.capital ? fontSize * 1.1 : 0);
-    const height = fontSize * 1.2;
-    const gap = Math.max(2, fontSize * 0.22);
-    const shift = Math.min(width * 0.45, iconSize * 1.5);
-    const positions = [
-      ...[0, -shift, shift].map((dx) => ({ x: x + dx, y: y - iconSize / 2 - gap - height / 2 })),
-      ...[0, -shift, shift].map((dx) => ({ x: x + dx, y: y + iconSize / 2 + gap + height / 2 })),
-      ...[-1, 1].flatMap((direction) =>
-        [0, -height * 0.75, height * 0.75].map((dy) => ({
-          x: x + direction * (iconSize / 2 + gap + width / 2),
-          y: y + dy,
-        }))),
-    ];
-    const ownIconBounds = iconBoundsByCity.get(city.id);
-    const placement = positions.find((point) => {
-      const label = {
-        left: point.x - width / 2 - 3,
-        right: point.x + width / 2 + 3,
-        top: point.y - height / 2 - 2,
-        bottom: point.y + height / 2 + 2,
-      };
-      return label.left >= 8 && label.right <= viewportWidth - 8 &&
-        label.top >= 8 && label.bottom <= viewportHeight - 8 &&
-        isFree(label, ownIconBounds);
-    });
-    if (!placement) continue;
-    const labelBounds = {
-      left: placement.x - width / 2 - 3,
-      right: placement.x + width / 2 + 3,
-      top: placement.y - height / 2 - 2,
-      bottom: placement.y + height / 2 + 2,
+    const width = textUnits * fontSize;
+    const height = fontSize * (1.2 + (city.capital ? 0.9 : 0));
+    const labelBottom = y - iconSize / 2 - Math.max(2, fontSize * 0.22);
+    const label = {
+      left: x - width / 2 - 3,
+      right: x + width / 2 + 3,
+      top: labelBottom - height,
+      bottom: labelBottom + 2,
     };
-    visible.set(city.id, { ...placement, fontSize, width, height });
-    labeledPixels.add(city.pixel);
-    occupy(labelBounds);
+    if (
+      label.left < 8 || label.right > viewportWidth - 8 ||
+      label.top < 8 || label.bottom > viewportHeight - 8 ||
+      !isFree(label)
+    ) continue;
+    visible.add(city.id);
+    occupy(label);
+    occupy({
+      left: x - iconSize / 2 - 2,
+      right: x + iconSize / 2 + 2,
+      top: y - iconSize / 2 - 2,
+      bottom: y + iconSize / 2 + 2,
+    });
   }
   return visible;
-}
-
-/** Возвращает множество городов, для которых удалось разместить подпись. */
-export function visibleCityLabelIds(
-  world: World,
-  mode: MapMode,
-  scale: number,
-  baseScale: number,
-  ox: number,
-  oy: number,
-  viewportWidth: number,
-  viewportHeight: number,
-  occupiedLabels: readonly { left: number; top: number; right: number; bottom: number }[] = [],
-): Set<number> {
-  return new Set(visibleCityLabelLayouts(
-    world,
-    mode,
-    scale,
-    baseScale,
-    ox,
-    oy,
-    viewportWidth,
-    viewportHeight,
-    occupiedLabels,
-  ).keys());
 }
 
 export function shouldShowGeographyMarks(mode: MapMode): boolean {
@@ -753,7 +637,7 @@ export interface CountryLabelViewportLayout {
   visible: boolean;
 }
 
-/** Повторно размещает подпись по видимому контуру; мост через воду допустим, если охвачены все видимые части. */
+/** Повторно размещает подпись по видимой части контура, не смещая её за пределы своей территории. */
 export function countryLabelViewportLayout(
   label: CountryMapLabel,
   scale: number,
@@ -822,52 +706,6 @@ export function countryLabelViewportLayout(
         fitted = candidate;
         fittedLines = lines;
       }
-    }
-  }
-  if (fitted && label.bridgeComponentBounds && label.bridgeComponentBounds.length > 1) {
-    const widestLine = fittedLines.reduce((widest, line) => {
-      const width = measureLineWidthFactor?.(line) ?? textWidthFactor(line);
-      const widestWidth = measureLineWidthFactor?.(widest) ?? textWidthFactor(widest);
-      return width > widestWidth ? line : widest;
-    });
-    const widestLineFactor = measureLineWidthFactor?.(widestLine) ?? textWidthFactor(widestLine);
-    const textWidth = widestLineFactor * fitted.fontSize +
-      Math.max(0, [...widestLine].length - 1) * fitted.letterSpacing;
-    const textHeight = fitted.fontSize * 1.2 * fittedLines.length;
-    let extentX: number;
-    let extentY: number;
-    if (fitted.path?.length) {
-      const xs = fitted.path.map((point) => point.x);
-      const ys = fitted.path.map((point) => point.y);
-      extentX = (Math.max(...xs) - Math.min(...xs) + textHeight) / 2;
-      extentY = (Math.max(...ys) - Math.min(...ys) + textHeight) / 2;
-    } else {
-      extentX = (Math.abs(Math.cos(fitted.angle)) * textWidth +
-        Math.abs(Math.sin(fitted.angle)) * textHeight) / 2;
-      extentY = (Math.abs(Math.sin(fitted.angle)) * textWidth +
-        Math.abs(Math.cos(fitted.angle)) * textHeight) / 2;
-    }
-    const margin = fitted.fontSize * 0.3;
-    const labelBounds = {
-      left: fitted.x - extentX - margin,
-      top: fitted.y - extentY - margin,
-      right: fitted.x + extentX + margin,
-      bottom: fitted.y + extentY + margin,
-    };
-    const visibleComponents = label.bridgeComponentBounds
-      .map((bounds) => ({
-        left: ox + bounds.x0 * scale,
-        top: oy + bounds.y0 * scale,
-        right: ox + (bounds.x1 + 1) * scale,
-        bottom: oy + (bounds.y1 + 1) * scale,
-      }))
-      .filter((bounds) =>
-        bounds.left < viewportWidth - 8 && bounds.right > 8 &&
-        bounds.top < viewportHeight - 8 && bounds.bottom > 8);
-    if (!visibleComponents.every((bounds) =>
-      labelBounds.left < bounds.right && labelBounds.right > bounds.left &&
-      labelBounds.top < bounds.bottom && labelBounds.bottom > bounds.top)) {
-      fitted = null;
     }
   }
   const fontSize = fitted?.fontSize ?? 0;

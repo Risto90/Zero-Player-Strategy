@@ -12,18 +12,22 @@ import { countryCandidates, countryRulerHistory, expectedHeirFor, rulers } from 
 import type { Game } from '@/game/game';
 import type { Country } from '@/game/world';
 import type { Person } from '@/game/government';
-import { cityProfileRoute, countryCandidatesRoute, countryRulersRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
+import { countryCandidatesRoute, countryRulersRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
+import { closeProfileToMap, openProfile } from '@/game/profileNavigation';
 import {
   MissingProfile,
   ProfileFact,
   ProfileLayout,
   ProfileLink,
+  ProfileIntro,
   ProfileScrollList,
   ProfileSection,
 } from '@/components/profiles/ProfileLayout';
+import { ProfileEntityList } from '@/components/profiles/EntityMarks';
 import { CountryCandidatesList, CountryResidentsList, CountryRulerHistoryList } from '@/components/profiles/CountryLists';
 import { countryCharacters } from '@/game/characters';
 import { OriginComposition } from '@/components/profiles/OriginComposition';
+import { EmblemPreview } from '@/components/profiles/EmblemPreview';
 
 const c = colors.light;
 
@@ -59,20 +63,22 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
 
   const personLink = (personId: number, name: string, note?: string) => (
     <ProfileLink key={`${personId}-${name}`} title={name} note={note}
-      onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(personId) } })} />
+      onPress={() => openProfile({ pathname: '/person/[id]', params: { id: String(personId) } })} />
   );
   const details = (
     <>
-      <View style={styles.facts}>
-        <ProfileFact>Тип · {country.type === 'nomadic' ? 'кочевая страна' : 'оседлая страна'}</ProfileFact>
-        <ProfileFact>Площадь · {fmt(country.type === 'nomadic' ? country.range?.length ?? 0 : country.pixels)} земель</ProfileFact>
-        <ProfileFact>Население · {fmt(composition.population)} чел.</ProfileFact>
-        <ProfileFact>Форма правления · {GOVERNMENTS[country.government].name}</ProfileFact>
-        <ProfileFact>Основана в {country.foundedYear} году · {country.rank}</ProfileFact>
-        {country.modifiers.map((modifier) => (
-          <Text key={modifier} style={styles.note}>· {modifier === 'consulate' ? `Консулат (${country.consulCount})` : MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
-        ))}
-      </View>
+      <ProfileIntro mark={<EmblemPreview spec={country.emblemSpec} label={`Флаг ${country.name}`} />}>
+        <View style={styles.facts}>
+          <ProfileFact>Тип · {country.type === 'nomadic' ? 'кочевая страна' : 'оседлая страна'}</ProfileFact>
+          <ProfileFact>Площадь · {fmt(country.type === 'nomadic' ? country.range?.length ?? 0 : country.pixels)} земель</ProfileFact>
+          <ProfileFact>Население · {fmt(composition.population)} чел.</ProfileFact>
+          <ProfileFact>Форма правления · {GOVERNMENTS[country.government].name}</ProfileFact>
+          <ProfileFact>Основана в {country.foundedYear} году · {country.rank}</ProfileFact>
+          {country.modifiers.map((modifier) => (
+            <Text key={modifier} style={styles.note}>· {modifier === 'consulate' ? `Консулат (${country.consulCount})` : MODIFIERS[modifier].name}: {MODIFIERS[modifier].effect}</Text>
+          ))}
+        </View>
+      </ProfileIntro>
 
       <ProfileSection title={country.modifiers.includes('consulate') ? 'ПРАВИТЕЛИ' : 'ПРАВИТЕЛЬ'}>
         {rulers(game.world, country).filter((leader) => leader.alive).map((leader) => (
@@ -99,20 +105,22 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
             if (group.id === null) return <ProfileFact key="unknown-culture">{group.name} · {pct(group.percent)}</ProfileFact>;
             const cultureId = group.id;
             return <ProfileLink key={cultureId} title={group.name} note={pct(group.percent)}
-              onPress={() => router.push(cultureProfileRoute(cultureId))} />;
+              onPress={() => openProfile(cultureProfileRoute(cultureId))} />;
           }) : <ProfileFact>Нет данных.</ProfileFact>}
         </ProfileScrollList>
       </ProfileSection>
 
       <ProfileSection title="РЕЛИГИОЗНЫЙ СОСТАВ">
-        <ProfileScrollList>
-          {composition.religions.length ? composition.religions.map((group) => {
-            if (group.id === null) return <ProfileFact key="atheists">{group.name} · {pct(group.percent)}</ProfileFact>;
-            const religionId = group.id;
-            return <ProfileLink key={religionId} title={group.name} note={pct(group.percent)}
-              onPress={() => router.push(religionProfileRoute(religionId))} />;
-          }) : <ProfileFact>Нет данных.</ProfileFact>}
-        </ProfileScrollList>
+        <ProfileEntityList items={composition.religions.map((group, index) => group.id === null
+          ? { kind: 'atheists' as const, key: `atheists-${index}`, name: group.name, note: pct(group.percent) }
+          : {
+            kind: 'religion' as const,
+            key: String(group.id),
+            name: group.name,
+            note: pct(group.percent),
+            spec: game.world.religions[group.id]?.emblemSpec,
+            href: religionProfileRoute(group.id),
+          })} />
       </ProfileSection>
 
       <ProfileSection title="РАСЫ">
@@ -120,13 +128,13 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
       </ProfileSection>
 
       <ProfileSection title={`ГОРОДА · ${cities.length}`}>
-        <ProfileScrollList>
-          {cities.length ? cities.map((city) => (
-            <ProfileLink key={city.id} title={`${city.capital ? 'Столица · ' : ''}${city.name ?? 'Город'}`}
-              note={`${['городок', 'город', 'вольный город', 'полис', 'мегаполис', 'конгломерация'][city.rank - 1]} · ${fmt(Math.round(city.population))} чел.`}
-              onPress={() => router.push(cityProfileRoute(city.id))} />
-          )) : <ProfileFact>Городов нет.</ProfileFact>}
-        </ProfileScrollList>
+        <ProfileEntityList emptyText="Городов нет." items={cities.map((city) => ({
+          kind: 'city' as const,
+          key: String(city.id),
+          city,
+          hasPort: game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0,
+          country: game.world.countries[city.countryId],
+        }))} />
       </ProfileSection>
 
       {country.type === 'nomadic' && <ProfileSection title="АРЕАЛ">
@@ -135,7 +143,7 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
 
       <Pressable onPress={() => {
         game.showCountryOnMap(country.id);
-        router.replace('/play');
+        closeProfileToMap();
       }} style={styles.mapButton}>
         <Feather name="map" size={16} color={c.primaryForeground} />
         <Text style={styles.mapButtonText}>Показать на карте</Text>
@@ -147,7 +155,7 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
       subtitle={`${country.rank} · основана в ${country.foundedYear} году`}
       details={details}
       extraTabs={[
-        { key: 'residents', label: `Жители · ${residents.length}`, content: <CountryResidentsList residents={residents} /> },
+        { key: 'residents', label: `Жители · ${residents.length}`, content: <CountryResidentsList residents={residents} world={game.world} /> },
         ...(candidates.length ? [{
           key: 'candidates',
           label: `Кандидаты · ${candidates.length}`,
@@ -156,6 +164,7 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
       ]}
       chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('country', country.id)])}
       archive={snapshot.chronicle}
+      world={game.world}
       initialReference={chronicleReference('country', country.id)}
       objectOptions={historyObjectOptions}
     />

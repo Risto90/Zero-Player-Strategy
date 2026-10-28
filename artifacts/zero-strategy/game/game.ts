@@ -4,9 +4,11 @@ import { ContourArea, type ContourSpan } from './contours';
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
   type BrushMode, type BrushOption, type Card, type CardChoice, type CardPainterState, type CharacterEvent } from './brush';
 import { drawCountryCard, drawWorldCard, firstCreateCard } from './cards';
+import { createEntityEmblem } from './flagIdentity';
 import { BIOMES, BRUSH_SIZES, MAX_COUNTRIES, RANKS, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
 import { forEachNeighbour, type MapKind } from './geography';
 import { copyWorld, deserializeWorld, serializeSteps, type SavedWorld } from './persistence';
+import { ensureDynastyEmblems } from './dynastyHeraldry';
 import { generatePlaceName } from './cityNames';
 import { decodeSave, encodeSave } from './saveFile';
 import { clearSaveBytes, hasSaveBytes, readSaveBytes, writeSaveBytes } from './storage';
@@ -37,6 +39,7 @@ import {
   transferCountryChronicle,
   type ChronicleEntry,
   type ChronicleReference,
+  type ChronicleScope,
 } from './chronicle';
 
 function polityChronicleReference(polity: Country): ChronicleReference {
@@ -245,6 +248,7 @@ export class Game {
   private selectedCityChronicleId: number | null = null;
   private card: Card | null = null;
   private painter: CardPainter | null = null;
+  private activeChronicleContext: { scope: ChronicleScope; countryId?: number } | null = null;
   private pendingInheritanceSplit: {
     sourceCountryId: number;
     destinationIds: number[];
@@ -394,6 +398,7 @@ export class Game {
       ensureOffices(game.world, country, saved.year);
     }
     refreshHeirs(game.world, saved.year);
+    ensureDynastyEmblems(game.world);
     game.turn = saved.turn;
     game.focusCountryId = saved.focusCountryId;
     const legacyNomadIds = new Map<number, number>();
@@ -1160,6 +1165,7 @@ export class Game {
         }
       }
       if (this.world.discoverGeography()) this.renderer.markAll();
+      ensureDynastyEmblems(this.world);
       this.queue = this.playerSlots();
       this.startNextPlayerCard();
     } finally {
@@ -1240,6 +1246,14 @@ export class Game {
     selectMapMode = true,
     recipient: NotificationRecipient = this.defaultNotificationRecipient(),
   ): void {
+    if (!card.chronicleScope) {
+      card.chronicleScope = recipient.scope === 'country' ? 'country' : 'world';
+    }
+    if (card.chronicleScope === 'country' && card.chronicleCountryId === undefined) {
+      card.chronicleCountryId = recipient.scope === 'country'
+        ? recipient.countryId
+        : card.targetCountryId ?? undefined;
+    }
     this.card = card;
     if (card.developmentOnly) this.brushMode = 'repeat';
     this.painter = new CardPainter(this.world, card, this.brushMode, painterState);
@@ -1420,8 +1434,17 @@ export class Game {
       this.emit();
       return;
     }
-    this.afterPaint();
-    this.finish(this.painter);
+    const previousChronicleContext = this.activeChronicleContext;
+    this.activeChronicleContext = this.card?.chronicleScope === 'country' &&
+      Number.isInteger(this.card.chronicleCountryId)
+      ? { scope: 'country', countryId: this.card.chronicleCountryId }
+      : { scope: 'world' };
+    try {
+      this.afterPaint();
+      this.finish(this.painter);
+    } finally {
+      this.activeChronicleContext = previousChronicleContext;
+    }
     this.painter = null;
     this.card = null;
   }
@@ -1491,6 +1514,18 @@ export class Game {
         const city = cityId === undefined ? null : w.cities[cityId];
         if (city && target && city.countryId === target.id && canUpgradeCityRank(w, target.id, city.rank)) {
           city.rank = (city.rank + 1) as City['rank'];
+          if (city.rank >= 2 && city.rank <= 6 && !city.emblemSpec) {
+            const culture = w.cultures[target.cultureId];
+            Object.assign(city, createEntityEmblem(
+              w.seed,
+              'city',
+              city.chronicleId,
+              'city-coat',
+              culture?.styleProfile,
+              undefined,
+              city.rank,
+            ));
+          }
           concentrateCityPopulation(w, city);
           this.markCityArea(city);
           this.addLog(`${target.name}: город повышен до ранга «${cityRankName(city.rank)}».`, [
@@ -2191,7 +2226,12 @@ export class Game {
   }
 
   private addLog(text: string, objects: ChronicleReference[] = [], importantObjects: ChronicleReference[] = []): void {
-    const uniqueObjects = new Map(objects.map((reference) => [`${reference.type}:${reference.id}`, reference]));
+    const sourceCountry = this.activeChronicleContext?.scope === 'country' &&
+      this.activeChronicleContext.countryId !== undefined
+      ? [chronicleReference('country', this.activeChronicleContext.countryId)]
+      : [];
+    const uniqueObjects = new Map([...objects, ...sourceCountry]
+      .map((reference) => [`${reference.type}:${reference.id}`, reference]));
     const linkedObjects = new Set(uniqueObjects.keys());
     const uniqueImportance = new Map(importantObjects
       .filter((reference) => linkedObjects.has(`${reference.type}:${reference.id}`))
@@ -2201,6 +2241,10 @@ export class Game {
       text,
       objects: [...uniqueObjects.values()],
       importantObjects: [...uniqueImportance.values()],
+      scope: this.activeChronicleContext?.scope ?? 'world',
+      ...(this.activeChronicleContext?.scope === 'country' && this.activeChronicleContext.countryId !== undefined
+        ? { scopeCountryId: this.activeChronicleContext.countryId }
+        : {}),
     }, ...this.log];
   }
 

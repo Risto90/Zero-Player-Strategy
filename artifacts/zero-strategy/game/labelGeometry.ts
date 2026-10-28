@@ -295,7 +295,7 @@ function sampleRectangle(
     }
   }
   const coverage = inside / total;
-  return allowBridge ? coverage > 0.5 : coverage === 1;
+  return allowBridge ? coverage >= 0.5 : coverage === 1;
 }
 
 function normalizeReadableAngle(angle: number): number {
@@ -492,7 +492,7 @@ function pathCoverage(
       total += 1;
     }
   }
-  return allowBridge ? inside / total > 0.5 : inside === total;
+  return inside / total >= (allowBridge ? 0.5 : 1);
 }
 
 /**
@@ -544,7 +544,7 @@ export function fitLabelToVisibleContour(input: {
     Math.max(LABEL_MIN_SIZE, Math.hypot(bounds.right - bounds.left, bounds.bottom - bounds.top) * 0.35),
   );
   const lineCount = Math.max(1, Math.min(3, Math.floor(input.lineCount ?? 1)));
-  const curvedPath = lineCount === 1 && axis.elongation >= 1.5
+  const curvedPath = lineCount === 1 && axis.elongation >= 1.5 && !input.allowBridge
     ? centerline(rings, axis, viewport)
     : [];
   let best: LabelGeometryPlacement | null = null;

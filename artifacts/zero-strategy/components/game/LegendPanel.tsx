@@ -1,6 +1,6 @@
 import { Feather } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router, type Href } from 'expo-router';
+import { type Href } from 'expo-router';
 import { useState } from 'react';
 import type { ReactElement } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -12,6 +12,9 @@ import { HUMAN_ORIGINS } from '@/game/human';
 import { RAMPS } from '@/game/render';
 import { cityRankName } from '@/game/settlements';
 import { cityProfileRoute, countryProfileRoute, cultureProfileRoute, raceProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
+import { openProfile } from '@/game/profileNavigation';
+import { AtheistFlagMark, CityIconLink, EntityCrownLink, EntityFlagLink } from '@/components/profiles/EntityMarks';
+import type { ReactNode } from 'react';
 
 const c = colors.light;
 const VALUE_NOTE: Record<string, string> = {
@@ -44,31 +47,41 @@ function NameSearch({ value, placeholder, onChangeText }: { value: string; place
   );
 }
 
-function EntityRow({ row, unit, active, onSelect, profileRoute, showShare = true, showSwatch = true, testId }: {
+function EntityRow({ row, unit, active, onSelect, profileRoute, leadingMark, afterNameMark, trailingMark, hideProfileButton = false, showShare = true, showSwatch = true, testId }: {
   row: LegendRow;
   unit: string;
   active: boolean;
   onSelect?: () => void;
   profileRoute?: Href | null;
+  leadingMark?: ReactNode;
+  afterNameMark?: ReactNode;
+  trailingMark?: ReactNode;
+  hideProfileButton?: boolean;
   showShare?: boolean;
   showSwatch?: boolean;
   testId: string;
 }) {
+  const hasProfileButton = Boolean(profileRoute) && !hideProfileButton;
+  const hasRightMark = Boolean(trailingMark) || hasProfileButton;
   return (
     <View style={[styles.entityRow, active && styles.entityRowActive]} testID={testId}>
       {showShare && (
-        <View pointerEvents="none" style={[styles.rowBarTrack, profileRoute && styles.rowBarTrackWithProfile]}>
+        <View pointerEvents="none" style={[styles.rowBarTrack, hasRightMark && styles.rowBarTrackWithProfile]}>
           <View style={[styles.rowBar, {
             width: `${Math.max(0, Math.min(100, row.percent))}%`,
             backgroundColor: row.color,
           }]} />
         </View>
       )}
+      {leadingMark ? <View style={styles.leadingMark}>{leadingMark}</View> : null}
       <Pressable onPress={onSelect} disabled={!onSelect} style={styles.selectButton}
         accessibilityRole="button" accessibilityState={{ selected: active }} testID={`${testId}-select`}>
         {showSwatch && <View style={[styles.swatch, { backgroundColor: row.color }]} />}
         <View style={styles.rowNameBlock}>
-          <Text style={styles.rowName} numberOfLines={1}>{row.name}</Text>
+          <View style={styles.rowNameLine}>
+            <Text style={styles.rowName} numberOfLines={1}>{row.name}</Text>
+            {afterNameMark ? <View style={styles.afterNameMark}>{afterNameMark}</View> : null}
+          </View>
           {row.detail !== '' && <Text style={styles.rowDetail} numberOfLines={1}>{row.detail}</Text>}
         </View>
         <View style={styles.rowStats}>
@@ -76,8 +89,9 @@ function EntityRow({ row, unit, active, onSelect, profileRoute, showShare = true
           <Text style={styles.rowValue}>{fmt(row.value)} {unit}</Text>
         </View>
       </Pressable>
-      {profileRoute ? (
-        <Pressable onPress={() => router.push(profileRoute)} style={styles.profileButton}
+      {trailingMark ? <View style={styles.profileButton}>{trailingMark}</View> : null}
+      {hasProfileButton && profileRoute ? (
+        <Pressable onPress={() => openProfile(profileRoute)} style={styles.profileButton}
           accessibilityRole="link" accessibilityLabel={`Открыть профиль: ${row.name}`}
           testID={`${testId}-profile`}>
           <Feather name="external-link" size={15} color={c.accent} />
@@ -87,12 +101,16 @@ function EntityRow({ row, unit, active, onSelect, profileRoute, showShare = true
   );
 }
 
-function EntityRows({ rows, unit = 'чел.', activeId = null, onSelect, profileRouteForId, showShare = true, showSwatch = true, header, footer, testPrefix }: {
+function EntityRows({ rows, unit = 'чел.', activeId = null, onSelect, profileRouteForId, leadingMarkForId, afterNameMarkForId, trailingMarkForId, hideProfileButton = false, showShare = true, showSwatch = true, header, footer, testPrefix }: {
   rows: LegendRow[];
   unit?: string;
   activeId?: number | null;
   onSelect?: (row: LegendRow) => void;
   profileRouteForId?: (id: number) => Href | null;
+  leadingMarkForId?: (id: number) => ReactNode;
+  afterNameMarkForId?: (id: number) => ReactNode;
+  trailingMarkForId?: (id: number) => ReactNode;
+  hideProfileButton?: boolean;
   showShare?: boolean;
   showSwatch?: boolean;
   header?: ReactElement | null;
@@ -107,6 +125,9 @@ function EntityRows({ rows, unit = 'чел.', activeId = null, onSelect, profile
         <EntityRow row={item} unit={unit} active={activeId === item.id}
           onSelect={onSelect ? () => onSelect(item) : undefined}
           profileRoute={profileRouteForId?.(item.id)} showShare={showShare} showSwatch={showSwatch}
+          leadingMark={leadingMarkForId?.(item.id)} afterNameMark={afterNameMarkForId?.(item.id)}
+          trailingMark={trailingMarkForId?.(item.id)}
+          hideProfileButton={hideProfileButton}
           testId={`${testPrefix}-${item.id}`} />
       )}
       initialNumToRender={12} nestedScrollEnabled keyboardShouldPersistTaps="handled" />
@@ -142,7 +163,12 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
         <NameSearch value={search} placeholder="Найти страну" onChangeText={setSearch} />
         {rows.length ? <EntityRows rows={rows} activeId={snap.selectedCountryId}
           onSelect={(row) => game.showCountryOnMap(row.id)}
-          profileRouteForId={countryProfileRoute} testPrefix="row-country" /> : <Empty text="Ничего не найдено. Измените запрос или очистите его." />}
+          profileRouteForId={countryProfileRoute}
+          leadingMarkForId={(id) => {
+            const country = game.world.countries[id];
+            return country ? <EntityFlagLink spec={country.emblemSpec} href={countryProfileRoute(id)} label={country.name} /> : null;
+          }}
+          hideProfileButton showSwatch={false} testPrefix="row-country" /> : <Empty text="Ничего не найдено. Измените запрос или очистите его." />}
       </View>
     ) : <Empty text="Ни одного государства. Пока." />;
   } else if (mapMode === 'cultures' || mapMode === 'religions' || mapMode === 'origins') {
@@ -158,14 +184,21 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
     sub = activeId === null ? 'нажмите строку — показать слой карты' : `слой: ${rows.find((row) => row.id === activeId)?.name ?? ''}`;
     const visibleRows = rows.filter((row) => normalizeSearchText(row.name).includes(query));
     const footer = isReligion && legend.totalPopulation > 0 ? (
-      <EntityRow row={legend.nonBelievers} unit="чел." active={false} showShare testId="row-nonbelievers" />
+      <EntityRow row={legend.nonBelievers} unit="чел." active={false} showShare showSwatch={false}
+        leadingMark={<AtheistFlagMark />} testId="row-nonbelievers" />
     ) : null;
     body = rows.length ? (
       <View style={styles.listContent}>
         <NameSearch value={search} placeholder={`Найти ${isCulture ? 'культуру' : isReligion ? 'веру' : 'расу'}`} onChangeText={setSearch} />
         {visibleRows.length ? <EntityRows rows={visibleRows} activeId={activeId}
           onSelect={(row) => game.showLayer(layer?.kind === kind && layer.id === row.id ? null : { kind, id: row.id })}
-          profileRouteForId={profileRouteForId} footer={footer} testPrefix={`row-${kind}`} /> : <Empty text="Ничего не найдено. Измените запрос или очистите его." />}
+          profileRouteForId={profileRouteForId}
+          leadingMarkForId={isReligion ? (id) => {
+            const religion = game.world.religions[id];
+            return religion ? <EntityFlagLink spec={religion.emblemSpec} href={religionProfileRoute(id)} label={religion.name} /> : null;
+          } : undefined}
+          hideProfileButton={isReligion} showSwatch={!isReligion}
+          footer={footer} testPrefix={`row-${kind}`} /> : <Empty text="Ничего не найдено. Измените запрос или очистите его." />}
       </View>
     ) : <Empty text={isCulture ? 'Пока никого.' : isReligion ? 'Пока нет верующих.' : 'На карте рас нет.'} />;
   } else if (mapMode === 'cities') {
@@ -190,7 +223,35 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
             game.selectCity(row.id);
             if (!deselect && city) onCityPress?.(city.pixel);
           }}
-          profileRouteForId={cityProfileRoute} testPrefix="row-city" /> : <Empty text="Ничего не найдено. Измените запрос или очистите его." />}
+          profileRouteForId={cityProfileRoute}
+          leadingMarkForId={(id) => {
+            const city = game.world.cities.find((item) => item.id === id);
+            const country = city ? game.world.countries[city.countryId] : undefined;
+            if (!city) return null;
+            return (
+              <View style={styles.cityMarks}>
+                {city.capital && country
+                  ? <EntityCrownLink href={countryProfileRoute(country.id)} label={country.name} />
+                  : null}
+                {country?.emblemSpec
+                  ? <EntityFlagLink spec={country.emblemSpec} href={countryProfileRoute(country.id)} label={country.name} />
+                  : null}
+              </View>
+            );
+          }}
+          afterNameMarkForId={(id) => {
+            const city = game.world.cities.find((item) => item.id === id);
+            return city?.emblemSpec
+              ? <EntityFlagLink spec={city.emblemSpec} href={cityProfileRoute(city.id)} label={city.name ?? 'Город'} />
+              : null;
+          }}
+          trailingMarkForId={(id) => {
+            const city = game.world.cities.find((item) => item.id === id);
+            if (!city) return null;
+            const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
+            return <CityIconLink city={city} hasPort={hasPort} size={32} />;
+          }}
+          hideProfileButton testPrefix="row-city" /> : <Empty text="Ничего не найдено. Измените запрос или очистите его." />}
       </View>
     ) : <Empty text="Пока нет городов." />;
   } else if (mapMode === 'biomes') {
@@ -250,10 +311,14 @@ const styles = StyleSheet.create({
   rowBarTrack: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
   rowBarTrackWithProfile: { right: 38 },
   rowBar: { position: 'absolute', left: 0, top: 0, bottom: 0, opacity: 0.15 },
+  leadingMark: { paddingLeft: 8, justifyContent: 'center' },
+  cityMarks: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   selectButton: { flex: 1, minWidth: 0, minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8, paddingVertical: 6, backgroundColor: 'transparent' },
   rowNameBlock: { flex: 1, minWidth: 0 },
+  rowNameLine: { flexDirection: 'row', alignItems: 'center', gap: 4, minWidth: 0 },
+  afterNameMark: { flexShrink: 0 },
   rowStats: { alignItems: 'flex-end', minWidth: 72 },
-  rowName: { fontFamily: fonts.sansMedium, fontSize: 13, color: c.foreground },
+  rowName: { flex: 1, minWidth: 0, fontFamily: fonts.sansMedium, fontSize: 13, color: c.foreground },
   rowDetail: { fontFamily: fonts.sans, fontSize: 11, color: c.mutedForeground },
   rowValue: { fontFamily: fonts.mono, fontSize: 10, color: c.mutedForeground },
   rowPct: { fontFamily: fonts.mono, fontSize: 11, color: c.foreground },

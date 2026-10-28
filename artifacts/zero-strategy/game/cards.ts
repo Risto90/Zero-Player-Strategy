@@ -22,6 +22,7 @@ import {
   upgradeableCities,
 } from './settlements';
 import type { City } from './world';
+import { FLAG_IDENTITY_CONFIG } from './flagIdentityConfig';
 
 export const CARD_TITLES: Record<CardType, string> = {
   create: 'Создание государства',
@@ -1376,7 +1377,10 @@ export function drawClimateCard(world: World, type: ClimateCard, country: Countr
 function drawFaith(world: World, country: Country | null, year: number): Card | null {
   const { count, hint } = countScope(world, country, INK.faith, (p) => world.owner[p] > 0);
   if (count < 1) return null;
-  const religion = world.newReligion(year);
+  const parentReligion = FLAG_IDENTITY_CONFIG.religionParentSource === 'current-country' && country && country.religionId !== null
+    ? world.religions[country.religionId] ?? null
+    : null;
+  const religion = world.newReligion(year, parentReligion);
   const where = country ? `в ${country.name}` : 'в любых государствах';
   const card = makeCard('faith', count, country, `Вера «${religion.name}» распространяется ${where}: каждый мазок обращает 40% жителей.`, hint);
   card.newReligionId = religion.id;

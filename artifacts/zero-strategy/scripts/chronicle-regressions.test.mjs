@@ -4,6 +4,7 @@ import {
   CHRONICLE_OBJECT_HISTORY_LIMIT,
   CHRONICLE_PAGE_SIZE,
   chroniclePage,
+  findChronicleMentions,
   filterChronicle,
   isChronicleImportant,
   migrateChronicle,
@@ -95,6 +96,14 @@ const current = migrateChronicle([
 ]);
 assert.deepEqual(current[0].importantObjects, [ref('city', 81)], 'current object-scoped importance survives migration');
 assert.deepEqual(current[1].importantObjects, [], 'importance without a valid object link is rejected');
+const scopedEntries = migrateChronicle([
+  { ...entry('Country-scoped event', [ref('country', 3)]), scope: 'country', scopeCountryId: 3 },
+  { ...entry('World-scoped event', []), scope: 'world', scopeCountryId: 3 },
+  entry('Legacy event without source metadata', []),
+]);
+assert.deepEqual(scopedEntries.map(({ scope, scopeCountryId }) => [scope, scopeCountryId]), [
+  ['country', 3], ['world', undefined], [undefined, undefined],
+], 'метаданные источника сохраняются, а старые записи остаются без классификации');
 
 const countryArchive = migrateChronicle([
   entry('Country and city event', [ref('country', 3), ref('city', 40)], [ref('city', 40)]),
@@ -134,6 +143,8 @@ assert.equal(filterChronicle(longArchive, [ref('country', 99)]).length, 0,
   'importance does not make unrelated objects inherit a record');
 assert.equal(searchChronicle(longArchive, { reference: ref('country', 7) }).length, 160,
   'archive search reaches linked records older than the profile history limit');
+assert.equal(searchChronicle(longArchive, { references: [ref('country', 7)] }).length, objectHistory.length,
+  'entity filters show only records that belong to the entity profile chronicle');
 assert.equal(chroniclePage(searchChronicle(longArchive, { reference: ref('country', 7) }), 1)[0].text, 'Event 25',
   'filtered archive pages keep newest-first order');
 assert.deepEqual(searchChronicle([
@@ -143,6 +154,28 @@ assert.deepEqual(searchChronicle([
 ['Основан город ВЕЖА'], 'search ignores letter case and requires every search term');
 assert.equal(searchChronicle(longArchive, { year: 'invalid' }).length, 0,
   'invalid year filters do not return the unfiltered archive');
+const filteredArchive = [
+  entry('A', [ref('country', 7), ref('person', 4)]),
+  { ...entry('B', [ref('country', 7), ref('person', 4)]), year: 1001 },
+  entry('C', [ref('country', 7)]),
+];
+assert.deepEqual(searchChronicle(filteredArchive, {
+  references: [ref('country', 7), ref('person', 4)],
+  years: [1000],
+}).map(({ text }) => text), ['A'],
+'фильтры сущностей пересекаются, а выбранные годы ограничивают тот же архив');
+assert.deepEqual(searchChronicle(filteredArchive, {
+  references: [ref('country', 7), ref('person', 4)],
+  years: [1000, 1001],
+}).map(({ text }) => text), ['A', 'B'],
+'несколько выбранных годов работают как единая группа при пересечении фильтров сущностей');
+assert.deepEqual(findChronicleMentions('Северная Республика и Республика.', [
+  { reference: ref('country', 1), name: 'Республика' },
+  { reference: ref('country', 2), name: 'Северная Республика' },
+]).map(({ reference, name }) => [reference.id, name]), [
+  [2, 'Северная Республика'],
+  [1, 'Республика'],
+], 'для ссылок выбирается самое длинное совпадение, а вложенные совпадения не дублируются');
 
 const archivePages = Array.from({ length: 61 }, (_, index) => entry(`Archive ${index}`, []));
 assert.equal(chroniclePage(archivePages, 0).length, CHRONICLE_PAGE_SIZE, 'global archive initially exposes 25 records');
@@ -164,9 +197,21 @@ assert.equal(chroniclePage(thousandsObjectHistory, Math.floor((thousandsObjectHi
 'later pages retain old country-important events');
 
 const logPanelSource = readFileSync('components/game/LogPanel.tsx', 'utf8');
-assert.match(logPanelSource, /isChronicleImportant\(entry, selectedReference\)/u,
-  'the profile chronicle renders the marker only for its selected object');
-assert.doesNotMatch(logPanelSource, /entry\.important\b/u, 'the global list never treats an object mark as universal');
+assert.match(logPanelSource, /selectedReferences\.some\(\(reference\) => isChronicleImportant\(entry, reference\)\)/u,
+  'летопись выделяет важность для любого активного фильтра сущности');
+assert.match(logPanelSource, /references: selectedReferences[\s\S]*years: selectedYears/u,
+  'архив одновременно применяет несколько фильтров сущностей и годов');
+assert.match(logPanelSource, /hasActiveFilters && \([\s\S]*styles\.activeFilters/u,
+  'метки фильтров появляются только при активном фильтре');
+assert.match(logPanelSource, /const visibleReferences = selectedReferences\.filter\(\(reference\) =>[\s\S]*!chronicleReferencesEqual\(initialReference, reference\)/u,
+  'обязательный фильтр летописи сущности скрыт среди выбранных фильтров');
+assert.match(logPanelSource, /if \(initialReference && chronicleReferencesEqual\(initialReference, reference\)\) return;/u,
+  'обязательный фильтр страницы нельзя удалить');
+assert.match(logPanelSource, /\{visibleReferences\.map\(\(reference\) =>/u,
+  'в метках показываются только дополнительные фильтры');
+assert.match(logPanelSource, /onPress=\{\(\) => addYear\(entry\.year\)\}/u,
+  'год события можно выбрать как фильтр архива');
+assert.doesNotMatch(logPanelSource, /entry\.important\b/u, 'общий архив не считает пометку объекта универсальной');
 
 // Exercise character-event logging in the game, not just the entry model.
 const characterWorld = World.create('random', 57133);

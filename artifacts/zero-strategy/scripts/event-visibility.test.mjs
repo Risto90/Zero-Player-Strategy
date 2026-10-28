@@ -156,12 +156,16 @@ assert.match(screen, /logOverlay: \{ position: 'absolute', top: 0, right: 0, bot
   'the chronicle overlay spans the whole map area');
 assert.match(screen, /logCloseButton: \{[^}]*width: 44, height: 44/,
   'the close control has a mobile-sized touch target');
-assert.match(logPanel, /data=\{log\}/,
-  'the chronicle renders its complete archive in a scrollable list');
-const minimalLogPanel = logPanel.match(/if \(minimal\) \{([\s\S]*?)\n  \}\n\n  return \(/)?.[1];
-assert.ok(minimalLogPanel, 'the game can render a separate minimal chronicle mode');
-assert.doesNotMatch(minimalLogPanel, /TextInput|filters|Загрузить ещё|ЛЕТОПИСЬ|событий/,
-  'the in-game chronicle contains no heading, search, filters, counters, or paging controls');
+assert.match(logPanel, /data=\{visibleEntries\}/,
+  'летопись показывает отфильтрованный архив в прокручиваемом списке');
+assert.match(logPanel, /!minimal && \([\s\S]*?<View style=\{styles\.filters\}>[\s\S]*?<TextInput/u,
+  'внутриигровая летопись скрывает поиск в компактном режиме');
+assert.match(logPanel, /hasActiveFilters && \([\s\S]*?styles\.activeFilters/u,
+  'метки фильтров появляются в летописи только после выбора фильтра');
+assert.match(logPanel, /minimal \? styles\.minimalRow : styles\.row/u,
+  'один рендерер архива используется на карте и страницах сущностей');
+assert.doesNotMatch(logPanel, /if \(minimal\) \{/u,
+  'компактный режим не поддерживает отдельное отображение без ссылок');
 
 const pauseButton = screen.match(/<Pressable[\s\S]*?testID="button-pause"[\s\S]*?\/>/)?.[0];
 assert.ok(pauseButton, 'the pause button remains rendered during turn progress');

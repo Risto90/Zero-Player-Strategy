@@ -159,6 +159,7 @@ interface ProfiledDraft {
   chargeCount: number;
   ordinarySpecs: FlagOrdinarySpec[];
   ordinaryDescriptors: Record<string, string>;
+  cultureTags?: string[];
   ordinaryPaint?: ReturnType<typeof buildFlagOrdinaryLayers>;
   charges: SampledCharge[];
   spec?: FlagSpec;
@@ -3054,7 +3055,9 @@ function makeSpec(
     profile_id: draft.profile.id,
     second_profile_id: draft.secondProfileId,
     era: draft.era,
-    tags: draft.profile.tags_allowed?.includes('neutral') ? ['neutral'] : [],
+    tags: draft.cultureTags?.length
+      ? [...draft.cultureTags]
+      : draft.profile.tags_allowed?.includes('neutral') ? ['neutral'] : [],
     outline: {
       type: draft.outlineType,
       params: draft.outlineParams as JsonObject,
@@ -3988,10 +3991,13 @@ function createHooks(
   onValidationRuleTiming?: (rule: FlagValidationRule, durationMs: number, section?: string) => void,
   ablationScenario?: FlagAblationScenario,
   onCompositionTiming?: (section: string, durationMs: number) => void,
+  generationContext?: FlagEntityGenerationContext,
 ): FlagGenerationHooks<ProfiledDraft> {
   return {
     selectProfile(context: FlagGenerationContext) {
-      return makeDraft(profileId, era, context.seed, context.random('S1_PROFILE'));
+      const draft = makeDraft(profileId, era, context.seed, context.random('S1_PROFILE'));
+      draft.cultureTags = [...(generationContext?.culture_tags ?? [])];
+      return draft;
     },
     selectOutline(draft, context) {
       const random = context.random('S2_OUTLINE');
@@ -4539,7 +4545,9 @@ function createHooks(
       return null;
     },
     createFallback(_fallbackId, context) {
-      return makeDraft('P28_FB', era, context.seed, context.random('S1_FALLBACK'), true);
+      const draft = makeDraft('P28_FB', era, context.seed, context.random('S1_FALLBACK'), true);
+      draft.cultureTags = [...(generationContext?.culture_tags ?? [])];
+      return draft;
     },
     buildFlagSpec(draft, context) {
       if (!draft.spec) throw new Error('Финальная FlagSpec отсутствует');
@@ -4567,8 +4575,27 @@ export interface GenerateProfiledFlagOptions {
   onStageTiming?: (stage: FlagGenerationStage | 'render', durationMs: number) => void;
   onValidationRuleTiming?: (rule: FlagValidationRule, durationMs: number, section?: string) => void;
   onCompositionTiming?: (section: string, durationMs: number) => void;
+  generation_context?: FlagEntityGenerationContext;
   /** Режим для измерительной абляции; не используется игровой интеграцией. */
   ablationScenario?: FlagAblationScenario;
+}
+
+export interface FlagEntityGenerationContext {
+  world_seed: number;
+  entity_type: 'country' | 'religion' | 'city' | 'culture' | 'dynasty';
+  entity_id: number;
+  generation_purpose: 'country-flag' | 'religion-symbol' | 'city-coat' | 'culture-style' | 'dynasty-coat';
+  culture_id?: number;
+  culture_tags?: string[];
+  parent_style_ref?: string;
+  relationship_type?: 'culture-branch' | 'religion-branch';
+  variation_seed: string;
+  variation_policy: {
+    dimensions: readonly string[];
+    weights: Record<string, number>;
+    ranges: Record<string, readonly [number, number]>;
+  };
+  city_rank?: number;
 }
 
 export function generateProfiledFlag(options: GenerateProfiledFlagOptions) {
@@ -4580,6 +4607,7 @@ export function generateProfiledFlag(options: GenerateProfiledFlagOptions) {
     options.onValidationRuleTiming,
     options.ablationScenario,
     options.onCompositionTiming,
+    options.generation_context,
   );
   if (options.onStageTiming) hooks.onStageTiming = options.onStageTiming;
   return generateFlag(options.seed, hooks, {

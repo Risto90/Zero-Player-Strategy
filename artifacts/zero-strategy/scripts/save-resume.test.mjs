@@ -196,7 +196,7 @@ try {
   uninterrupted.addLog('Связь с объектом сохранена', [{ type: 'country', id: fixture.country.id }]);
   const card = makeCard('rain', { targetCountryId: fixture.country.id, hint: fixture.pixels[16] });
   uninterrupted.card = card;
-  uninterrupted.startCard(card);
+  uninterrupted.startCard(card, undefined, true, { scope: 'country', countryId: fixture.country.id });
   const pixel = fixture.pixels[16];
   uninterrupted.dispatchAction({ type: 'dab', x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH), radius: 0 });
   const savedInk = card.ink;
@@ -210,6 +210,7 @@ try {
     text: 'Связь с объектом сохранена',
     objects: [{ type: 'country', id: fixture.country.id }],
     importantObjects: [],
+    scope: 'world',
   }, 'object links in new chronicle entries survive save/load');
   const resumePixel = fixture.pixels[16];
   resumed.dispatchAction({
@@ -222,6 +223,10 @@ try {
   resumed.dispatchAction({ type: 'completeCard' });
   sameResult(uninterrupted, resumed, 'painted climate card');
   assert.match(uninterrupted.getSnapshot().chronicle[0].text, /Ливни/u, 'the painted weather event is recorded');
+  assert.equal(uninterrupted.getSnapshot().chronicle[0].scope, 'country',
+    'события карточки страны сохраняют источник после сохранения и загрузки');
+  assert.equal(uninterrupted.getSnapshot().chronicle[0].scopeCountryId, fixture.country.id,
+    'события карточки сохраняют идентификатор страны-источника');
   assert.deepEqual(uninterrupted.getSnapshot().chronicle[0].objects, [{ type: 'country', id: fixture.country.id }],
     'events explicitly link to the affected country');
   uninterrupted.discard();

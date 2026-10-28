@@ -565,10 +565,18 @@ for (const selectedIndex of [0, 1]) {
     const selectedCityId = card.choices[card.selectedChoice].cityId;
     assert.equal(world.cities[selectedCityId].rank, ranksBefore[selectedCityId] + 1,
       'resolving the card increases the rank of the selected city');
+    assert.ok(world.cities[selectedCityId].emblemSpec, 'promoting a city creates its coat of arms');
+    assert.equal(
+      world.cities[selectedCityId].flagIdentity.entityId,
+      world.cities[selectedCityId].chronicleId,
+      'the promoted city uses its stable chronicle identity',
+    );
     for (const city of world.cities) {
       if (city.id !== selectedCityId) {
         assert.equal(city.rank, ranksBefore[city.id], 'non-selected cities keep their ranks');
       }
+      if (city.rank === 1) assert.equal(city.emblemSpec, undefined, 'rank-one cities do not receive coats of arms');
+      if (city.rank >= 2) assert.ok(city.emblemSpec, 'every rank-two-or-higher city has a saved coat of arms');
     }
   } finally {
     Math.random = previousRandom;

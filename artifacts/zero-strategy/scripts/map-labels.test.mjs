@@ -11,7 +11,6 @@ import {
   geographicVisibilityScale,
   shouldShowCityMarks,
   shouldShowGeographyMarks,
-  visibleCityLabelLayouts,
   visibleCityLabelIds,
   volcanoVisibilityScale,
 } from '../game/mapLabels.ts';
@@ -82,8 +81,6 @@ const zoomedOut = countryMapLabels(world, 0.3, 'political', 1);
 const zoomedIn = countryMapLabels(world, 2, 'political', 1);
 assert.equal(zoomedOut.some((label) => label.countryId === 0), false, 'маленькая подпись страны скрыта, пока не помещается');
 assert.ok(zoomedIn.some((label) => label.countryId === 0), 'подпись осёдлой страны появляется, когда помещается в её область');
-assert.equal(zoomedIn.find((label) => label.countryId === 0)?.allowBridge, true,
-  'подпись страны может заходить на море или нейтральную землю, оставаясь привязанной к её контуру');
 assert.ok(zoomedIn.some((label) => label.countryId === 1 && label.selected), 'выбранное кочевье подписано на карте государств');
 assert.ok(countryMapLabels(world, 2, 'cities', 1).some((label) => label.countryId === 1),
   'подписи кочевий также появляются на карте городов');
@@ -102,11 +99,9 @@ const cityNameIds = visibleCityLabelIds(world, 'political', 1, 1, 0, 0, 320, 180
 assert.ok(cityNameIds.has(10), 'для видимой столицы показывается подпись');
 assert.equal(cityNameIds.has(11), false, 'перекрывающиеся подписи городов не рисуются друг поверх друга');
 assert.equal(cityNameIds.has(12), false, 'подпись города скрыта, пока не виден его значок');
-const cityLabelAvoidingCountry = visibleCityLabelLayouts(world, 'political', 1, 1, 0, 0, 320, 180, [
+assert.equal(visibleCityLabelIds(world, 'political', 1, 1, 0, 0, 320, 180, [
   { left: 40, top: 45, right: 120, bottom: 70 },
-]).get(10);
-assert.ok(cityLabelAvoidingCountry && cityLabelAvoidingCountry.y > 80,
-  'подпись города перемещается ниже значка, если над ним уже занято место подписью страны');
+]).has(10), false, 'подпись города скрывается при конфликте с уже размещённой подписью карты');
 assert.equal(visibleCityLabelIds(world, 'elevation', 10, 1, 0, 0, 320, 180).size, 0,
   'значки и подписи городов отсутствуют на карте высот');
 assert.equal(shouldShowGeographyMarks('political'), true, 'горы видны на карте государств');
@@ -119,13 +114,8 @@ assert.ok(entityMapLabels(world, 'religions', { kind: 'religion', id: 0 }, 2)
 assert.ok(entityMapLabels(world, 'origins', { kind: 'origin', id: 0 }, 2)
   .some((label) => label.text.length > 0), 'выбранная раса получает контурную подпись');
 const dividedLabels = countryMapLabels(world, 8, 'political', null).filter((label) => label.countryId === 2);
-assert.equal(dividedLabels.filter((label) => label.allFragments).length, 1,
-  'раздельные части страны получают общий вариант подписи через свободное пространство');
-const wholeCountryBridge = dividedLabels.find((label) => label.allFragments);
-assert.equal(wholeCountryBridge?.bridgeComponentBounds?.length, 2,
-  'общая подпись учитывает каждый раздельный контур страны');
-assert.equal(dividedLabels.filter((label) => !label.allFragments && !label.fragmentOnly).length, 2,
-  'для частей страны сохраняются отдельные варианты подписи, если общая не помещается');
+assert.equal(dividedLabels.filter((label) => !label.allFragments).length, 2,
+  'раздельные территории страны получают отдельные подписи, если общая не помещается');
 for (let left = 0; left < zoomedIn.length; left += 1) {
   for (let right = left + 1; right < zoomedIn.length; right += 1) {
     const a = zoomedIn[left];
@@ -292,39 +282,6 @@ const bridgedLabel = fitLabelToVisibleContour({
 });
 assert.ok(bridgedLabel && bridgedLabel.x > 35 && bridgedLabel.x < 55,
   'близкие раздельные части получают одну подпись, растянутую через общий промежуток');
-const splitCountryLabel = {
-  ...viewportLabel,
-  key: 'split-country-bridge-fit',
-  countryId: 99,
-  text: 'Равтия',
-  fontSize: 30,
-  bounds: [10, 10, 100, 50],
-  countryBounds: { x0: 10, y0: 10, x1: 100, y1: 50 },
-  rings: [
-    new Int32Array([10, 10, 48, 10, 48, 50, 10, 50]),
-    new Int32Array([62, 10, 100, 10, 100, 50, 62, 50]),
-  ],
-  allowBridge: true,
-  allFragments: true,
-  bridgeComponentBounds: [
-    { x0: 10, y0: 10, x1: 48, y1: 50 },
-    { x0: 62, y0: 10, x1: 100, y1: 50 },
-  ],
-};
-const splitCountryLayout = countryLabelViewportLayout(splitCountryLabel, 1, 0, 0, 120, 80);
-assert.ok(splitCountryLayout.visible && splitCountryLayout.x > 48 && splitCountryLayout.x < 62,
-  'общая подпись занимает промежуток между видимыми частями, а не остаётся на одной из них');
-const coastalCountryLabel = {
-  ...splitCountryLabel,
-  key: 'coastal-country-bridge-fit',
-  countryId: 100,
-  countryBounds: { x0: 10, y0: 30, x1: 100, y1: 44 },
-  rings: [new Int32Array([10, 30, 100, 30, 100, 44, 10, 44])],
-  bridgeComponentBounds: [{ x0: 10, y0: 30, x1: 100, y1: 44 }],
-};
-const coastalCountryLayout = countryLabelViewportLayout(coastalCountryLabel, 1, 0, 0, 120, 80);
-assert.ok(coastalCountryLayout.visible,
-  'узкая прибрежная территория получает подпись, заходящую на воду');
 const clippedAwayLabel = fitLabelToVisibleContour({
   rings: [new Int32Array([205, 20, 400, 20, 400, 70, 205, 70])],
   scale: 1,

@@ -1,4 +1,4 @@
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { useMemo } from 'react';
 import { Text, View } from 'react-native';
 import { useGameSnapshot } from '@/game/useGame';
@@ -6,8 +6,10 @@ import { currentGame } from '@/game/session';
 import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt } from '@/game/format';
 import { cityComposition } from '@/game/settlements';
-import { cityProfileRoute, countryProfileRoute, cultureProfileRoute } from '@/game/profileRoutes';
-import { MissingProfile, ProfileFact, ProfileLayout, ProfileLink, ProfileSection, ProfileScrollList } from '@/components/profiles/ProfileLayout';
+import { countryProfileRoute, cultureProfileRoute } from '@/game/profileRoutes';
+import { openProfile } from '@/game/profileNavigation';
+import { MissingProfile, ProfileFact, ProfileLayout, ProfileLink, ProfileSection } from '@/components/profiles/ProfileLayout';
+import { ProfileEntityList } from '@/components/profiles/EntityMarks';
 
 export default function CulturePage() {
   const { id: rawId } = useLocalSearchParams<{ id: string }>();
@@ -34,34 +36,39 @@ export default function CulturePage() {
       <View style={styles.facts}>
         <ProfileFact><Text style={{ color: culture.color }}>■ </Text>Население · {fmt(population)} чел.</ProfileFact>
         <ProfileFact>Основан(а) в {culture.foundedYear} году</ProfileFact>
+        {culture.styleProfile && (
+          <ProfileFact>Стиль флага · профиль {culture.styleProfile.profileId}, эпоха {culture.styleProfile.era}</ProfileFact>
+        )}
+        {culture.styleProfile?.tags.length ? <ProfileFact>Теги стиля · {culture.styleProfile.tags.join(', ')}</ProfileFact> : null}
         {culture.traits?.length ? <ProfileFact>Черты · {culture.traits.join(', ')}</ProfileFact> : null}
       </View>
       <ProfileSection title="РОДСТВО">
         {culture.parentId !== null && game.world.cultures[culture.parentId] && (
           <ProfileLink title={`${game.world.cultures[culture.parentId].name} · исходный этнос`}
-            onPress={() => router.push(cultureProfileRoute(culture.parentId!))} />
+            onPress={() => openProfile(cultureProfileRoute(culture.parentId!))} />
         )}
         {branches.length ? branches.map((child) => (
           <ProfileLink key={child.id} title={`${child.name} · ветвь`}
-            onPress={() => router.push(cultureProfileRoute(child.id))} />
+            onPress={() => openProfile(cultureProfileRoute(child.id))} />
         )) : <ProfileFact>Другие ветви не зарегистрированы.</ProfileFact>}
       </ProfileSection>
       <ProfileSection title={`СТРАНЫ · ${countries.length}`}>
-        <ProfileScrollList>
-          {countries.length ? countries.map((country) => (
-            <ProfileLink key={country.id} title={`${country.rank} ${country.name}`}
-              onPress={() => router.push(countryProfileRoute(country.id))} />
-          )) : <ProfileFact>Сейчас этнос не входит в состав стран.</ProfileFact>}
-        </ProfileScrollList>
+        <ProfileEntityList emptyText="Сейчас этнос не входит в состав стран." items={countries.map((country) => ({
+          kind: 'country' as const,
+          key: String(country.id),
+          name: `${country.rank} ${country.name}`,
+          spec: country.emblemSpec,
+          href: countryProfileRoute(country.id),
+        }))} />
       </ProfileSection>
       <ProfileSection title={`ГОРОДА · ${cities.length}`}>
-        <ProfileScrollList>
-          {cities.length ? cities.map((city) => (
-            <ProfileLink key={city.id} title={city.name ?? 'Город'}
-              note={game.world.countries[city.countryId]?.name ?? 'Страна распущена'}
-              onPress={() => router.push(cityProfileRoute(city.id))} />
-          )) : <ProfileFact>Городов нет.</ProfileFact>}
-        </ProfileScrollList>
+        <ProfileEntityList emptyText="Городов нет." items={cities.map((city) => ({
+          kind: 'city' as const,
+          key: String(city.id),
+          city,
+          hasPort: game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0,
+          country: game.world.countries[city.countryId],
+        }))} />
       </ProfileSection>
     </>
   );
@@ -69,6 +76,7 @@ export default function CulturePage() {
     subtitle="Этнос" details={details}
     chronicle={filterChronicle(snapshot.chronicle, [chronicleReference('culture', culture.id)])}
     archive={snapshot.chronicle}
+    world={game.world}
     initialReference={chronicleReference('culture', culture.id)}
     objectOptions={historyObjectOptions}
   />;

@@ -20,6 +20,9 @@ import type { HumanOriginId } from './human';
 import { MapContours } from './contours';
 import { generateGeography, type GeographyFeature, type RiverFeature } from './geographyFeatures';
 import { riverStrengthForRank } from './geographyGeometry';
+import { createEntityEmblem, createFlagStyleProfile, cultureTags, ensureFlagIdentity } from './flagIdentity';
+import type { FlagIdentity, FlagStyleProfile } from './flagIdentity';
+import type { FlagSpec } from './flagSpec';
 
 export type GeographyObjectKind = 'river' | 'peak' | 'volcano';
 export interface GeographyNameTarget {
@@ -56,6 +59,9 @@ export interface Country extends PoliticalState {
   cells?: NomadCell[];
   /** Историческое место происхождения для летописи; не используется как текущее место жительства. */
   sourceCountryId?: number | null;
+  emblemSpec?: FlagSpec;
+  flagIdentity?: FlagIdentity;
+  styleProfile?: FlagStyleProfile;
 }
 
 export function isActiveCountry(country: Country | null | undefined): boolean {
@@ -81,6 +87,9 @@ export interface City {
   name?: string;
   namingCultureId?: number;
   namingStyleId?: NameStyleId;
+  emblemSpec?: FlagSpec;
+  flagIdentity?: FlagIdentity;
+  styleProfile?: FlagStyleProfile;
 }
 
 export interface CityPopulationGroup {
@@ -111,9 +120,19 @@ export interface Culture {
   parentId: number | null;
   foundedYear: number;
   traits?: string[];
+  emblemSpec?: FlagSpec;
+  flagIdentity?: FlagIdentity;
+  styleProfile?: FlagStyleProfile;
 }
 
 export type Religion = Culture;
+
+export interface DynastyHeraldry {
+  id: number;
+  emblemSpec: FlagSpec;
+  flagIdentity: FlagIdentity;
+  styleProfile: FlagStyleProfile;
+}
 
 /** Весь мир: постоянные географические данные и рабочие растры всех слоёв. */
 export class World {
@@ -152,6 +171,8 @@ export class World {
   cultures: Culture[] = [];
   religions: Religion[] = [];
   people: Person[] = [];
+  /** Сохранённые гербы династий, индексированные по постоянному familyId. */
+  dynastyEmblems: Record<number, DynastyHeraldry> = {};
   /** Увеличивается при каждом изменении карты; по нему обновляются кеши. */
   version = 0;
   /** Увеличивается только при расширении территории государства или кочевого ареала. */
@@ -464,6 +485,18 @@ export class World {
       capital,
       ...generateCityIdentity(this, pixel),
     };
+    if (rank >= 2) {
+      const culture = this.cultures[country.cultureId];
+      Object.assign(city, createEntityEmblem(
+        this.seed,
+        'city',
+        city.chronicleId,
+        'city-coat',
+        culture?.styleProfile,
+        undefined,
+        rank,
+      ));
+    }
     if (capital) for (const existing of this.cities) if (existing.countryId === countryId) existing.capital = false;
     this.cities.push(city);
     this.cityIdAt[pixel] = city.id;
@@ -538,6 +571,14 @@ export class World {
       box: [MAP_WIDTH, MAP_HEIGHT, -1, -1],
       ...fields,
     };
+    const cultureStyle = culture?.styleProfile;
+    Object.assign(country, ensureFlagIdentity(
+      this.seed,
+      country,
+      'country',
+      'country-flag',
+      cultureStyle,
+    ));
     this.countries.push(country);
     country.ruler.countryId = country.id;
     country.ruler.formerRulerOf = [country.id];
@@ -568,20 +609,45 @@ export class World {
       foundedYear: year,
       traits: Math.random() < 0.25 ? [randomItem(['warlike', 'peaceful', 'genderEqual'])] : [],
     };
+    culture.styleProfile = createFlagStyleProfile(
+      this.seed,
+      'culture',
+      culture.id,
+      'culture-style',
+      cultureTags(culture.id),
+      parent,
+    );
+    culture.flagIdentity = culture.styleProfile.identity;
     this.cultures.push(culture);
     return culture;
   }
 
-  newReligion(year: number): Religion {
+  newReligion(year: number, parent: Religion | null = null): Religion {
     const used = new Set(this.religions.map((r) => r.name));
     const religion: Religion = {
       id: this.religions.length,
       name: uniqueName(() => `${randomItem(NAMES.religionStart)} ${randomItem(NAMES.religionEnd)}`, used),
       color: pickUniqueColor(PALETTE.religion, this.usedColors(this.religions)),
-      parentId: null,
+      parentId: parent?.id ?? null,
       foundedYear: year,
       traits: Math.random() < 0.25 ? [randomItem(['maleClergy', 'femaleClergy', 'equalClergy'])] : [],
     };
+    religion.styleProfile = createFlagStyleProfile(
+      this.seed,
+      'religion',
+      religion.id,
+      'religion-symbol',
+      [],
+      parent,
+    );
+    Object.assign(religion, ensureFlagIdentity(
+      this.seed,
+      religion,
+      'religion',
+      'religion-symbol',
+      religion.styleProfile,
+      parent,
+    ));
     this.religions.push(religion);
     return religion;
   }

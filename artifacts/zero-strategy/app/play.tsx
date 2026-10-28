@@ -31,6 +31,7 @@ import {
   notificationSubscriptionsForViewer,
   type GameNotification,
 } from '@/game/notifications';
+import { openProfile } from '@/game/profileNavigation';
 import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
 import type { MapMode } from '@/game/render';
@@ -362,7 +363,8 @@ function GameScreen({ game }: { game: Game }) {
     }, 3000);
   }, [snap.log]);
 
-  const log = useMemo(() => <LogPanel log={snap.chronicle} transparent minimal />, [snap.chronicle]);
+  const log = useMemo(() => <LogPanel log={snap.chronicle} world={game.world} transparent minimal />,
+    [snap.chronicle, game.world]);
   const nextLabel = snap.queuedCards > 0
     ? 'Готово'
     : snap.card?.type === 'government'
@@ -563,8 +565,8 @@ function GameScreen({ game }: { game: Game }) {
           <InspectCard
             info={selectedInfo}
             onClose={() => setInspect(null)}
-            onCountryPress={(id) => router.push(countryProfileRoute(id))}
-            onCityPress={(id) => router.push(cityProfileRoute(id))}
+            onCountryPress={(id) => openProfile(countryProfileRoute(id))}
+            onCityPress={(id) => openProfile(cityProfileRoute(id))}
           />
         )}
         {snap.role !== 'observer' && !!hint && (

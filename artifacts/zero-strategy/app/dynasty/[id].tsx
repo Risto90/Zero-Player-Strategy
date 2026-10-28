@@ -1,5 +1,5 @@
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, usePathname } from 'expo-router';
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import {
   Animated,
@@ -11,9 +11,13 @@ import {
   type GestureResponderEvent,
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { EmblemPreview } from '@/components/profiles/EmblemPreview';
+import { DynastyEmblemLink, DynastyEmblemMark } from '@/components/profiles/EntityMarks';
 import colors, { fonts } from '@/constants/colors';
 import type { Person } from '@/game/government';
 import { countryProfileRoute } from '@/game/profileRoutes';
+import { closeProfileToMap, openProfile, rememberProfilePath } from '@/game/profileNavigation';
 import {
   buildDynastyTree,
   centerDynastyPoint,
@@ -44,8 +48,11 @@ const crownRoleLabel: Record<import('@/game/dynastyTree').DynastyCrownRole, stri
 
 export default function DynastyPage() {
   const { id: rawId, person: rawFocusId } = useLocalSearchParams<{ id: string; person?: string }>();
+  const pathname = usePathname();
   const [game, setGame] = useState<Game | null>(() => currentGame());
   const [loadError, setLoadError] = useState('');
+  const insets = useSafeAreaInsets();
+  useEffect(() => rememberProfilePath(pathname), [pathname]);
 
   useEffect(() => {
     if (game) return;
@@ -66,7 +73,7 @@ export default function DynastyPage() {
 
   if (!game) {
     return (
-      <View style={[styles.screen, styles.center]}>
+      <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}>
         <Text style={styles.note}>{loadError || 'Загружаю династию…'}</Text>
         {!!loadError && <BackButton />}
       </View>
@@ -80,7 +87,7 @@ export default function DynastyPage() {
   const familyId = hasRequestedFamily ? requestedFamilyId : focusPerson?.familyId ?? requestedFamilyId;
   if (!Number.isFinite(familyId)) {
     return (
-      <View style={[styles.screen, styles.center]}>
+      <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}>
         <Text style={styles.title}>Династия не найдена</Text>
         <BackButton />
       </View>
@@ -122,6 +129,7 @@ function ZoomButton({
 
 function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number; focusId?: number }) {
   useGameSnapshot(game);
+  const insets = useSafeAreaInsets();
   const [collapsedPeople, setCollapsedPeople] = useState<Set<number>>(() => new Set());
   const [collapsedPairs, setCollapsedPairs] = useState<Set<string>>(() => new Set());
   const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
@@ -138,6 +146,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
   const centered = useRef(false);
 
   const familyMembers = game.world.people.filter((person) => person.familyId === familyId);
+  const dynastyEmblem = game.world.dynastyEmblems[familyId]?.emblemSpec;
   const model = useMemo(
     () => buildDynastyTree(game.world.people, familyId, collapsedPeople, collapsedPairs),
     [game.world.version, familyId, collapsedPeople, collapsedPairs],
@@ -148,6 +157,8 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
     [game.world.version, model.nodes],
   );
   const familyName = familyMembers[0]?.familyName ?? model.nodes.find((node) => node.isDynastyMember)?.person.familyName ?? 'Династия';
+  const safeTop = insets.top + 67;
+  const safeBottom = insets.bottom + 34;
 
   const centerPoint = (point: { x: number; y: number }, width = viewport.width, height = viewport.height) => {
     if (width <= 0 || height <= 0) return;
@@ -274,17 +285,17 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
     });
   };
   const openPerson = (personId: number) => {
-    router.push({ pathname: '/person/[id]', params: { id: String(personId) } });
+    openProfile({ pathname: '/person/[id]', params: { id: String(personId) } });
   };
   const openDynasty = (person: Person) => {
-    router.push({
+    openProfile({
       pathname: '/dynasty/[id]',
       params: { id: String(person.familyId), person: String(person.id) },
     });
   };
   const openCountry = (countryId: number) => {
     setExpandedCrownPersonId(null);
-    router.push(countryProfileRoute(countryId));
+    openProfile(countryProfileRoute(countryId));
   };
 
   const onViewportLayout = (width: number, height: number) => {
@@ -312,14 +323,23 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
   }
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingTop: safeTop, paddingBottom: safeBottom }]}>
       <View style={styles.header}>
         <BackButton />
-        <Text style={styles.eyebrow}>РОДОСЛОВНАЯ</Text>
+        <View style={styles.headerRight}>
+          <Text style={styles.eyebrow}>РОДОСЛОВНАЯ</Text>
+          <Pressable onPress={closeProfileToMap} style={styles.closeButton}
+            accessibilityRole="button" accessibilityLabel="Вернуться к карте" testID="profile-close-map">
+            <Feather name="x" size={16} color={c.foreground} />
+          </Pressable>
+        </View>
       </View>
       <View style={styles.titleRow}>
         <View style={styles.titleBlock}>
-          <Text numberOfLines={1} style={styles.title}>{familyName}</Text>
+          <View style={styles.dynastyTitleLine}>
+            <Text numberOfLines={1} style={styles.title}>{familyName}</Text>
+            <DynastyEmblemMark spec={dynastyEmblem} size={32} />
+          </View>
           <Text style={styles.subtitle}>Династия · {familyMembers.length} персонажей</Text>
         </View>
         <View style={styles.zoomControls}>
@@ -449,6 +469,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
               </Svg>
               {model.nodes.map((node) => {
                 const person = node.person;
+                const personDynastyEmblem = game.world.dynastyEmblems[person.familyId]?.emblemSpec;
                 const crown = crowns.get(person.id);
                 const crownExpanded = expandedCrownPersonId === person.id;
                 const externalChild = !node.isDynastyMember &&
@@ -504,6 +525,12 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                           <MaterialCommunityIcons name="crown" size={12} color={crownColor[crown.role]} />
                         </Pressable>
                       )}
+                      {personDynastyEmblem
+                        ? node.isDynastyMember
+                          ? <DynastyEmblemMark spec={personDynastyEmblem} size={16} />
+                          : <DynastyEmblemLink spec={personDynastyEmblem} familyId={person.familyId}
+                            focusPersonId={person.id} label={person.familyName} size={16} />
+                        : null}
                       <Pressable
                         onPress={(event) => {
                           event.stopPropagation();
@@ -569,22 +596,35 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                       </Text>
                     )}
                     {externalChild && (
-                      <Pressable
-                        accessibilityRole="link"
-                        accessibilityLabel={`Открыть династию ${person.familyName}`}
-                        onPress={(event) => {
-                          event.stopPropagation();
-                          openDynasty(person);
-                        }}
-                        style={styles.externalDynastyButton}
-                      >
-                        <Feather name="arrow-down" size={15} color={c.accent} />
-                      </Pressable>
+                      personDynastyEmblem
+                        ? (
+                          <DynastyEmblemLink spec={personDynastyEmblem} familyId={person.familyId}
+                            focusPersonId={person.id} label={person.familyName} size={64}
+                            testID={`external-dynasty-emblem-${person.id}`} />
+                        )
+                        : (
+                          <Pressable
+                            accessibilityRole="link"
+                            accessibilityLabel={`Открыть династию ${person.familyName}`}
+                            onPress={(event) => {
+                              event.stopPropagation();
+                              openDynasty(person);
+                            }}
+                            style={styles.externalDynastyButton}
+                          >
+                            <Feather name="arrow-down" size={15} color={c.accent} />
+                          </Pressable>
+                        )
                     )}
                   </View>
                 );
               })}
             </Animated.View>
+            {dynastyEmblem ? (
+              <View pointerEvents="box-none" style={styles.dynastyEmblemOverlay}>
+                <EmblemPreview spec={dynastyEmblem} label={`Герб династии ${familyName}`} frameHeight={88} />
+              </View>
+            ) : null}
           </View>
         </>
       ) : (
@@ -602,9 +642,12 @@ const styles = StyleSheet.create({
   header: { minHeight: 34, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderColor: c.foreground },
   back: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4 },
   backText: { fontFamily: fonts.sansMedium, fontSize: 11, color: c.foreground },
-  eyebrow: { marginLeft: 'auto', fontFamily: fonts.sansSemiBold, fontSize: 8, letterSpacing: 1.2, color: c.primary },
+  headerRight: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 6 },
+  eyebrow: { fontFamily: fonts.sansSemiBold, fontSize: 8, letterSpacing: 1.2, color: c.primary },
+  closeButton: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
   titleRow: { minHeight: 43, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 3, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
   titleBlock: { flex: 1, gap: 2 },
+  dynastyTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   title: { fontFamily: fonts.display, fontSize: 21, color: c.foreground },
   subtitle: { fontFamily: fonts.sans, fontSize: 10, color: c.mutedForeground },
   zoomControls: { flexDirection: 'row', alignItems: 'center', gap: 2 },
@@ -618,6 +661,7 @@ const styles = StyleSheet.create({
   parentLine: { borderColor: c.border },
   legendText: { fontFamily: fonts.sans, fontSize: 8, color: c.mutedForeground },
   viewport: { flex: 1, overflow: 'hidden', backgroundColor: c.card },
+  dynastyEmblemOverlay: { position: 'absolute', top: 8, left: 8, zIndex: 5, padding: 4, borderWidth: 1, borderColor: c.border, backgroundColor: c.background },
   treeCanvas: { position: 'absolute', left: 0, top: 0, transformOrigin: 'top left' },
   personCard: { position: 'absolute', padding: 5, gap: 2, backgroundColor: c.background, borderWidth: 1, borderColor: c.border, borderRadius: 3, zIndex: 1 },
   dynastyPersonCard: { borderTopWidth: 3, borderTopColor: c.primary },

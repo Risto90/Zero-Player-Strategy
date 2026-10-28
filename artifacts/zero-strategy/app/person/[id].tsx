@@ -1,36 +1,49 @@
 import { Feather } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { router, useLocalSearchParams, usePathname } from 'expo-router';
+import { useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { LogPanel } from '@/components/game/LogPanel';
 import colors, { fonts } from '@/constants/colors';
 import { ageStage, personDeathStatus, type Person } from '@/game/government';
 import { countryProfileRoute } from '@/game/profileRoutes';
+import { closeProfileToMap, openProfile, rememberProfilePath } from '@/game/profileNavigation';
 import { useGameSnapshot } from '@/game/useGame';
 import type { Game } from '@/game/game';
 import { currentGame } from '@/game/session';
 import { chronicleObjectOptions, chronicleReference, filterChronicle } from '@/game/chronicle';
 import { humanOriginShares } from '@/game/human';
 import { OriginComposition } from '@/components/profiles/OriginComposition';
+import { DynastyEmblemLink } from '@/components/profiles/EntityMarks';
+import { dynastyFocusPersonId } from '@/game/dynastyHeraldry';
 
 const c = colors.light;
 
 type PersonProfileRow =
   | { type: 'section'; key: string; title: string }
   | { type: 'empty'; key: string; message: string }
-  | { type: 'relative'; key: string; id: number; title: string; note: string };
+  | { type: 'relative'; key: string; id: number; familyId: number; title: string; note: string };
 
-function RelativeLink({ id, title, note }: { id: number; title: string; note?: string }) {
+function RelativeLink({ id, familyId, title, note, spec }: {
+  id: number;
+  familyId: number;
+  title: string;
+  note?: string;
+  spec?: import('@/game/flagSpec').FlagSpec;
+}) {
   return (
-    <Pressable onPress={() => router.push({ pathname: '/person/[id]', params: { id: String(id) } })} style={styles.relative}>
-      <Text style={styles.link}>{title}</Text>
-      {note && <Text style={styles.note}>{note}</Text>}
-    </Pressable>
+    <View style={styles.relative}>
+      {spec ? <DynastyEmblemLink spec={spec} familyId={familyId} focusPersonId={id} label={title} size={16} /> : null}
+      <Pressable onPress={() => openProfile({ pathname: '/person/[id]', params: { id: String(id) } })} style={styles.relativeText}>
+        <Text style={styles.link}>{title}</Text>
+        {note && <Text style={styles.note}>{note}</Text>}
+      </Pressable>
+    </View>
   );
 }
 
 export default function PersonPage() {
   const { id: rawId } = useLocalSearchParams<{ id: string }>();
+  const pathname = usePathname();
   const game = currentGame();
   const world = game?.world;
   const peopleById = useMemo(
@@ -38,6 +51,7 @@ export default function PersonPage() {
     [world, world?.version],
   );
   const person = peopleById.get(Number(rawId));
+  useEffect(() => rememberProfilePath(pathname), [pathname]);
   if (!game || !person) {
     return (
       <View style={[styles.screen, styles.center]}>
@@ -61,6 +75,8 @@ function PersonProfile({
   const snapshot = useGameSnapshot(game);
   const [showChronicle, setShowChronicle] = useState(false);
   const world = game.world;
+  const dynastyEmblem = world.dynastyEmblems[person.familyId]?.emblemSpec;
+  const dynastyFocusId = dynastyFocusPersonId(world.people, person.familyId) ?? person.id;
   const historyObjectOptions = useMemo(
     () => chronicleObjectOptions(world),
     [world, world.version],
@@ -108,6 +124,7 @@ function PersonProfile({
           type: 'relative',
           key: `${key}-${relative.id}`,
           id: relative.id,
+          familyId: relative.familyId,
           title: relative.name,
           note,
         });
@@ -133,12 +150,18 @@ function PersonProfile({
   }, [children, parents, partners, siblings, world, person]);
   const detailsHeader = (
     <View style={styles.detailsHeader}>
-      <Text style={styles.title}>{person.name}</Text>
+      <View style={styles.personTitleRow}>
+        <Text style={styles.title}>{person.name}</Text>
+        {dynastyEmblem
+          ? <DynastyEmblemLink spec={dynastyEmblem} familyId={person.familyId}
+            focusPersonId={person.id} label={person.familyName} size={32} />
+          : null}
+      </View>
       <Text style={styles.subtitle}>
         {person.alive ? 'Жив(а)' : `${personDeathStatus(person)?.replace(/^./u, (letter) => letter.toLocaleUpperCase('ru-RU'))}`}
       </Text>
       {homeCountry && (homeCountry.type === 'nomadic' || homeCountry.pixels > 0) && (
-        <Pressable onPress={() => router.push(countryProfileRoute(homeCountry.id))}
+        <Pressable onPress={() => openProfile(countryProfileRoute(homeCountry.id))}
           accessibilityRole="link" style={styles.countryLink}>
           <Text style={styles.link}>{homeCountry.name} · текущая родина</Text>
         </Pressable>
@@ -154,11 +177,21 @@ function PersonProfile({
         </View>
         <View style={styles.factRow}>
           <Text style={styles.fact}>Династия · </Text>
-          <Text onPress={() => router.push({
-            pathname: '/dynasty/[id]',
-            params: { id: String(person.familyId), person: String(person.id) },
-          })}
-            accessibilityRole="link" style={styles.factFamily}>{person.familyName}</Text>
+          {dynastyEmblem
+            ? (
+              <>
+                <DynastyEmblemLink spec={dynastyEmblem} familyId={person.familyId}
+                  focusPersonId={dynastyFocusId} label={person.familyName} size={32} />
+                <Text style={styles.factFamilyPlain}>{person.familyName}</Text>
+              </>
+            )
+            : (
+              <Text onPress={() => openProfile({
+                pathname: '/dynasty/[id]',
+                params: { id: String(person.familyId), person: String(person.id) },
+              })}
+                accessibilityRole="link" style={styles.factFamily}>{person.familyName}</Text>
+            )}
         </View>
         {!!person.trait && <Text style={styles.fact}>Черты · {person.traits.join(', ') || person.trait}</Text>}
         <Text style={styles.fact}>Годы жизни · {Math.floor(person.bornAt)}—{person.deathYear ?? 'настоящее время'}</Text>
@@ -173,7 +206,13 @@ function PersonProfile({
           <Feather name="arrow-left" size={18} color={c.foreground} />
           <Text style={styles.backText}>Назад</Text>
         </Pressable>
-        <Text style={styles.eyebrow}>ЛЕТОПИСЬ ПЕРСОНАЖА</Text>
+        <View style={styles.headerRight}>
+          <Text style={styles.eyebrow}>ЛЕТОПИСЬ ПЕРСОНАЖА</Text>
+          <Pressable onPress={closeProfileToMap} style={styles.closeButton}
+            accessibilityRole="button" accessibilityLabel="Вернуться к карте" testID="profile-close-map">
+            <Feather name="x" size={19} color={c.foreground} />
+          </Pressable>
+        </View>
       </View>
       <View style={styles.tabs}>
         <Pressable onPress={() => setShowChronicle(false)} style={[styles.tab, !showChronicle && styles.activeTab]}>
@@ -190,6 +229,7 @@ function PersonProfile({
           <LogPanel
             key={`person:${person.id}`}
             log={snapshot.chronicle}
+            world={world}
             initialReference={chronicleReference('person', person.id)}
             objectOptions={historyObjectOptions}
             showHeading={false}
@@ -203,7 +243,8 @@ function PersonProfile({
             ? <View style={styles.section}><Text style={styles.sectionTitle}>{item.title}</Text></View>
             : item.type === 'empty'
               ? <Text style={styles.note}>{item.message}</Text>
-              : <RelativeLink id={item.id} title={item.title} note={item.note} />}
+              : <RelativeLink id={item.id} familyId={item.familyId} title={item.title} note={item.note}
+                spec={world.dynastyEmblems[item.familyId]?.emblemSpec} />}
           ListHeaderComponent={detailsHeader}
           ListFooterComponent={person.deathReason
             ? <Text style={styles.note}>Причина смерти · {person.deathReason}</Text>
@@ -231,21 +272,26 @@ const styles = StyleSheet.create({
   activeTabText: { color: c.primaryForeground },
   back: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8 },
   backText: { fontFamily: fonts.sansMedium, fontSize: 13, color: c.foreground },
-  eyebrow: { marginLeft: 'auto', fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.6, color: c.primary },
+  headerRight: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 9 },
+  eyebrow: { fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1.6, color: c.primary },
+  closeButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   detailsHeader: { paddingTop: 18, gap: 14 },
   profileListContent: { paddingHorizontal: 18 },
-  title: { fontFamily: fonts.display, fontSize: 30, color: c.foreground },
+  personTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  title: { flexShrink: 1, fontFamily: fonts.display, fontSize: 30, color: c.foreground },
   subtitle: { marginTop: -12, fontFamily: fonts.sans, fontSize: 13, color: c.mutedForeground },
   countryLink: { alignSelf: 'flex-start', marginTop: -8 },
   facts: { padding: 12, gap: 6, borderLeftWidth: 3, borderColor: c.primary, backgroundColor: c.card },
   originSection: { gap: 5, marginTop: 3 },
   originHeading: { fontFamily: fonts.sansSemiBold, fontSize: 11, letterSpacing: 1.1, color: c.primary },
   fact: { fontFamily: fonts.sans, fontSize: 13, color: c.foreground },
-  factRow: { flexDirection: 'row', alignItems: 'center' },
+  factRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 2 },
   factFamily: { fontFamily: fonts.sans, fontSize: 13, color: c.accent, textDecorationLine: 'underline' },
+  factFamilyPlain: { fontFamily: fonts.sans, fontSize: 13, color: c.foreground },
   section: { paddingTop: 8, gap: 4, borderTopWidth: 1, borderColor: c.border },
   sectionTitle: { marginBottom: 3, fontFamily: fonts.sansSemiBold, fontSize: 11, letterSpacing: 1.4, color: c.primary },
-  relative: { paddingVertical: 6, borderBottomWidth: 1, borderColor: c.border },
+  relative: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, borderBottomWidth: 1, borderColor: c.border },
+  relativeText: { flex: 1 },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 14, color: c.accent, textDecorationLine: 'underline' },
   note: { fontFamily: fonts.sans, fontSize: 12, color: c.mutedForeground },
 });
