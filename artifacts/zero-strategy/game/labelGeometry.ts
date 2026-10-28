@@ -41,9 +41,84 @@ interface Axis {
   elongation: number;
 }
 
+interface IndexedContourEdge {
+  a: LabelGeometryPoint;
+  b: LabelGeometryPoint;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+interface IndexedContour {
+  edges: IndexedContourEdge[];
+  crossingRows: Map<number, IndexedContourEdge[]>;
+  spatialCells: Map<string, IndexedContourEdge[]>;
+}
+
 const LABEL_EDGE_MARGIN = 8;
 const LABEL_MIN_SIZE = 11;
 const LABEL_MAX_TRACKING = 0.35;
+const CONTOUR_INDEX_CELL_SIZE = 32;
+
+function indexContour(rings: readonly LabelGeometryPoint[][]): IndexedContour {
+  const edges: IndexedContourEdge[] = [];
+  const crossingRows = new Map<number, IndexedContourEdge[]>();
+  const spatialCells = new Map<string, IndexedContourEdge[]>();
+  const add = <T extends string | number>(
+    map: Map<T, IndexedContourEdge[]>,
+    key: T,
+    edge: IndexedContourEdge,
+  ) => {
+    const bucket = map.get(key) ?? [];
+    bucket.push(edge);
+    map.set(key, bucket);
+  };
+  for (const ring of rings) {
+    for (let index = 0; index < ring.length; index += 1) {
+      const a = ring[index], b = ring[(index + 1) % ring.length];
+      const edge = {
+        a,
+        b,
+        left: Math.min(a.x, b.x),
+        top: Math.min(a.y, b.y),
+        right: Math.max(a.x, b.x),
+        bottom: Math.max(a.y, b.y),
+      };
+      edges.push(edge);
+      const firstRow = Math.floor(edge.top / CONTOUR_INDEX_CELL_SIZE);
+      const lastRow = Math.floor(edge.bottom / CONTOUR_INDEX_CELL_SIZE);
+      for (let row = firstRow; row <= lastRow; row += 1) add(crossingRows, row, edge);
+      const firstColumn = Math.floor(edge.left / CONTOUR_INDEX_CELL_SIZE);
+      const lastColumn = Math.floor(edge.right / CONTOUR_INDEX_CELL_SIZE);
+      const firstCellRow = Math.floor(edge.top / CONTOUR_INDEX_CELL_SIZE);
+      const lastCellRow = Math.floor(edge.bottom / CONTOUR_INDEX_CELL_SIZE);
+      for (let row = firstCellRow; row <= lastCellRow; row += 1) {
+        for (let column = firstColumn; column <= lastColumn; column += 1) {
+          add(spatialCells, `${column}:${row}`, edge);
+        }
+      }
+    }
+  }
+  return { edges, crossingRows, spatialCells };
+}
+
+function contourEdgesInRect(contour: IndexedContour, bounds: LabelBounds): IndexedContourEdge[] {
+  const found = new Set<IndexedContourEdge>();
+  const firstColumn = Math.floor(bounds.left / CONTOUR_INDEX_CELL_SIZE);
+  const lastColumn = Math.floor(bounds.right / CONTOUR_INDEX_CELL_SIZE);
+  const firstRow = Math.floor(bounds.top / CONTOUR_INDEX_CELL_SIZE);
+  const lastRow = Math.floor(bounds.bottom / CONTOUR_INDEX_CELL_SIZE);
+  for (let row = firstRow; row <= lastRow; row += 1) {
+    for (let column = firstColumn; column <= lastColumn; column += 1) {
+      for (const edge of contour.spatialCells.get(`${column}:${row}`) ?? []) {
+        if (edge.right >= bounds.left && edge.left <= bounds.right &&
+            edge.bottom >= bounds.top && edge.top <= bounds.bottom) found.add(edge);
+      }
+    }
+  }
+  return [...found];
+}
 
 function pointsFromRing(ring: ArrayLike<number>, scale: number, ox: number, oy: number): LabelGeometryPoint[] {
   const points: LabelGeometryPoint[] = [];
@@ -102,14 +177,12 @@ function visibleBoundaryPoints(rings: readonly LabelGeometryPoint[][], bounds: L
   return points;
 }
 
-function containsPoint(rings: readonly LabelGeometryPoint[][], x: number, y: number): boolean {
+function containsPoint(contour: IndexedContour, x: number, y: number): boolean {
   let inside = false;
-  for (const ring of rings) {
-    for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
-      const a = ring[index], b = ring[previous];
-      if ((a.y > y) !== (b.y > y) &&
-          x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
-    }
+  const row = Math.floor(y / CONTOUR_INDEX_CELL_SIZE);
+  for (const { a, b } of contour.crossingRows.get(row) ?? []) {
+    if ((a.y > y) !== (b.y > y) &&
+        x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
   }
   return inside;
 }
@@ -241,7 +314,7 @@ function segmentIntersectsRect(
 }
 
 function sampleRectangle(
-  rings: readonly LabelGeometryPoint[][],
+  contour: IndexedContour,
   x: number,
   y: number,
   width: number,
@@ -272,12 +345,9 @@ function sampleRectangle(
     point.x < viewport.left || point.x > viewport.right ||
     point.y < viewport.top || point.y > viewport.bottom)) return false;
   if (!allowBridge) {
-    if (!corners.every((point) => containsPoint(rings, point.x, point.y))) return false;
-    for (const ring of rings) {
-      for (let index = 0; index < ring.length; index += 1) {
-        const start = ring[index], end = ring[(index + 1) % ring.length];
-        if (segmentIntersectsRect(start.x, start.y, end.x, end.y, footprint)) return false;
-      }
+    if (!corners.every((point) => containsPoint(contour, point.x, point.y))) return false;
+    for (const { a, b } of contourEdgesInRect(contour, footprint)) {
+      if (segmentIntersectsRect(a.x, a.y, b.x, b.y, footprint)) return false;
     }
     return true;
   }
@@ -290,7 +360,7 @@ function sampleRectangle(
       const pointY = y + localX * sin + localY * cos;
        if (pointX >= viewport.left && pointX <= viewport.right &&
            pointY >= viewport.top && pointY <= viewport.bottom &&
-           containsPoint(rings, pointX, pointY)) inside += 1;
+           containsPoint(contour, pointX, pointY)) inside += 1;
       total += 1;
     }
   }
@@ -306,6 +376,7 @@ function normalizeReadableAngle(angle: number): number {
 
 function labelCenterCandidates(
   rings: readonly LabelGeometryPoint[][],
+  contour: IndexedContour,
   bounds: LabelBounds,
   allowBridge: boolean,
   gridSteps = 7,
@@ -336,7 +407,7 @@ function labelCenterCandidates(
   return [...unique.values()]
     .filter((point) => point.x >= bounds.left && point.x <= bounds.right &&
       point.y >= bounds.top && point.y <= bounds.bottom &&
-      (allowBridge || containsPoint(rings, point.x, point.y)))
+      (allowBridge || containsPoint(contour, point.x, point.y)))
     .sort((a, b) => Math.hypot(a.x - center.x, a.y - center.y) - Math.hypot(b.x - center.x, b.y - center.y));
 }
 
@@ -472,7 +543,7 @@ function curveAllowed(points: readonly LabelGeometryPoint[], fontSize: number): 
 }
 
 function pathCoverage(
-  rings: readonly LabelGeometryPoint[][],
+  contour: IndexedContour,
   path: readonly LabelGeometryPoint[],
   fontSize: number,
   allowBridge: boolean,
@@ -488,7 +559,7 @@ function pathCoverage(
       const x = location.point.x + normalX * fontSize * offset;
       const y = location.point.y + normalY * fontSize * offset;
       if (x >= viewport.left && x <= viewport.right && y >= viewport.top && y <= viewport.bottom &&
-          containsPoint(rings, x, y)) inside += 1;
+          containsPoint(contour, x, y)) inside += 1;
       total += 1;
     }
   }
@@ -513,6 +584,7 @@ export function fitLabelToVisibleContour(input: {
   obstacles?: readonly LabelAvoidanceRect[];
 }): LabelGeometryPlacement | null {
   const rings = input.rings.map((ring) => pointsFromRing(ring, input.scale, input.ox, input.oy));
+  const contourIndex = indexContour(rings);
   const contourBounds = boundsOf(rings);
   if (!contourBounds) return null;
   const viewport = {
@@ -538,7 +610,7 @@ export function fitLabelToVisibleContour(input: {
     Math.max(-maxAngle, principalAngle - Math.PI / 12),
     Math.min(maxAngle, principalAngle + Math.PI / 12),
   ].map((angle) => Math.round(normalizeReadableAngle(angle) * 1000) / 1000))];
-  const centers = labelCenterCandidates(rings, bounds, input.allowBridge);
+  const centers = labelCenterCandidates(rings, contourIndex, bounds, input.allowBridge);
   const naturalLimit = Math.min(
     Math.max(LABEL_MIN_SIZE, input.maxFontSize),
     Math.max(LABEL_MIN_SIZE, Math.hypot(bounds.right - bounds.left, bounds.bottom - bounds.top) * 0.35),
@@ -579,9 +651,9 @@ export function fitLabelToVisibleContour(input: {
       const shapeFits = metrics.textWidth <= available * 0.9 &&
         (curved
           ? Boolean(fittedPath && curveAllowed(fittedPath, fontSize) &&
-            pathCoverage(rings, fittedPath, fontSize, input.allowBridge, viewport))
+            pathCoverage(contourIndex, fittedPath, fontSize, input.allowBridge, viewport))
           : sampleRectangle(
-            rings,
+            contourIndex,
             center.x,
             center.y,
             metrics.textWidth,
@@ -648,7 +720,7 @@ export function fitLabelToVisibleContour(input: {
     }
   }
   if (!best && input.obstacles?.length) {
-    const finerCenters = labelCenterCandidates(rings, bounds, input.allowBridge, 15);
+    const finerCenters = labelCenterCandidates(rings, contourIndex, bounds, input.allowBridge, 15);
     for (const angle of angles) {
       for (const center of finerCenters) {
         const available = intervalAtPoint(rings, center.x, center.y, angle, viewport, input.allowBridge);
