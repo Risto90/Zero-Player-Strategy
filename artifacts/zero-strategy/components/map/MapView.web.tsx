@@ -20,31 +20,45 @@ import {
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
 import { discoveredRiverPaths } from '@/game/geographyGeometry';
-import { elevationPackedColor, seaDepthPackedColor, STRIP_H } from '@/game/render';
+import type { VectorPaintInfo } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
 import { circleHatchLines } from './cityInfluenceHatching';
 import { isCityVisibleAtZoom } from './cityIconMath';
 import { MapGestures } from './gestures';
-import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
+import { type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
 import { centerOnMapPoint, clampView, initialView, minScale, toMap, zoomAround } from './viewMath';
 
 import { renderFlagSpec } from '@/game/flagRenderer';
+import { buildVectorMapSvg, vectorColorFor, type VectorMapViewport } from './vectorMap';
 
 const crownGlyph = String.fromCodePoint(Number(MaterialCommunityIcons.getRawGlyphMap().crown));
 const crownFontFamily = MaterialCommunityIcons.getFontFamily();
 
-function drawGoldCrown(ctx: CanvasRenderingContext2D, x: number, y: number, size: number): void {
-  ctx.save();
-  ctx.font = `${size}px "${crownFontFamily}"`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.lineWidth = Math.max(1, size * 0.12);
-  ctx.strokeStyle = 'rgba(35,30,24,0.8)';
-  ctx.strokeText(crownGlyph, x, y);
-  ctx.fillStyle = colors.light.crownGold;
-  ctx.fillText(crownGlyph, x, y);
-  ctx.restore();
+function xmlEscape(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+}
+
+function svgText(
+  value: string,
+  x: number,
+  y: number,
+  size: number,
+  fill: string,
+  stroke: string,
+  strokeWidth: number,
+  angle = 0,
+  tracking = 0,
+  fontFamily = 'IBM Plex Sans, sans-serif',
+): string {
+  const transform = angle ? ` transform="translate(${x} ${y}) rotate(${angle * 180 / Math.PI})"` : ` x="${x}" y="${y}"`;
+  const coordinates = angle ? ' x="0" y="0"' : '';
+  return `<text${transform}${coordinates} text-anchor="middle" dominant-baseline="central" font-family="${xmlEscape(fontFamily)}" font-size="${size}" font-weight="600" letter-spacing="${tracking}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linejoin="round" paint-order="stroke">${xmlEscape(value)}</text>`;
+}
+
+function goldCrownSvg(x: number, y: number, size: number): string {
+  return svgText(crownGlyph, x, y, size, colors.light.crownGold, 'rgba(35,30,24,0.8)', Math.max(1, size * 0.12), 0, 0, crownFontFamily);
 }
 
 function rgba(hex: string, alpha: number) {
@@ -52,24 +66,16 @@ function rgba(hex: string, alpha: number) {
   return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
 }
 
-function cachedSvgImage(
-  svg: string,
-  cache: Map<string, HTMLImageElement>,
-  onLoad: () => void,
-): HTMLImageElement | null {
-  let image = cache.get(svg);
-  if (!image) {
-    image = new window.Image();
-    image.onload = onLoad;
-    image.onerror = () => cache.delete(svg);
-    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-    cache.set(svg, image);
-  }
-  return image.complete && image.naturalWidth > 0 ? image : null;
+let textMeasureContext: CanvasRenderingContext2D | null = null;
+
+function getTextMeasureContext(): CanvasRenderingContext2D | null {
+  if (textMeasureContext) return textMeasureContext;
+  if (typeof document === 'undefined') return null;
+  textMeasureContext = document.createElement('canvas').getContext('2d');
+  return textMeasureContext;
 }
 
-function drawCityInfluence(
-  ctx: CanvasRenderingContext2D,
+function drawCityInfluenceSvg(
   game: MapViewProps['game'],
   view: ViewTransform,
   width: number,
@@ -77,9 +83,10 @@ function drawCityInfluence(
   baseScale: number,
 ) {
   const snapshot = game.getSnapshot();
-  if (snapshot.mapMode !== 'cities') return;
+  if (snapshot.mapMode !== 'cities') return '';
   const selectedCityId = snapshot.selectedCityId;
   const selectedCity = selectedCityId === null ? null : game.world.cities[selectedCityId];
+  const elements: string[] = [];
   for (const city of game.world.cities) {
     const centerX = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
     const centerY = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
@@ -90,43 +97,29 @@ function drawCityInfluence(
     if (!selected && !isCityVisibleAtZoom(view.scale, baseScale, cityVisibilityRank(city, hasPort))) continue;
     const color = game.world.countries[city.countryId]?.color ?? '#8f3036';
     if (selected) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-      ctx.clip();
-      ctx.fillStyle = rgba(color, 0.12);
-      ctx.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2);
-      ctx.strokeStyle = rgba(color, 0.72);
-      ctx.lineWidth = 1.35;
-      for (const line of circleHatchLines(centerX, centerY, radius, 8)) {
-        ctx.beginPath();
-        ctx.moveTo(line.x1, line.y1);
-        ctx.lineTo(line.x2, line.y2);
-        ctx.stroke();
-      }
-      ctx.restore();
+      const clipId = `city-influence-${city.id}`;
+      const hatches = circleHatchLines(centerX, centerY, radius, 8)
+        .map((line) => `M${line.x1} ${line.y1}L${line.x2} ${line.y2}`).join('');
+      elements.push(
+        `<defs><clipPath id="${clipId}"><circle cx="${centerX}" cy="${centerY}" r="${radius}"/></clipPath></defs>`,
+        `<circle cx="${centerX}" cy="${centerY}" r="${radius}" fill="${rgba(color, 0.12)}"/>`,
+        `<path d="${hatches}" clip-path="url(#${clipId})" fill="none" stroke="${rgba(color, 0.72)}" stroke-width="1.35"/>`,
+      );
     }
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-    ctx.setLineDash(selected ? [8, 5] : []);
-    ctx.lineWidth = selected ? 2.2 : Math.max(0.7, 0.7 + city.rank * 0.22);
-    ctx.strokeStyle = rgba(color, selected ? 0.95 : 0.16 + city.rank * 0.075);
-    ctx.stroke();
-    if (selected) ctx.setLineDash([]);
+    const dash = selected ? ' stroke-dasharray="8 5"' : '';
+    const lineWidth = selected ? 2.2 : Math.max(0.7, 0.7 + city.rank * 0.22);
+    const alpha = selected ? 0.95 : 0.16 + city.rank * 0.075;
+    elements.push(`<circle cx="${centerX}" cy="${centerY}" r="${radius}" fill="none" stroke="${rgba(color, alpha)}" stroke-width="${lineWidth}"${dash}/>`);
   }
+  return elements.join('');
 }
 
 function mapTextColor(game: MapViewProps['game'], pixel: number): string {
-  let packed = game.renderer.pixels[pixel] ?? 0xffeeeeee;
-  if (game.getSnapshot().mapMode === 'elevation') {
-    const elevation = game.world.elevation[pixel] ?? 0;
-    packed = elevation < 0
-      ? seaDepthPackedColor(elevation)
-      : elevationPackedColor(elevation);
-  }
-  const red = packed & 255;
-  const green = (packed >>> 8) & 255;
-  const blue = (packed >>> 16) & 255;
+  const paint: VectorPaintInfo = game.renderer.vectorPaintAt(pixel);
+  const packed = vectorColorFor(game, paint);
+  const red = Number.parseInt(packed.slice(1, 3), 16);
+  const green = Number.parseInt(packed.slice(3, 5), 16);
+  const blue = Number.parseInt(packed.slice(5, 7), 16);
   const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
   return luminance > 0.56 ? '#28231e' : '#fff7df';
 }
@@ -137,36 +130,30 @@ const RIVER_COLORS: Record<number, string> = {
   3: '#22537d',
 };
 
-function drawRivers(
-  ctx: CanvasRenderingContext2D,
+function drawRiversSvg(
   game: MapViewProps['game'],
   view: ViewTransform,
+  width: number,
+  height: number,
   baseScale: number,
-) {
+): string {
   const paths = discoveredRiverPaths(game.world);
-  if (paths.length === 0 || view.scale < baseScale) return;
-  ctx.save();
+  if (paths.length === 0 || view.scale < baseScale) return '';
+  const elements: string[] = [];
   for (const segment of paths) {
     if (view.scale < riverVisibilityScale(baseScale, segment.strength)) continue;
     const [minX, minY, maxX, maxY] = segment.bounds;
     if (view.ox + maxX * view.scale < 0 || view.oy + maxY * view.scale < 0 ||
-      view.ox + minX * view.scale > ctx.canvas.clientWidth ||
-      view.oy + minY * view.scale > ctx.canvas.clientHeight) continue;
-    ctx.beginPath();
-    for (let index = 0; index < segment.contourPoints.length; index += 1) {
-      const point = segment.contourPoints[index];
+      view.ox + minX * view.scale > width || view.oy + minY * view.scale > height) continue;
+    const commands = segment.contourPoints.map((point, index) => {
       const x = view.ox + point.x * view.scale;
       const y = view.oy + point.y * view.scale;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.closePath();
-    ctx.strokeStyle = RIVER_COLORS[segment.strength];
-    ctx.globalAlpha = segment.strength === 1 ? 0.82 : 0.94;
-    ctx.fillStyle = RIVER_COLORS[segment.strength];
-    ctx.fill();
+      return `${index === 0 ? 'M' : 'L'}${x} ${y}`;
+    }).join('');
+    const opacity = segment.strength === 1 ? 0.82 : 0.94;
+    elements.push(`<path d="${commands}Z" fill="${RIVER_COLORS[segment.strength]}" fill-opacity="${opacity}"/>`);
   }
-  ctx.restore();
+  return elements.join('');
 }
 
 function pointAlongPath(points: readonly { x: number; y: number }[], distance: number) {
@@ -331,6 +318,7 @@ function drawRiverNames(
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
   occupiedLabels: LabelScreenBounds[] = [],
   additionalObstacles: readonly LabelScreenBounds[] = [],
+  elements: string[] = [],
 ) {
   const byRiver = new Map<number, ReturnType<typeof discoveredRiverPaths>>();
   for (const segment of discoveredRiverPaths(game.world)) {
@@ -339,8 +327,6 @@ function drawRiverNames(
     paths.push(segment);
     byRiver.set(segment.riverId, paths);
   }
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
   for (const segments of byRiver.values()) {
     let visibleSegment: ReturnType<typeof discoveredRiverPaths>[number] | null = null;
     let screenPoints: ScreenPoint[] | null = null;
@@ -369,9 +355,9 @@ function drawRiverNames(
     const screenWidth = projectMapPoint
       ? segment.width * (screenLength / Math.max(1, segment.length))
       : segment.width * view.scale;
-    const maximumFont = Math.min(18, Math.max(11, screenWidth * 0.8));
+    const maximumFont = Math.min(18, Math.max(6, screenWidth * 0.8));
     let chosen: { size: number; widths: number[]; tracking: number; textWidth: number; path: ScreenPoint[] } | null = null;
-    for (let size = maximumFont; size >= 11; size -= 1) {
+    for (let size = maximumFont; size >= 6; size -= 1) {
       ctx.font = `600 ${size}px "IBM Plex Sans", sans-serif`;
       const widths = characters.map((character) => ctx.measureText(character).width);
       const glyphWidth = widths.reduce((sum, item) => sum + item, 0);
@@ -435,15 +421,16 @@ function drawRiverNames(
     occupiedLabels.push(...glyphs.map((glyph) => glyph.bounds));
 
     for (const glyph of glyphs) {
-      ctx.save();
-      ctx.translate(glyph.x, glyph.y);
-      ctx.rotate(glyph.angle);
-      ctx.lineWidth = Math.max(1.2, chosen.size * 0.24);
-      ctx.strokeStyle = '#fff';
-      ctx.strokeText(glyph.character, 0, 0);
-      ctx.fillStyle = '#17130f';
-      ctx.fillText(glyph.character, 0, 0);
-      ctx.restore();
+      elements.push(svgText(
+        glyph.character,
+        glyph.x,
+        glyph.y,
+        chosen.size,
+        '#17130f',
+        '#fff',
+        Math.max(1.2, chosen.size * 0.24),
+        glyph.angle,
+      ));
     }
   }
 }
@@ -473,19 +460,15 @@ function drawMapLabels(
   height: number,
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
   avoidToolOverlay = false,
-): LabelScreenBounds[] {
+): { occupied: LabelScreenBounds[]; svg: string } {
   const snapshot = game.getSnapshot();
+  const elements: string[] = [];
   const ratio = view.scale / Math.max(baseScale, 0.0001);
   const text = (value: string, x: number, y: number, size: number, color: string, maxWidth?: number) => {
     if (x < -100 || y < -30 || x > width + 100 || y > height + 30) return;
-    ctx.font = `600 ${size}px "IBM Plex Sans", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.lineWidth = Math.max(1, size * 0.2);
-    ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.8)';
-    ctx.strokeText(value, x, y, maxWidth);
-    ctx.fillStyle = color;
-    ctx.fillText(value, x, y, maxWidth);
+    const stroke = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.8)';
+    const widthScale = maxWidth && value.length ? Math.min(1, maxWidth / (measuredCountryTextWidthFactor(ctx, value) * size)) : 1;
+    elements.push(`<g transform="translate(${x} ${y}) scale(${widthScale} 1)">${svgText(value, 0, 0, size, color, stroke, Math.max(1, size * 0.2))}</g>`);
   };
   const trackedCountryLabel = (
     value: string,
@@ -500,8 +483,6 @@ function drawMapLabels(
   ) => {
     const displayLines = lines.length ? lines : [value];
     ctx.font = `600 ${size}px "IBM Plex Sans", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
     const lineMetrics = displayLines.map((line) => {
       const characters = [...line];
       const widths = characters.map((character) => ctx.measureText(character).width);
@@ -509,16 +490,17 @@ function drawMapLabels(
         Math.max(0, characters.length - 1) * tracking;
       return { characters, widths, totalWidth };
     });
-    ctx.lineWidth = Math.max(1, size * 0.2);
-    ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)';
-    ctx.fillStyle = color;
     const drawGlyph = (character: string, glyphX: number, glyphY: number, glyphAngle: number) => {
-      ctx.save();
-      ctx.translate(glyphX, glyphY);
-      ctx.rotate(glyphAngle);
-      ctx.strokeText(character, 0, 0);
-      ctx.fillText(character, 0, 0);
-      ctx.restore();
+      elements.push(svgText(
+        character,
+        glyphX,
+        glyphY,
+        size,
+        color,
+        color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)',
+        Math.max(1, size * 0.2),
+        glyphAngle,
+      ));
     };
     if (path && path.length >= 2 && lineMetrics.length === 1) {
       const { characters, widths, totalWidth } = lineMetrics[0];
@@ -584,7 +566,6 @@ function drawMapLabels(
     if (!feature.discoveredBy.length) continue;
     const isVolcano = game.world.volcanoes.includes(feature);
     const active = isVolcano && feature.active === true;
-    if (isVolcano && !active) continue;
     const visibilityScale = active
       ? volcanoVisibilityScale(baseScale, feature.activityIntervalYears, feature.eruptionIntensity)
       : geographicVisibilityScale(baseScale, feature.elevation);
@@ -702,16 +683,8 @@ function drawMapLabels(
   }
 
   for (const { feature, active, isVolcano, x, y, size } of featureMarks) {
-    ctx.beginPath();
-    ctx.moveTo(x, y - size);
-    ctx.lineTo(x - size * 0.78, y + size * 0.62);
-    ctx.lineTo(x + size * 0.78, y + size * 0.62);
-    ctx.closePath();
-    ctx.fillStyle = active ? '#bd382c' : isVolcano ? '#b2763e' : '#594b3c';
-    ctx.strokeStyle = 'rgba(250,244,224,0.9)';
-    ctx.lineWidth = 1;
-    ctx.fill();
-    ctx.stroke();
+    const featureColor = active ? '#bd382c' : isVolcano ? '#b2763e' : '#594b3c';
+    elements.push(`<path d="M${x} ${y - size}L${x - size * 0.78} ${y + size * 0.62}L${x + size * 0.78} ${y + size * 0.62}Z" fill="${featureColor}" stroke="rgba(250,244,224,0.9)" stroke-width="1"/>`);
     if (feature.name) {
       const pixel = feature.pixel;
       const labelY = y + size + 6;
@@ -731,27 +704,27 @@ function drawMapLabels(
     }
   }
 
-  drawRiverNames(ctx, game, view, baseScale, width, height, projectMapPoint, occupiedLabels, cityIconBounds);
-  return occupiedLabels;
+  drawRiverNames(ctx, game, view, baseScale, width, height, projectMapPoint, occupiedLabels, cityIconBounds, elements);
+  return { occupied: occupiedLabels, svg: elements.join('') };
 }
 
 type ScreenPoint = { x: number; y: number };
 
-/** Браузерная карта: растровые слои, управление жестами и 3D-рельеф высот. */
+/** Браузерная карта: SVG-контуры, надписи, жесты и 3D-рельеф высот. */
 export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   { game, tool, canPaint, avoidToolOverlay = false, onInspect, onMapActivity },
   ref,
 ) {
   const [iconFontsLoaded] = useFonts(MaterialCommunityIcons.font);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const vectorSvgRef = useRef<SVGSVGElement>(null);
+  const overlaySvgRef = useRef<SVGSVGElement>(null);
+  const interactionRef = useRef<HTMLDivElement>(null);
   const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
   const terrainRendererRef = useRef<Terrain3DRenderer | null>(null);
   const terrainErrorRef = useRef<string | null>(null);
-  const offscreenRef = useRef<HTMLCanvasElement | null>(null);
-  const imageRef = useRef<ImageData | null>(null);
+  const vectorCoverageRef = useRef<{ sceneKey: string; bounds: VectorMapViewport } | null>(null);
   const cityImagesRef = useRef<(HTMLImageElement | null)[]>([]);
-  const svgImagesRef = useRef(new Map<string, HTMLImageElement>());
   const redrawRef = useRef<() => void>(() => {});
   const viewRef = useRef<ViewTransform>({ scale: 1, ox: 0, oy: 0 });
   const sizeRef = useRef({ width: 1, height: 1, dpr: 1 });
@@ -759,6 +732,17 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const frameRef = useRef(0);
   const routeActiveRef = useRef(false);
   const pageVisibleRef = useRef(true);
+  const cameraGestureActiveRef = useRef(false);
+  const cameraGestureBaseRef = useRef<ViewTransform | null>(null);
+  const wheelEndTimerRef = useRef<number | null>(null);
+  const overlayRevisionRef = useRef(0);
+  const lastDrawStateRef = useRef<{
+    view: ViewTransform;
+    width: number;
+    height: number;
+    mode: string;
+    overlayRevision: number;
+  } | null>(null);
   const orbitPointerRef = useRef<number | null>(null);
   const orbitLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const cursorRef = useRef<{ x: number; y: number } | null>(null);
@@ -772,15 +756,10 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const draw = useCallback(() => {
     frameRef.current = 0;
     if (!routeActiveRef.current || !pageVisibleRef.current) return;
-    const canvas = canvasRef.current;
+    const vectorSvg = vectorSvgRef.current;
+    const overlaySvg = overlaySvgRef.current;
     const terrainCanvas = terrainCanvasRef.current;
-    const offscreen = offscreenRef.current;
-    const image = imageRef.current;
-    if (!canvas || !offscreen || !image) return;
-    const octx = offscreen.getContext('2d');
-    for (const s of game.renderer.flushSome(PAINT_BUDGET_MS)) octx?.putImageData(image, 0, 0, 0, s * STRIP_H, MAP_WIDTH, STRIP_H);
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!vectorSvg || !overlaySvg) return;
     const { width, height, dpr } = sizeRef.current;
     const view = viewRef.current;
     const mapMode = game.getSnapshot().mapMode;
@@ -791,14 +770,47 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       x1: Math.min(MAP_WIDTH - 1, Math.ceil((width - view.ox) / view.scale) + 1),
       y1: Math.min(MAP_HEIGHT - 1, Math.ceil((height - view.oy) / view.scale) + 1),
     };
-    if (!isElevation && visibleBounds.x1 >= visibleBounds.x0 && visibleBounds.y1 >= visibleBounds.y0) {
-      for (const rect of game.renderer.flushVisible(PAINT_BUDGET_MS, visibleBounds)) {
-        octx?.putImageData(image, 0, 0, rect.x0, rect.y0, rect.x1 - rect.x0 + 1, rect.y1 - rect.y0 + 1);
-      }
+    const padding = 128;
+    const renderBounds = {
+      x0: Math.max(0, Math.floor((visibleBounds.x0 - padding) / padding) * padding),
+      y0: Math.max(0, Math.floor((visibleBounds.y0 - padding) / padding) * padding),
+      x1: Math.min(MAP_WIDTH, Math.ceil((visibleBounds.x1 + padding) / padding) * padding),
+      y1: Math.min(MAP_HEIGHT - 1, Math.ceil((visibleBounds.y1 + padding) / padding) * padding),
+    };
+    const layer = game.renderer.layer;
+    const sceneKey = `${mapMode}:${layer?.kind ?? ''}:${layer?.id ?? ''}`;
+    const cachedCoverage = vectorCoverageRef.current;
+    const covered = cachedCoverage?.sceneKey === sceneKey
+      && cachedCoverage.bounds.x0 <= visibleBounds.x0
+      && cachedCoverage.bounds.y0 <= visibleBounds.y0
+      && cachedCoverage.bounds.x1 >= visibleBounds.x1
+      && cachedCoverage.bounds.y1 >= visibleBounds.y1;
+    const mapDirty = game.renderer.hasPendingIn(renderBounds);
+    const needsVectorUpdate = !covered || mapDirty;
+    const previousDraw = lastDrawStateRef.current;
+    const viewChanged = !previousDraw
+      || previousDraw.view.scale !== view.scale
+      || previousDraw.view.ox !== view.ox
+      || previousDraw.view.oy !== view.oy;
+    const sizeChanged = !previousDraw || previousDraw.width !== width || previousDraw.height !== height;
+    const overlayChanged = !previousDraw || previousDraw.overlayRevision !== overlayRevisionRef.current;
+    const drawOverlay = !cameraGestureActiveRef.current;
+    if (!needsVectorUpdate && !viewChanged && !sizeChanged && !overlayChanged) {
+      game.mapDrawn();
+      return;
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (needsVectorUpdate && visibleBounds.x1 >= visibleBounds.x0 && visibleBounds.y1 >= visibleBounds.y0) {
+      vectorSvg.innerHTML = buildVectorMapSvg(game, renderBounds);
+      vectorCoverageRef.current = { sceneKey, bounds: renderBounds };
+      game.renderer.acknowledge(renderBounds);
+    }
+    vectorSvg.setAttribute(
+      'viewBox',
+      `${-view.ox / view.scale} ${-view.oy / view.scale} ${width / view.scale} ${height / view.scale}`,
+    );
+    overlaySvg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    const overlayElements: string[] = [];
     if (isElevation) {
-      ctx.clearRect(0, 0, width, height);
       if (terrainCanvas) {
         terrainCanvas.style.display = 'block';
         if (!terrainRendererRef.current && !terrainErrorRef.current) {
@@ -814,126 +826,122 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         }
       }
       if (terrainErrorRef.current) {
-        ctx.fillStyle = '#241e18';
-        ctx.font = '600 15px "IBM Plex Sans", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(`3D-рельеф недоступен: ${terrainErrorRef.current}`, width / 2, height / 2, width - 32);
+        overlayElements.push(svgText(terrainErrorRef.current, width / 2, height / 2, 15, '#f0e7d2', '#241e18', 2));
       }
     } else {
       if (terrainCanvas) terrainCanvas.style.display = 'none';
-      ctx.fillStyle = colors.light.mapBackdrop;
-      ctx.fillRect(0, 0, width, height);
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
-      drawRivers(ctx, game, view, baseScaleRef.current);
+      overlayElements.push(drawRiversSvg(game, view, width, height, baseScaleRef.current));
     }
-    drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
-    const projectMapPoint = isElevation && terrainRendererRef.current
-      ? (x: number, y: number) => terrainRendererRef.current?.projectMapPoint(
-        x,
-        y,
-        sizeRef.current,
+    if (drawOverlay) {
+      overlayElements.push(drawCityInfluenceSvg(game, view, width, height, baseScaleRef.current));
+      const measureContext = getTextMeasureContext();
+      const projectMapPoint = isElevation && terrainRendererRef.current
+        ? (x: number, y: number) => terrainRendererRef.current?.projectMapPoint(
+          x,
+          y,
+          sizeRef.current,
+          game.world,
+        ) ?? null
+        : undefined;
+      const labelResult = measureContext
+        ? drawMapLabels(
+          measureContext,
+          game,
+          view,
+          baseScaleRef.current,
+          width,
+          height,
+          projectMapPoint,
+          avoidToolOverlay,
+        )
+        : { occupied: [], svg: '' };
+      overlayElements.push(labelResult.svg);
+      const cityLabelIds = visibleCityLabelIds(
         game.world,
-      ) ?? null
-      : undefined;
-    const occupiedMapLabels = drawMapLabels(
-      ctx,
-      game,
-      view,
-      baseScaleRef.current,
-      width,
-      height,
-      projectMapPoint,
-      avoidToolOverlay,
-    );
-    const cityLabelIds = visibleCityLabelIds(
-      game.world,
-      mapMode,
-      view.scale,
-      baseScaleRef.current,
-      view.ox,
-      view.oy,
-      width,
-      height,
-      occupiedMapLabels,
-    );
-    if (shouldShowCityMarks(mapMode)) for (const city of game.world.cities) {
-      const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
-      const zoomRank = cityVisibilityRank(city, hasPort);
-      if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
-      const icon = cityImagesRef.current[cityIconIndex(city, hasPort)];
-      if (!icon?.complete || icon.naturalWidth === 0) continue;
-      const size = hasPort ? 30 + city.rank : 24 + city.rank;
-      const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
-      const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
-      if (x + size < 0 || y + size < 0 || x - size > width || y - size > height) continue;
-      ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
-      if (city.name && cityLabelIds.has(city.id)) {
-        const labelFontSize = cityLabelFontSize(view.scale, baseScaleRef.current);
-        ctx.font = `600 ${labelFontSize}px "IBM Plex Sans", sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'bottom';
-        const labelY = y - size / 2 - Math.max(2, labelFontSize * 0.22);
-        const textWidth = ctx.measureText(city.name).width;
-        const flagSvg = city.emblemSpec ? renderFlagSpec(city.emblemSpec) : null;
-        const flagImage = flagSvg
-          ? cachedSvgImage(flagSvg, svgImagesRef.current, () => redrawRef.current())
-          : null;
-        const flagAspect = city.emblemSpec
-          ? Math.max(0.5, Math.min(2.6, city.emblemSpec.outline.aspect))
-          : 1;
-        const flagHeight = flagSvg ? Math.max(8, labelFontSize * 1.1) : 0;
-        const flagWidth = flagSvg ? flagHeight * flagAspect : 0;
-        const crownSize = city.capital ? labelFontSize * 1.45 : 0;
-        const markWidth = flagSvg ? Math.max(flagWidth, crownSize) : crownSize;
-        const gap = markWidth ? Math.max(4, labelFontSize * 0.35) : 0;
-        const labelLeft = x - (textWidth + markWidth + gap) / 2;
-        const textCenter = labelLeft + markWidth + gap + textWidth / 2;
-        const color = mapTextColor(game, city.pixel);
-        ctx.lineWidth = Math.max(1, labelFontSize * 0.22);
-        ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)';
-        ctx.fillStyle = color;
-        if (flagSvg && flagImage) {
-          ctx.drawImage(
-            flagImage,
-            labelLeft + (markWidth - flagWidth) / 2,
-            labelY - labelFontSize * 0.88,
-            flagWidth,
-            flagHeight,
-          );
-          if (city.capital && iconFontsLoaded) {
-            drawGoldCrown(
-              ctx,
-              labelLeft + markWidth / 2,
-              labelY - labelFontSize * 0.88 - crownSize / 2 - 2,
-              crownSize,
-            );
+        mapMode,
+        view.scale,
+        baseScaleRef.current,
+        view.ox,
+        view.oy,
+        width,
+        height,
+        labelResult.occupied,
+      );
+      if (shouldShowCityMarks(mapMode)) for (const city of game.world.cities) {
+        const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
+        const zoomRank = cityVisibilityRank(city, hasPort);
+        if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
+        const icon = cityImagesRef.current[cityIconIndex(city, hasPort)];
+        if (!icon?.complete || icon.naturalWidth === 0) continue;
+        const size = hasPort ? 30 + city.rank : 24 + city.rank;
+        const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
+        const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
+        if (x + size < 0 || y + size < 0 || x - size > width || y - size > height) continue;
+        overlayElements.push(`<image href="${xmlEscape(icon.src)}" x="${x - size / 2}" y="${y - size / 2}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid meet"/>`);
+        if (city.name && cityLabelIds.has(city.id) && measureContext) {
+          const labelFontSize = cityLabelFontSize(view.scale, baseScaleRef.current);
+          measureContext.font = `600 ${labelFontSize}px "IBM Plex Sans", sans-serif`;
+          const labelY = y - size / 2 - Math.max(2, labelFontSize * 0.22);
+          const textWidth = measureContext.measureText(city.name).width;
+          const flagSvg = city.emblemSpec ? renderFlagSpec(city.emblemSpec) : null;
+          const flagAspect = city.emblemSpec
+            ? Math.max(0.5, Math.min(2.6, city.emblemSpec.outline.aspect))
+            : 1;
+          const flagHeight = flagSvg ? Math.max(8, labelFontSize * 1.1) : 0;
+          const flagWidth = flagSvg ? flagHeight * flagAspect : 0;
+          const crownSize = city.capital ? labelFontSize * 1.45 : 0;
+          const markWidth = flagSvg ? Math.max(flagWidth, crownSize) : crownSize;
+          const gap = markWidth ? Math.max(4, labelFontSize * 0.35) : 0;
+          const labelLeft = x - (textWidth + markWidth + gap) / 2;
+          const textCenter = labelLeft + markWidth + gap + textWidth / 2;
+          const color = mapTextColor(game, city.pixel);
+          const stroke = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)';
+          if (flagSvg) {
+            const flagUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(flagSvg)}`;
+            overlayElements.push(`<image href="${xmlEscape(flagUri)}" x="${labelLeft + (markWidth - flagWidth) / 2}" y="${labelY - labelFontSize * 0.88}" width="${flagWidth}" height="${flagHeight}" preserveAspectRatio="xMidYMid meet"/>`);
+            if (city.capital && iconFontsLoaded) {
+              overlayElements.push(goldCrownSvg(
+                labelLeft + markWidth / 2,
+                labelY - labelFontSize * 0.88 - crownSize / 2 - 2,
+                crownSize,
+              ));
+            }
+          } else if (city.capital && iconFontsLoaded) {
+            overlayElements.push(goldCrownSvg(labelLeft + markWidth / 2, labelY - labelFontSize / 2, crownSize));
           }
-        } else if (city.capital && iconFontsLoaded) {
-          drawGoldCrown(ctx, labelLeft + markWidth / 2, labelY - labelFontSize / 2, crownSize);
+          overlayElements.push(svgText(
+            city.name,
+            textCenter,
+            labelY - labelFontSize / 2,
+            labelFontSize,
+            color,
+            stroke,
+            Math.max(1, labelFontSize * 0.22),
+          ));
         }
-        ctx.strokeText(city.name, textCenter, labelY);
-        ctx.fillText(city.name, textCenter, labelY);
       }
+      const cursor = cursorRef.current;
+      if (cursor) {
+        const radius = game.brushRadius * view.scale;
+        overlayElements.push(`<circle cx="${cursor.x}" cy="${cursor.y}" r="${radius}" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="3"/><circle cx="${cursor.x}" cy="${cursor.y}" r="${radius}" fill="none" stroke="rgba(30,26,20,0.9)" stroke-width="1.2"/>`);
+      }
+      if (isElevation && terrainErrorRef.current) {
+        overlayElements.push(svgText(`3D-рельеф недоступен: ${terrainErrorRef.current}`, width / 2, height / 2, 15, '#f0e7d2', '#241e18', 2));
+      }
+      overlaySvg.innerHTML = overlayElements.join('');
     }
-    const cursor = cursorRef.current;
-    if (cursor) {
-      const radius = game.brushRadius * view.scale;
-      ctx.beginPath();
-      ctx.arc(cursor.x, cursor.y, radius, 0, Math.PI * 2);
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.stroke();
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = 'rgba(30,26,20,0.9)';
-      ctx.stroke();
-    }
-    if (!isElevation && game.renderer.hasPendingIn(visibleBounds)) frameRef.current = requestAnimationFrame(draw);
-    else game.mapDrawn();
+    game.mapDrawn();
+    lastDrawStateRef.current = {
+      view: { ...view },
+      width,
+      height,
+      mode: mapMode,
+      overlayRevision: overlayRevisionRef.current,
+    };
   }, [game, iconFontsLoaded]);
 
-  const requestDraw = useCallback(() => {
+  const requestDraw = useCallback((force = true) => {
+    if (force) overlayRevisionRef.current += 1;
     if (routeActiveRef.current && pageVisibleRef.current && !frameRef.current) {
       frameRef.current = requestAnimationFrame(draw);
     }
@@ -945,6 +953,13 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     requestDraw();
     return () => {
       routeActiveRef.current = false;
+      cameraGestureActiveRef.current = false;
+      cameraGestureBaseRef.current = null;
+      if (wheelEndTimerRef.current !== null) {
+        window.clearTimeout(wheelEndTimerRef.current);
+        wheelEndTimerRef.current = null;
+      }
+      if (overlaySvgRef.current) overlaySvgRef.current.style.transform = 'none';
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
       frameRef.current = 0;
     };
@@ -979,7 +994,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         return null;
       }
       const image = new window.Image();
-      image.onload = requestDraw;
+      image.onload = () => requestDraw();
       image.onerror = () => console.error(`Failed to load city icon ${index}`);
       image.src = uri;
       return image;
@@ -998,10 +1013,40 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const applyView = useCallback(
     (view: ViewTransform) => {
       viewRef.current = view;
-      requestDraw();
+      if (cameraGestureActiveRef.current) {
+        const base = cameraGestureBaseRef.current ?? view;
+        const ratio = view.scale / base.scale;
+        const overlay = overlaySvgRef.current;
+        if (overlay) {
+          overlay.style.transformOrigin = '0 0';
+          overlay.style.transform = `translate3d(${view.ox - ratio * base.ox}px, ${view.oy - ratio * base.oy}px, 0) scale(${ratio})`;
+        }
+        requestDraw(false);
+      } else requestDraw();
     },
     [requestDraw],
   );
+
+  const startCameraGesture = useCallback(() => {
+    if (cameraGestureActiveRef.current) return;
+    cameraGestureActiveRef.current = true;
+    cameraGestureBaseRef.current = { ...viewRef.current };
+    const overlay = overlaySvgRef.current;
+    if (overlay) overlay.style.transform = 'none';
+  }, []);
+
+  const finishCameraGesture = useCallback(() => {
+    if (!cameraGestureActiveRef.current) return;
+    cameraGestureActiveRef.current = false;
+    cameraGestureBaseRef.current = null;
+    if (wheelEndTimerRef.current !== null) {
+      window.clearTimeout(wheelEndTimerRef.current);
+      wheelEndTimerRef.current = null;
+    }
+    const overlay = overlaySvgRef.current;
+    if (overlay) overlay.style.transform = 'none';
+    requestDraw();
+  }, [requestDraw]);
 
   useImperativeHandle(ref, () => ({
     zoomBy: (factor: number) => {
@@ -1032,24 +1077,20 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           ? terrainRendererRef.current?.mapPointAt(x, y, viewRef.current, sizeRef.current, game.world) ??
             toMap(viewRef.current, x, y)
           : toMap(viewRef.current, x, y),
+        onCameraGestureStart: startCameraGesture,
+        onCameraGestureEnd: finishCameraGesture,
         setCursor: (point) => {
           cursorRef.current = point;
           requestDraw();
         },
       }),
-    [game, applyView, requestDraw],
+    [game, applyView, requestDraw, startCameraGesture, finishCameraGesture],
   );
 
-  // Изображение вне экрана использует тот же буфер памяти, что и пиксели отрисовщика.
+  // Векторный слой меняется только при открытой странице карты и видимом окне.
   useEffect(() => {
-    const offscreen = document.createElement('canvas');
-    offscreen.width = MAP_WIDTH;
-    offscreen.height = MAP_HEIGHT;
-    offscreenRef.current = offscreen;
-    imageRef.current = new ImageData(new Uint8ClampedArray(game.renderer.pixels.buffer), MAP_WIDTH, MAP_HEIGHT);
-    game.redrawAll();
     requestDraw();
-    const off = game.onMapChange(requestDraw);
+    const off = game.onMapChange(() => requestDraw(false));
     return () => {
       off();
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
@@ -1059,51 +1100,68 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
 
   useEffect(() => {
     const wrap = wrapRef.current;
-    const canvas = canvasRef.current;
     const terrainCanvas = terrainCanvasRef.current;
-    if (!wrap || !canvas || !terrainCanvas) return;
+    if (!wrap || !terrainCanvas) return;
     let first = true;
     const observer = new ResizeObserver(() => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const width = Math.max(1, wrap.clientWidth);
       const height = Math.max(1, wrap.clientHeight);
       sizeRef.current = { width, height, dpr };
-      canvas.width = Math.round(width * dpr);
-      canvas.height = Math.round(height * dpr);
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
       terrainCanvas.style.width = `${width}px`;
       terrainCanvas.style.height = `${height}px`;
       baseScaleRef.current = initialView(width, height).scale;
+      if (cameraGestureActiveRef.current) finishCameraGesture();
       applyView(first ? initialView(width, height) : clampView(viewRef.current, width, height));
       first = false;
     });
     observer.observe(wrap);
     return () => observer.disconnect();
-  }, [applyView]);
+  }, [applyView, finishCameraGesture]);
 
   // Масштабирование колёсиком мыши.
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const interaction = interactionRef.current;
+    if (!interaction) return;
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       onMapActivity?.();
-      const rect = canvas.getBoundingClientRect();
+      startCameraGesture();
+      const rect = interaction.getBoundingClientRect();
       const { width, height } = sizeRef.current;
       applyView(zoomAround(viewRef.current, Math.exp(-event.deltaY * 0.0015), event.clientX - rect.left, event.clientY - rect.top, width, height));
+      if (wheelEndTimerRef.current !== null) window.clearTimeout(wheelEndTimerRef.current);
+      wheelEndTimerRef.current = window.setTimeout(finishCameraGesture, 150);
     };
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', onWheel);
-  }, [applyView, onMapActivity]);
+    interaction.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      interaction.removeEventListener('wheel', onWheel);
+      if (wheelEndTimerRef.current !== null) window.clearTimeout(wheelEndTimerRef.current);
+      wheelEndTimerRef.current = null;
+    };
+  }, [applyView, finishCameraGesture, onMapActivity, startCameraGesture]);
 
-  const local = (event: React.PointerEvent<HTMLCanvasElement>) => {
+  const local = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
 
   return (
     <div ref={wrapRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden', touchAction: 'none' }}>
+      <svg
+        ref={vectorSvgRef}
+        aria-hidden
+        preserveAspectRatio="none"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'block',
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden',
+          pointerEvents: 'none',
+        }}
+      />
       <canvas
         ref={terrainCanvasRef}
         aria-hidden
@@ -1116,8 +1174,24 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           pointerEvents: 'none',
         }}
       />
-      <canvas
-        ref={canvasRef}
+      <svg
+        ref={overlaySvgRef}
+        aria-hidden
+        preserveAspectRatio="none"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'block',
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden',
+          pointerEvents: 'none',
+          transformOrigin: '0 0',
+          willChange: 'transform',
+        }}
+      />
+      <div
+        ref={interactionRef}
         data-testid="map-canvas"
         style={{
           position: 'absolute',
@@ -1125,6 +1199,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           display: 'block',
           background: 'transparent',
           touchAction: 'none',
+          transformOrigin: '0 0',
+          willChange: 'transform',
           cursor: tool === 'brush' && canPaint ? 'crosshair' : 'grab',
         }}
         onPointerEnter={onMapActivity}

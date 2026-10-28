@@ -69,6 +69,7 @@ try {
   {
     const { world, pixels } = makeFixture(61_401);
     const game = new Game(world, 'all');
+    game.setPlayScreenActive(true);
     const card = makeCard('rain', { hint: pixels[20] });
     game.startCard(card);
     game.dispatchAction({
@@ -87,21 +88,15 @@ try {
     assert.ok(game.getSnapshot().card, 'an unfinished card remains active after a short press');
     game.secondsLeft = 1;
     game.tick();
-    assert.equal(game.secondsLeft, 1, 'the timer waits for the initial map redraw');
-    assert.equal(game.getSnapshot().year, year, 'a timeout cannot advance while the map is drawing');
-    game.mapDrawn();
-    game.tick();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(game.getSnapshot().year, year + 1, 'timeout automatically completes the remaining card and advances the year');
     assert.equal(world.humidity[pixels[20]], manuallyPaintedHumidity,
       'the existing brush state is reused instead of applying the player-painted pixel twice');
     assert.equal(card.ink, 0, 'the automatic strategy spends the remaining quota on legal climate targets');
-    assert.equal(game.getSnapshot().drawing, true, 'automatic completion waits for the changed map to redraw');
+    assert.equal(game.getSnapshot().drawing, false, 'simulation completion does not wait for the map renderer');
     const nextTurnSeconds = game.secondsLeft;
     game.tick();
-    assert.equal(game.secondsLeft, nextTurnSeconds, 'the next timer stays paused until the automatic redraw completes');
-    game.mapDrawn();
-    game.tick();
-    assert.equal(game.secondsLeft, nextTurnSeconds - 1, 'the timer resumes after the redraw callback');
+    assert.equal(game.secondsLeft, nextTurnSeconds - 1, 'the timer continues independently of map redraws');
     game.discard();
   }
 
@@ -109,6 +104,7 @@ try {
   {
     const { world, country } = makeFixture(61_402);
     const game = new Game(world, 'all');
+    game.setPlayScreenActive(true);
     const card = makeCard('buildCity', { targetCountryId: country.id, ink: 0, inkTotal: 0 });
     const oldCityCount = world.cities.filter((city) => city.countryId === country.id).length;
     game.startCard(card);
@@ -128,6 +124,7 @@ try {
   {
     const { world, country } = makeFixture(61_404);
     const game = new Game(world, 'all');
+    game.setPlayScreenActive(true);
     const card = makeCard('buildCity', {
       targetCountryId: country.id,
       ink: 0,
@@ -147,6 +144,7 @@ try {
   {
     const { world } = makeFixture(61_403);
     const game = new Game(world, 'all');
+    game.setPlayScreenActive(true);
     const card = makeCard('character', {
       choices: [
         { label: 'Первый вариант', detail: 'Первый вариант.' },
@@ -164,6 +162,43 @@ try {
     await game.nextTurn(true);
     assert.equal(card.selectedChoice, 1, 'auto-turn preserves the player-selected choice');
     assert.equal(automaticChoiceChanges, 0, 'auto-turn does not replace the selected choice with a random one');
+    game.discard();
+  }
+
+  // Only an unpaused player card is suspended when its owner leaves the map.
+  {
+    const { world } = makeFixture(61_405);
+    const game = new Game(world, 'all');
+    game.setPlayScreenActive(true);
+    game.startCard(makeCard('rain'));
+    game.secondsLeft = 23;
+    game.setPlayScreenActive(false);
+    assert.equal(game.getSnapshot().paused, true, 'leaving Play pauses the active player card');
+    assert.equal(game.getSnapshot().offscreenTurnAlert, true, 'the off-screen pause is visible to the app shell');
+    game.tick();
+    assert.equal(game.secondsLeft, 23, 'the player-card timer stays paused away from Play');
+    game.setPlayScreenActive(true);
+    assert.equal(game.getSnapshot().paused, false, 'returning to Play resumes the automatic off-screen pause');
+    assert.equal(game.getSnapshot().offscreenTurnAlert, false, 'returning clears the off-screen alert');
+    game.tick();
+    assert.equal(game.secondsLeft, 22, 'the resumed player timer continues counting down');
+
+    game.togglePause();
+    game.setPlayScreenActive(false);
+    game.setPlayScreenActive(true);
+    assert.equal(game.getSnapshot().paused, true, 'leaving and returning does not undo a manual pause');
+    assert.equal(game.getSnapshot().offscreenTurnAlert, false, 'manual pause does not show an off-screen-turn alert');
+    game.discard();
+  }
+
+  {
+    const { world } = makeFixture(61_406);
+    const game = new Game(world, 'observer');
+    game.startCard(makeCard('rain'));
+    game.secondsLeft = 23;
+    game.setPlayScreenActive(false);
+    assert.equal(game.getSnapshot().paused, false, 'observer automation is not paused by leaving Play');
+    assert.equal(game.getSnapshot().offscreenTurnAlert, false, 'observer mode never shows the player-turn alert');
     game.discard();
   }
 } finally {
@@ -184,4 +219,4 @@ assert.match(screen, /if \(!snap\.card \|\| snap\.canCompleteCard\) void game\.n
 assert.match(screen, /Удерживайте 3 секунды для автохода/,
   'the active hold shows the three-second confirmation hint');
 
-console.log('Automatic turn, mandatory city, redraw-gating, and hold-confirmation checks passed.');
+console.log('Automatic turn, mandatory city, timer independence, and hold-confirmation checks passed.');

@@ -157,10 +157,11 @@ export class MapRenderer {
   private readonly nomadRaster = new Uint32Array(MAP_PIXELS);
   private readonly selectedNomadRaster = new Uint8Array(MAP_PIXELS);
   private readonly nomadDensity = new Float32Array(MAP_PIXELS);
+  private readonly nomadTouched = new Set<number>();
   private nomadRasterVersion = -1;
   private originRasterVersion = -1;
   private readonly originRaster = new Uint8Array(MAP_PIXELS);
-  private readonly originComputed = new Uint8Array(MAP_PIXELS);
+  private readonly originComputedVersion = new Uint32Array(MAP_PIXELS);
   private readonly nomadOriginScores = new Map<number, Float64Array>();
   private readonly originColors = HUMAN_ORIGINS.map((origin) => pack(hexToRgb(HUMAN_ORIGIN_COLORS[origin.id])));
   private cityColors = CITY_COLORS.map((color) => pack(hexToRgb(color)));
@@ -301,7 +302,9 @@ export class MapRenderer {
 
   /** Возвращает цвет одного неизменного интервала контуров, не обходя его точки. */
   vectorPaintAt(pixel: number): VectorPaintInfo {
-    this.syncColors();
+    this.syncEntityColors();
+    if (this.mode === 'density' || this.mode === 'origins') this.syncNomadData();
+    if (this.mode === 'origins' && this.originRasterVersion !== this.world.version) this.prepareOriginRaster();
     const w = this.world;
     const rgb = (packed: number): string => {
       const r = (packed & 255).toString(16).padStart(2, '0');
@@ -516,8 +519,14 @@ export class MapRenderer {
   }
 
   private syncColors(): void {
+    this.syncEntityColors();
+    this.syncNomadData();
+    if (this.originRasterVersion !== this.world.version) this.prepareOriginRaster();
+  }
+
+  private syncEntityColors(): void {
     const w = this.world;
-    // Entities may be discarded and recreated with new colours at the same id.
+    // Повторно созданные сущности могут получить другие цвета при прежнем идентификаторе.
     const key = `${w.countries.map((c) => c.color).join()}|${w.cultures.map((c) => c.color).join()}|${w.religions.map((c) => c.color).join()}`;
     if (key !== this.colorKey) {
       this.colorKey = key;
@@ -528,14 +537,22 @@ export class MapRenderer {
       this.compCache.religion.fill(0);
       this.nomadRasterVersion = -1;
     }
+  }
+
+  private syncNomadData(): void {
+    const w = this.world;
     if (this.nomadRasterVersion !== w.version) {
-      this.nomadRaster.fill(0);
-      this.nomadDensity.fill(0);
+      for (const pixel of this.nomadTouched) {
+        this.nomadRaster[pixel] = 0;
+        this.nomadDensity[pixel] = 0;
+      }
+      this.nomadTouched.clear();
       for (const nomad of w.countries) {
         if (nomad.type !== 'nomadic') continue;
         const color = this.countryColors[nomad.id] ?? pack(hexToRgb(nomad.color));
         for (const p of nomad.range ?? []) {
           if (p < 0 || p >= MAP_PIXELS || !w.land[p]) continue;
+          this.nomadTouched.add(p);
           const old = this.nomadRaster[p];
           this.nomadRaster[p] = old
             ? pack(mix([old & 255, (old >> 8) & 255, (old >> 16) & 255], [color & 255, (color >> 8) & 255, (color >> 16) & 255], 0.5))
@@ -543,6 +560,7 @@ export class MapRenderer {
         }
         for (const cell of nomad.cells ?? []) {
           if (cell.pixel < 0 || cell.pixel >= MAP_PIXELS || !w.land[cell.pixel]) continue;
+          this.nomadTouched.add(cell.pixel);
           this.nomadDensity[cell.pixel] += cell.population;
           const old = this.nomadRaster[cell.pixel];
           this.nomadRaster[cell.pixel] = old
@@ -552,13 +570,10 @@ export class MapRenderer {
       }
       this.nomadRasterVersion = w.version;
     }
-    if (this.originRasterVersion !== w.version) this.prepareOriginRaster();
   }
 
   private prepareOriginRaster(): void {
     const w = this.world;
-    this.originRaster.fill(0);
-    this.originComputed.fill(0);
     this.nomadOriginScores.clear();
     for (const country of w.countries) {
       if (country.type !== 'nomadic') continue;
@@ -581,8 +596,9 @@ export class MapRenderer {
   }
 
   private originAt(pixel: number): number {
-    if (this.originComputed[pixel]) return this.originRaster[pixel];
     const w = this.world;
+    const versionStamp = w.version + 1;
+    if (this.originComputedVersion[pixel] === versionStamp) return this.originRaster[pixel];
     const city = w.cityAt(pixel);
     const nomadScores = this.nomadOriginScores.get(pixel);
     let scores: Float64Array | null = null;
@@ -618,7 +634,7 @@ export class MapRenderer {
       }
       if (scores[leading] > 0) this.originRaster[pixel] = leading + 1;
     }
-    this.originComputed[pixel] = 1;
+    this.originComputedVersion[pixel] = versionStamp;
     return this.originRaster[pixel];
   }
 

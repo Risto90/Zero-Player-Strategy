@@ -164,7 +164,7 @@ export interface GameSnapshot {
   secondsLeft: number;
   paused: boolean;
   busy: boolean;
-  /** Изменения за год ещё отрисовываются; таймер ждёт завершения отрисовки. */
+  /** Флаг отрисовки не влияет на таймер и обработку ходов. */
   drawing: boolean;
   /** Ход игрока ожидает возвращения на страницу карты. */
   offscreenTurnAlert: boolean;
@@ -311,7 +311,7 @@ export class Game {
     if (!deferMapPreparation) this.redrawAll();
   }
 
-  /** Перерисовывает всю карту (например, при открытии её экрана); таймер ждёт её отображения. */
+  /** Помечает контуры карты изменёнными; отображение обновляет только видимый фрагмент активного режима. */
   redrawAll(): void {
     this.renderer.markAll();
     this.drawing = true;
@@ -459,7 +459,7 @@ export class Game {
     return () => this.listeners.delete(listener);
   };
 
-  /** Вызывается, когда пиксели карты нужно перерисовать (см. `renderer.flush()`). */
+  /** Подписка на изменения контуров, которые могут затронуть видимый фрагмент карты. */
   onMapChange(listener: () => void): () => void {
     this.mapListeners.add(listener);
     return () => this.mapListeners.delete(listener);
@@ -502,7 +502,7 @@ export class Game {
     return { scope: 'all' };
   }
 
-  /** Экран карты вызывает этот метод, когда все изменённые участки показаны. */
+  /** Экран карты завершает обновление видимого представления; игровой ход от этого не зависит. */
   mapDrawn(): void {
     if (!this.drawing) return;
     this.drawing = false;
@@ -575,10 +575,10 @@ export class Game {
   }
 
   private tick(): void {
-    if (this.paused || this.busy) return;
+    if (this.paused || (this.busy && this.secondsLeft === 0)) return;
     this.secondsLeft = Math.max(0, this.secondsLeft - 1);
-    if (this.secondsLeft <= 0) void this.nextTurn(true);
-    else this.emit();
+    if (this.secondsLeft === 0 && !this.busy) void this.nextTurn(true);
+    this.emit();
   }
 
   togglePause(): void {
@@ -2484,9 +2484,7 @@ export class Game {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      // Сначала дождаться отрисовки карты: она и сохранение используют один поток JavaScript.
-      if (this.drawing) this.scheduleSave();
-      else void this.save();
+      void this.save();
     }, 1500);
   }
 
