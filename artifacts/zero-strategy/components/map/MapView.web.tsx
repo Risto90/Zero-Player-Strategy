@@ -22,7 +22,8 @@ import {
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
 import { discoveredRiverPaths } from '@/game/geographyGeometry';
-import type { VectorPaintInfo } from '@/game/render';
+import type { ContourLayerName } from '@/game/contours';
+import type { MapMode, VectorPaintInfo } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
 import { circleHatchLines } from './cityInfluenceHatching';
@@ -348,6 +349,38 @@ type LabelScreenBounds = { left: number; top: number; right: number; bottom: num
 
 type MapLabelLayout = { occupied: LabelScreenBounds[]; svg: string };
 const mapLabelLayoutCaches = new WeakMap<object, Map<string, MapLabelLayout>>();
+
+function mapLabelSourceRevision(game: MapViewProps['game'], mode: MapMode): string {
+  const contourLayers: readonly ContourLayerName[] = mode === 'cultures'
+    ? ['owner', 'culture']
+    : mode === 'religions'
+      ? ['owner', 'religion']
+      : mode === 'origins'
+        ? ['owner', 'humanOrigins']
+        : mode === 'political' || mode === 'cities'
+          ? ['owner']
+          : [];
+  const countryMetadata = game.world.countries
+    .map((country) => `${country.id}:${country.name}:${country.type}:${country.pixels}:${country.range?.length ?? 0}`)
+    .join(',');
+  const cityMetadata = game.world.cities
+    .map((city) => `${city.id}:${city.name}:${city.pixel}:${city.rank}`)
+    .join(',');
+  const entityMetadata = (mode === 'cultures'
+    ? game.world.cultures
+    : mode === 'religions'
+      ? game.world.religions
+      : [])
+    .map((entity) => `${entity.id}:${entity.name}`)
+    .join(',');
+  return [
+    game.world.contours.revisionFor(contourLayers),
+    game.world.geographyRevision,
+    countryMetadata,
+    cityMetadata,
+    entityMetadata,
+  ].join('|');
+}
 type MapPerformanceTiming = {
   stage: string;
   mode: string;
@@ -838,7 +871,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const vectorCoverageRef = useRef<{ sceneKey: string; bounds: VectorMapViewport } | null>(null);
   const mapLabelDataRef = useRef<{
     scope: string;
-    worldVersion: number;
+    sourceRevision: string;
     visibleBoundsKey: string;
     revision: number;
     labels: CountryMapLabel[];
@@ -1009,10 +1042,13 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         const scope = `${mapMode}:${snapshot.layer?.kind ?? ''}:${snapshot.layer?.id ?? ''}:${snapshot.selectedCountryId ?? ''}`;
         const cachedLabels = mapLabelDataRef.current;
         const labelsMayBeStale = snapshot.busy || snapshot.drawing;
+        const sourceRevision = labelsMayBeStale && cachedLabels
+          ? cachedLabels.sourceRevision
+          : mapLabelSourceRevision(game, mapMode);
         const refreshLabels = !cachedLabels ||
           cachedLabels.scope !== scope ||
           (!labelsMayBeStale && (
-            cachedLabels.worldVersion !== game.world.version ||
+            cachedLabels.sourceRevision !== sourceRevision ||
             cachedLabels.visibleBoundsKey !== visibleBoundsKey
           ));
         if (refreshLabels) {
@@ -1035,7 +1071,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           );
           mapLabelDataRef.current = {
             scope,
-            worldVersion: game.world.version,
+            sourceRevision,
             visibleBoundsKey,
             revision: (cachedLabels?.revision ?? 0) + 1,
             labels: [...countryLabels, ...entityLabels],
