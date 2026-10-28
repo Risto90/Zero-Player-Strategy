@@ -23,7 +23,6 @@ export interface CountryMapLabel {
   bounds: [number, number, number, number];
   countryBounds: ContourBounds;
   rings: readonly Int32Array[];
-  area: ContourArea;
   allowBridge: boolean;
 }
 
@@ -213,7 +212,6 @@ function makeLabel(
     ],
     countryBounds,
     rings: area.rings(),
-    area,
     allowBridge: requiredAreas.length > 1,
   };
 }
@@ -619,28 +617,8 @@ export function countryLabelViewportLayout(
   visibilityThreshold = 11,
   measureLineWidthFactor?: (text: string) => number,
   obstacles: readonly LabelAvoidanceRect[] = [],
-  visibleContour?: ContourArea,
 ): CountryLabelViewportLayout {
-  // Сначала обрезаем векторную область страной видимой карты и только затем
-  // строим кольца для размещения текста — невидимая геометрия не участвует в кадре.
-  const visibleArea = visibleContour ? label.area.intersect(visibleContour) : label.area;
-  if (!visibleArea.size) {
-    return {
-      x: 0,
-      y: 0,
-      worldX: 0,
-      worldY: 0,
-      lines: [],
-      fontSize: 0,
-      letterSpacing: 0,
-      angle: 0,
-      path: null,
-      territoryVisible: false,
-      visible: false,
-    };
-  }
-  const worldBounds = visibleArea.bounds;
-  const visibleRings = visibleContour ? visibleArea.rings() : label.rings;
+  const worldBounds = label.countryBounds;
   const screenLeft = ox + worldBounds.x0 * scale;
   const screenRight = ox + (worldBounds.x1 + 1) * scale;
   const screenTop = oy + worldBounds.y0 * scale;
@@ -664,7 +642,7 @@ export function countryLabelViewportLayout(
   const factor = measuredTextWidthFactor && Number.isFinite(measuredTextWidthFactor) && measuredTextWidthFactor > 0
     ? measuredTextWidthFactor
     : textWidthFactor(label.text);
-  const visibleCore = visibleRings.some((ring) => ring.length >= 6);
+  const visibleCore = label.rings.some((ring) => ring.length >= 6);
   const viewportCap = Math.max(visibilityThreshold, Math.min(48, Math.min(viewportWidth, viewportHeight) * 0.045));
   const maxFont = Math.min(viewportCap, Math.max(visibilityThreshold, label.fontSize * scale * 1.5));
   let fitted: ReturnType<typeof fitLabelToVisibleContour> = null;
@@ -677,7 +655,7 @@ export function countryLabelViewportLayout(
         return width > longestWidth ? line : longest;
       });
       const candidate = fitLabelToVisibleContour({
-      rings: visibleRings,
+      rings: label.rings,
       scale,
       ox,
       oy,

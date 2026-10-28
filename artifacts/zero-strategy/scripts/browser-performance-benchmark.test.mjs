@@ -67,7 +67,6 @@ class ObserverPerformanceBenchmark {
     this.browser = null;
     this.context = null;
     this.page = null;
-    this.mapDrag = null;
   }
 
   async open() {
@@ -95,21 +94,8 @@ class ObserverPerformanceBenchmark {
       };
 
       window.__performanceFrameGaps = [];
-      window.__performanceFrameTimes = [];
-      window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__ = [];
-      window.__mapRasterWrites = 0;
-      const putImageData = CanvasRenderingContext2D.prototype.putImageData;
-      CanvasRenderingContext2D.prototype.putImageData = function(image, ...args) {
-        if (this.canvas?.dataset?.testid === 'map-raster-canvas') {
-          window.__mapRasterWrites += args.length >= 6
-            ? args[4] * args[5]
-            : image.width * image.height;
-        }
-        return putImageData.call(this, image, ...args);
-      };
       let previousFrame = 0;
       const recordFrame = (time) => {
-        window.__performanceFrameTimes.push(time);
         if (previousFrame) window.__performanceFrameGaps.push(time - previousFrame);
         previousFrame = time;
         requestAnimationFrame(recordFrame);
@@ -137,91 +123,6 @@ class ObserverPerformanceBenchmark {
     }, null, { timeout: timeoutMs, polling: 50 });
   }
 
-  async measureMapDrag() {
-    const canvas = this.page.locator('[data-testid="map-canvas"]');
-    const bounds = await canvas.boundingBox();
-    assert.ok(bounds && bounds.width > 0 && bounds.height > 0, 'Холст карты должен быть виден для проверки перетаскивания.');
-
-    const start = {
-      x: bounds.x + bounds.width * 0.4,
-      y: bounds.y + bounds.height * 0.5,
-    };
-    const end = {
-      x: Math.min(bounds.x + bounds.width - 24, start.x + Math.min(260, bounds.width * 0.24)),
-      y: Math.min(bounds.y + bounds.height - 24, start.y + Math.min(150, bounds.height * 0.2)),
-    };
-    await this.page.evaluate(() => {
-      window.__mapDragLatencies = [];
-      window.__mapDrawStart = window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__.length;
-      window.__mapRasterWritesAtStart = window.__mapRasterWrites;
-      window.__mapRasterTransformAtStart =
-        document.querySelector('[data-testid="map-raster-canvas"]')?.style.transform;
-      window.__riverRenderKeyAtStart =
-        document.querySelector('[data-testid="river-raster-canvas"]')?.dataset.renderKey;
-      window.__mapDragActive = true;
-      window.__mapDragStartedAt = performance.now();
-      const canvas = document.querySelector('[data-testid="map-canvas"]');
-      window.__mapDragListener = (event) => {
-        if (window.__mapDragActive) {
-          window.__mapDragLatencies.push(Math.max(0, performance.now() - event.timeStamp));
-        }
-      };
-      canvas.addEventListener('pointermove', window.__mapDragListener, true);
-    });
-    await this.page.mouse.move(start.x, start.y);
-    await this.page.mouse.down();
-    await this.page.mouse.move(end.x, end.y, { steps: 45 });
-    await this.page.mouse.up();
-    await this.page.evaluate(() => {
-      window.__mapDragEndedAt = performance.now();
-      window.__mapDragActive = false;
-    });
-    await this.page.waitForTimeout(120);
-
-    this.mapDrag = await this.page.evaluate(() => {
-      const startAt = window.__mapDragStartedAt;
-      const endAt = window.__mapDragEndedAt;
-      const frames = window.__performanceFrameTimes;
-      const duringDrag = frames.filter((time) => time >= startAt && time <= endAt);
-      const frameGaps = duringDrag.slice(1).map((time, index) => time - duringDrag[index]);
-      const latencies = window.__mapDragLatencies;
-      const drawSamples = window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__.slice(window.__mapDrawStart);
-      const median = (values) => {
-        if (!values.length) return 0;
-        const sorted = [...values].sort((a, b) => a - b);
-        const middle = Math.floor(sorted.length / 2);
-        return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-      };
-      document.querySelector('[data-testid="map-canvas"]')
-        ?.removeEventListener('pointermove', window.__mapDragListener, true);
-      return {
-        durationMs: endAt - startAt,
-        pointerMoves: latencies.length,
-        medianInputDelayMs: median(latencies),
-        maximumInputDelayMs: Math.max(0, ...latencies),
-        animationFrames: duringDrag.length,
-        medianFrameGapMs: median(frameGaps),
-        maximumFrameGapMs: Math.max(0, ...frameGaps),
-        framesOver50Ms: frameGaps.filter((gap) => gap > 50).length,
-        overlayDraws: drawSamples.length,
-        medianOverlayDrawMs: median(drawSamples.map(({ totalMs }) => totalMs)),
-        maximumOverlayDrawMs: Math.max(0, ...drawSamples.map(({ totalMs }) => totalMs)),
-        maximumLabelLayoutMs: Math.max(0, ...drawSamples.map(({ labels = 0 }) => labels)),
-        rasterPixelsWritten: window.__mapRasterWrites - window.__mapRasterWritesAtStart,
-        rasterTransformChanged: document.querySelector('[data-testid="map-raster-canvas"]')?.style.transform !==
-          window.__mapRasterTransformAtStart,
-        riverLayerUnchanged: document.querySelector('[data-testid="river-raster-canvas"]')?.dataset.renderKey ===
-          window.__riverRenderKeyAtStart,
-      };
-    });
-    assert.ok(this.mapDrag.pointerMoves > 0, 'Перетаскивание должно доходить до обработчика карты.');
-    assert.ok(this.mapDrag.animationFrames > 0, 'Во время перетаскивания должны отрисовываться кадры.');
-    assert.equal(this.mapDrag.rasterPixelsWritten, 0, 'Панорамирование не должно заново записывать игровой растр.');
-    assert.ok(this.mapDrag.rasterTransformChanged, 'Перетаскивание должно менять преобразование полного холста карты.');
-    assert.ok(this.mapDrag.riverLayerUnchanged, 'Панорамирование не должно повторно строить контурный слой рек.');
-    console.log(`Отзывчивость карты при перетаскивании: ${JSON.stringify(this.mapDrag)}.`);
-  }
-
   async measureTurn(index) {
     const before = await this.page.evaluate(() => {
       const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
@@ -229,7 +130,6 @@ class ObserverPerformanceBenchmark {
         year: bridge.getSnapshot().year,
         startedAt: performance.now(),
         firstFrameGap: window.__performanceFrameGaps.length,
-        firstMapDraw: window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__.length,
       };
     });
 
@@ -250,7 +150,6 @@ class ObserverPerformanceBenchmark {
         events: bridge.takeSamples(),
         stages: bridge.takeStages(),
         frameGaps,
-        mapDraws: window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__.slice(before.firstMapDraw),
       };
     }, { index, before });
 
@@ -267,7 +166,6 @@ class ObserverPerformanceBenchmark {
     const events = this.turns.flatMap(({ events: samples }) => samples.filter((sample) => sample.cardType !== null));
     const stages = this.turns.flatMap(({ stages: samples }) => samples);
     const allFrameGaps = this.turns.flatMap(({ frameGaps }) => frameGaps);
-    const mapDraws = this.turns.flatMap(({ mapDraws: samples }) => samples);
     const median = (values) => {
       if (!values.length) return 0;
       const ordered = [...values].sort((a, b) => a - b);
@@ -300,15 +198,6 @@ class ObserverPerformanceBenchmark {
       eventsExecutionOverOneSecond: events.filter(({ resolutionDurationMs }) => resolutionDurationMs > 1000).length,
       maximumFrameGapMs: Math.max(0, ...allFrameGaps),
       framesOver50Ms: allFrameGaps.filter((gap) => gap > 50).length,
-      mapDrag: this.mapDrag,
-      mapDrawSummary: {
-        count: mapDraws.length,
-        medianMs: median(mapDraws.map(({ totalMs }) => totalMs)),
-        maximumMs: Math.max(0, ...mapDraws.map(({ totalMs }) => totalMs)),
-        maximumMapLayerMs: Math.max(0, ...mapDraws.map(({ mapLayer = 0 }) => mapLayer)),
-        maximumLabelLayoutMs: Math.max(0, ...mapDraws.map(({ labels = 0 }) => labels)),
-        maximumCityMarksMs: Math.max(0, ...mapDraws.map(({ cityMarks = 0 }) => cityMarks)),
-      },
       slowEvents,
     };
     console.log(`Итог браузерного замера: ${JSON.stringify(summary, null, 2)}`);
@@ -327,7 +216,6 @@ class ObserverPerformanceBenchmark {
   async run() {
     try {
       await this.open();
-      await this.measureMapDrag();
       const profiler = process.env.PERF_CPU_PROFILE === '1'
         ? await this.context.newCDPSession(this.page) : null;
       if (profiler) {

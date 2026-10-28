@@ -32,7 +32,7 @@ import {
   type GameNotification,
 } from '@/game/notifications';
 import { openProfile } from '@/game/profileNavigation';
-import { continueSavedGame, currentGame } from '@/game/session';
+import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
 import type { MapMode } from '@/game/render';
 import { isActiveCountry } from '@/game/world';
@@ -101,13 +101,7 @@ export default function PlayScreen() {
     };
   }, [game]);
 
-  useEffect(() => {
-    if (!game) return;
-    game.start();
-    return () => {
-      void game.saveNow();
-    };
-  }, [game]);
+  useEffect(() => () => void leaveGame(), []);
 
   useEffect(() => {
     if (!game) return;

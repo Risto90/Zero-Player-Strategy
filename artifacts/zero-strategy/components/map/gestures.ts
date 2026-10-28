@@ -15,8 +15,6 @@ export interface GestureHost {
   tool(): MapTool;
   canPaint(): boolean;
   onInspect(info: PixelInfo | null): void;
-  onPanStart?(): void;
-  onPanEnd?(): void;
   /** Точка на рельефе для 3D-режима; остальные слои используют плоское преобразование. */
   mapPointAt?(x: number, y: number): Point;
   /** Курсор кисти в экранных координатах; null скрывает его. */
@@ -79,7 +77,6 @@ export class MapGestures {
     if (this.points.size > 2) return;
     const paint = host.tool() === 'brush' && host.canPaint() && !host.game.getSnapshot().busy;
     this.kind = paint ? 'paint' : 'pan';
-    if (!paint) host.onPanStart?.();
     this.start = { x, y };
     this.moved = false;
     if (paint) {
@@ -129,10 +126,7 @@ export class MapGestures {
       if (host.tool() === 'city') host.game.selectCityAt(m.x, m.y);
       else if (host.tool() === 'hand') host.onInspect(host.game.inspect(m.x, m.y));
     }
-    if (this.points.size === 0) {
-      if (this.kind === 'pan' || this.kind === 'pinch') host.onPanEnd?.();
-      this.kind = 'none';
-    }
+    if (this.points.size === 0) this.kind = 'none';
     else if (this.kind === 'pinch') {
       // После жеста масштабирования оставшийся палец только перемещает карту.
       this.kind = 'pan';

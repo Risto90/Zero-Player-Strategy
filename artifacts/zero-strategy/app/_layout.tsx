@@ -32,7 +32,7 @@ export default function RootLayout() {
       <ErrorBoundary>
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.light.background } }}>
           <Stack.Screen name="index" />
-          <Stack.Screen name="play" options={{ gestureEnabled: false, freezeOnBlur: false }} />
+          <Stack.Screen name="play" options={{ gestureEnabled: false }} />
           <Stack.Screen name="country/[id]" />
           <Stack.Screen name="country/[id]/candidates" />
           <Stack.Screen name="country/[id]/rulers" />
