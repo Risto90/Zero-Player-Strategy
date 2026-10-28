@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { Game } from '../game/game.ts';
 import { normalizePolitics } from '../game/characters.ts';
 import { createFamilyId, createPerson, personDeathStatus } from '../game/government.ts';
-import { leadershipOptions, successionOrder } from '../game/succession.ts';
+import { countryCandidates, leadershipOptions, successionOrder } from '../game/succession.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
 import { chronicleReference, isChronicleImportant } from '../game/chronicle.ts';
@@ -43,6 +43,22 @@ function addChild(world, country, parent, year = 1000) {
   child.countryId = country.id;
   world.people.push(child);
   if (!country.dynastyClaims.includes(child.familyId)) country.dynastyClaims.push(child.familyId);
+  return child;
+}
+
+function addChildFromOtherDynasty(world, country, parent, {
+  countryId = country.id,
+  age = 25,
+  cultureId = country.cultureId,
+  religionId = country.religionId,
+} = {}) {
+  const otherParent = createPerson(1000, 30, createFamilyId(), [], country.cultureId, country.religionId);
+  otherParent.countryId = country.id;
+  world.people.push(otherParent);
+  const child = createPerson(1000, age, otherParent.familyId, [parent.id, otherParent.id],
+    cultureId, religionId);
+  child.countryId = countryId;
+  world.people.push(child);
   return child;
 }
 
@@ -119,6 +135,74 @@ try {
       assert.equal(new Set(options.map((candidate) => candidate.id)).size, 2,
         'existing demographic matches replace generated candidates without duplicating an option');
     }
+  }
+
+  // Племенной пул определяется прямым родством с нынешними и прежними правителями,
+  // а не совпадением династии; обычные ограничения возраста, пола и проживания сохраняются.
+  {
+    const fixture = makeFixture();
+    const { world, country } = fixture;
+    country.government = 'tribal';
+    country.modifiers = ['ethnic', 'theocracy', 'matriarchal'];
+
+    const differentCulture = world.newCulture(null, 1000);
+    const currentRulerChild = addChildFromOtherDynasty(world, country, country.ruler, {
+      cultureId: differentCulture.id,
+    });
+    currentRulerChild.gender = 'female';
+    assert.notEqual(currentRulerChild.familyId, country.ruler.familyId,
+      'ребёнок наследует династию другого родителя');
+    assert.ok(!country.dynastyClaims.includes(currentRulerChild.familyId),
+      'династия ребёнка не заявлена страной');
+
+    const formerRuler = createPerson(1000, 40, createFamilyId(), [], country.cultureId, country.religionId);
+    formerRuler.countryId = country.id;
+    formerRuler.formerRulerOf.push(country.id);
+    world.people.push(formerRuler);
+    const formerRulerChild = addChildFromOtherDynasty(world, country, formerRuler);
+    country.previousRulerIds = [];
+
+    const claimedDynastyStranger = createPerson(1000, 25, country.ruler.familyId, [],
+      country.cultureId, country.religionId);
+    claimedDynastyStranger.countryId = country.id;
+    world.people.push(claimedDynastyStranger);
+
+    const underageChild = addChildFromOtherDynasty(world, country, country.ruler, { age: 11 });
+    const wrongGenderChild = addChildFromOtherDynasty(world, country, country.ruler);
+    wrongGenderChild.gender = 'male';
+    const outOfCountryChild = addChildFromOtherDynasty(world, country, country.ruler, { countryId: country.id + 1 });
+
+    const candidates = countryCandidates(world, country);
+    const candidateIds = candidates.map(({ person: candidate }) => candidate.id);
+    assert.ok(candidateIds.includes(currentRulerChild.id),
+      'ребёнок действующего правителя с династией другого родителя учитывается при культурных и религиозных модификаторах');
+    assert.ok(candidateIds.includes(formerRulerChild.id),
+      'ребёнок прежнего правителя найден по истории правителей');
+    assert.ok(!candidateIds.includes(claimedDynastyStranger.id),
+      'одно совпадение с династией не делает чужого персонажа племенным кандидатом');
+    assert.ok(!candidateIds.includes(underageChild.id), 'минимальный возраст племенного кандидата сохраняется');
+    assert.ok(!candidateIds.includes(wrongGenderChild.id), 'ограничение по полу сохраняется');
+    assert.ok(!candidateIds.includes(outOfCountryChild.id), 'действующее ограничение по проживанию сохраняется');
+    assert.equal(new Set(candidateIds).size, candidateIds.length, 'в списке кандидатов нет повторов');
+    assert.ok(successionOrder(world, country).some(({ id }) => id === currentRulerChild.id),
+      'прямой ребёнок включён в список преемства');
+    const tribalChildIds = new Set([currentRulerChild.id, formerRulerChild.id]);
+    assert.ok(leadershipOptions(world, country, 1000).some(({ id }) => tribalChildIds.has(id)),
+      'ребёнок с династией другого родителя может быть предложен для передачи власти');
+  }
+
+  // Совпадение династии не отменяет наследственные правила родословной.
+  {
+    const fixture = makeFixture();
+    const { world, country } = fixture;
+    country.government = 'hereditary';
+    country.modifiers = ['primogeniture'];
+    const unrelatedClaimant = createPerson(1000, 25, country.ruler.familyId, [],
+      country.cultureId, country.religionId);
+    unrelatedClaimant.countryId = country.id;
+    world.people.push(unrelatedClaimant);
+    assert.ok(!successionOrder(world, country).some(({ id }) => id === unrelatedClaimant.id),
+      'чужой персонаж с заявленной династией не включается в наследственное преемство');
   }
 
   // После смерти правителя должность переходит подходящему потомку, а запись о смерти сохраняется.

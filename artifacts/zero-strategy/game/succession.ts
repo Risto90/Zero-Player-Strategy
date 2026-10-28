@@ -273,6 +273,18 @@ function isChildOfFormerRuler(
   });
 }
 
+function tribalRulerIds(world: World, c: Country, old: Person): Set<number> {
+  return new Set([
+    old.id,
+    ...c.previousRulerIds,
+    ...world.people.filter((p) => p.formerRulerOf.includes(c.id)).map((p) => p.id),
+  ]);
+}
+
+function isChildOfTribalRuler(p: Person, rulerIds: ReadonlySet<number>): boolean {
+  return p.parents.some((id) => rulerIds.has(id));
+}
+
 interface ConsulateSuccessionOptions {
   priority: Person[];
   siblingIds: Set<number>;
@@ -456,13 +468,12 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
   if (c.government === 'republic') return [];
   const peopleById = new Map(world.people.map((p) => [p.id, p]));
   const eligibility = candidateEligibilityContext(world, c, old);
-  const former = new Set([...c.previousRulerIds, old.id]);
+  const former = c.government === 'tribal' ? tribalRulerIds(world, c, old) : new Set<number>();
   const rulingLineage = rulingLineageIds(world, old);
   let family = c.government === 'tribal'
-    ? world.people.filter((p) => p.id !== old.id && p.parents.some((id) => former.has(id)))
+    ? world.people.filter((p) => p.id !== old.id && isChildOfTribalRuler(p, former))
     : world.people.filter((p) => p.id !== old.id && c.dynastyClaims.includes(p.familyId) &&
       rulingLineage.has(p.id));
-  if (c.government === 'tribal') family = family.filter((p) => p.parents.some((id) => former.has(id)));
   const children = world.people.filter((p) => p.parents.includes(old.id));
   let pool = family;
   const youngest = c.modifiers.includes('minority');
