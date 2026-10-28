@@ -156,6 +156,8 @@ class ObserverPerformanceBenchmark {
       window.__mapRasterWritesAtStart = window.__mapRasterWrites;
       window.__mapRasterTransformAtStart =
         document.querySelector('[data-testid="map-raster-canvas"]')?.style.transform;
+      window.__riverRenderKeyAtStart =
+        document.querySelector('[data-testid="river-raster-canvas"]')?.dataset.renderKey;
       window.__mapDragActive = true;
       window.__mapDragStartedAt = performance.now();
       const canvas = document.querySelector('[data-testid="map-canvas"]');
@@ -208,12 +210,15 @@ class ObserverPerformanceBenchmark {
         rasterPixelsWritten: window.__mapRasterWrites - window.__mapRasterWritesAtStart,
         rasterTransformChanged: document.querySelector('[data-testid="map-raster-canvas"]')?.style.transform !==
           window.__mapRasterTransformAtStart,
+        riverLayerUnchanged: document.querySelector('[data-testid="river-raster-canvas"]')?.dataset.renderKey ===
+          window.__riverRenderKeyAtStart,
       };
     });
     assert.ok(this.mapDrag.pointerMoves > 0, 'Перетаскивание должно доходить до обработчика карты.');
     assert.ok(this.mapDrag.animationFrames > 0, 'Во время перетаскивания должны отрисовываться кадры.');
     assert.equal(this.mapDrag.rasterPixelsWritten, 0, 'Панорамирование не должно заново записывать игровой растр.');
     assert.ok(this.mapDrag.rasterTransformChanged, 'Перетаскивание должно менять преобразование полного холста карты.');
+    assert.ok(this.mapDrag.riverLayerUnchanged, 'Панорамирование не должно повторно строить контурный слой рек.');
     console.log(`Отзывчивость карты при перетаскивании: ${JSON.stringify(this.mapDrag)}.`);
   }
 

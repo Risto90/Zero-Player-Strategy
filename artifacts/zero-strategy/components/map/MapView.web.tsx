@@ -138,46 +138,46 @@ const RIVER_COLORS: Record<number, string> = {
 };
 
 const riverCanvasPathCache = new WeakMap<MapViewProps['game']['world'], {
-  version: number;
-  territoryVersion: number;
+  geographyKey: string;
   paths: { segment: ReturnType<typeof discoveredRiverPaths>[number]; path: Path2D }[];
 }>();
 
-function drawRivers(
-  ctx: CanvasRenderingContext2D,
+// Русла один раз заливаются контурами на полноразмерном холсте и перемещаются вместе с картой.
+function renderRiverLayer(
+  canvas: HTMLCanvasElement,
   game: MapViewProps['game'],
-  view: ViewTransform,
+  scale: number,
   baseScale: number,
-) {
-  const paths = discoveredRiverPaths(game.world);
-  if (paths.length === 0 || view.scale < baseScale) return;
-  let cached = riverCanvasPathCache.get(game.world);
-  if (!cached || cached.version !== game.world.version ||
-      cached.territoryVersion !== game.world.territoryVersion) {
+): void {
+  const world = game.world;
+  const discoveryKey = world.riverFeatures.map((river) => river.discoveredBy.length).join(',');
+  const geographyKey = `${world.territoryVersion}:${discoveryKey}`;
+  let cached = riverCanvasPathCache.get(world);
+  if (!cached || cached.geographyKey !== geographyKey) {
     cached = {
-      version: game.world.version,
-      territoryVersion: game.world.territoryVersion,
-      paths: paths.map((segment) => ({ segment, path: new Path2D(segment.contourPath) })),
+      geographyKey,
+      paths: discoveredRiverPaths(world)
+        .map((segment) => ({ segment, path: new Path2D(segment.contourPath) })),
     };
-    riverCanvasPathCache.set(game.world, cached);
+    riverCanvasPathCache.set(world, cached);
   }
-  const left = -view.ox / view.scale;
-  const top = -view.oy / view.scale;
-  const right = (ctx.canvas.clientWidth - view.ox) / view.scale;
-  const bottom = (ctx.canvas.clientHeight - view.oy) / view.scale;
-  ctx.save();
-  ctx.translate(view.ox, view.oy);
-  ctx.scale(view.scale, view.scale);
-  for (const { segment, path } of cached.paths) {
-    if (view.scale < riverVisibilityScale(baseScale, segment.strength)) continue;
-    const [minX, minY, maxX, maxY] = segment.bounds;
-    if (maxX < left || maxY < top || minX > right || minY > bottom) continue;
-    ctx.strokeStyle = RIVER_COLORS[segment.strength];
+  const visiblePaths = cached.paths.filter(({ segment }) =>
+    scale >= riverVisibilityScale(baseScale, segment.strength));
+  const renderKey = `${geographyKey}:${visiblePaths.map(({ segment }) =>
+    `${segment.riverId}-${segment.strength}`).join(',')}`;
+  if (canvas.width !== MAP_WIDTH) canvas.width = MAP_WIDTH;
+  if (canvas.height !== MAP_HEIGHT) canvas.height = MAP_HEIGHT;
+  if (canvas.dataset.renderKey === renderKey) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.clearRect(0, 0, MAP_WIDTH, MAP_HEIGHT);
+  for (const { segment, path } of visiblePaths) {
     ctx.globalAlpha = segment.strength === 1 ? 0.82 : 0.94;
     ctx.fillStyle = RIVER_COLORS[segment.strength];
     ctx.fill(path);
   }
-  ctx.restore();
+  ctx.globalAlpha = 1;
+  canvas.dataset.renderKey = renderKey;
 }
 
 function pointAlongPath(points: readonly { x: number; y: number }[], distance: number) {
@@ -920,6 +920,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
+  const riverCanvasRef = useRef<HTMLCanvasElement>(null);
   const terrainRendererRef = useRef<Terrain3DRenderer | null>(null);
   const terrainErrorRef = useRef<string | null>(null);
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
@@ -958,6 +959,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     };
     const canvas = canvasRef.current;
     const terrainCanvas = terrainCanvasRef.current;
+    const riverCanvas = riverCanvasRef.current;
     const offscreen = offscreenRef.current;
     const image = imageRef.current;
     if (!canvas || !offscreen || !image) return;
@@ -982,6 +984,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       y1: Math.ceil((height - view.oy) / view.scale),
     });
     offscreen.style.display = isElevation ? 'none' : 'block';
+    if (riverCanvas) riverCanvas.style.display = isElevation ? 'none' : 'block';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (isElevation) {
       ctx.clearRect(0, 0, width, height);
@@ -1009,7 +1012,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     } else {
       if (terrainCanvas) terrainCanvas.style.display = 'none';
       ctx.clearRect(0, 0, width, height);
-      drawRivers(ctx, game, view, baseScaleRef.current);
+      if (riverCanvas) renderRiverLayer(riverCanvas, game, view.scale, baseScaleRef.current);
     }
     finishStage('mapLayer');
     drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
@@ -1162,10 +1165,11 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   }, []);
 
   const applyWorldCanvasView = useCallback((view: ViewTransform) => {
-    const canvas = offscreenRef.current;
-    if (!canvas) return;
-    canvas.style.transform = `translate3d(${view.ox}px, ${view.oy}px, 0) scale(${view.scale})`;
-    canvas.style.imageRendering = view.scale < 1 ? 'auto' : 'pixelated';
+    for (const canvas of [offscreenRef.current, riverCanvasRef.current]) {
+      if (!canvas) continue;
+      canvas.style.transform = `translate3d(${view.ox}px, ${view.oy}px, 0) scale(${view.scale})`;
+      canvas.style.imageRendering = view.scale < 1 ? 'auto' : 'pixelated';
+    }
   }, []);
   const beginPan = useCallback(() => {
     panActiveRef.current = true;
@@ -1300,6 +1304,24 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           left: 0,
           top: 0,
           display: 'block',
+          width: `${MAP_WIDTH}px`,
+          height: `${MAP_HEIGHT}px`,
+          transformOrigin: '0 0',
+          willChange: 'transform',
+          pointerEvents: 'none',
+        }}
+      />
+      <canvas
+        ref={riverCanvasRef}
+        aria-hidden
+        data-testid="river-raster-canvas"
+        width={MAP_WIDTH}
+        height={MAP_HEIGHT}
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          display: 'none',
           width: `${MAP_WIDTH}px`,
           height: `${MAP_HEIGHT}px`,
           transformOrigin: '0 0',
