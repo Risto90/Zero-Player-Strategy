@@ -163,6 +163,7 @@ export class MapRenderer {
   layer: EntityLayer | null = null;
   private selectedCountryId: number | null = null;
   private readonly dirtyTiles = new Uint8Array(TILES);
+  private readonly tileRevisions = new Uint32Array(TILES);
   private dirtyCount = 0;
   private readonly overlayDirtyTiles = new Set<number>();
   private readonly terrainDirtyTiles = new Set<number>();
@@ -293,6 +294,7 @@ export class MapRenderer {
   markAll(): void {
     this.revision += 1;
     this.dirtyTiles.fill(1);
+    this.tileRevisions.fill(this.revision);
     this.dirtyCount = TILES;
   }
 
@@ -472,6 +474,7 @@ export class MapRenderer {
     if (tiles.size === 0) return;
     this.revision += 1;
     for (const tile of tiles) {
+      this.tileRevisions[tile] = this.revision;
       if (this.dirtyTiles[tile]) continue;
       this.dirtyTiles[tile] = 1;
       this.dirtyCount += 1;
@@ -616,6 +619,40 @@ export class MapRenderer {
       }
     }
     return false;
+  }
+
+  /** Возвращает версии векторных плиток, пересекающих область SVG; x1 не включается. */
+  vectorTilesIn(bounds: Rect): Array<{
+    id: number;
+    bounds: Rect;
+    revision: number;
+  }> {
+    const x0 = Math.max(0, Math.floor(bounds.x0));
+    const y0 = Math.max(0, Math.floor(bounds.y0));
+    const x1 = Math.min(MAP_WIDTH, Math.ceil(bounds.x1));
+    const y1 = Math.min(MAP_HEIGHT - 1, Math.floor(bounds.y1));
+    if (x1 <= x0 || y1 < y0) return [];
+    const c0 = Math.min(TILE_COLS - 1, Math.floor(x0 / TILE_W));
+    const c1 = Math.min(TILE_COLS - 1, Math.floor((x1 - 1) / TILE_W));
+    const r0 = Math.min(STRIPS - 1, Math.floor(y0 / STRIP_H));
+    const r1 = Math.min(STRIPS - 1, Math.floor(y1 / STRIP_H));
+    const result: Array<{ id: number; bounds: Rect; revision: number }> = [];
+    for (let row = r0; row <= r1; row += 1) {
+      for (let col = c0; col <= c1; col += 1) {
+        const id = row * TILE_COLS + col;
+        result.push({
+          id,
+          bounds: {
+            x0: col * TILE_W,
+            y0: row * STRIP_H,
+            x1: Math.min(MAP_WIDTH, (col + 1) * TILE_W),
+            y1: Math.min(MAP_HEIGHT - 1, (row + 1) * STRIP_H - 1),
+          },
+          revision: this.tileRevisions[id],
+        });
+      }
+    }
+    return result;
   }
 
   /** Снимает метки изменений, уже переданных в векторный слой видимого окна. */

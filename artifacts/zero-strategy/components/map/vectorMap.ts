@@ -23,6 +23,7 @@ interface CachedContourMarkup {
 export interface VectorMapSvgPart {
   key: string;
   markup: string;
+  order: number;
 }
 
 const colorCaches = new Map<string, CachedVectorColor>();
@@ -329,7 +330,7 @@ function fillPaths(
     const cacheKey = `fill:${game.getSnapshot().mapMode}:${bounds.x0}:${bounds.y0}:${bounds.x1}:${bounds.y1}:${key}:${area.color}`;
     const markup = cachedContourMarkup(game, cacheKey, area.spans, (path) =>
       `<path data-contour="${key}" d="${path}" fill="${area.color}" fill-rule="evenodd"/>`);
-    if (markup) paths.push({ key: `fill:${key}`, markup });
+    if (markup) paths.push({ key: `fill:${key}`, markup, order: 1 });
   }
   return paths;
 }
@@ -408,8 +409,12 @@ function staticSeaDepthMarkup(game: Game, bounds: VectorMapViewport): string {
   return markup;
 }
 
-/** Создаёт отдельные SVG-слои, чтобы менять только изменившиеся контуры. */
-export function buildVectorMapSvgParts(game: Game, bounds: VectorMapViewport): VectorMapSvgPart[] {
+function buildVectorMapSvgPartsInternal(
+  game: Game,
+  bounds: VectorMapViewport,
+  includeNomads: boolean,
+  keyPrefix: string,
+): VectorMapSvgPart[] {
   const snapshot = game.getSnapshot();
   const mode = snapshot.mapMode;
   const x0 = Math.max(0, Math.min(MAP_WIDTH, Math.floor(bounds.x0)));
@@ -420,6 +425,7 @@ export function buildVectorMapSvgParts(game: Game, bounds: VectorMapViewport): V
   const paths: VectorMapSvgPart[] = [{
     key: 'sea-depth',
     markup: staticSeaDepthMarkup(game, visibleBounds),
+    order: 0,
   }];
   if (mode !== 'elevation') {
     paths.push(...fillPaths(game, contourLayersForMode(mode), visibleBounds, (pixel) => !!game.world.land[pixel]));
@@ -449,35 +455,59 @@ export function buildVectorMapSvgParts(game: Game, bounds: VectorMapViewport): V
       const key = `owner-boundary:${ownerValue}:${selected ? 'selected' : 'normal'}:${x0}:${y0}:${x1}:${y1}`;
       const markup = cachedContourMarkup(game, key, spans, (path) =>
         `<path d="${path}" fill="none" stroke="${stroke}" stroke-opacity="${selected ? 1 : 0.7}" stroke-width="${width}"/>`);
-      if (markup) paths.push({ key: `owner-boundary:${ownerValue - 1}`, markup });
+      if (markup) paths.push({ key: `owner-boundary:${ownerValue - 1}`, markup, order: 2 });
     }
     const coastKey = `coast:${x0}:${y0}:${x1}:${y1}`;
     const coastMarkup = cachedContourMarkup(game, coastKey, landSpans, (path) =>
       `<path d="${path}" fill="none" stroke="#654e3a" stroke-opacity=".65" stroke-width="1"/>`);
-    if (coastMarkup) paths.push({ key: 'coast', markup: coastMarkup });
+    if (coastMarkup) paths.push({ key: 'coast', markup: coastMarkup, order: 3 });
   }
 
-  if (mode === 'political' || mode === 'cities') {
-    for (const country of game.world.countries) {
-      if (country.type !== 'nomadic' || !country.range?.length) continue;
-      const path = cachedNomadPath(country);
-      if (!path) continue;
-      const color = vectorColorFor(game, {
-        key: `country:${country.id}`,
-        color: country.color,
-        randomized: true,
-      });
-      const selected = snapshot.selectedCountryId === country.id;
-      const outline = selected
-        ? ` stroke="#f0d28a" stroke-width="2.2"`
-        : '';
-      paths.push({
-        key: `nomad:${country.id}`,
-        markup: `<path data-nomad="${country.id}" d="${path}" fill="${color}" fill-opacity=".48" fill-rule="evenodd"${outline}/>`,
-      });
-    }
-  }
+  if (includeNomads) paths.push(...buildVectorMapSvgNomadParts(game));
 
+  return keyPrefix
+    ? paths.map((part) => ({ ...part, key: `${keyPrefix}${part.key}` }))
+    : paths;
+}
+
+/** Создаёт отдельные SVG-слои, чтобы менять только изменившиеся контуры. */
+export function buildVectorMapSvgParts(game: Game, bounds: VectorMapViewport): VectorMapSvgPart[] {
+  return buildVectorMapSvgPartsInternal(game, bounds, true, '');
+}
+
+/** Пересобирает векторную геометрию одной изменившейся плитки. */
+export function buildVectorMapSvgTileParts(
+  game: Game,
+  bounds: VectorMapViewport,
+  tileId: number,
+): VectorMapSvgPart[] {
+  return buildVectorMapSvgPartsInternal(game, bounds, false, `tile:${tileId}:`);
+}
+
+/** Номадские территории остаются отдельными путями поверх плиток заливки. */
+export function buildVectorMapSvgNomadParts(game: Game): VectorMapSvgPart[] {
+  const snapshot = game.getSnapshot();
+  if (snapshot.mapMode !== 'political' && snapshot.mapMode !== 'cities') return [];
+  const paths: VectorMapSvgPart[] = [];
+  for (const country of game.world.countries) {
+    if (country.type !== 'nomadic' || !country.range?.length) continue;
+    const path = cachedNomadPath(country);
+    if (!path) continue;
+    const color = vectorColorFor(game, {
+      key: `country:${country.id}`,
+      color: country.color,
+      randomized: true,
+    });
+    const selected = snapshot.selectedCountryId === country.id;
+    const outline = selected
+      ? ` stroke="#f0d28a" stroke-width="2.2"`
+      : '';
+    paths.push({
+      key: `nomad:${country.id}`,
+      markup: `<path data-nomad="${country.id}" d="${path}" fill="${color}" fill-opacity=".48" fill-rule="evenodd"${outline}/>`,
+      order: 4,
+    });
+  }
   return paths;
 }
 

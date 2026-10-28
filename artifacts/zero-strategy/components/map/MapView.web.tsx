@@ -32,7 +32,13 @@ import { type MapViewHandle, type MapViewProps, type ViewTransform } from './typ
 import { centerOnMapPoint, clampView, initialView, minScale, toMap, zoomAround } from './viewMath';
 
 import { renderFlagSpec } from '@/game/flagRenderer';
-import { buildVectorMapSvgParts, vectorColorFor, type VectorMapSvgPart, type VectorMapViewport } from './vectorMap';
+import {
+  buildVectorMapSvgNomadParts,
+  buildVectorMapSvgTileParts,
+  vectorColorFor,
+  type VectorMapSvgPart,
+  type VectorMapViewport,
+} from './vectorMap';
 
 const crownGlyph = String.fromCodePoint(Number(MaterialCommunityIcons.getRawGlyphMap().crown));
 const crownFontFamily = MaterialCommunityIcons.getFontFamily();
@@ -43,6 +49,8 @@ function xmlEscape(value: string): string {
 }
 
 type VectorMapPartNode = { node: SVGGElement; markup: string };
+type VectorMapTileMarkup = { revision: number; parts: VectorMapSvgPart[] };
+type VectorMapTilePartsCache = { sceneKey: string; tiles: Map<number, VectorMapTileMarkup> };
 
 function updateVectorMapSvgParts(
   svg: SVGSVGElement,
@@ -813,6 +821,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const wrapRef = useRef<HTMLDivElement>(null);
   const vectorSvgRef = useRef<SVGSVGElement>(null);
   const vectorPartNodesRef = useRef(new Map<string, VectorMapPartNode>());
+  const vectorTilePartsRef = useRef<VectorMapTilePartsCache>({ sceneKey: '', tiles: new Map() });
   const overlaySvgRef = useRef<SVGSVGElement>(null);
   const interactionRef = useRef<HTMLDivElement>(null);
   const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -884,7 +893,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       y1: Math.min(MAP_HEIGHT - 1, Math.ceil((visibleBounds.y1 + padding) / padding) * padding),
     };
     const layer = game.renderer.layer;
-    const sceneKey = `${mapMode}:${layer?.kind ?? ''}:${layer?.id ?? ''}`;
+    const sceneKey = `${mapMode}:${layer?.kind ?? ''}:${layer?.id ?? ''}:${snapshot.selectedCountryId ?? ''}:${snapshot.role}:${snapshot.focusCountry?.id ?? 'world'}`;
     const cachedCoverage = vectorCoverageRef.current;
     const covered = cachedCoverage?.sceneKey === sceneKey
       && cachedCoverage.bounds.x0 <= visibleBounds.x0
@@ -910,19 +919,39 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     }
     if (needsVectorUpdate && visibleBounds.x1 >= visibleBounds.x0 && visibleBounds.y1 >= visibleBounds.y0) {
       const vectorBuildStarted = performance.now();
-      const vectorParts = buildVectorMapSvgParts(game, renderBounds);
+      let tileCache = vectorTilePartsRef.current;
+      if (tileCache.sceneKey !== sceneKey) {
+        tileCache = { sceneKey, tiles: new Map() };
+        vectorTilePartsRef.current = tileCache;
+      }
+      let rebuiltTiles = 0;
+      const vectorParts: VectorMapSvgPart[] = [];
+      for (const tile of game.renderer.vectorTilesIn(renderBounds)) {
+        let cached = tileCache.tiles.get(tile.id);
+        if (!cached || cached.revision !== tile.revision) {
+          cached = {
+            revision: tile.revision,
+            parts: buildVectorMapSvgTileParts(game, tile.bounds, tile.id),
+          };
+          tileCache.tiles.set(tile.id, cached);
+          rebuiltTiles += 1;
+        }
+        vectorParts.push(...cached.parts);
+      }
+      vectorParts.push(...buildVectorMapSvgNomadParts(game));
+      vectorParts.sort((first, second) => first.order - second.order || first.key.localeCompare(second.key));
       updateVectorMapSvgParts(vectorSvg, vectorParts, vectorPartNodesRef.current);
       recordMapPerformanceTiming({
-        stage: 'vector-map-build',
+        stage: 'vector-map-tile-build',
         mode: mapMode,
-        count: vectorParts.length,
+        count: rebuiltTiles,
         durationMs: performance.now() - vectorBuildStarted,
         busy: snapshot.busy,
         worldVersion: game.world.version,
         countryCount: game.world.countries.length,
       });
       vectorCoverageRef.current = { sceneKey, bounds: renderBounds };
-      game.renderer.acknowledge(renderBounds);
+      game.renderer.acknowledge({ ...renderBounds, x1: renderBounds.x1 - 1 });
     }
     if (!cameraGestureActiveRef.current) {
       vectorSvg.setAttribute(
