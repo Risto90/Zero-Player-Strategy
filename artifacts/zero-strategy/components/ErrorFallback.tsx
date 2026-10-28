@@ -7,10 +7,8 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import { Feather } from '@expo/vector-icons';
-import { reloadAppAsync } from 'expo';
 
 export type ErrorFallbackProps = {
   error: Error;
@@ -19,23 +17,18 @@ export type ErrorFallbackProps = {
 
 export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
 
   const [isModalVisible, setIsModalVisible] = useState(false);
 
-  const handleRestart = async () => {
-    try {
-      await reloadAppAsync();
-    } catch (restartError) {
-      console.error('Failed to restart app:', restartError);
-      resetError();
-    }
+  const handleRestart = () => {
+    resetError();
+    window.location.reload();
   };
 
   const formatErrorDetails = (): string => {
-    let details = `Error: ${error.message}\n\n`;
+    let details = `Ошибка: ${error.message}\n\n`;
     if (error.stack) {
-      details += `Stack Trace:\n${error.stack}`;
+      details += `Стек вызовов:\n${error.stack}`;
     }
     return details;
   };
@@ -50,7 +43,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
           style={({ pressed }) => [
             styles.topButton,
             {
-              top: insets.top + 16,
+              top: 16,
               backgroundColor: colors.card,
               opacity: pressed ? 0.8 : 1,
             },
@@ -128,7 +121,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
                 style={styles.modalScrollView}
                 contentContainerStyle={[
                   styles.modalScrollContent,
-                  { paddingBottom: insets.bottom + 16 },
+                  { paddingBottom: 16 },
                 ]}
                 showsVerticalScrollIndicator
               >

@@ -2,7 +2,6 @@ import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LogPanel } from '@/components/game/LogPanel';
 import colors, { fonts } from '@/constants/colors';
 import { ageStage, personDeathStatus, type Person } from '@/game/government';
@@ -33,7 +32,6 @@ function RelativeLink({ id, title, note }: { id: number; title: string; note?: s
 export default function PersonPage() {
   const { id: rawId } = useLocalSearchParams<{ id: string }>();
   const game = currentGame();
-  const insets = useSafeAreaInsets();
   const world = game?.world;
   const peopleById = useMemo(
     () => new Map((world?.people ?? []).map((item) => [item.id, item])),
@@ -42,7 +40,7 @@ export default function PersonPage() {
   const person = peopleById.get(Number(rawId));
   if (!game || !person) {
     return (
-      <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}>
+      <View style={[styles.screen, styles.center]}>
         <Text style={styles.title}>Персонаж не найден</Text>
         <Pressable onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>Назад</Text></Pressable>
       </View>
@@ -62,7 +60,6 @@ function PersonProfile({
 }) {
   const snapshot = useGameSnapshot(game);
   const [showChronicle, setShowChronicle] = useState(false);
-  const insets = useSafeAreaInsets();
   const world = game.world;
   const historyObjectOptions = useMemo(
     () => chronicleObjectOptions(world),
@@ -170,7 +167,7 @@ function PersonProfile({
   );
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <View style={styles.screen}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.back} accessibilityLabel="Назад">
           <Feather name="arrow-left" size={18} color={c.foreground} />
@@ -189,7 +186,7 @@ function PersonProfile({
         </Pressable>
       </View>
       {showChronicle ? (
-        <View style={[styles.chroniclePanel, { paddingBottom: insets.bottom }]}>
+        <View style={styles.chroniclePanel}>
           <LogPanel
             key={`person:${person.id}`}
             log={snapshot.chronicle}
@@ -211,7 +208,7 @@ function PersonProfile({
           ListFooterComponent={person.deathReason
             ? <Text style={styles.note}>Причина смерти · {person.deathReason}</Text>
             : undefined}
-          contentContainerStyle={[styles.profileListContent, { paddingBottom: insets.bottom + 24 }]}
+          contentContainerStyle={[styles.profileListContent, { paddingBottom: 24 }]}
           initialNumToRender={18}
           maxToRenderPerBatch={18}
           windowSize={7}

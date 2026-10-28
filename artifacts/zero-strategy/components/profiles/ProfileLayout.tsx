@@ -3,7 +3,6 @@ import { router } from 'expo-router';
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LogPanel } from '@/components/game/LogPanel';
 import colors, { fonts } from '@/constants/colors';
 import type { ChronicleEntry, ChronicleObjectOption, ChronicleReference } from '@/game/chronicle';
@@ -33,7 +32,6 @@ export function ProfileLayout({
   extraTabs?: { key: string; label: string; content: ReactNode }[];
   showChronicleTab?: boolean;
 }) {
-  const insets = useSafeAreaInsets();
   const [tab, setTab] = useState('details');
   const selectedExtraTab = extraTabs.find((item) => item.key === tab);
   useEffect(() => {
@@ -42,7 +40,7 @@ export function ProfileLayout({
     }
   }, [extraTabs, selectedExtraTab, showChronicleTab, tab]);
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <View style={styles.screen}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} style={styles.back} accessibilityLabel="Назад">
           <Feather name="arrow-left" size={18} color={c.foreground} />
@@ -75,12 +73,12 @@ export function ProfileLayout({
         )}
       </ScrollView>
       {tab === 'details' ? (
-        <ScrollView style={styles.pageScroll} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        <ScrollView style={styles.pageScroll} contentContainerStyle={[styles.content, { paddingBottom: 24 }]}
           nestedScrollEnabled>
           {details}
         </ScrollView>
       ) : tab === 'chronicle' ? (
-        <View style={[styles.pageScroll, styles.chroniclePanel, { paddingBottom: insets.bottom }]}>
+        <View style={[styles.pageScroll, styles.chroniclePanel]}>
           <LogPanel
             key={initialReference ? `${initialReference.type}:${initialReference.id}` : 'all'}
             log={archive}
@@ -90,11 +88,11 @@ export function ProfileLayout({
           />
         </View>
       ) : selectedExtraTab ? (
-        <View style={[styles.pageScroll, styles.extraTabContent, { paddingBottom: insets.bottom }]}>
+        <View style={[styles.pageScroll, styles.extraTabContent]}>
           {selectedExtraTab.content}
         </View>
       ) : (
-        <ScrollView style={styles.pageScroll} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        <ScrollView style={styles.pageScroll} contentContainerStyle={[styles.content, { paddingBottom: 24 }]}
           nestedScrollEnabled>
           {details}
         </ScrollView>
@@ -134,9 +132,8 @@ export function ProfileScrollList({ children }: { children: ReactNode }) {
 }
 
 export function MissingProfile({ title }: { title: string }) {
-  const insets = useSafeAreaInsets();
   return (
-    <View style={[styles.screen, styles.missing, { paddingTop: insets.top }]}>
+    <View style={[styles.screen, styles.missing]}>
       <Text style={styles.title}>{title}</Text>
       <Pressable onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>Назад</Text></Pressable>
     </View>

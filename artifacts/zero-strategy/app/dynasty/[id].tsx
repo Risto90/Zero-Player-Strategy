@@ -11,7 +11,6 @@ import {
   type GestureResponderEvent,
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import colors, { fonts } from '@/constants/colors';
 import type { Person } from '@/game/government';
 import { countryProfileRoute } from '@/game/profileRoutes';
@@ -47,7 +46,6 @@ export default function DynastyPage() {
   const { id: rawId, person: rawFocusId } = useLocalSearchParams<{ id: string; person?: string }>();
   const [game, setGame] = useState<Game | null>(() => currentGame());
   const [loadError, setLoadError] = useState('');
-  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (game) return;
@@ -68,7 +66,7 @@ export default function DynastyPage() {
 
   if (!game) {
     return (
-      <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}>
+      <View style={[styles.screen, styles.center]}>
         <Text style={styles.note}>{loadError || 'Загружаю династию…'}</Text>
         {!!loadError && <BackButton />}
       </View>
@@ -82,7 +80,7 @@ export default function DynastyPage() {
   const familyId = hasRequestedFamily ? requestedFamilyId : focusPerson?.familyId ?? requestedFamilyId;
   if (!Number.isFinite(familyId)) {
     return (
-      <View style={[styles.screen, styles.center, { paddingTop: insets.top }]}>
+      <View style={[styles.screen, styles.center]}>
         <Text style={styles.title}>Династия не найдена</Text>
         <BackButton />
       </View>
@@ -124,7 +122,6 @@ function ZoomButton({
 
 function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number; focusId?: number }) {
   useGameSnapshot(game);
-  const insets = useSafeAreaInsets();
   const [collapsedPeople, setCollapsedPeople] = useState<Set<number>>(() => new Set());
   const [collapsedPairs, setCollapsedPairs] = useState<Set<string>>(() => new Set());
   const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
@@ -151,8 +148,6 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
     [game.world.version, model.nodes],
   );
   const familyName = familyMembers[0]?.familyName ?? model.nodes.find((node) => node.isDynastyMember)?.person.familyName ?? 'Династия';
-  const safeTop = insets.top + 67;
-  const safeBottom = insets.bottom + 34;
 
   const centerPoint = (point: { x: number; y: number }, width = viewport.width, height = viewport.height) => {
     if (width <= 0 || height <= 0) return;
@@ -317,7 +312,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
   }
 
   return (
-    <View style={[styles.screen, { paddingTop: safeTop, paddingBottom: safeBottom }]}>
+    <View style={styles.screen}>
       <View style={styles.header}>
         <BackButton />
         <Text style={styles.eyebrow}>РОДОСЛОВНАЯ</Text>

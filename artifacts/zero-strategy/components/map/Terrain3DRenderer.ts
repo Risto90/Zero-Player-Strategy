@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { contours } from 'd3-contour';
 import { MAP_HEIGHT, MAP_WIDTH } from '../../game/config';
 import type { Game } from '../../game/game';
 import { discoveredRiverPaths, riverVisibilityScale } from '../../game/geographyGeometry';
@@ -9,21 +10,25 @@ type World = Game['world'];
 type ViewSize = { width: number; height: number; dpr: number };
 type ScreenPoint = { x: number; y: number };
 
-export const TERRAIN_GRID_COLUMNS = 512;
-export const TERRAIN_GRID_ROWS = 256;
+export const TERRAIN_CONTOUR_COLUMNS = 512;
+export const TERRAIN_CONTOUR_ROWS = 256;
+export const SEA_DEPTH_TEXTURE_WIDTH = 1024;
+export const SEA_DEPTH_TEXTURE_HEIGHT = 512;
 const HEIGHT_SCALE = 0.000012;
+const HEIGHT_CONTOUR_STEP_METERS = 250;
 const RIVER_CARVE_BASE_METERS = 180;
 const CAMERA_FOV = 42;
-const LAND_COLOR = [174, 163, 135] as const;
-
-function srgbToLinear(channel: number): number {
-  const value = channel / 255;
-  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-}
+const LAND_SURFACE_OFFSET = 0.00015;
+const LAND_COLOR = '#aea387';
 
 function packedChannels(packed: number): [number, number, number] {
   return [packed & 255, (packed >>> 8) & 255, (packed >>> 16) & 255];
 }
+
+type ContourGeometry = {
+  value: number;
+  coordinates: number[][][][];
+};
 
 function sampleElevation(world: World, x: number, y: number): number {
   const mapX = Math.max(0, Math.min(MAP_WIDTH - 1, x));
@@ -41,10 +46,6 @@ function sampleElevation(world: World, x: number, y: number): number {
   return top * (1 - ty) + bottom * ty;
 }
 
-/**
- * Создаёт только визуальную сетку рельефа. Она не заменяет контурную модель карты
- * и не участвует в расчётах кистей, населения, границ или доступной для игры площади.
- */
 function riverCarveMeters(world: World, x: number, y: number): number {
   let strongest = 0;
   let bestWeight = 0;
@@ -66,71 +67,144 @@ function riverCarveMeters(world: World, x: number, y: number): number {
   return (RIVER_CARVE_BASE_METERS + strongest * 55) * bestWeight;
 }
 
+function terrainHeightMeters(elevation: number): number {
+  return Math.max(0, Math.floor(elevation / HEIGHT_CONTOUR_STEP_METERS) * HEIGHT_CONTOUR_STEP_METERS);
+}
+
 function mapPosition(world: World, x: number, y: number, carveRiver = false): THREE.Vector3 {
   const elevation = sampleElevation(world, x, y) -
     (carveRiver ? riverCarveMeters(world, x, y) : 0);
   return new THREE.Vector3(
     (x / (MAP_WIDTH - 1)) * 2 - 1,
-    elevation * HEIGHT_SCALE,
+    terrainHeightMeters(elevation) * HEIGHT_SCALE + LAND_SURFACE_OFFSET,
     (y / (MAP_HEIGHT - 1)) - 0.5,
   );
 }
 
+/** Строит контурные площадки высот; растры кистей и игровые слои эта сетка не меняет. */
 export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
-  const vertexCount = TERRAIN_GRID_COLUMNS * TERRAIN_GRID_ROWS;
-  const positions = new Float32Array(vertexCount * 3);
-  const colors = new Float32Array(vertexCount * 3);
-  const indices = new Uint32Array((TERRAIN_GRID_COLUMNS - 1) * (TERRAIN_GRID_ROWS - 1) * 6);
-  let vertex = 0;
-
-  for (let row = 0; row < TERRAIN_GRID_ROWS; row += 1) {
-    const y = (row / (TERRAIN_GRID_ROWS - 1)) * (MAP_HEIGHT - 1);
-    for (let column = 0; column < TERRAIN_GRID_COLUMNS; column += 1) {
-      const x = (column / (TERRAIN_GRID_COLUMNS - 1)) * (MAP_WIDTH - 1);
-      const pixelX = Math.min(MAP_WIDTH - 1, Math.round(x));
-      const pixelY = Math.min(MAP_HEIGHT - 1, Math.round(y));
-      const pixel = pixelY * MAP_WIDTH + pixelX;
-      const elevation = sampleElevation(world, x, y);
-      const isLand = world.land[pixel] !== 0;
-      const carve = isLand ? riverCarveMeters(world, x, y) : 0;
-
-      positions[vertex * 3] = (x / (MAP_WIDTH - 1)) * 2 - 1;
-      positions[vertex * 3 + 1] = (elevation - carve) * HEIGHT_SCALE;
-      positions[vertex * 3 + 2] = (y / (MAP_HEIGHT - 1)) - 0.5;
-
-      const [red, green, blue] = isLand
-        ? [...LAND_COLOR]
-        : packedChannels(seaDepthPackedColor(Math.min(0, elevation)));
-      colors[vertex * 3] = srgbToLinear(red);
-      colors[vertex * 3 + 1] = srgbToLinear(green);
-      colors[vertex * 3 + 2] = srgbToLinear(blue);
-      vertex += 1;
+  const sampledHeights = new Float64Array(TERRAIN_CONTOUR_COLUMNS * TERRAIN_CONTOUR_ROWS);
+  let maximumHeight = 0;
+  for (let row = 0; row < TERRAIN_CONTOUR_ROWS; row += 1) {
+    const mapY = Math.round(row / (TERRAIN_CONTOUR_ROWS - 1) * (MAP_HEIGHT - 1));
+    for (let column = 0; column < TERRAIN_CONTOUR_COLUMNS; column += 1) {
+      const mapX = Math.round(column / (TERRAIN_CONTOUR_COLUMNS - 1) * (MAP_WIDTH - 1));
+      const pixel = mapY * MAP_WIDTH + mapX;
+      const value = world.land[pixel]
+        ? Math.max(0, world.elevation[pixel] - riverCarveMeters(world, mapX, mapY))
+        : -1;
+      const index = row * TERRAIN_CONTOUR_COLUMNS + column;
+      sampledHeights[index] = value;
+      maximumHeight = Math.max(maximumHeight, value);
     }
   }
 
-  let index = 0;
-  for (let row = 0; row < TERRAIN_GRID_ROWS - 1; row += 1) {
-    for (let column = 0; column < TERRAIN_GRID_COLUMNS - 1; column += 1) {
-      const a = row * TERRAIN_GRID_COLUMNS + column;
-      const b = a + 1;
-      const d = a + TERRAIN_GRID_COLUMNS;
-      const c = d + 1;
-      indices[index++] = a;
-      indices[index++] = c;
-      indices[index++] = b;
-      indices[index++] = a;
-      indices[index++] = d;
-      indices[index++] = c;
+  const levels = [0];
+  for (let elevation = HEIGHT_CONTOUR_STEP_METERS; elevation <= maximumHeight; elevation += HEIGHT_CONTOUR_STEP_METERS) {
+    levels.push(elevation);
+  }
+  const heightContours = contours()
+    .size([TERRAIN_CONTOUR_COLUMNS, TERRAIN_CONTOUR_ROWS])
+    .thresholds(levels)(sampledHeights) as ContourGeometry[];
+  const positions: number[] = [];
+  const indices: number[] = [];
+  let vertexBase = 0;
+  let previousY = LAND_SURFACE_OFFSET;
+
+  const mapPoint = (point: number[]): THREE.Vector2 => new THREE.Vector2(
+    (point[0] / (TERRAIN_CONTOUR_COLUMNS - 1)) * 2 - 1,
+    (point[1] / (TERRAIN_CONTOUR_ROWS - 1)) - 0.5,
+  );
+  const normalizedRing = (ring: number[][]): THREE.Vector2[] => {
+    const points = ring.map(mapPoint);
+    if (points.length > 1 && points[0].distanceToSquared(points[points.length - 1]) < 1e-10) {
+      points.pop();
     }
+    return points;
+  };
+
+  for (const heightContour of heightContours) {
+    const surfaceY = terrainHeightMeters(heightContour.value) * HEIGHT_SCALE + LAND_SURFACE_OFFSET;
+    for (const polygon of heightContour.coordinates) {
+      const rings = polygon.map(normalizedRing).filter((ring) => ring.length >= 3);
+      const [outer, ...holes] = rings;
+      if (!outer) continue;
+
+      const triangles = THREE.ShapeUtils.triangulateShape(outer, holes);
+      const polygonPoints = [outer, ...holes].flat();
+      for (const point of polygonPoints) {
+        positions.push(point.x, surfaceY, point.y);
+      }
+      for (const triangle of triangles) {
+        indices.push(
+          vertexBase + triangle[0],
+          vertexBase + triangle[1],
+          vertexBase + triangle[2],
+        );
+      }
+      vertexBase += polygonPoints.length;
+
+      if (surfaceY > previousY) {
+        for (const ring of rings) {
+          for (let index = 0; index < ring.length; index += 1) {
+            const a = ring[index];
+            const b = ring[(index + 1) % ring.length];
+            const wallBase = vertexBase;
+            positions.push(
+              a.x, previousY, a.y,
+              b.x, previousY, b.y,
+              b.x, surfaceY, b.y,
+              a.x, surfaceY, a.y,
+            );
+            indices.push(
+              wallBase, wallBase + 1, wallBase + 2,
+              wallBase, wallBase + 2, wallBase + 3,
+            );
+            vertexBase += 4;
+          }
+        }
+      }
+    }
+    previousY = Math.max(previousY, surfaceY);
   }
 
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   return geometry;
+}
+
+/** Создаёт плоскую текстуру глубин моря под контурной 3D-сушей. */
+export function buildSeaDepthTexture(world: World): THREE.DataTexture {
+  const data = new Uint8Array(SEA_DEPTH_TEXTURE_WIDTH * SEA_DEPTH_TEXTURE_HEIGHT * 4);
+  for (let row = 0; row < SEA_DEPTH_TEXTURE_HEIGHT; row += 1) {
+    const mapY = Math.round(row / (SEA_DEPTH_TEXTURE_HEIGHT - 1) * (MAP_HEIGHT - 1));
+    const textureRow = SEA_DEPTH_TEXTURE_HEIGHT - 1 - row;
+    for (let column = 0; column < SEA_DEPTH_TEXTURE_WIDTH; column += 1) {
+      const mapX = Math.round(column / (SEA_DEPTH_TEXTURE_WIDTH - 1) * (MAP_WIDTH - 1));
+      const pixel = mapY * MAP_WIDTH + mapX;
+      const offset = (textureRow * SEA_DEPTH_TEXTURE_WIDTH + column) * 4;
+      const [red, green, blue] = packedChannels(seaDepthPackedColor(Math.min(0, world.elevation[pixel])));
+      data[offset] = red;
+      data[offset + 1] = green;
+      data[offset + 2] = blue;
+      data[offset + 3] = world.land[pixel] ? 0 : 255;
+    }
+  }
+  const texture = new THREE.DataTexture(
+    data,
+    SEA_DEPTH_TEXTURE_WIDTH,
+    SEA_DEPTH_TEXTURE_HEIGHT,
+    THREE.RGBAFormat,
+  );
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 export class Terrain3DRenderer {
@@ -140,9 +214,10 @@ export class Terrain3DRenderer {
   private readonly raycaster = new THREE.Raycaster();
   private readonly riverGroup = new THREE.Group();
   private terrainMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | null = null;
+  private seaMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null;
   private world: World | null = null;
-  private terrainVersion = -1;
-  private riverVersion = -1;
+  private terrainGeographyVersion = -1;
+  private riverGeographyVersion = -1;
   private width = 1;
   private height = 1;
   private yaw = 0;
@@ -154,13 +229,13 @@ export class Terrain3DRenderer {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: true,
-      alpha: false,
+      alpha: true,
       powerPreference: 'high-performance',
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.12;
-    this.scene.background = new THREE.Color('#87b0b2');
+    this.scene.background = null;
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.25));
 
     const sunlight = new THREE.DirectionalLight(0xfff5df, 2.2);
@@ -173,30 +248,55 @@ export class Terrain3DRenderer {
   }
 
   private installWorld(world: World): void {
-    if (this.world !== world || this.terrainVersion !== world.territoryVersion) {
+    const changedWorld = this.world !== world;
+    if (changedWorld) {
+      const texture = buildSeaDepthTexture(world);
+      if (!this.seaMesh) {
+        const geometry = new THREE.PlaneGeometry(2, 1);
+        geometry.rotateX(-Math.PI / 2);
+        const material = new THREE.MeshBasicMaterial({
+          map: texture,
+          transparent: true,
+          depthWrite: true,
+          side: THREE.DoubleSide,
+          toneMapped: false,
+        });
+        this.seaMesh = new THREE.Mesh(geometry, material);
+        this.seaMesh.renderOrder = 0;
+        this.seaMesh.frustumCulled = false;
+        this.scene.add(this.seaMesh);
+      } else {
+        this.seaMesh.material.map?.dispose();
+        this.seaMesh.material.map = texture;
+        this.seaMesh.material.needsUpdate = true;
+      }
+    }
+
+    if (changedWorld || this.terrainGeographyVersion !== world.geographyRevision) {
       const geometry = buildTerrainGeometry(world);
       if (!this.terrainMesh) {
         const material = new THREE.MeshStandardMaterial({
-          vertexColors: true,
+          color: LAND_COLOR,
           roughness: 0.94,
           metalness: 0,
           side: THREE.DoubleSide,
         });
         this.terrainMesh = new THREE.Mesh(geometry, material);
         this.terrainMesh.frustumCulled = false;
+        this.terrainMesh.renderOrder = 1;
         this.scene.add(this.terrainMesh);
       } else {
         this.terrainMesh.geometry.dispose();
         this.terrainMesh.geometry = geometry;
       }
       this.world = world;
-      this.terrainVersion = world.territoryVersion;
-      this.riverVersion = -1;
+      this.terrainGeographyVersion = world.geographyRevision;
+      this.riverGeographyVersion = -1;
     }
 
-    if (this.riverVersion !== world.version) {
+    if (this.riverGeographyVersion !== world.geographyRevision) {
       this.rebuildRivers(world);
-      this.riverVersion = world.version;
+      this.riverGeographyVersion = world.geographyRevision;
     }
   }
 
@@ -350,22 +450,17 @@ export class Terrain3DRenderer {
       new THREE.Vector2((x / size.width) * 2 - 1, 1 - (y / size.height) * 2),
       this.camera,
     );
-    const horizontalPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-    const intersection = new THREE.Vector3();
-    let mapX = (x - view.ox) / view.scale;
-    let mapY = (y - view.oy) / view.scale;
-    let hitTerrain = false;
-    for (let iteration = 0; iteration < 3; iteration += 1) {
-      horizontalPlane.constant = -horizontalPlane.normal.y * (
-        this.world ? mapPosition(this.world, mapX, mapY, true).y : 0
-      );
-      if (!this.raycaster.ray.intersectPlane(horizontalPlane, intersection)) break;
-      hitTerrain = true;
-      mapX = THREE.MathUtils.clamp((intersection.x + 1) * 0.5 * (MAP_WIDTH - 1), 0, MAP_WIDTH - 1);
-      mapY = THREE.MathUtils.clamp((intersection.z + 0.5) * (MAP_HEIGHT - 1), 0, MAP_HEIGHT - 1);
-      if (!this.world) break;
+    this.scene.updateMatrixWorld(true);
+    const surfaces = [this.terrainMesh, this.seaMesh].filter(
+      (mesh): mesh is THREE.Mesh => mesh !== null,
+    );
+    const hit = this.raycaster.intersectObjects(surfaces, false)[0];
+    if (hit) {
+      return {
+        x: THREE.MathUtils.clamp((hit.point.x + 1) * 0.5 * (MAP_WIDTH - 1), 0, MAP_WIDTH - 1),
+        y: THREE.MathUtils.clamp((hit.point.z + 0.5) * (MAP_HEIGHT - 1), 0, MAP_HEIGHT - 1),
+      };
     }
-    if (hitTerrain) return { x: mapX, y: mapY };
     return {
       x: (x - view.ox) / view.scale,
       y: (y - view.oy) / view.scale,
@@ -378,6 +473,12 @@ export class Terrain3DRenderer {
     this.terrainMesh?.geometry.dispose();
     this.terrainMesh?.material.dispose();
     if (this.terrainMesh) this.scene.remove(this.terrainMesh);
+    if (this.seaMesh) {
+      this.seaMesh.material.map?.dispose();
+      this.seaMesh.material.dispose();
+      this.seaMesh.geometry.dispose();
+      this.scene.remove(this.seaMesh);
+    }
     this.scene.remove(this.riverGroup);
     const materials = new Set<THREE.Material>();
     for (const child of [...this.riverGroup.children]) {

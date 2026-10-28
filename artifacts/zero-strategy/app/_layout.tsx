@@ -5,7 +5,6 @@ import { JetBrainsMono_500Medium } from '@expo-google-fonts/jetbrains-mono';
 import { PlayfairDisplay_400Regular, PlayfairDisplay_400Regular_Italic, PlayfairDisplay_700Bold, useFonts } from '@expo-google-fonts/playfair-display';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { StatusBar } from 'expo-status-bar';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import colors from '@/constants/colors';
 
@@ -31,7 +30,6 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <ErrorBoundary>
-        <StatusBar style="dark" />
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.light.background } }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="play" options={{ gestureEnabled: false }} />

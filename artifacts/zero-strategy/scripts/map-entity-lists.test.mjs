@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Game } from '../game/game.ts';
 import { MAP_WIDTH } from '../game/config.ts';
@@ -20,7 +20,6 @@ const root = resolve(process.cwd());
 const legendPanel = readFileSync(resolve(root, 'components/game/LegendPanel.tsx'), 'utf8');
 const modes = readFileSync(resolve(root, 'components/game/ModeTabs.tsx'), 'utf8');
 const rendererSource = readFileSync(resolve(root, 'game/render.ts'), 'utf8');
-const nativeMap = readFileSync(resolve(root, 'components/map/MapView.tsx'), 'utf8');
 const webMap = readFileSync(resolve(root, 'components/map/MapView.web.tsx'), 'utf8');
 
 assert.match(legendPanel, /function EntityRow/u);
@@ -40,15 +39,15 @@ assert.match(legendPanel, /game\.selectCity\(row\.id\)/u, 'city-row selection dr
 assert.match(legendPanel, /game\.showCountryOnMap\(row\.id\)/u, 'country rows select both settled and nomadic countries');
 assert.doesNotMatch(modes, /id: 'nomads'/u, 'the map mode menu has no separate nomadic mode');
 assert.doesNotMatch(rendererSource, /'nomads'\s*:/u, 'the map renderer exposes no nomadic mode');
-assert.match(nativeMap, /cityInfluenceRadius\(world, city\)/u, 'the mobile map draws calculated city spheres');
+assert.equal(
+  existsSync(resolve(root, 'components/map/MapView.tsx')),
+  false,
+  'the browser-only project has no separate native map implementation',
+);
 assert.match(webMap, /cityInfluenceRadius\(game\.world, city\)/u, 'the web map draws calculated city spheres');
-assert.match(nativeMap, /selected \? circleHatchLines/u, 'only the selected city is hatched on mobile');
 assert.match(webMap, /if \(selected\) \{[\s\S]*circleHatchLines/u, 'only the selected city is hatched on web');
-assert.match(nativeMap, /selected && <Circle cx=\{x\} cy=\{y\} r=\{radius\} color=\{color\} opacity/u,
-  'the selected mobile circle fill is clipped to the calculated circular radius');
 assert.match(webMap, /ctx\.arc\(centerX, centerY, radius, 0, Math\.PI \* 2\)[\s\S]*ctx\.clip\(\)/u,
   'the selected web hatch is clipped to the calculated circular radius');
-assert.match(nativeMap, /screenX \+ screenRadius >= 0/u, 'mobile sphere outlines are culled to the viewport and zoom');
 assert.match(webMap, /centerX \+ radius < 0/u, 'web sphere outlines are culled to the viewport');
 const hatch = circleHatchLines(30, 40, 50, 8);
 assert.ok(hatch.length > 10, 'a full circle receives evenly spaced hatch lines');

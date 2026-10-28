@@ -2,7 +2,6 @@ import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CardPanel } from '@/components/game/CardPanel';
 import { InspectCard } from '@/components/game/InspectCard';
 import { LegendPanel } from '@/components/game/LegendPanel';
@@ -126,7 +125,6 @@ function GameScreen({ game }: { game: Game }) {
   const notificationE2e = process.env.EXPO_PUBLIC_NOTIFICATION_E2E === 'true';
   if (notificationE2e) Game.notificationE2eFastMode = true;
   const snap = useGameSnapshot(game);
-  const insets = useSafeAreaInsets();
   const { height, width } = useWindowDimensions();
   const mapRef = useRef<MapViewHandle>(null);
   const zoomTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -165,9 +163,7 @@ function GameScreen({ game }: { game: Game }) {
   const activeNotification = pendingNotifications[0] ?? null;
   const canOpenChoices = canOpenEvent && snap.card?.choices?.length === 2;
   const showTools = 1 + Number(canBrush) + Number(canPlaceCity) + Number(canOpenChoices) >= 2;
-  const webTopInset = Math.max(insets.top, 67);
-  const webBottomInset = Math.max(insets.bottom, 34);
-  const mapHeight = Math.max(160, height - webTopInset - webBottomInset - 72);
+  const mapHeight = Math.max(160, height - 72);
   const overlayHeight = Math.max(140, Math.min(620, mapHeight - 56));
 
   const onCityPress = useCallback((pixel: number) => {
@@ -389,7 +385,7 @@ function GameScreen({ game }: { game: Game }) {
     : 0;
 
   return (
-    <View style={[styles.screen, { paddingTop: webTopInset, paddingBottom: webBottomInset }]}>
+    <View style={styles.screen}>
       <View style={styles.inkTrack} testID="map-ink-status" accessibilityLabel="Остаток чернил">
         <View style={[styles.inkFill, { width: `${inkShare * 100}%` }]} />
       </View>
@@ -464,8 +460,7 @@ function GameScreen({ game }: { game: Game }) {
               longPressFired.current = false;
               setHoldingNext(!!snap.card && !snap.canCompleteCard);
             }}
-            // React Native Web keeps a touch responder through mobile contextmenu
-            // only when onLongPress is configured.
+            // Для удержания кнопки в браузере явно подключён обработчик долгого нажатия.
             onLongPress={snap.card && !snap.canCompleteCard && !snap.busy ? () => {
               longPressFired.current = true;
               setHoldingNext(false);

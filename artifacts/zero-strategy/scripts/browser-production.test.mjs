@@ -27,6 +27,24 @@ assert.doesNotMatch(
   /(?:^|\n)\s*artifacts\/zero-strategy\/static-build\/?(?:\s|$)/,
   'generated browser files must be included in the published image',
 );
+const appConfig = JSON.parse(readFileSync(path.join(projectRoot, 'app.json'), 'utf8'));
+assert.deepEqual(appConfig.expo.platforms, ['web'], 'the application is built only for the browser');
+assert.equal(
+  existsSync(path.join(projectRoot, 'components', 'map', 'MapView.tsx')),
+  false,
+  'the project must not keep a separate native map implementation',
+);
+assert.equal(
+  existsSync(path.join(projectRoot, 'game', 'storage.web.ts')),
+  false,
+  'browser storage must have a single implementation',
+);
+const playSource = readFileSync(path.join(projectRoot, 'app', 'play.tsx'), 'utf8');
+assert.doesNotMatch(
+  playSource,
+  /Platform\.OS|Platform\.select|AppState|useSafeAreaInsets/u,
+  'the game screen must not branch into native-only behavior',
+);
 
 async function findFreePort() {
   const server = createServer();
@@ -172,7 +190,7 @@ try {
     'utf8',
   );
   assert.match(mapSource, /touchAction:\s*'none'/, 'the map must keep touch gesture handling');
-  const storageSource = readFileSync(path.join(projectRoot, 'game', 'storage.web.ts'), 'utf8');
+  const storageSource = readFileSync(path.join(projectRoot, 'game', 'storage.ts'), 'utf8');
   assert.match(storageSource, /indexedDB\.open/, 'browser saves must use persistent IndexedDB');
 
   console.log(

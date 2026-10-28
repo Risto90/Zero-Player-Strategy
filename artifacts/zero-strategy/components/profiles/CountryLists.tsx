@@ -1,6 +1,5 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ReactNode } from 'react';
 import { FlatList, Pressable, ScrollView, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
@@ -104,9 +103,8 @@ export function CountryDirectoryPage({
   subtitle: string;
   children: ReactNode;
 }) {
-  const insets = useSafeAreaInsets();
   return (
-    <View style={[styles.directory, { paddingTop: insets.top }]}>
+    <View style={styles.directory}>
       <View style={styles.directoryHeader}>
         <Pressable onPress={() => router.back()} style={styles.back} accessibilityLabel="Назад">
           <Feather name="arrow-left" size={18} color={c.foreground} />
@@ -114,7 +112,7 @@ export function CountryDirectoryPage({
         </Pressable>
         <Text style={styles.eyebrow}>{eyebrow}</Text>
       </View>
-      <ScrollView contentContainerStyle={[styles.directoryContent, { paddingBottom: insets.bottom + 24 }]}>
+      <ScrollView contentContainerStyle={styles.directoryContent}>
         <Text style={styles.title}>{country.name}</Text>
         <Text style={styles.subtitle}>{subtitle}</Text>
         {children}

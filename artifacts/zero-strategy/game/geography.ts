@@ -65,7 +65,7 @@ async function yieldToUi(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-/** Кооперативные версии сохраняют порядок циклов и дают потоку JavaScript Android обрабатывать интерфейс. */
+/** Пошаговая генерация сохраняет порядок циклов и даёт браузеру перерисовать интерфейс. */
 async function fractalFieldCooperative(
   width: number,
   height: number,

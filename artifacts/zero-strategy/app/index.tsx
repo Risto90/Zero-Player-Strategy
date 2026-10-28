@@ -2,7 +2,6 @@ import { Feather } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Loading } from '@/components/Loading';
 import colors, { fonts } from '@/constants/colors';
 import type { PlayerRole } from '@/game/game';
@@ -23,7 +22,6 @@ const ROLES: { id: PlayerRole; title: string; note: string }[] = [
 ];
 
 export default function HomeScreen() {
-  const insets = useSafeAreaInsets();
   const [hasSave, setHasSave] = useState(false);
   const [map, setMap] = useState<MapKind>('world');
   const [role, setRole] = useState<PlayerRole>('all');
@@ -50,7 +48,7 @@ export default function HomeScreen() {
     setStartError('');
     setStarting(true);
     setStartStage('Подготавливаем карту');
-    // Allow React Native to paint the progress screen before cooperative generation begins.
+    // Даём браузеру отрисовать экран прогресса до начала пошаговой генерации.
     setTimeout(() => {
       void startNewGameCooperative(map, role, setStartStage)
         .then(() => router.push('/play'))
@@ -91,7 +89,7 @@ export default function HomeScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingTop: insets.top + 28, paddingBottom: insets.bottom + 40 }]}>
+    <ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingTop: 28, paddingBottom: 40 }]}>
       <View style={styles.kickerRow}>
         <View style={styles.rule} />
         <Text style={styles.kicker}>АТЛАС БЕЗ ПОЛКОВОДЦЕВ</Text>

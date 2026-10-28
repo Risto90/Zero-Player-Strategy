@@ -17,7 +17,7 @@ export interface GestureHost {
   onInspect(info: PixelInfo | null): void;
   /** Точка на рельефе для 3D-режима; остальные слои используют плоское преобразование. */
   mapPointAt?(x: number, y: number): Point;
-  /** Brush cursor in screen coordinates, or null to hide it. */
+  /** Курсор кисти в экранных координатах; null скрывает его. */
   setCursor(point: Point | null): void;
 }
 
@@ -41,7 +41,7 @@ export class MapGestures {
     return this.host.mapPointAt?.(x, y) ?? toMap(this.host.getView(), x, y);
   }
 
-  /** Syncs with the full list of touches currently on the map. */
+  /** Синхронизирует состояние со всеми касаниями на карте. */
   sync(touches: { id: number; x: number; y: number }[]): void {
     const seen = new Set<number>();
     for (const t of touches) {
@@ -98,7 +98,7 @@ export class MapGestures {
       const { dist, mid } = this.pinchState();
       const view = host.getView();
       const factor = this.pinchDist > 0 ? dist / this.pinchDist : 1;
-      // Zoom around the old midpoint, then follow the midpoint as it moves.
+      // Масштабирует относительно прежней середины, затем следует за новой.
       const zoomed = zoomAround(view, factor, this.pinchMid.x, this.pinchMid.y, width, height);
       host.setView(clampView({ ...zoomed, ox: zoomed.ox + mid.x - this.pinchMid.x, oy: zoomed.oy + mid.y - this.pinchMid.y }, width, height));
       this.pinchDist = dist;
@@ -128,7 +128,7 @@ export class MapGestures {
     }
     if (this.points.size === 0) this.kind = 'none';
     else if (this.kind === 'pinch') {
-      // One finger left after a pinch: keep panning, never paint by accident.
+      // После жеста масштабирования оставшийся палец только перемещает карту.
       this.kind = 'pan';
       this.moved = true;
     } else if (this.kind === 'paint') this.kind = 'none';

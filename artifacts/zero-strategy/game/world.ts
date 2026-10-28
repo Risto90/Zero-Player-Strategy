@@ -167,6 +167,11 @@ export class World {
     () => this.version,
   );
 
+  /** Версия меняется только при открытии новых географических контуров. */
+  get geographyRevision(): number {
+    return this.geographyVersion;
+  }
+
   constructor(
     readonly mapKind: MapKind,
     readonly seed: number,
