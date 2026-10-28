@@ -538,24 +538,43 @@ export function successionOrder(world: World, c: Country, old = c.ruler): Person
   if (tyrantSpouseIds.size) {
     pool = pool.filter((p) => candidateAllowed(world, c, p, old, false, false, tyrantSpouseIds.has(p.id)));
   }
-  const partnerIds = new Set<number>();
-  if (c.modifiers.includes('pornocracy')) {
-    const partners = (p: Person) => [...p.spouseIds, ...p.loverIds]
-      .map((id) => peopleById.get(id)).filter((x): x is Person => !!x);
-    const oldPartners = partners(old);
-    const expanded = pool.flatMap((p) => [...partners(p), p]);
-    const poolIds = new Set(pool.map((p) => p.id));
-    for (const p of [...oldPartners, ...expanded.filter((p) => !poolIds.has(p.id))]) partnerIds.add(p.id);
-    pool = [...oldPartners, ...expanded];
-  }
   const uniquePool = new Set<number>();
   pool = pool.filter((p) => {
     if (uniquePool.has(p.id)) return false;
     uniquePool.add(p.id);
-    return candidateAllowedWithContext(
-      world, c, p, old, partnerIds.has(p.id), false, tyrantSpouseIds.has(p.id), eligibility,
-    );
+    return candidateAllowedWithContext(world, c, p, old, false, false, tyrantSpouseIds.has(p.id), eligibility);
   });
+  const partnerIds = new Set<number>();
+  if (c.modifiers.includes('pornocracy')) {
+    const partners = (p: Person) => [...p.spouseIds, ...p.loverIds]
+      .map((id) => peopleById.get(id)).filter((x): x is Person => !!x);
+    const sourceIds = new Set(pool.map((p) => p.id));
+    const addedIds = new Set<number>();
+    const addPartner = (p: Person) => {
+      if (p.id === old.id || sourceIds.has(p.id) || addedIds.has(p.id)) return;
+      addedIds.add(p.id);
+      partnerIds.add(p.id);
+    };
+    const orderedWithPartners: Person[] = [];
+    for (const p of partners(old)) {
+      addPartner(p);
+      if (addedIds.has(p.id) && !orderedWithPartners.some((entry) => entry.id === p.id)) {
+        orderedWithPartners.push(p);
+      }
+    }
+    for (const candidate of pool) {
+      for (const partner of partners(candidate)) {
+        addPartner(partner);
+        if (addedIds.has(partner.id) && !orderedWithPartners.some((entry) => entry.id === partner.id)) {
+          orderedWithPartners.push(partner);
+        }
+      }
+      orderedWithPartners.push(candidate);
+    }
+    pool = orderedWithPartners.filter((p) =>
+      !partnerIds.has(p.id) ||
+      candidateAllowedWithContext(world, c, p, old, true, false, false, eligibility));
+  }
   return communistPool(c, pool);
 }
 export function hasFixedHeir(c: Country): boolean {

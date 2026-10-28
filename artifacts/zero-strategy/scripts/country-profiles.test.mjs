@@ -5,7 +5,7 @@ import { countryCharacters, normalizePolitics } from '../game/characters.ts';
 import { availableModifiers, createFamilyId, createPerson, MODIFIERS } from '../game/government.ts';
 import { applyReform, reformCandidates } from '../game/politics.ts';
 import { demography } from '../game/demography.ts';
-import { appoint, candidateAllowed, candidateWeight, countryCandidates, countryRulerHistory, ensureOffices, hasFixedHeir, leadershipOptions, successionOrder } from '../game/succession.ts';
+import { appoint, candidateAllowed, candidateWeight, countryCandidates, countryRulerHistory, ensureOffices, hasFixedHeir, leadershipOptions, refreshHeirs, successionOrder } from '../game/succession.ts';
 import { World } from '../game/world.ts';
 
 function fixture(seed = 10201) {
@@ -179,6 +179,54 @@ function addChild(world, country, parent, options = {}) {
     'основание кандидата указывает на подтверждённое родство родителя и ребёнка');
   assert.ok(candidates[0]?.basis.some((reason) => reason.includes('Ожидаемый наследник по действующему закону')),
     'основание отдельно указывает на действующий порядок первородства');
+}
+
+// Порнократия добавляет партнёров к исходной линии, не дублируя наследников и правителя.
+{
+  const { world, country } = fixture(10237);
+  country.government = 'hereditary';
+  country.modifiers = ['primogeniture'];
+  const ruler = country.ruler;
+  const { child: firstHeir } = addChild(world, country, ruler, { age: 35 });
+  const { child: secondHeir } = addChild(world, country, ruler, { age: 25 });
+  const sourceOrder = successionOrder(world, country).map((p) => p.id);
+  assert.ok(sourceOrder.indexOf(firstHeir.id) < sourceOrder.indexOf(secondHeir.id),
+    'первородство задаёт исходный порядок до добавления партнёров');
+
+  const rulerPartner = addPerson(world, country, { gender: 'female' });
+  ruler.spouseIds.push(rulerPartner.id);
+  rulerPartner.spouseIds.push(ruler.id);
+  const heirPartner = addPerson(world, country, { gender: 'female' });
+  firstHeir.loverIds.push(heirPartner.id);
+  heirPartner.loverIds.push(firstHeir.id);
+  firstHeir.spouseIds.push(secondHeir.id);
+  secondHeir.spouseIds.push(firstHeir.id);
+
+  country.modifiers = ['primogeniture', 'pornocracy'];
+  const order = successionOrder(world, country);
+  const orderIds = order.map((p) => p.id);
+  assert.equal(orderIds[0], rulerPartner.id, 'партнёр правителя, не входивший в исходный список, стоит первым');
+  assert.deepEqual(
+    orderIds.filter((id) => sourceOrder.includes(id)),
+    sourceOrder,
+    'партнёры, уже входящие в исходный список, не меняют порядок по закону наследования',
+  );
+  assert.equal(orderIds.indexOf(heirPartner.id) + 1, orderIds.indexOf(firstHeir.id),
+    'новый партнёр кандидата стоит непосредственно перед ним');
+  assert.equal(orderIds.filter((id) => id === secondHeir.id).length, 1,
+    'наследник, который также является партнёром другого кандидата, не дублируется');
+  assert.ok(!orderIds.includes(ruler.id), 'правитель не добавляется повторно как партнёр кандидата');
+  assert.equal(new Set(orderIds).size, orderIds.length, 'в итоговой линии нет повторов');
+
+  refreshHeirs(world);
+  assert.equal(country.heir?.id, order[0]?.id, 'сохранённый ожидаемый наследник совпадает с общей линией');
+  const displayedCandidates = countryCandidates(world, country);
+  assert.equal(displayedCandidates[0]?.person.id, order[0]?.id,
+    'карточка страны показывает первого человека из общей линии наследования');
+  assert.equal(displayedCandidates[0]?.expectedHeir, true,
+    'первый кандидат отмечен ожидаемым наследником');
+  assert.equal(leadershipOptions(world, country, 1000)[0]?.id, order[0]?.id,
+    'выбор нового правителя использует того же первого преемника');
 }
 
 // Несвязанные заявленные династии не становятся наследниками; совпадающие жители только заменяют случайные варианты.

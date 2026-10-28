@@ -215,6 +215,24 @@ try {
   assert.equal(ruler.alive, false, 'succession preserves the ruler death');
   assert.equal(personDeathStatus(ruler), `умер${ruler.gender === 'female' ? 'ла' : ''} в 1000 году`,
     'the deceased ruler biography retains the year');
+  // Фактическая передача власти после смерти использует ту же линию порнократии.
+  {
+    const pornocracyFixture = makeFixture();
+    const { world, country } = pornocracyFixture;
+    country.modifiers = ['primogeniture', 'pornocracy'];
+    const formerRuler = country.ruler;
+    const firstHeir = addChild(world, country, formerRuler);
+    addChild(world, country, formerRuler);
+    formerRuler.spouseIds.push(firstHeir.id);
+    firstHeir.spouseIds.push(formerRuler.id);
+    const expectedSuccessor = successionOrder(world, country, formerRuler)[0];
+    assert.ok(expectedSuccessor, 'перед смертью правителя линия содержит допустимого преемника');
+    assert.notEqual(expectedSuccessor.id, formerRuler.id, 'правитель не включён в собственную линию наследования');
+    const game = new Game(world, 'all');
+    game.applyCharacterEvent(country, { kind: 'death', personIds: [formerRuler.id] }, null);
+    assert.equal(country.ruler.id, expectedSuccessor.id,
+      'после смерти назначается первый допустимый преемник из той же линии');
+  }
   const deathEntry = deathGame.log.find(({ text }) => text.includes(ruler.name) && text.includes('умер'));
   assert.ok(deathEntry, 'the ruler death is present in the chronicle');
    assert.equal(isChronicleImportant(deathEntry, chronicleReference('person', ruler.id)), true,
