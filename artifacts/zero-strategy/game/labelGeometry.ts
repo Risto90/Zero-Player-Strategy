@@ -102,9 +102,34 @@ function visibleBoundaryPoints(rings: readonly LabelGeometryPoint[][], bounds: L
   return points;
 }
 
+type RingBounds = { left: number; top: number; right: number; bottom: number };
+const containmentBoundsCache = new WeakMap<readonly LabelGeometryPoint[][], readonly RingBounds[]>();
+
+function containmentBounds(rings: readonly LabelGeometryPoint[][]): readonly RingBounds[] {
+  const cached = containmentBoundsCache.get(rings);
+  if (cached) return cached;
+  const bounds = rings.map((ring): RingBounds => {
+    let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+    for (const point of ring) {
+      left = Math.min(left, point.x);
+      top = Math.min(top, point.y);
+      right = Math.max(right, point.x);
+      bottom = Math.max(bottom, point.y);
+    }
+    return { left, top, right, bottom };
+  });
+  containmentBoundsCache.set(rings, bounds);
+  return bounds;
+}
+
 function containsPoint(rings: readonly LabelGeometryPoint[][], x: number, y: number): boolean {
   let inside = false;
-  for (const ring of rings) {
+  const bounds = containmentBounds(rings);
+  for (let ringIndex = 0; ringIndex < rings.length; ringIndex += 1) {
+    const ring = rings[ringIndex];
+    const boundary = bounds[ringIndex];
+    if (x < boundary.left || x > boundary.right ||
+        y < boundary.top || y > boundary.bottom) continue;
     for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
       const a = ring[index], b = ring[previous];
       if ((a.y > y) !== (b.y > y) &&
