@@ -112,6 +112,7 @@ export class CityInfluenceIndex {
   private readonly anchors = new Map<number, number[]>();
   private readonly maxX = Math.ceil(MAP_WIDTH / BUCKET);
   private readonly maxY = Math.ceil(MAP_HEIGHT / BUCKET);
+  private hasOwnCities = false;
 
   constructor(
     private readonly world: World,
@@ -129,6 +130,7 @@ export class CityInfluenceIndex {
       const list = this.centers.get(key) ?? [];
       list.push(indexed);
       this.centers.set(key, list);
+      if (city.countryId === countryId) this.hasOwnCities = true;
       if (city.countryId !== countryId || !this.includeAnchors) continue;
       const r = Math.ceil(indexed.radius);
       const x0 = Math.max(0, x - r), x1 = Math.min(MAP_WIDTH - 1, x + r);
@@ -203,7 +205,8 @@ export class CityInfluenceIndex {
         }
       }
     }
-    if (this.countryId >= 0 && (nearestOwnCityId === null || nearestOwnDistance > 0)) {
+    // Без собственных городов ближайший всё равно останется неопределённым: обходить всю сетку незачем.
+    if (this.hasOwnCities && this.countryId >= 0 && (nearestOwnCityId === null || nearestOwnDistance > 0)) {
       for (let ring = 3; ring < Math.max(this.maxX, this.maxY); ring += 1) {
         for (let dx = -ring; dx <= ring; dx += 1) {
           for (const dy of [-ring, ring]) this.checkCities(bx + dx, by + dy, x, y, (city, distance) => {
@@ -232,7 +235,7 @@ export class CityInfluenceIndex {
         if (nearestOwnCityId !== null && nearestOwnDistance <= Math.max(0, (ring - 1) * BUCKET - MAX_CITY_RADIUS)) break;
       }
     }
-    const nearestAnchor = this.countryId >= 0 && needAnchor
+    const nearestAnchor = this.countryId >= 0 && needAnchor && this.anchors.size > 0
       ? this.nearestAnchor(x, y, bx, by)
       : { distance: Infinity, pixel: null };
     return {

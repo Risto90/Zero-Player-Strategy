@@ -60,6 +60,29 @@ function totalOwnedPopulation(world) {
   return total;
 }
 
+{
+  const { world, cities } = makeNearbyCityFixture(1, 0);
+  const influence = new CityInfluenceIndex(world, 0, true);
+  let distantCityBucketChecks = 0;
+  let distantAnchorBucketChecks = 0;
+  const checkCities = influence.checkCities.bind(influence);
+  const checkAnchors = influence.checkAnchors.bind(influence);
+  influence.checkCities = (...args) => {
+    distantCityBucketChecks += 1;
+    checkCities(...args);
+  };
+  influence.checkAnchors = (...args) => {
+    distantAnchorBucketChecks += 1;
+    checkAnchors(...args);
+  };
+  const result = influence.at(cities[0].pixel, true);
+  assert.equal(result.foreignRankSum, cities[0].rank, 'город чужого государства остаётся в расчёте влияния');
+  assert.equal(result.nearestOwnCityId, null, 'при отсутствии собственных городов ближайший город не назначается');
+  assert.equal(result.nearestOwnDistance, Infinity, 'при отсутствии собственных городов расстояние остаётся бесконечным');
+  assert.equal(distantCityBucketChecks, 0, 'при отсутствии собственных городов сетка далёких корзин не обходится');
+  assert.equal(distantAnchorBucketChecks, 0, 'при отсутствии якорей колонизации сетка не обходится');
+}
+
 function makeNearbyCityFixture(cityCount, foreignFrom = Infinity, countryPixels = 0) {
   const world = World.create('random', 82731);
   const culture = world.newCulture(null, 0);
