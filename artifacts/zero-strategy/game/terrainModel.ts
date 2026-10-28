@@ -6,11 +6,11 @@ export interface TerrainReliefPath {
   path: string;
 }
 
-const GRID_STEP = 24;
+const GRID_STEP = 8;
 const HEIGHT_EXAGGERATION = 0.004;
 const RIVER_BED_DEPTH_METERS = 250;
-const MATERIAL: readonly [number, number, number] = [151, 151, 129];
-const SHADE_COUNT = 12;
+const MATERIAL: readonly [number, number, number] = [183, 172, 145];
+const SHADE_COUNT = 24;
 const LIGHT = normalize3(-0.45, -0.58, 0.68);
 const modelCache = new WeakMap<World, TerrainReliefPath[]>();
 
@@ -20,9 +20,27 @@ function normalize3(x: number, y: number, z: number): [number, number, number] {
 }
 
 function shadeColor(index: number): string {
-  const light = 0.48 + (index / (SHADE_COUNT - 1)) * 0.7;
+  const light = 0.68 + (index / (SHADE_COUNT - 1)) * 0.42;
   const channel = (value: number) => Math.max(0, Math.min(255, Math.round(value * light))).toString(16).padStart(2, '0');
   return `#${channel(MATERIAL[0])}${channel(MATERIAL[1])}${channel(MATERIAL[2])}`;
+}
+
+function smoothedElevationAt(world: World, x: number, y: number): number {
+  let total = 0;
+  let count = 0;
+  for (const offsetY of [-GRID_STEP, 0, GRID_STEP]) {
+    const sampleY = Math.max(0, Math.min(MAP_HEIGHT - 1, y + offsetY));
+    for (const offsetX of [-GRID_STEP, 0, GRID_STEP]) {
+      const sampleX = Math.max(0, Math.min(MAP_WIDTH - 1, x + offsetX));
+      const pixel = sampleY * MAP_WIDTH + sampleX;
+      if (!world.land[pixel]) continue;
+      total += world.elevation[pixel];
+      count += 1;
+    }
+  }
+  const center = Math.max(0, Math.min(MAP_HEIGHT - 1, y)) * MAP_WIDTH +
+    Math.max(0, Math.min(MAP_WIDTH - 1, x));
+  return count ? total / count : world.elevation[center] ?? 0;
 }
 
 function pathPoint(x: number, y: number, height: number): string {
@@ -43,7 +61,9 @@ function triangleShade(a: [number, number, number], b: [number, number, number],
 
 /** Высота смещает точку вверх по экрану в проекции рельефа и на слое высот. */
 export function terrainProjectedY(world: World, pixel: number, mapY = Math.floor(pixel / MAP_WIDTH)): number {
-  return mapY - Math.max(0, world.elevation[pixel] ?? 0) * HEIGHT_EXAGGERATION;
+  const x = pixel % MAP_WIDTH;
+  const y = Math.floor(pixel / MAP_WIDTH);
+  return mapY - Math.max(0, smoothedElevationAt(world, x, y)) * HEIGHT_EXAGGERATION;
 }
 
 /** Русло немного ниже соседней поверхности; правило влияет только на визуальную проекцию. */
@@ -55,10 +75,10 @@ export function terrainRiverbedY(world: World, pixel: number, mapY = Math.floor(
 export function terrainTextColor(world: World, pixel: number): string {
   const x = pixel % MAP_WIDTH;
   const y = Math.floor(pixel / MAP_WIDTH);
-  const west = world.elevation[y * MAP_WIDTH + Math.max(0, x - GRID_STEP)] ?? 0;
-  const east = world.elevation[y * MAP_WIDTH + Math.min(MAP_WIDTH - 1, x + GRID_STEP)] ?? 0;
-  const north = world.elevation[Math.max(0, y - GRID_STEP) * MAP_WIDTH + x] ?? 0;
-  const south = world.elevation[Math.min(MAP_HEIGHT - 1, y + GRID_STEP) * MAP_WIDTH + x] ?? 0;
+  const west = smoothedElevationAt(world, Math.max(0, x - GRID_STEP), y);
+  const east = smoothedElevationAt(world, Math.min(MAP_WIDTH - 1, x + GRID_STEP), y);
+  const north = smoothedElevationAt(world, x, Math.max(0, y - GRID_STEP));
+  const south = smoothedElevationAt(world, x, Math.min(MAP_HEIGHT - 1, y + GRID_STEP));
   const normal = normalize3(
     -((east - west) * HEIGHT_EXAGGERATION) / (GRID_STEP * 2),
     -((south - north) * HEIGHT_EXAGGERATION) / (GRID_STEP * 2),
@@ -83,6 +103,7 @@ export function terrainReliefPaths(world: World): TerrainReliefPath[] {
     Math.min(MAP_WIDTH - 1, index * GRID_STEP));
   const yCoordinates = Array.from({ length: Math.ceil((MAP_HEIGHT - 1) / GRID_STEP) + 1 }, (_, index) =>
     Math.min(MAP_HEIGHT - 1, index * GRID_STEP));
+  const heights = yCoordinates.map((y) => xCoordinates.map((x) => smoothedElevationAt(world, x, y)));
 
   for (let row = 0; row < yCoordinates.length - 1; row += 1) {
     const y0 = yCoordinates[row], y1 = yCoordinates[row + 1];
@@ -97,7 +118,9 @@ export function terrainReliefPaths(world: World): TerrainReliefPath[] {
       const points: [number, number, number][] = pixels.map((pixel, index) => [
         index === 0 || index === 3 ? x0 : x1,
         index < 2 ? y0 : y1,
-        world.elevation[pixel],
+        index === 0 ? heights[row][column] :
+          index === 1 ? heights[row][column + 1] :
+            index === 2 ? heights[row + 1][column + 1] : heights[row + 1][column],
       ]);
       const triangles = [[0, 1, 2], [0, 2, 3]] as const;
       for (const [ia, ib, ic] of triangles) {
