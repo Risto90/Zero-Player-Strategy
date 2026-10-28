@@ -45,6 +45,32 @@ const raster = new Uint8Array(MAP_PIXELS);
 rasterizeScalar([{ value: 1, rings: islands.rings() }], raster);
 assert.deepEqual([...raster.keys()].filter((p) => raster[p] === 1), pixels(islands), 'Кольца точно восстанавливают площадь с дырой');
 
+const fullMapRing = ContourArea.rectangle({ x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 }).rings();
+assert.equal(fullMapRing.length, 1, 'Весь прямоугольник карты остаётся одним кольцом');
+assert.equal(fullMapRing[0].length, 8, 'Кольцо большого прямоугольника хранит только четыре угла');
+assert.deepEqual([...fullMapRing[0]], [0, 0, MAP_WIDTH, 0, MAP_WIDTH, MAP_HEIGHT, 0, MAP_HEIGHT],
+  'Большая граница строится из длинных векторов без прохода по её пикселям');
+
+let ringSeed = 71;
+for (let iteration = 0; iteration < 12; iteration += 1) {
+  const maskForRings = new Uint8Array(MAP_PIXELS);
+  for (let y = 0; y < 32; y += 1) {
+    for (let x = 0; x < 32; x += 1) {
+      ringSeed = (Math.imul(ringSeed, 1664525) + 1013904223) >>> 0;
+      if ((ringSeed >>> 28) < 6) maskForRings[y * MAP_WIDTH + x] = 1;
+    }
+  }
+  const randomArea = ContourArea.fromBinaryMask(maskForRings, { x0: 0, y0: 0, x1: 31, y1: 31 });
+  const restored = new Uint8Array(MAP_PIXELS);
+  rasterizeScalar([{ value: 1, rings: randomArea.rings() }], restored);
+  for (let y = 0; y < 32; y += 1) {
+    for (let x = 0; x < 32; x += 1) {
+      const pixel = y * MAP_WIDTH + x;
+      assert.equal(restored[pixel], maskForRings[pixel], `Кольцо точно восстанавливает случайную ячейку ${x}:${y}`);
+    }
+  }
+}
+
 const values = new Uint8Array(MAP_PIXELS).fill(20);
 const layer = new ScalarContourLayer(() => values);
 const bounds = { x0: 0, y0: 0, x1: 80, y1: 80 };
