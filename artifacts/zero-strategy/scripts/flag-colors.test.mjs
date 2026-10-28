@@ -87,6 +87,29 @@ assert.equal(solved.palette.s1.color_id === solved.palette.s2.color_id, false, '
 const repeated = solveFlagPalette(spec, { ...options, random: makeRandom(97) });
 assert.deepEqual(repeated, solved, 'identical deterministic streams produce identical palette and diagnostics');
 
+const numericRaster = {
+  width: 4,
+  height: 2,
+  pixelSize: 30,
+  values: Uint8Array.from([0, 0, 1, 1, 0, 0, 1, 1]),
+  slotIds: { 0: 's1', 1: 's2' },
+};
+const numericSolved = solveFlagPalette(spec, {
+  ...options,
+  slotRaster: numericRaster,
+  random: makeRandom(97),
+});
+assert.deepEqual(numericSolved, solved, 'числовой растр должен сохранять результаты строкового растра');
+assert.deepEqual(
+  validateFlagPalette(spec, numericSolved.palette, {
+    slotRaster: numericRaster,
+    era: 0,
+    chargeBackgrounds: options.chargeBackgrounds,
+  }),
+  numericSolved.checks,
+  'проверка сохранённой палитры должна совпадать для числового растра',
+);
+
 const strictFailure = solveFlagPalette(spec, {
   ...options,
   random: makeRandom(13),
@@ -98,6 +121,18 @@ const strictFailure = solveFlagPalette(spec, {
 });
 assert.equal(strictFailure.success, false, 'strict tincture rejects adjacent color/color fields');
 assert.ok(strictFailure.attempts > 0, 'solver returns its deterministic attempt count on failure');
+
+const impossibleC5 = solveFlagPalette(spec, {
+  ...options,
+  slotRaster: {
+    width: 10,
+    height: 1,
+    pixelSize: 30,
+    values: [...Array(9).fill('s1'), 's2'],
+  },
+});
+assert.equal(impossibleC5.success, false, 'C5 rejects a symbolic slot that alone exceeds the maximum color share');
+assert.equal(impossibleC5.attempts, 0, 'impossible C5 geometry is rejected before resampling palettes');
 
 const eraFailure = solveFlagPalette(spec, {
   ...options,

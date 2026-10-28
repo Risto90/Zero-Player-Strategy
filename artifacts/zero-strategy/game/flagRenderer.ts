@@ -1,5 +1,5 @@
 import { buildFlagField, type FlagFieldNode, type FlagFieldFrame, type FlagPolygon, type FlagPolygonSet, type FlagPoint } from './flagField';
-import { validateFlagEmblem, type EmblemPrimitive } from './flagEmblems';
+import { validateFlagEmblem, type EmblemNode, type EmblemPrimitive } from './flagEmblems';
 import { buildFlagOrdinaryLayers } from './flagOrdinaries';
 import { buildFlagOutline, type OutlinePoint } from './flagOutlines';
 import { assertValidFlagSpec, type FlagFrame, type FlagLayer, type FlagNode, type FlagSpec } from './flagSpec';
@@ -7,6 +7,7 @@ import { assertValidFlagSpec, type FlagFrame, type FlagLayer, type FlagNode, typ
 const HEIGHT = 1200;
 const NUMBER_PRECISION = 1;
 const EPSILON = 1e-9;
+const renderedSvgCache = new WeakMap<object, { signature: string; svg: string }>();
 
 interface FrameBox {
   x: number;
@@ -59,6 +60,20 @@ function number(value: number): string {
 function pointPath(points: readonly { x: number; y: number }[]): string {
   if (points.length < 3) throw new RangeError('SVG polygon needs at least three points');
   return `M${number(points[0].x)} ${number(points[0].y)}${points.slice(1).map((p) => ` L${number(p.x)} ${number(p.y)}`).join('')} Z`;
+}
+
+function signedPolygonArea(points: readonly { x: number; y: number }[]): number {
+  return points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point.x * next.y - next.x * point.y;
+  }, 0) / 2;
+}
+
+function compoundPath(polygons: readonly (readonly { x: number; y: number }[])[]): string {
+  return polygons.map((polygon) => {
+    const points = signedPolygonArea(polygon) < 0 ? [...polygon].reverse() : polygon;
+    return pointPath(points);
+  }).join(' ');
 }
 
 function colorFor(fill: unknown, context: RenderContext): string {
@@ -134,11 +149,10 @@ function emitPolygons(
   context: RenderContext,
 ): string {
   const color = colorFor(fill, context);
-  const shapes = clipPolygonsToSvgRange(polygons, state.width).map((polygon) =>
-    `<polygon points="${polygon.map(({ x, y }) => `${number(x)},${number(y)}`).join(' ')}" fill="${color}"/>`).join('');
-  if (!shapes) return '';
+  const bounded = clipPolygonsToSvgRange(polygons, state.width);
+  if (!bounded.length) return '';
   const id = layerId(state, role, type);
-  return `<g id="${id}">${clippedMarkup(shapes, context.clips)}</g>`;
+  return `<g id="${id}">${clippedMarkup(`<path d="${compoundPath(bounded)}" fill="${color}"/>`, context.clips)}</g>`;
 }
 
 function circlePoints(cx: number, cy: number, radius: number, samples = 96): FlagPolygon {
@@ -313,6 +327,16 @@ function shapePoints(shapeInput: unknown, frame: FrameBox): { polygons: FlagPoly
     const cutouts = Array.isArray(shape.cutouts) ? shape.cutouts.map(points) : [];
     return { polygons: [polygon, ...cutouts], ...(cutouts.length ? { fillRule: 'evenodd' as const } : {}) };
   }
+  if (type === 'multipolygon') {
+    if (!Array.isArray(shape.polygons) || shape.polygons.length === 0) {
+      throw new TypeError('Multipolygon shape requires a non-empty polygons array');
+    }
+    const polygons = shape.polygons.map(points);
+    if (polygons.some((polygon) => polygon.length < 3)) {
+      throw new RangeError('Every multipolygon contour must contain at least three points');
+    }
+    return { polygons };
+  }
   if (type === 'circle' || type === 'disc' || type === 'ring') {
     const cx = finite(shape.cx ?? shape.center?.u, 0.5, 'shape.cx');
     const cy = finite(shape.cy ?? shape.center?.v, 0.5, 'shape.cy');
@@ -408,25 +432,33 @@ function emitShape(
     const scale = finite(shape.diameter ?? shape.size, finite(shape.radius, 0.2, 'shape.radius') * 2, 'shape.diameter');
     const cx = finite(shape.cx ?? shape.center?.u, 0.5, 'shape.cx');
     const cy = finite(shape.cy ?? shape.center?.v, 0.5, 'shape.cy');
-    const built = validateFlagEmblem({ module: moduleId as any, params }, {
+    const emblemNode = shape.node && typeof shape.node === 'object' && !Array.isArray(shape.node)
+      ? shape.node as unknown as EmblemNode
+      : { module: moduleId as any, params };
+    const built = validateFlagEmblem(emblemNode, {
       scale,
       canvasHeight: Math.min(context.frame.width, context.frame.height),
-      rng: deterministicRandom(`${state.seed}:${layer.id}:${stableStringify(params)}`),
+      rng: deterministicRandom(`${state.seed}:${layer.id}:${stableStringify(shape.node ?? params)}`),
     });
     const center = { x: context.frame.x + cx * context.frame.width, y: context.frame.y + cy * context.frame.height };
     const emblemScale = scale * Math.min(context.frame.width, context.frame.height);
     const angle = finite(shape.rotate ?? shape.rotation, 0, 'shape.rotate') * Math.PI / 180;
-    const primitives: string[] = [];
+    const pathsByColor = new Map<string, string[]>();
     for (const primitive of built.primitives) {
       const primitiveColor = primitive.fill === 'inner'
         ? colorFor(shape.inner_fill ?? layer.fill, context)
         : primitive.fill === 'detail'
           ? colorFor(shape.detail_fill ?? layer.fill, context)
           : colorFor(shape.outer_fill ?? layer.fill, context);
-      primitives.push(renderEmblemPrimitive(primitive, center, emblemScale, angle, primitiveColor, state.width));
+      const paths = pathsByColor.get(primitiveColor) ?? [];
+      paths.push(renderEmblemPrimitive(primitive, center, emblemScale, angle, state.width, shape.mirror === true));
+      pathsByColor.set(primitiveColor, paths);
     }
     const id = layerId(state, layer.role, module.toLowerCase());
-    return `<g id="${id}">${clippedMarkup(primitives.join(''), normalizedContext.clips)}</g>`;
+    const markup = [...pathsByColor.entries()]
+      .map(([primitiveColor, paths]) => `<path d="${paths.join(' ')}" fill="${primitiveColor}"/>`)
+      .join('');
+    return `<g id="${id}">${clippedMarkup(markup, normalizedContext.clips)}</g>`;
   }
   if (/^O0[1-7]$/.test(type.toUpperCase())) {
     const built = buildFlagOrdinaryLayers([{ type: type.toUpperCase() as any, params, fill: layer.fill }], {
@@ -441,8 +473,7 @@ function emitShape(
   const bounded = clipPolygonsToSvgRange(geometry.polygons, state.width);
   const paths = geometry.fillRule
     ? `<path d="${bounded.map(pointPath).join(' ')}" fill="${fill}" fill-rule="${geometry.fillRule}"/>`
-    : bounded.map((polygon) =>
-      `<polygon points="${polygon.map(({ x, y }) => `${number(x)},${number(y)}`).join(' ')}" fill="${fill}"/>`).join('');
+    : `<path d="${compoundPath(bounded)}" fill="${fill}"/>`;
   return `<g id="${id}">${clippedMarkup(paths, normalizedContext.clips)}</g>`;
 }
 
@@ -451,23 +482,22 @@ function renderEmblemPrimitive(
   center: FlagPoint,
   scale: number,
   angle: number,
-  fill: string,
   maxWidth: number,
+  mirror = false,
 ): string {
   const apply = ({ x, y }: { x: number; y: number }) => ({
-    x: center.x + scale * (x * Math.cos(angle) - y * Math.sin(angle)),
-    y: center.y + scale * (x * Math.sin(angle) + y * Math.cos(angle)),
+    x: center.x + scale * ((mirror ? -x : x) * Math.cos(angle) - y * Math.sin(angle)),
+    y: center.y + scale * ((mirror ? -x : x) * Math.sin(angle) + y * Math.cos(angle)),
   });
   if (primitive.kind === 'circle') {
     const p = apply(primitive.center);
     const radius = primitive.radius * scale;
     if (p.x - radius >= -HEIGHT * 0.1 && p.x + radius <= maxWidth + HEIGHT * 0.1 &&
       p.y - radius >= -HEIGHT * 0.1 && p.y + radius <= HEIGHT * 1.1) {
-      return `<circle cx="${number(p.x)}" cy="${number(p.y)}" r="${number(radius)}" fill="${fill}"/>`;
+      return `M${number(p.x - radius)} ${number(p.y)} A${number(radius)} ${number(radius)} 0 1 0 ${number(p.x + radius)} ${number(p.y)} A${number(radius)} ${number(radius)} 0 1 0 ${number(p.x - radius)} ${number(p.y)} Z`;
     }
     const clipped = clipPolygonsToSvgRange([circlePoints(p.x, p.y, radius)], maxWidth);
-    return clipped.map((polygon) =>
-      `<polygon points="${polygon.map((point) => `${number(point.x)},${number(point.y)}`).join(' ')}" fill="${fill}"/>`).join('');
+    return compoundPath(clipped);
   }
   if (primitive.kind === 'ring') {
     const p = apply(primitive.center);
@@ -475,14 +505,13 @@ function renderEmblemPrimitive(
     if (p.x - outer < -HEIGHT * 0.1 || p.x + outer > maxWidth + HEIGHT * 0.1 ||
       p.y - outer < -HEIGHT * 0.1 || p.y + outer > HEIGHT * 1.1) {
       const rings = clipPolygonsToSvgRange([circlePoints(p.x, p.y, outer), circlePoints(p.x, p.y, inner)], maxWidth);
-      return `<path d="${rings.map(pointPath).join(' ')}" fill="${fill}" fill-rule="evenodd"/>`;
+      const [outerRing, innerRing] = rings;
+      return `${outerRing ? pointPath(outerRing) : ''}${innerRing ? ` ${pointPath([...innerRing].reverse())}` : ''}`;
     }
-    const d = `M${number(p.x - outer)} ${number(p.y)} A${number(outer)} ${number(outer)} 0 1 0 ${number(p.x + outer)} ${number(p.y)} A${number(outer)} ${number(outer)} 0 1 0 ${number(p.x - outer)} ${number(p.y)} Z M${number(p.x - inner)} ${number(p.y)} A${number(inner)} ${number(inner)} 0 1 1 ${number(p.x + inner)} ${number(p.y)} A${number(inner)} ${number(inner)} 0 1 1 ${number(p.x - inner)} ${number(p.y)} Z`;
-    return `<path d="${d}" fill="${fill}" fill-rule="evenodd"/>`;
+    return `M${number(p.x - outer)} ${number(p.y)} A${number(outer)} ${number(outer)} 0 1 0 ${number(p.x + outer)} ${number(p.y)} A${number(outer)} ${number(outer)} 0 1 0 ${number(p.x - outer)} ${number(p.y)} Z M${number(p.x - inner)} ${number(p.y)} A${number(inner)} ${number(inner)} 0 1 1 ${number(p.x + inner)} ${number(p.y)} A${number(inner)} ${number(inner)} 0 1 1 ${number(p.x - inner)} ${number(p.y)} Z`;
   }
   const polygon = clipPolygonsToSvgRange([primitive.points.map(apply)], maxWidth);
-  return polygon.map((points) =>
-    `<polygon points="${points.map((point) => `${number(point.x)},${number(point.y)}`).join(' ')}" fill="${fill}"/>`).join('');
+  return compoundPath(polygon);
 }
 
 function deterministicRandom(seed: string): () => number {
@@ -634,6 +663,7 @@ function renderNode(state: RenderState, node: FlagNode, context: RenderContext):
       const sourceId = `${id}-source`;
       state.defs.push(`<g id="${sourceId}">${template}</g>`);
       const { x, y, width, height } = context.frame;
+      const centerX = x + width / 2, centerY = y + height / 2;
       return placements(node.pattern).map((placement) => {
         const px = x + placement.u * width, py = y + placement.v * height;
         const transforms = [`translate(${number(px)} ${number(py)})`];
@@ -641,7 +671,7 @@ function renderNode(state: RenderState, node: FlagNode, context: RenderContext):
         if (placement.scale !== 1 || placement.mirror) {
           transforms.push(`scale(${number(placement.mirror ? -placement.scale : placement.scale)} ${number(placement.scale)})`);
         }
-        transforms.push(`translate(${number(-px)} ${number(-py)})`);
+        transforms.push(`translate(${number(-centerX)} ${number(-centerY)})`);
         return `<use href="#${sourceId}" transform="${transforms.join(' ')}"/>`;
       }).join('');
     }
@@ -708,10 +738,17 @@ function outlinePath(points: readonly OutlinePoint[]): string {
 }
 
 /**
- * Converts a saved FlagSpec to deterministic, compact SVG using only the
- * geometry modules and SVG elements permitted by §17.
+ * Преобразует сохранённый FlagSpec в детерминированный компактный SVG,
+ * используя только геометрические модули и элементы SVG, разрешённые §17.
  */
 export function renderFlagSpec(spec: FlagSpec, options: { embed_metadata?: boolean } = {}): string {
+  const cacheable = spec !== null && typeof spec === 'object';
+  const signature = cacheable
+    ? `${options.embed_metadata === true ? 'metadata' : 'plain'}:${stableStringify(spec)}`
+    : '';
+  const cached = cacheable ? renderedSvgCache.get(spec as object) : undefined;
+  if (cached?.signature === signature) return cached.svg;
+
   assertValidFlagSpec(spec);
   const outline = spec.outline.type === 'RECT'
     ? {
@@ -753,6 +790,7 @@ export function renderFlagSpec(spec: FlagSpec, options: { embed_metadata?: boole
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${number(outline.width)} ${HEIGHT}"><defs>${state.defs.join('')}</defs>${metadata}<g clip-path="url(#clip-outline)">${body}</g></svg>`;
   const bytes = new TextEncoder().encode(svg).length;
   if (bytes > 30 * 1024) throw new RangeError(`Rendered SVG exceeds the 30 KB limit (${bytes} bytes)`);
+  if (cacheable) renderedSvgCache.set(spec as object, { signature, svg });
   return svg;
 }
 
@@ -760,5 +798,5 @@ function escapeXml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-/** Short alias matching the logical renderer interface in the specification. */
+/** Краткий псевдоним логического интерфейса рендерера из спецификации. */
 export const render = renderFlagSpec;

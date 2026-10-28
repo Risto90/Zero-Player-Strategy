@@ -3,6 +3,9 @@ import { FLAG_NOVELTY_CONFIG } from './flagNoveltyConfig';
 import { FLAG_PROFILE_CONFIG, type FlagProfileConfig } from './flagProfileConfig';
 import { deltaE76 } from './flagColors';
 import type { FlagNode, FlagSpec } from './flagSpec';
+import { buildFlagField, type FlagFieldOperator } from './flagField';
+import { buildFlagOutline } from './flagOutlines';
+import { flagStageRandom } from './random';
 
 const HASH_MASK = (1n << 64n) - 1n;
 const REFERENCE_RASTER_WIDTH = FLAG_NOVELTY_CONFIG.referenceRasterWidth;
@@ -131,8 +134,10 @@ export function visualHash(spec: FlagSpec): string {
 
 /** Записывает вычисленные хеши в meta перед сохранением или выдачей FlagSpec. */
 export function stampFlagHashes(spec: FlagSpec): FlagSpec {
-  spec.meta.structure_hash = structureHash(spec);
-  spec.meta.visual_hash = visualHash(spec);
+  const structuralHash = structureHash(spec);
+  const palette = Object.fromEntries(spec.slots.items.map((slot) => [slot, spec.palette[slot]?.hex?.toUpperCase() ?? null]));
+  spec.meta.structure_hash = structuralHash;
+  spec.meta.visual_hash = fnv64(`${structuralHash}|${stableJson(palette)}`);
   return spec;
 }
 
@@ -196,6 +201,8 @@ function fieldOperator(spec: FlagSpec): string {
 function moduleName(shape: unknown): string {
   const value = object(shape);
   const candidate = String(value?.module ?? value?.type ?? value?.kind ?? 'NONE').toUpperCase();
+  const moduleId = /^M(\d{2})$/.exec(candidate);
+  if (moduleId) return MODULE_CATALOG[Number(moduleId[1]) - 1] ?? 'OTHER';
   return MODULE_CATALOG.includes(candidate as typeof MODULE_CATALOG[number]) ? candidate : (candidate === 'NONE' ? 'NONE' : 'OTHER');
 }
 
@@ -253,6 +260,17 @@ function writeRect(raster: FlagRaster, x0: number, y0: number, x1: number, y1: n
   const maxY = Math.min(raster.height, Math.ceil(Math.max(y0, y1)));
   for (let y = minY; y < maxY; y += 1) for (let x = minX; x < maxX; x += 1) {
     raster.colors[y * raster.width + x] = color;
+  }
+}
+
+function paintPolygon(raster: FlagRaster, points: readonly { x: number; y: number }[], color: string): void {
+  if (points.length < 3) return;
+  const minX = Math.max(0, Math.floor(Math.min(...points.map(({ x }) => x))));
+  const maxX = Math.min(raster.width, Math.ceil(Math.max(...points.map(({ x }) => x))));
+  const minY = Math.max(0, Math.floor(Math.min(...points.map(({ y }) => y))));
+  const maxY = Math.min(raster.height, Math.ceil(Math.max(...points.map(({ y }) => y))));
+  for (let y = minY; y < maxY; y += 1) for (let x = minX; x < maxX; x += 1) {
+    if (containsPolygon(x + 0.5, y + 0.5, points)) raster.colors[y * raster.width + x] = color;
   }
 }
 
@@ -327,49 +345,24 @@ function paintNode(spec: FlagSpec, raster: FlagRaster, node: FlagNode): void {
   } else if (node.kind === 'split') {
     const op = node.op.toUpperCase();
     const params = node.params as Record<string, unknown>;
-    if (!['G02', 'BANDS', 'G04', 'SPLIT2', 'G05', 'QUARTERLY'].includes(op)) {
-      throw new TypeError(`Оператор поля "${op}" не поддерживается растеризатором новизны; передайте адаптер rasterize`);
-    }
     if (node.children.some((child) => child.kind !== 'fill')) {
       throw new TypeError(`Вложенные разбиения "${op}" требуют адаптера rasterize`);
     }
-    const colors = node.children.map((child) => child.kind === 'fill' ? fillColor(spec, child.fill) : null);
-    if (op === 'G02' || op === 'BANDS') {
-      const axis = String(params.axis ?? 'H').toUpperCase();
-      const total = axis === 'V' ? raster.width : raster.height;
-      const weights = Array.isArray(params.weights) ? params.weights.map(Number) : node.children.map(() => 1);
-      const sum = weights.reduce((a, b) => a + b, 0) || node.children.length;
-      let cursor = 0;
-      node.children.forEach((_, index) => {
-        const next = index === node.children.length - 1 ? total : cursor + total * (weights[index] ?? 1) / sum;
-        if (colors[index]) {
-          if (axis === 'V') writeRect(raster, cursor, 0, next, raster.height, colors[index] as string);
-          else writeRect(raster, 0, cursor, raster.width, next, colors[index] as string);
-        }
-        cursor = next;
-      });
-    } else if (op === 'G04' || op === 'SPLIT2') {
-      const mode = String(params.mode ?? params.type ?? params.axis ?? 'PALE').toUpperCase();
-      const p = Number(params.position ?? 0.5);
-      for (let y = 0; y < raster.height; y += 1) for (let x = 0; x < raster.width; x += 1) {
-        const fractionX = (x + 0.5) / raster.width, fractionY = (y + 0.5) / raster.height;
-        const first = mode.includes('FESS') ? fractionY < p
-          : mode.includes('BEND') || mode.includes('DIAG') ? fractionX + fractionY < 1
-            : fractionX < p;
-        const color = colors[first ? 0 : 1];
-        if (color) raster.colors[y * raster.width + x] = color;
-      }
-    } else if (op === 'G05' || op === 'QUARTERLY') {
-      const point = object(params.point) ?? {};
-      const splitX = Number(point.u ?? params.px ?? 0.5);
-      const splitY = Number(point.v ?? params.py ?? 0.5);
-      for (let y = 0; y < raster.height; y += 1) for (let x = 0; x < raster.width; x += 1) {
-        const right = (x + 0.5) / raster.width >= splitX;
-        const bottom = (y + 0.5) / raster.height >= splitY;
-        const quadrant = bottom ? (right ? 3 : 2) : (right ? 1 : 0);
-        const color = colors[quadrant];
-        if (color) raster.colors[y * raster.width + x] = color;
-      }
+    const aliases: Record<string, FlagFieldOperator> = {
+      BANDS: 'G02', SPLIT2: 'G04', QUARTERLY: 'G05',
+    };
+    const field = buildFlagField({
+      op: aliases[op] ?? op as FlagFieldOperator,
+      params,
+    }, { x0: 0, y0: 0, w: raster.width, h: raster.height }, {
+      canvasHeight: raster.height,
+      slots: node.children.map((child) => child.kind === 'fill' && typeof child.fill === 'string' ? child.fill : ''),
+      random: flagStageRandom(spec.seed, 'S9_NOVELTY', 0),
+    });
+    for (const layer of field.paintLayers) {
+      const color = fillColor(spec, layer.slot);
+      if (!color) continue;
+      for (const polygon of layer.polygons) paintPolygon(raster, polygon, color);
     }
   } else if (node.kind === 'layer') {
     const color = fillColor(spec, node.layer.fill);
@@ -386,46 +379,26 @@ function paintNode(spec: FlagSpec, raster: FlagRaster, node: FlagNode): void {
   }
 }
 
+const outlineRasterCache = new WeakMap<FlagSpec, { boundary: { x: number; y: number }[]; cutouts: { x: number; y: number }[][] }>();
+
 function inFlagOutline(spec: FlagSpec, x: number, y: number, width: number, height: number): boolean {
-  const u = x / width, v = y / height;
-  const params = spec.outline.params;
-  const ratio = (keys: string[], fallback: number) => {
-    for (const key of keys) {
-      const value = params[key];
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        return value > 1 ? value / 1200 : value;
-      }
-    }
-    return fallback;
-  };
-  let points: { x: number; y: number }[] | undefined;
-  if (spec.outline.type === 'PENNANT') {
-    const thickness = ratio(['thickness_ratio', 'thickness', 't'], 0);
-    points = [{ x: 0, y: 0 }, { x: 1, y: 0.5 - thickness / 2 }, { x: 1, y: 0.5 + thickness / 2 }, { x: 0, y: 1 }];
-  } else if (spec.outline.type === 'SWALLOW') {
-    const depth = ratio(['depth_ratio', 'depth', 'd'], 0.1);
-    points = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1 - depth, y: 0.5 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
-  } else if (spec.outline.type === 'DOUBLE_PENNANT') {
-    const y = ratio(['waist_y', 'ys'], 0.5);
-    const outer = ratio(['outer_point_x', 'w1'], 0.7);
-    const inner = ratio(['inner_point_x', 'xn'], 0.35);
-    points = [{ x: 0, y: 0 }, { x: outer, y }, { x: inner, y }, { x: 1, y: 1 }, { x: 0, y: 1 }];
-  } else if (spec.outline.type === 'BANNER') {
-    const lower = String(params.lowerEdge ?? params.lower_edge ?? 'STRAIGHT').toUpperCase();
-    if (!['STRAIGHT', 'POINT'].includes(lower)) {
-      throw new TypeError(`Нижний край знамени "${lower}" требует адаптера rasterize`);
-    }
-    if (lower === 'POINT') {
-      const depth = ratio(['point_depth_ratio', 'point_depth'], 0.15);
-      points = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 - depth }, { x: 0.5, y: 1 }, { x: 0, y: 1 - depth }];
-    } else {
-      points = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
-    }
+  if (spec.outline.type === 'RECT' && spec.outline.params.edge === undefined) return true;
+  let rasterOutline = outlineRasterCache.get(spec);
+  if (!rasterOutline) {
+    const outline = buildFlagOutline({
+      type: spec.outline.type as any,
+      aspect: spec.outline.aspect,
+      params: spec.outline.params as any,
+    });
+    rasterOutline = {
+      boundary: outline.boundary.map((point) => ({ x: point.x * width / outline.width, y: point.y * height / outline.height })),
+      cutouts: outline.cutouts.map((cutout) =>
+        cutout.map((point) => ({ x: point.x * width / outline.width, y: point.y * height / outline.height }))),
+    };
+    outlineRasterCache.set(spec, rasterOutline);
   }
-  if (!['RECT', 'PENNANT', 'SWALLOW', 'DOUBLE_PENNANT', 'BANNER'].includes(spec.outline.type)) {
-    throw new TypeError(`Контур "${spec.outline.type}" требует адаптера rasterize`);
-  }
-  return !points || containsPolygon(u, v, points);
+  return containsPolygon(x + 0.5, y + 0.5, rasterOutline.boundary) &&
+    !rasterOutline.cutouts.some((cutout) => containsPolygon(x + 0.5, y + 0.5, cutout));
 }
 
 /** Растеризатор простого подмножества FlagSpec для воспроизводимого сравнения эталонов. */

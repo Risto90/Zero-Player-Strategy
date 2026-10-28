@@ -147,6 +147,25 @@ const outOfRangeCoordinate = makeSpec();
 outOfRangeCoordinate.root.ground.params.origin.u = 1.01;
 assert.ok(validateFlagSpec(outOfRangeCoordinate).some((issue) => issue.path.endsWith('.origin.u')));
 
+const offCanvasGyronnyFan = makeSpec();
+offCanvasGyronnyFan.root.ground.op = 'G08';
+offCanvasGyronnyFan.root.ground.params = { fan: true, center: { u: -0.3, v: 0.5 } };
+offCanvasGyronnyFan.root.ground.children = Array.from(
+  { length: 8 },
+  () => ({ kind: 'fill', fill: 's1' }),
+);
+assert.deepEqual(
+  validateFlagSpec(offCanvasGyronnyFan),
+  [],
+  'центр веера G08 может выходить за полотнище в заданном диапазоне',
+);
+const outOfRangeGyronnyFan = structuredClone(offCanvasGyronnyFan);
+outOfRangeGyronnyFan.root.ground.params.center.u = 1.3001;
+assert.ok(
+  validateFlagSpec(outOfRangeGyronnyFan).some((issue) => issue.path.endsWith('.center.u')),
+  'центр веера G08 не должен выходить за настроенный диапазон',
+);
+
 const outOfRangeBoundary = makeSpec();
 outOfRangeBoundary.root.ground.children[1].children[3].boundary.point.v = -0.01;
 assert.ok(validateFlagSpec(outOfRangeBoundary).some((issue) => issue.path.endsWith('.boundary.point.v')));

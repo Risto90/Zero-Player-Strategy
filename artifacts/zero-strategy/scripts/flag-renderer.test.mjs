@@ -44,6 +44,11 @@ for (const { id, spec } of FLAG_REFERENCE_CORPUS) {
 const source = FLAG_REFERENCE_CORPUS.find(({ id }) => id === 'japan').spec;
 const clone = () => structuredClone(source);
 
+const mutable = clone();
+const originalMutableSvg = renderFlagSpec(mutable);
+mutable.palette.s2.hex = '#000000';
+assert.notEqual(renderFlagSpec(mutable), originalMutableSvg, 'изменённая спецификация не использует устаревший SVG из кэша');
+
 const notch = clone();
 notch.outline = { ...notch.outline, type: 'SWALLOW', aspect: 1.5, params: { depth: 180, notchCount: 1, notchShape: 'V' } };
 const notchSvg = renderFlagSpec(notch);
@@ -114,6 +119,40 @@ assert.equal((repeatSvg.match(/<use href=/g) ?? []).length, 8, 'repeat emits one
 assert.ok(repeatSvg.includes('repeat-source'), 'repeated emblem geometry is shared in defs');
 inspectSvg(repeatSvg);
 
+const repeatedModule = clone();
+repeatedModule.root.layers = [{
+  kind: 'repeat',
+  pattern: {
+    placements: [
+      { u: 0.82, v: 0.5, rotation: 45, scale: 1, mirror: true },
+      { u: 0.18, v: 0.5, rotation: 0, scale: 1, mirror: false },
+    ],
+  },
+  child: {
+    kind: 'layer',
+    layer: {
+      id: 'repeated-module',
+      role: 'charge',
+      shape: { type: 'M03', node: { module: 'M03', params: { points: 5, innerRatio: 0.45 } },
+        diameter: 0.16, cx: 0.5, cy: 0.5 },
+      transform: {},
+      fill: 's2',
+      clip: ['flag-outline'],
+      tags: ['charge'],
+      cost: 1,
+    },
+  },
+}];
+const repeatedModuleSvg = renderFlagSpec(repeatedModule);
+assert.equal((repeatedModuleSvg.match(/<use href=/g) ?? []).length, 2,
+  'повторитель модуля создаёт отдельную ссылку для каждого размещения');
+assert.ok(repeatedModuleSvg.includes('translate(1476 600) rotate(45) scale(-1 1) translate(-900 -600)'),
+  'повторный экземпляр переносится из центра шаблона в заданную точку с поворотом и отражением');
+const moduleSource = repeatedModuleSvg.match(/<g id="L\d+-charge-repeat-source">([\s\S]*?)<\/g>/)?.[1] ?? '';
+assert.equal((moduleSource.match(/<path\b/g) ?? []).length, 1,
+  'геометрия повторяемого модуля хранится одним составным путём на цвет');
+inspectSvg(repeatedModuleSvg);
+
 const transformed = clone();
 transformed.root.layers = [{
   kind: 'layer',
@@ -155,4 +194,38 @@ const ringSvg = renderFlagSpec(ring);
 assert.ok(ringSvg.includes('fill-rule="evenodd"'), 'ring cutout uses even-odd fill');
 inspectSvg(ringSvg);
 
-console.log(`Flag SVG renderer checks passed for ${FLAG_REFERENCE_CORPUS.length} references and complex compositions.`);
+const concentric = clone();
+concentric.root.ground = {
+  kind: 'split',
+  op: 'G12',
+  params: { n: 3, figure: 'circle', pattern: 'CYC', weights: { kind: 'equal' }, slots: ['s1', 's2', 's1'] },
+  children: [{ kind: 'fill', fill: 's1' }, { kind: 'fill', fill: 's2' }, { kind: 'fill', fill: 's1' }],
+};
+const concentricSvg = renderFlagSpec(concentric);
+const concentricRegions = [...concentricSvg.matchAll(/<g id="L\d+-ground-g12-region">([\s\S]*?)<\/g>/g)];
+assert.equal(concentricRegions.length, 3, 'each concentric color region is one compound SVG layer');
+assert.ok(concentricRegions.every(([, markup]) => (markup.match(/<path\b/g) ?? []).length === 1),
+  'each concentric color region uses one compound path');
+inspectSvg(concentricSvg);
+
+const compoundEmblem = clone();
+compoundEmblem.root.layers = [{
+  kind: 'layer',
+  layer: {
+    id: 'compound-sun',
+    role: 'charge',
+    shape: { type: 'M07', params: { rays: 12 } },
+    transform: {},
+    fill: 's2',
+    clip: ['flag-outline'],
+    tags: ['emblem'],
+    cost: 1,
+  },
+}];
+const compoundEmblemSvg = renderFlagSpec(compoundEmblem);
+const sunMarkup = compoundEmblemSvg.match(/<g id="L\d+-charge-m07">([\s\S]*?)<\/g>/)?.[1] ?? '';
+assert.equal((sunMarkup.match(/<path\b/g) ?? []).length, 1,
+  'one emblem copy uses one compound path for each color');
+inspectSvg(compoundEmblemSvg);
+
+console.log(`Проверены ${FLAG_REFERENCE_CORPUS.length} эталонов SVG-рендерера и сложные композиции.`);

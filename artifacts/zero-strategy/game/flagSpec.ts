@@ -6,6 +6,8 @@
  * данных позволяет преобразовывать вручную подготовленные спецификации туда и
  * обратно, пока последующие этапы генератора добавляют проверяемые соглашения.
  */
+import { FLAG_FIELD_CONFIG } from './flagFieldConfig';
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export interface JsonObject {
@@ -122,6 +124,7 @@ export interface FlagMeta {
   /** Значение качества Q из §15, если оно измерено генератором. */
   quality?: number;
   symmetry: JsonValue;
+  symmetry_target?: JsonValue;
   symmetry_actual?: JsonValue;
   color_count: number;
   structure_hash: string;
@@ -134,6 +137,9 @@ export interface FlagMeta {
     fallback_profile_id: string | null;
     optional_layers_removed: number;
     rejection_reasons: string[];
+    small_layers_removed?: number;
+    symmetry_downgrades?: number;
+    diagnostics?: JsonObject[];
   };
 }
 
@@ -224,11 +230,18 @@ function validateFill(fill: unknown, slots: Set<string>, path: string, issues: F
   }
 }
 
-function validateCoordinates(value: unknown, path: string, issues: FlagSpecIssue[], seen = new Set<object>()): void {
+function validateCoordinates(
+  value: unknown,
+  path: string,
+  issues: FlagSpecIssue[],
+  allowGyronnyFanCenterU = false,
+  seen = new Set<object>(),
+): void {
   if (Array.isArray(value)) {
     if (seen.has(value)) return;
     seen.add(value);
-    value.forEach((child, index) => validateCoordinates(child, `${path}[${index}]`, issues, seen));
+    value.forEach((child, index) =>
+      validateCoordinates(child, `${path}[${index}]`, issues, allowGyronnyFanCenterU, seen));
     seen.delete(value);
     return;
   }
@@ -236,10 +249,18 @@ function validateCoordinates(value: unknown, path: string, issues: FlagSpecIssue
   if (seen.has(value)) return;
   seen.add(value);
   for (const [key, child] of Object.entries(value)) {
-    if ((key === 'u' || key === 'v') && (!isFiniteNumber(child) || child < 0 || child > 1)) {
-      add(issues, `${path}.${key}`, 'relative coordinates must be in the inclusive range 0..1');
+    const gyronnyFanCenterU = allowGyronnyFanCenterU &&
+      path === '$.root.ground.params.center' && key === 'u';
+    const [minimum, maximum] = gyronnyFanCenterU
+      ? FLAG_FIELD_CONFIG.operators.G08.fanCenterRange
+      : [0, 1];
+    if ((key === 'u' || key === 'v') &&
+      (!isFiniteNumber(child) || child < minimum || child > maximum)) {
+      add(issues, `${path}.${key}`, gyronnyFanCenterU
+        ? `Координата центра веера G08 должна быть в диапазоне ${minimum}..${maximum}`
+        : 'Относительные координаты должны быть в диапазоне 0..1');
     } else {
-      validateCoordinates(child, `${path}.${key}`, issues, seen);
+      validateCoordinates(child, `${path}.${key}`, issues, allowGyronnyFanCenterU, seen);
     }
   }
   seen.delete(value);
@@ -382,7 +403,12 @@ export function validateFlagSpec(value: unknown): FlagSpecIssue[] {
     add(issues, '$', 'must be a FlagSpec object');
     return issues;
   }
-  validateCoordinates(value, '$', issues);
+  const specRoot = isObject(value.root) ? value.root : undefined;
+  const ground = specRoot && isObject(specRoot.ground) ? specRoot.ground : undefined;
+  const groundParams = ground && isObject(ground.params) ? ground.params : undefined;
+  const allowGyronnyFanCenterU = ground?.kind === 'split' &&
+    ground.op === 'G08' && groundParams?.fan === true;
+  validateCoordinates(value, '$', issues, allowGyronnyFanCenterU);
 
   if (!isString(value.generator_version)) add(issues, '$.generator_version', 'must be a non-empty string');
   if (!(isString(value.seed) || isFiniteNumber(value.seed))) add(issues, '$.seed', 'must be a string or finite number');

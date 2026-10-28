@@ -34,6 +34,25 @@ assert.equal(compareFlagSpecs(source, source).similarity, 1, 'сходство �
 assert.equal(matchesReference(source, [source]), true, 'поиск находит точный визуальный хеш эталона');
 assert.equal(compareFlagSpecs(source, { ...source, outline: { ...source.outline, type: 'BANNER' } }).similarity, 0);
 assert.ok(describeFlagNovelty(source).field_operator.length > 0);
+const moduleIdSample = (moduleId) => {
+  const sample = structuredClone(source);
+  sample.root.layers = [{
+    kind: 'layer',
+    layer: {
+      id: 'проверка-категории-эмблемы',
+      role: 'charge',
+      shape: { type: moduleId },
+      transform: {},
+      fill: 's1',
+      clip: [],
+      tags: ['charge'],
+      cost: 1,
+    },
+  }];
+  return describeFlagNovelty(sample).module_family;
+};
+assert.equal(moduleIdSample('M03'), 'STAR', 'идентификатор модуля преобразуется в семейство эмблемы');
+assert.equal(moduleIdSample('M30'), 'BAR_STACK', 'учитывается последний идентификатор каталога эмблем');
 
 const independent = batchFlags(3, 4, 'independent', {
   generate: (seed) => structuredClone(FLAG_REFERENCE_CORPUS[Number(seed) % 50].spec),

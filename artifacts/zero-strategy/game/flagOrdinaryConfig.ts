@@ -1,8 +1,7 @@
 /**
- * Starting parameters for the §9 ordinary operators.
+ * Начальные параметры ординариев из §9.
  *
- * Values stay in configuration so the generator can tune them without
- * changing geometry code.
+ * Значения хранятся в конфигурации отдельно от построения геометрии.
  */
 export const FLAG_ORDINARY_CONFIG = {
   canvasHeight: 1200,
@@ -15,13 +14,27 @@ export const FLAG_ORDINARY_CONFIG = {
     maxOrdinaries: 3,
     maxCantons: 1,
     maxBordures: 1,
-    maxTotalCost: 6,
     maxFrameDepth: 3,
   },
   costs: {
-    default: 1,
+    operators: {
+      O01: 1,
+      O02: 1,
+      O03: 0.7,
+      O04: 1,
+      O05: 1.5,
+      O06: 1,
+      O07: 1.2,
+      O08: 1,
+      O09: 3,
+    },
+    doubleBordure: 0.5,
+    cantonContentMultiplier: 0.7,
+    nonStraightBoundaryGroup: 0.5,
+    patternFill: 1,
     fimbration: 0.5,
   },
+  thicknessSnap: { preferredDivisor: 24, fineDivisor: 60, preferredProbability: 0.75 },
   operators: {
     O01: {
       thicknessDivisors: [12, 4], defaultThicknessDivisor: 6, coupleLength: [0.2, 0.45],
@@ -33,11 +46,29 @@ export const FLAG_ORDINARY_CONFIG = {
     O02: { thicknessDivisors: [12, 4], defaultThicknessDivisor: 6 },
     O03: {
       thicknessDivisors: [12, 4], defaultThicknessDivisor: 8,
+      edgeThicknessDivisors: [8, 3],
       angles: [0, 90, 'DIAGONAL', 30, -30, 45, -45, 60, -60], defaultAxis: 'DIAGONAL',
       defaultOffset: 0,
     },
-    O04: { thicknessDivisors: [12, 4], defaultThicknessDivisor: 8, halfAngles: [20, 60], defaultHalfAngle: 35 },
-    O05: { thicknessDivisors: [12, 4], defaultThicknessDivisor: 8, defaultAngles: [-90, 150, 30] },
+    O04: { thicknessDivisors: [12, 5], defaultThicknessDivisor: 10, halfAngles: [20, 60], defaultHalfAngle: 35 },
+    O05: {
+      thicknessDivisors: [12, 6],
+      defaultThicknessDivisor: 12,
+      stemDirections: [
+        { id: 'DOWN', angle: 90, weight: 4 },
+        { id: 'UP', angle: -90, weight: 1 },
+        { id: 'FLY', angle: 0, weight: 2 },
+        { id: 'HOIST', angle: 180, weight: 1 },
+      ],
+      branchAngles: [
+        { angle: 135, weight: 0.6 },
+        { angle: 120, weight: 0.4 },
+      ],
+      defaultStemDirection: 'DOWN',
+      defaultBranchAngle: 135,
+      centerDivisor: 24,
+      centerRange: [8 / 24, 16 / 24],
+    },
     O06: {
       baseSideFraction: [0.4, 1], defaultBaseSideFraction: 0.65,
       depthFraction: [0.25, 1], defaultDepthFraction: 0.55,
@@ -45,8 +76,9 @@ export const FLAG_ORDINARY_CONFIG = {
       truncatedTip: [0, 0.5], defaultTipFraction: 0, defaultTruncatedTipFraction: 0.25,
     },
     O07: {
-      thicknessDivisors: [32, 7], defaultThicknessDivisor: 16,
-      variants: ['PLAIN', 'DOUBLE', 'CHECKY', 'ORLE'], defaultCheckCellDivisor: 8,
+      thicknessDivisors: [32, 7], defaultThicknessDivisor: 8,
+      checkyThicknessDivisors: [16, 8],
+      variants: ['PLAIN', 'DOUBLE', 'CHECKY', 'ORLE'],
       defaultSecondaryFill: 's3',
     },
     O08: {

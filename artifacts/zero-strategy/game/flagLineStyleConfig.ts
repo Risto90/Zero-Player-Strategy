@@ -1,6 +1,6 @@
 /**
- * Starting parameters for the §8 division-line styles.
- * Dimensions scale with the flag's canonical height.
+ * Исходные параметры стилей линий раздела §8.
+ * Размеры масштабируются по канонической высоте флага.
  */
 export const FLAG_LINE_STYLE_CONFIG = {
   minimumThicknessDivisor: 40,

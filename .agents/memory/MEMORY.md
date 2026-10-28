@@ -24,6 +24,8 @@
 - [Notification recipients](notification-recipients.md) — interface notices target player slots, never AI/automation status; the chronicle remains shared.
 - [Race map entities](race-map-entities.md) — call categories «расы»; show only populated races, with selectable map layers and profile links.
 - [Color metric tolerances](flag-color-metric-tolerances.md) — allow floating-point tolerance for CIELAB/WCAG results computed from rounded sRGB/D65 constants.
-- [Flag novelty benchmarks](flag-novelty-benchmarks.md) — a hand-authored reference corpus is not a substitute for measured seeded-generator results.
+- [Новизна флагов](flag-novelty-benchmarks.md) — охватывать допустимые настроенные варианты; ручные эталоны не заменяют измерения генерации по начальным значениям.
 - [Map contour rule](map-contour-rule.md) — treat equal-valued map regions as contours, reuse intersections and update only changed boundaries while retaining paint/start/stop constraints.
 - [Fictional geography names](geography-naming.md) — discovered real-world features receive fictional generated names; never assign their real Earth names.
+- [Замеры скорости генератора](flag-generator-performance.md) — использовать фиксированную выборку без профилировочной нагрузки и сообщать медиану, среднее, p90 и влияние повторов.
+- [Пауза сеанса задачи](task-session-pause.md) — статус проектной задачи и индикатор паузы сеанса Replit Agent могут расходиться.

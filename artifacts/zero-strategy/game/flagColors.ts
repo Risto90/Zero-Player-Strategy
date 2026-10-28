@@ -1,4 +1,5 @@
 import { FLAG_COLOR_CONFIG } from './flagColorConfig';
+import type { FlagProfileConfig } from './flagProfileConfig';
 import type { FlagPaletteEntry, FlagSpec } from './flagSpec';
 
 export type FlagColorClass = 'metal' | 'color';
@@ -21,9 +22,51 @@ export interface FlagColorProfile {
   colorWeights: Record<string, number>;
   archetypeWeights: Record<string, number>;
   freePaletteWeight: number;
+  freeColorWeights?: Record<string, number>;
   archetypeProbability: number;
   colorCountWeights: { count: number; weight: number }[];
   tinctureProbability: number;
+}
+
+/** Преобразует профиль генератора в конфигурацию решателя палитры без догадок о пропущенных весах. */
+export function createFlagColorProfile(profile: FlagProfileConfig): FlagColorProfile {
+  if (!profile.PAL?.weights || profile.PAL.p_arch === null ||
+    !profile.PAL.free_colors || !profile.K) {
+    throw new Error(`Для профиля ${profile.id} не заданы параметры PAL или K.`);
+  }
+  const freeColorWeights: Record<string, number> = {};
+  for (const [id, weight] of Object.entries(profile.PAL.free_colors)) {
+    if (weight === null || !Number.isFinite(weight) || weight < 0) {
+      throw new Error(`У свободного цвета ${id} в профиле ${profile.id} указан недопустимый вес.`);
+    }
+    if (!CONFIG.colors.some((color) => color.id === id)) {
+      throw new Error(`Свободный цвет ${id} профиля ${profile.id} отсутствует в каталоге цветов.`);
+    }
+    freeColorWeights[id] = weight;
+  }
+  const archetypeWeights: Record<string, number> = {};
+  for (const [id, weight] of Object.entries(profile.PAL.weights)) {
+    if (weight === null || !Number.isFinite(weight) || weight < 0) {
+      throw new Error(`У архетипа ${id} в профиле ${profile.id} указан недопустимый вес.`);
+    }
+    archetypeWeights[id] = weight;
+  }
+  const colorWeights = Object.fromEntries(CONFIG.colors.map(({ id }) => [id, 1]));
+  const colorCountWeights = Object.entries(profile.K).map(([count, weight]) => {
+    if (weight === null || !Number.isFinite(weight) || weight < 0) {
+      throw new Error(`Для K=${count} в профиле ${profile.id} указан недопустимый вес.`);
+    }
+    return { count: Number(count), weight };
+  });
+  return {
+    colorWeights,
+    archetypeWeights,
+    freePaletteWeight: profile.PAL.free ?? 0,
+    freeColorWeights,
+    archetypeProbability: profile.PAL.p_arch,
+    colorCountWeights,
+    tinctureProbability: profile.TINC ?? FLAG_COLOR_CONFIG.profiles.starter.tinctureProbability,
+  };
 }
 
 export interface FlagColorAdjacency {
@@ -36,22 +79,22 @@ export interface FlagColorAdjacency {
 export interface FlagChargeBackground {
   chargeSlot: string;
   backgroundSlot: string;
-  /** True when a different slot forms a fimbriation/outline around the charge. */
+  /** Истинно, если другой слот образует обводку вокруг заряда. */
   outlined?: boolean;
-  /** Charge diameter divided by the smaller flag dimension (D / min(w,h)). */
+  /** Диаметр заряда, делённый на меньшую сторону флага (D / min(w,h)). */
   diameterRatio?: number;
 }
 
 export type RasterSlot = string | number | null | undefined;
 
 export interface FlagSlotRaster {
-  /** Row-major layer_slot_at raster. Null/undefined cells are outside the flag. */
+  /** Растр layer_slot_at в порядке строк; значения null/undefined соответствуют областям вне флага. */
   values: ArrayLike<RasterSlot>;
   width: number;
   height: number;
-  /** Maps numeric raster values to symbolic slots; string raster entries map directly. */
+  /** Связывает числовые значения растра с символьными слотами; строковые значения используются напрямую. */
   slotIds?: Record<number, string>;
-  /** Size of one raster pixel in flag coordinate units. Defaults to 5 (240px over H=1200). */
+  /** Размер пикселя растра в единицах координат флага. По умолчанию — 5 (240 пикселей при H=1200). */
   pixelSize?: number;
 }
 
@@ -182,13 +225,32 @@ export interface LabColor {
   b: number;
 }
 
-function parseHex(hex: string): [number, number, number] {
+const METRIC_CACHE_LIMIT = 4096;
+const hexRgbCache = new Map<string, readonly [number, number, number]>();
+const labCache = new Map<string, readonly [number, number, number]>();
+const luminanceCache = new Map<string, number>();
+const deltaCache = new Map<string, number>();
+const contrastCache = new Map<string, number>();
+
+function cacheMetric<T>(cache: Map<string, T>, key: string, value: T): T {
+  if (cache.size >= METRIC_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, value);
+  return value;
+}
+
+function parseHex(hex: string): readonly [number, number, number] {
   if (!/^#[\da-f]{6}$/i.test(hex)) throw new RangeError(`invalid sRGB hex color "${hex}"`);
-  return [
+  const key = hex.toLowerCase();
+  const cached = hexRgbCache.get(key);
+  if (cached) return cached;
+  return cacheMetric(hexRgbCache, key, [
     Number.parseInt(hex.slice(1, 3), 16) / 255,
     Number.parseInt(hex.slice(3, 5), 16) / 255,
     Number.parseInt(hex.slice(5, 7), 16) / 255,
-  ];
+  ]);
 }
 
 function linearize(channel: number): number {
@@ -200,43 +262,61 @@ function labPivot(value: number): number {
   return value > delta ** 3 ? Math.cbrt(value) : value / (3 * delta ** 2) + 4 / 29;
 }
 
-/** Convert an sRGB hex color to CIELAB using the D65 reference white. */
-export function srgbToLab(hex: string): LabColor {
+function labValues(hex: string): readonly [number, number, number] {
+  const key = hex.toLowerCase();
+  const cached = labCache.get(key);
+  if (cached) return cached;
   const [r8, g8, b8] = parseHex(hex);
-  const r = linearize(r8);
-  const g = linearize(g8);
-  const b = linearize(b8);
+  const r = linearize(r8), g = linearize(g8), b = linearize(b8);
   const x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
   const y = 0.2126729 * r + 0.7151522 * g + 0.072175 * b;
   const z = (0.0193339 * r + 0.119192 * g + 0.9503041 * b) / 1.08883;
-  const fx = labPivot(x);
-  const fy = labPivot(y);
-  const fz = labPivot(z);
-  return {
-    l: 116 * fy - 16,
-    a: 500 * (fx - fy),
-    b: 200 * (fy - fz),
-  };
+  const fx = labPivot(x), fy = labPivot(y), fz = labPivot(z);
+  return cacheMetric(labCache, key, [
+    116 * fy - 16,
+    500 * (fx - fy),
+    200 * (fy - fz),
+  ]);
 }
 
-/** CIE76 Euclidean distance between two sRGB hex colors. */
+/** Переводит sRGB HEX в CIELAB относительно белой точки D65. */
+export function srgbToLab(hex: string): LabColor {
+  const [l, a, b] = labValues(hex);
+  return { l, a, b };
+}
+
+/** Евклидово расстояние CIE76 между двумя цветами sRGB HEX. */
 export function deltaE76(firstHex: string, secondHex: string): number {
-  const first = srgbToLab(firstHex);
-  const second = srgbToLab(secondHex);
-  return Math.hypot(first.l - second.l, first.a - second.a, first.b - second.b);
+  const firstKey = firstHex.toLowerCase(), secondKey = secondHex.toLowerCase();
+  const key = firstKey < secondKey ? `${firstKey}|${secondKey}` : `${secondKey}|${firstKey}`;
+  const cached = deltaCache.get(key);
+  if (cached !== undefined) return cached;
+  const first = labValues(firstHex), second = labValues(secondHex);
+  return cacheMetric(deltaCache, key, Math.hypot(
+    first[0] - second[0], first[1] - second[1], first[2] - second[2],
+  ));
 }
 
-/** WCAG 2.x relative luminance for an sRGB hex color. */
+/** Относительная яркость sRGB HEX по WCAG 2.x. */
 export function relativeLuminance(hex: string): number {
-  const [r, g, b] = parseHex(hex).map(linearize);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const key = hex.toLowerCase();
+  const cached = luminanceCache.get(key);
+  if (cached !== undefined) return cached;
+  const [r8, g8, b8] = parseHex(hex);
+  return cacheMetric(luminanceCache, key,
+    0.2126 * linearize(r8) + 0.7152 * linearize(g8) + 0.0722 * linearize(b8));
 }
 
-/** WCAG contrast ratio, always >= 1. */
+/** Контраст WCAG; результат всегда не меньше 1. */
 export function wcagContrast(firstHex: string, secondHex: string): number {
+  const firstKey = firstHex.toLowerCase(), secondKey = secondHex.toLowerCase();
+  const key = firstKey < secondKey ? `${firstKey}|${secondKey}` : `${secondKey}|${firstKey}`;
+  const cached = contrastCache.get(key);
+  if (cached !== undefined) return cached;
   const first = relativeLuminance(firstHex);
   const second = relativeLuminance(secondHex);
-  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+  return cacheMetric(contrastCache, key,
+    (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05));
 }
 
 function unionSlots(slots: string[], equalities: [string, string][] = []): Map<string, string> {
@@ -272,13 +352,20 @@ function rasterSlot(value: RasterSlot, slotIds?: Record<number, string>): string
   throw new RangeError(`numeric layer_slot_at value "${value}" has no symbolic slot mapping`);
 }
 
-/** Build a shared-boundary graph from a row-major slot raster. */
-export function buildFlagSlotAdjacency(
+/** Строит граф общих границ по растру слотов, упорядоченному по строкам. */
+type FlagSlotRasterMetrics = {
+  adjacency: FlagColorAdjacency[];
+  pixelAreas: { byRoot: Map<string, number>; total: number };
+};
+
+function buildFlagSlotAdjacencyAndAreas(
   raster: FlagSlotRaster,
   slots: readonly string[],
-  equalities: [string, string][] = [],
-  minimumBoundary = threshold('minimumSharedBoundary'),
-): FlagColorAdjacency[] {
+  equalities: [string, string][],
+  minimumBoundary: number,
+  collectAreas: boolean,
+  suppliedRoots?: Map<string, string>,
+): FlagSlotRasterMetrics {
   const { values, width, height } = raster;
   if (!Number.isInteger(width) || width < 1 || !Number.isInteger(height) || height < 1 || values.length !== width * height) {
     throw new RangeError('slot raster dimensions must match its row-major values');
@@ -289,9 +376,102 @@ export function buildFlagSlotAdjacency(
     FLAG_COLOR_CONFIG.thresholds.defaultRasterPixelSize /
     height;
   if (!Number.isFinite(size) || size <= 0) throw new RangeError('raster pixel size must be positive');
-  const roots = unionSlots([...slots], equalities);
+  const roots = suppliedRoots ?? unionSlots([...slots], equalities);
+  if (raster.slotIds && ArrayBuffer.isView(values) && typeof values[0] === 'number') {
+    const rootNames = [...new Set(roots.values())].sort();
+    const rootIndex = new Map(rootNames.map((root, index) => [root, index]));
+    const slotEntries = Object.entries(raster.slotIds).map(([rawCode, slot]) => [Number(rawCode), slot] as const);
+    let maximumCode = -1;
+    for (const [code] of slotEntries) if (Number.isInteger(code) && code > maximumCode) maximumCode = code;
+    if (maximumCode <= 65_535) {
+      const rootByCode = new Int32Array(maximumCode + 1).fill(-2);
+      const slotByCode: (string | undefined)[] = Array(maximumCode + 1);
+      for (const [code, slot] of slotEntries) {
+        if (!Number.isInteger(code) || code < 0 || code > maximumCode) continue;
+        slotByCode[code] = slot;
+        rootByCode[code] = known.has(slot)
+          ? rootIndex.get(roots.get(slot)!) ?? -2
+          : -3;
+      }
+      const numericValues = values as ArrayLike<number>;
+      const boundaries = new Map<number, { boundary: number; firstOrder: number }>();
+      const areaCounts = collectAreas ? new Uint32Array(rootNames.length) : null;
+      let totalArea = 0;
+      const countRootEdge = (first: number, second: number, order: number) => {
+        if (first < 0 || second < 0 || first === second) return;
+        const low = Math.min(first, second), high = Math.max(first, second);
+        const key = low * rootNames.length + high;
+        const current = boundaries.get(key);
+        if (current) {
+          current.boundary += size;
+          current.firstOrder = Math.min(current.firstOrder, order);
+        } else {
+          boundaries.set(key, { boundary: size, firstOrder: order });
+        }
+      };
+      let previousRowRoots = new Int32Array(width).fill(-1);
+      let currentRowRoots = new Int32Array(width).fill(-1);
+      for (let y = 0; y < height; y += 1) {
+        const row = y * width;
+        let leftRoot = -1;
+        for (let x = 0; x < width; x += 1) {
+          const value = numericValues[row + x];
+          if (!Number.isFinite(value) || !Number.isInteger(value)) {
+            throw new TypeError('numeric layer_slot_at values must be finite integers');
+          }
+          let currentRoot = -1;
+          if (value >= 0) {
+            if (value >= rootByCode.length || rootByCode[value] === -2) {
+              throw new RangeError(`numeric layer_slot_at value "${value}" has no symbolic slot mapping`);
+            }
+            if (rootByCode[value] === -3) {
+              throw new RangeError(`slot raster contains unknown slot "${slotByCode[value]}"`);
+            }
+            currentRoot = rootByCode[value];
+          }
+          if (areaCounts && currentRoot >= 0) {
+            areaCounts[currentRoot] += 1;
+            totalArea += 1;
+          }
+          if (x > 0) countRootEdge(leftRoot, currentRoot, (row + x - 1) * 2);
+          if (y > 0) countRootEdge(previousRowRoots[x], currentRoot, (row - width + x) * 2 + 1);
+          currentRowRoots[x] = currentRoot;
+          leftRoot = currentRoot;
+        }
+        const previous = previousRowRoots;
+        previousRowRoots = currentRowRoots;
+        currentRowRoots = previous;
+      }
+      const adjacency = [...boundaries.entries()]
+        .sort((first, second) => first[1].firstOrder - second[1].firstOrder)
+        .map(([key, { boundary }]) => ({
+          a: rootNames[Math.floor(key / rootNames.length)],
+          b: rootNames[key % rootNames.length],
+          boundary,
+          kind: 'field' as const,
+        }))
+        .filter(({ boundary }) => boundary + EPSILON >= minimumBoundary);
+      const byRoot = new Map<string, number>();
+      if (areaCounts) {
+        for (let index = 0; index < areaCounts.length; index += 1) {
+          if (areaCounts[index] > 0) byRoot.set(rootNames[index], areaCounts[index]);
+        }
+      }
+      return { adjacency, pixelAreas: { byRoot, total: totalArea } };
+    }
+  }
   const boundaries = new Map<string, number>();
+  const areaByRoot = new Map<string, number>();
+  let totalArea = 0;
   const read = (index: number) => rasterSlot(values[index], raster.slotIds);
+  const countArea = (slot: string | null) => {
+    if (!collectAreas || slot === null) return;
+    if (!known.has(slot)) throw new RangeError(`slot raster contains unknown slot "${slot}"`);
+    const root = roots.get(slot);
+    if (!root) throw new RangeError(`slot "${slot}" has no equality root`);
+    areaByRoot.set(root, (areaByRoot.get(root) ?? 0) + 1);
+    totalArea += 1;
+  };
   const countEdge = (left: string | null, right: string | null) => {
     if (left === null || right === null || left === right) return;
     if (!known.has(left) || !known.has(right)) {
@@ -307,16 +487,34 @@ export function buildFlagSlotAdjacency(
     for (let x = 0; x < width; x += 1) {
       const index = y * width + x;
       const current = read(index);
+      countArea(current);
       if (x + 1 < width) countEdge(current, read(index + 1));
       if (y + 1 < height) countEdge(current, read(index + width));
     }
   }
-  return [...boundaries.entries()]
+  const adjacency = [...boundaries.entries()]
     .map(([key, boundary]) => {
       const [a, b] = key.split('\u0000');
       return { a, b, boundary, kind: 'field' as const };
     })
     .filter(({ boundary }) => boundary + EPSILON >= minimumBoundary);
+  return { adjacency, pixelAreas: { byRoot: areaByRoot, total: totalArea } };
+}
+
+/** Строит граф общих границ по растру слотов, упорядоченному по строкам. */
+export function buildFlagSlotAdjacency(
+  raster: FlagSlotRaster,
+  slots: readonly string[],
+  equalities: [string, string][] = [],
+  minimumBoundary = threshold('minimumSharedBoundary'),
+): FlagColorAdjacency[] {
+  return buildFlagSlotAdjacencyAndAreas(
+    raster,
+    slots,
+    equalities,
+    minimumBoundary,
+    false,
+  ).adjacency;
 }
 
 function candidateColors(profile: FlagColorProfile, era: number): ColorCandidate[] {
@@ -331,11 +529,20 @@ function candidateColors(profile: FlagColorProfile, era: number): ColorCandidate
   return result;
 }
 
-function chooseColorCount(profile: FlagColorProfile, maxColors: number, slotsCount: number, random: () => number): number | null {
-  const choices = profile.colorCountWeights
+function chooseColorCountOrder(profile: FlagColorProfile, maxColors: number, slotsCount: number, random: () => number): number[] {
+  const remaining = profile.colorCountWeights
     .filter(({ count, weight }) => count >= threshold('minColors') && count <= maxColors && count <= slotsCount && weight > 0)
     .map(({ count, weight }) => ({ value: count, weight }));
-  return weightedPick(choices, random);
+  const order: number[] = [];
+  while (remaining.length > 0) {
+    const selected = weightedPick(remaining, random);
+    if (selected === null) break;
+    order.push(selected);
+    const index = remaining.findIndex(({ value }) => value === selected);
+    if (index < 0) break;
+    remaining.splice(index, 1);
+  }
+  return order;
 }
 
 function pickShade(colorId: string, candidates: ColorCandidate[], random: () => number): ColorCandidate | null {
@@ -380,8 +587,14 @@ function chooseWeightedFreePalette(
   candidates: ColorCandidate[],
   count: number,
   random: () => number,
+  freeColorWeights?: Record<string, number>,
 ): ColorCandidate[] | null {
-  const remaining = [...candidates];
+  const remaining = candidates
+    .filter(({ id }) => !freeColorWeights || (freeColorWeights[id] ?? 0) > 0)
+    .map((candidate) => ({
+      ...candidate,
+      weight: freeColorWeights?.[candidate.id] ?? candidate.weight,
+    }));
   const palette: ColorCandidate[] = [];
   for (let index = 0; index < count; index += 1) {
     const selected = weightedPick(remaining.map((color) => ({ value: color, weight: color.weight })), random);
@@ -401,7 +614,7 @@ function samplePalette(
   const useArchetype = validateRandom(random) < profile.archetypeProbability;
   if (useArchetype) return chooseArchetypePalette(profile, candidates, count, random);
   if (profile.freePaletteWeight <= 0) return null;
-  return chooseWeightedFreePalette(candidates, count, random);
+  return chooseWeightedFreePalette(candidates, count, random, profile.freeColorWeights);
 }
 
 function familyForbidden(first: ColorCandidate, second: ColorCandidate): boolean {
@@ -415,6 +628,7 @@ interface SolveContext {
   edges: FlagColorAdjacency[];
   charges: FlagChargeBackground[];
   raster: FlagSlotRaster;
+  pixelAreas: { byRoot: Map<string, number>; total: number };
   era: number;
   tincture: boolean;
 }
@@ -423,6 +637,7 @@ function assignPalette(
   palette: ColorCandidate[],
   context: SolveContext,
   random: () => number,
+  onLeafFailure?: (checks: FlagPaletteCheck[]) => void,
 ): Map<string, ColorCandidate> | null {
   const rootSlots = [...new Set(context.slots.map((slot) => context.roots.get(slot)!))];
   if (palette.length > rootSlots.length) return null;
@@ -464,7 +679,13 @@ function assignPalette(
     return true;
   };
   const visit = (): boolean => {
-    if (assignment.size === rootSlots.length) return colorCounts.values().every((count) => count > 0);
+    if (assignment.size === rootSlots.length) {
+      if (!colorCounts.values().every((count) => count > 0)) return false;
+      const checks = paletteChecks(palette, assignment, context);
+      if (checks.every((check) => check.passed)) return true;
+      onLeafFailure?.(checks);
+      return false;
+    }
     const unassigned = rootSlots.filter((slot) => !assignment.has(slot));
     if (palette.length - [...colorCounts.values()].filter((count) => count > 0).length > unassigned.length) return false;
     let selectedSlot: string | null = null;
@@ -494,24 +715,16 @@ function assignPalette(
 }
 
 function pixelColorCounts(
-  raster: FlagSlotRaster,
-  slots: string[],
-  roots: Map<string, string>,
+  pixelAreas: { byRoot: Map<string, number>; total: number },
   assignment: Map<string, ColorCandidate>,
 ): { colorCounts: Map<string, number>; total: number } {
-  const counts = new Map<string, number>();
-  let total = 0;
-  const known = new Set(slots);
-  for (let index = 0; index < raster.values.length; index += 1) {
-    const slot = rasterSlot(raster.values[index], raster.slotIds);
-    if (slot === null) continue;
-    if (!known.has(slot)) throw new RangeError(`slot raster contains unknown slot "${slot}"`);
-    const color = assignment.get(roots.get(slot)!);
-    if (!color) throw new RangeError(`slot "${slot}" has no color assignment`);
-    counts.set(color.id, (counts.get(color.id) ?? 0) + 1);
-    total += 1;
+  const colorCounts = new Map<string, number>();
+  for (const [root, count] of pixelAreas.byRoot) {
+    const color = assignment.get(root);
+    if (!color) throw new RangeError(`slot "${root}" has no color assignment`);
+    colorCounts.set(color.id, (colorCounts.get(color.id) ?? 0) + count);
   }
-  return { colorCounts: counts, total };
+  return { colorCounts, total: pixelAreas.total };
 }
 
 function paletteChecks(
@@ -571,14 +784,14 @@ function paletteChecks(
       violations.C2.push(`${charge.chargeSlot}/${charge.backgroundSlot}: CR ${contrast.toFixed(2)} < ${threshold('minimumChargeContrast')}`);
     }
   }
-  const { colorCounts, total } = pixelColorCounts(context.raster, context.slots, context.roots, assignment);
+  const { colorCounts, total } = pixelColorCounts(context.pixelAreas, assignment);
   for (const color of palette) {
     const share = total > 0 ? (colorCounts.get(color.id) ?? 0) / total : 0;
     if (share + EPSILON < threshold('minimumColorAreaShare')) {
-      violations.C5.push(`${color.id}: ${(share * 100).toFixed(2)}% < ${threshold('minimumColorAreaShare') * 100}%`);
+      violations.C5.push(`${color.id}: доля ${(share * 100).toFixed(2)}% меньше ${threshold('minimumColorAreaShare') * 100}%`);
     }
     if (share - EPSILON > threshold('maximumColorAreaShare')) {
-      violations.C5.push(`${color.id}: ${(share * 100).toFixed(2)}% > ${threshold('maximumColorAreaShare') * 100}%`);
+      violations.C5.push(`${color.id}: доля ${(share * 100).toFixed(2)}% больше ${threshold('maximumColorAreaShare') * 100}%`);
     }
     if ((colorCounts.get(color.id) ?? 0) === 0) violations.PALETTE.push(`${color.id} is declared but unused`);
   }
@@ -589,7 +802,7 @@ function paletteChecks(
   }));
 }
 
-/** Solve and validate a FlagSpec palette using a caller-owned deterministic stream. */
+/** Подбирает и проверяет палитру FlagSpec с помощью переданного детерминированного потока. */
 export function solveFlagPalette(spec: FlagSpec, options: Omit<SolveFlagPaletteOptions, 'era' | 'equalities'> & {
   era?: number;
   equalities?: [string, string][];
@@ -609,8 +822,15 @@ export function solveFlagPalette(spec: FlagSpec, options: Omit<SolveFlagPaletteO
     throw new RangeError(`maxColors must be an integer in [${threshold('minColors')}, ${threshold('maxColors')}]`);
   }
   const roots = unionSlots(slots, options.equalities ?? spec.slots.equalities);
-  const rasterEdges = buildFlagSlotAdjacency(options.slotRaster, slots, options.equalities ?? spec.slots.equalities);
-  const edges = [...rasterEdges, ...(options.adjacency ?? [])];
+  const rasterMetrics = buildFlagSlotAdjacencyAndAreas(
+    options.slotRaster,
+    slots,
+    options.equalities ?? spec.slots.equalities,
+    threshold('minimumSharedBoundary'),
+    true,
+    roots,
+  );
+  const edges = [...rasterMetrics.adjacency, ...(options.adjacency ?? [])];
   for (const edge of edges) {
     if (!roots.has(edge.a) || !roots.has(edge.b) || !Number.isFinite(edge.boundary) || edge.boundary < 0) {
       throw new RangeError('palette adjacency must reference known slots and have a non-negative boundary length');
@@ -626,30 +846,74 @@ export function solveFlagPalette(spec: FlagSpec, options: Omit<SolveFlagPaletteO
     }
   }
   const tincture = options.tincture ?? (validateRandom(options.random) < profile.tinctureProbability);
-  const context: SolveContext = { slots, roots, edges, charges, raster: options.slotRaster, era, tincture };
+  const context: SolveContext = {
+    slots,
+    roots,
+    edges,
+    charges,
+    raster: options.slotRaster,
+    pixelAreas: rasterMetrics.pixelAreas,
+    era,
+    tincture,
+  };
   const candidates = candidateColors(profile, era);
   const slotGroupCount = new Set(roots.values()).size;
-  const initialCount = chooseColorCount(profile, maxColors, slotGroupCount, options.random);
-  if (initialCount === null) {
+  const countOrder = chooseColorCountOrder(profile, maxColors, slotGroupCount, options.random);
+  if (countOrder.length === 0) {
     const checks = paletteChecks([], null, context);
-    return { success: false, reason: 'profile color-count distribution has no feasible choice for the available slots', tincture, attempts: 0, checks };
+    return {
+      success: false,
+      reason: `В распределении числа цветов профиля нет допустимого варианта для доступных цветовых слотов: объединённых групп ${slotGroupCount}, минимальное K=${threshold('minColors')}`,
+      tincture,
+      attempts: 0,
+      checks,
+    };
   }
-  const countPlans = [
-    { count: initialCount, attempts: threshold('paletteResamples') + 1 },
-    ...(initialCount < maxColors
-      ? [{ count: initialCount + 1, attempts: threshold('escalationAttempts') }]
-      : []),
-  ];
+  const largestSlotShare = Math.max(
+    0,
+    ...[...context.pixelAreas.byRoot.values()].map((area) => area / Math.max(1, context.pixelAreas.total)),
+  );
+  if (largestSlotShare - EPSILON > threshold('maximumColorAreaShare')) {
+    const checks = paletteChecks([], null, context);
+    return {
+      success: false,
+      reason: `Решение C5 невозможно: одна цветовая группа занимает ${(largestSlotShare * 100).toFixed(2)}%, больше ${threshold('maximumColorAreaShare') * 100}%`,
+      tincture,
+      attempts: 0,
+      checks,
+    };
+  }
+  const countPlans = countOrder.map((count, index) => ({
+    count,
+    attempts: index === 0 ? threshold('paletteResamples') + 1 : threshold('escalationAttempts'),
+  }));
   let attempts = 0;
+  let unavailablePalettes = 0;
+  let unsatisfiedAssignments = 0;
+  let lastAssignmentFailure: FlagPaletteCheck[] = [];
   let lastChecks = paletteChecks([], null, context);
   for (const plan of countPlans) {
     for (let attempt = 0; attempt < plan.attempts; attempt += 1) {
       attempts += 1;
       const palette = samplePalette(profile, candidates, plan.count, options.random);
-      if (!palette) continue;
-      const assignment = assignPalette(palette, context, options.random);
+      if (!palette) {
+        unavailablePalettes += 1;
+        continue;
+      }
+      const currentAssignmentFailures: FlagPaletteCheck[][] = [];
+      const assignment = assignPalette(palette, context, options.random, (checks) => {
+        currentAssignmentFailures.push(checks);
+      });
+      if (!assignment) {
+        unsatisfiedAssignments += 1;
+        if (currentAssignmentFailures.length) {
+          lastAssignmentFailure = currentAssignmentFailures[currentAssignmentFailures.length - 1];
+        }
+        lastChecks = paletteChecks(palette, null, context);
+        continue;
+      }
       lastChecks = paletteChecks(palette, assignment, context);
-      if (!assignment || lastChecks.some((check) => !check.passed)) continue;
+      if (lastChecks.some((check) => !check.passed)) continue;
       const result: Record<string, FlagPaletteEntry> = {};
       for (const slot of slots) {
         const color = assignment.get(roots.get(slot)!);
@@ -659,16 +923,21 @@ export function solveFlagPalette(spec: FlagSpec, options: Omit<SolveFlagPaletteO
       return { success: true, palette: result, colorCount: plan.count, tincture, attempts, checks: lastChecks };
     }
   }
+  const lastFailureRules = [...new Set(lastAssignmentFailure.filter((check) => !check.passed).map(({ rule }) => rule))];
+  const lastFailureDetails = lastAssignmentFailure
+    ?.filter((check) => !check.passed)
+    .flatMap(({ violations }) => violations)
+    .slice(0, 3) ?? [];
   return {
     success: false,
-    reason: `no valid palette found after ${attempts} deterministic attempts`,
+    reason: `палитра не найдена за ${attempts} попыток (недоступная палитра: ${unavailablePalettes}; несовместимые назначения: ${unsatisfiedAssignments}; правила: ${lastFailureRules.join(', ') || 'нет полного назначения'}${lastFailureDetails.length ? `; детали: ${lastFailureDetails.join('; ')}` : ''})`,
     tincture,
     attempts,
     checks: lastChecks,
   };
 }
 
-/** Return all color-metric and palette rule outcomes for an existing slot assignment. */
+/** Возвращает результаты метрик цвета и правил палитры для существующего назначения слотов. */
 export function validateFlagPalette(
   spec: FlagSpec,
   palette: Record<string, FlagPaletteEntry>,
@@ -707,15 +976,6 @@ export function validateFlagPalette(
   if (new Set(colors.map(({ id }) => id)).size > threshold('maxColors')) {
     violations.push(`palette exceeds ${threshold('maxColors')} colors`);
   }
-  const context: SolveContext = {
-    slots,
-    roots,
-    edges: [...buildFlagSlotAdjacency(options.slotRaster, slots, options.equalities ?? spec.slots.equalities), ...(options.adjacency ?? [])],
-    charges: options.chargeBackgrounds ?? [],
-    raster: options.slotRaster,
-    era,
-    tincture: options.tincture ?? false,
-  };
   if (!Number.isInteger(era) || era < 0 || era > 6) throw new RangeError('palette era must be an integer in [0, 6]');
   if (!options.slotRaster) throw new TypeError('palette validation requires the final layer_slot_at raster');
   if (!Number.isInteger(options.slotRaster.width) || options.slotRaster.width < 1 ||
@@ -723,12 +983,25 @@ export function validateFlagPalette(
     options.slotRaster.values.length !== options.slotRaster.width * options.slotRaster.height) {
     throw new RangeError('slot raster dimensions must match its row-major values');
   }
-  for (const edge of context.edges) {
+  const rasterMetrics = buildFlagSlotAdjacencyAndAreas(
+    options.slotRaster,
+    slots,
+    options.equalities ?? spec.slots.equalities,
+    threshold('minimumSharedBoundary'),
+    true,
+    roots,
+  );
+  const edges = [
+    ...rasterMetrics.adjacency,
+    ...(options.adjacency ?? []),
+  ];
+  const charges = options.chargeBackgrounds ?? [];
+  for (const edge of edges) {
     if (!roots.has(edge.a) || !roots.has(edge.b) || !Number.isFinite(edge.boundary) || edge.boundary < 0) {
       throw new RangeError('palette adjacency must reference known slots and have a non-negative boundary length');
     }
   }
-  for (const charge of context.charges) {
+  for (const charge of charges) {
     if (!roots.has(charge.chargeSlot) || !roots.has(charge.backgroundSlot)) {
       throw new RangeError('charge/background relationships must reference known slots');
     }
@@ -736,6 +1009,16 @@ export function validateFlagPalette(
       throw new RangeError('charge diameter ratios must be finite and non-negative');
     }
   }
+  const context: SolveContext = {
+    slots,
+    roots,
+    edges,
+    charges,
+    raster: options.slotRaster,
+    pixelAreas: rasterMetrics.pixelAreas,
+    era,
+    tincture: options.tincture ?? false,
+  };
   const checks = paletteChecks(colors, violations.length ? null : assignment, context);
   if (violations.length) checks.find((check) => check.rule === 'PALETTE')!.violations.push(...violations);
   return checks;

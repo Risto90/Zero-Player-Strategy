@@ -133,7 +133,7 @@ for (const opCase of [
   { op: 'G04', params: { mode: 'CHEVRON', line_style: 'NEBULY' } },
   { op: 'G11', params: { n: 3, amplitude: 0.1, line_style: 'DANCETTY' } },
 ]) {
-  const result = buildFlagField(opCase, frame, { canvasHeight: height });
+  const result = buildFlagField(opCase, frame, { canvasHeight: height, random: () => 0 });
   assert.ok(Math.abs(result.regions.reduce((sum, region) => sum + region.area, 0) - frameArea) < 0.02,
     `${opCase.op} preserves region adjacency after styling`);
 }

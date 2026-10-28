@@ -1,4 +1,4 @@
-import { buildFlagField, clipFlagPolygons, type FlagFieldNode, type FlagFieldPaintLayer, type FlagFieldFrame, type FlagPolygon, type FlagPolygonSet, type FlagPoint } from './flagField';
+import { buildFlagField, clipFlagPolygons, flagFieldComplexityCost, type FlagFieldNode, type FlagFieldPaintLayer, type FlagFieldFrame, type FlagPolygon, type FlagPolygonSet, type FlagPoint } from './flagField';
 import { FLAG_ORDINARY_CONFIG as CONFIG } from './flagOrdinaryConfig';
 import { generateFlagBoundary, type FlagLineStyle } from './flagLineStyles';
 
@@ -15,8 +15,10 @@ export interface FlagOrdinarySpec {
 export interface FlagOrdinaryFrame extends FlagFieldFrame {}
 export interface FlagOrdinaryOptions {
   canvasHeight?: number;
-  /** Flag outline and inherited frames, outermost first. */
+  /** Контур флага и унаследованные рамки в порядке от внешней к внутренней. */
   clipChain?: FlagPolygonSet[];
+  /** Поток ГСЧ текущего этапа генерации. */
+  random?: () => number;
 }
 export interface FlagOrdinaryPaintLayer {
   kind: 'ordinary' | 'canton' | 'ground';
@@ -24,6 +26,7 @@ export interface FlagOrdinaryPaintLayer {
   operator: FlagOrdinaryType | string;
   fill: unknown;
   polygons: FlagPolygonSet;
+  validationPolygons?: FlagPolygonSet;
   clipChain: FlagPolygonSet[];
   depth: number;
   cost: number;
@@ -62,6 +65,21 @@ function range(value: unknown, limits: readonly number[], name: string): number 
     throw new RangeError(`${name} must be in [${limits[0]}, ${limits[1]}]`);
   }
   return result;
+}
+
+function weightedChoice<T extends { weight: number }>(items: readonly T[], random: (() => number) | undefined, fallback: T): T {
+  if (!random) return fallback;
+  const total = items.reduce((sum, item) => sum + item.weight, 0);
+  const value = random();
+  if (!Number.isFinite(value) || value < 0 || value >= 1 || total <= 0) {
+    throw new RangeError('weighted ordinary selection requires a valid seeded random value');
+  }
+  let target = value * total;
+  for (const item of items) {
+    target -= item.weight;
+    if (target < 0) return item;
+  }
+  return items[items.length - 1];
 }
 
 function frameCenter(frame: FlagOrdinaryFrame, params: Record<string, unknown>): FlagPoint {
@@ -199,8 +217,6 @@ function saltireGeometry(params: Record<string, unknown>, frame: FlagOrdinaryFra
 
 function bandGeometry(params: Record<string, unknown>, frame: FlagOrdinaryFrame, height: number, thickness?: number): FlagPolygonSet {
   const config = CONFIG.operators.O03;
-  const t = thickness ?? range(params.thickness ?? height / config.defaultThicknessDivisor,
-    config.thicknessDivisors.map((n) => height / n), 'band thickness');
   const rawAxis = params.axis ?? config.defaultAxis;
   let angle: number;
   if (String(rawAxis).toUpperCase() === 'DIAGONAL') angle = Math.atan2(frame.h, frame.w) * 180 / Math.PI;
@@ -211,6 +227,9 @@ function bandGeometry(params: Record<string, unknown>, frame: FlagOrdinaryFrame,
   }
   let center = frameCenter(frame, params);
   const placement = String(params.placement ?? 'CENTER').toUpperCase();
+  const thicknessDivisors = placement === 'AT_EDGE' ? config.edgeThicknessDivisors : config.thicknessDivisors;
+  const t = thickness ?? range(params.thickness ?? height / config.defaultThicknessDivisor,
+    thicknessDivisors.map((n) => height / n), 'band thickness');
   if (placement === 'AT_EDGE') {
     const edge = boundaryPoint(String(params.edge ?? 'TOP'), frame);
     center = edge;
@@ -241,13 +260,42 @@ function chevronGeometry(params: Record<string, unknown>, frame: FlagOrdinaryFra
   }).concat([circle(center, t / 2)]);
 }
 
-function pallGeometry(params: Record<string, unknown>, frame: FlagOrdinaryFrame, height: number, thickness?: number): FlagPolygonSet {
+function pallGeometry(
+  params: Record<string, unknown>,
+  frame: FlagOrdinaryFrame,
+  height: number,
+  thickness?: number,
+  random?: () => number,
+): FlagPolygonSet {
   const config = CONFIG.operators.O05;
   const t = thickness ?? range(params.thickness ?? height / config.defaultThicknessDivisor,
     config.thicknessDivisors.map((n) => height / n), 'pall thickness');
   const center = frameCenter(frame, params);
   const length = Math.hypot(frame.w, frame.h) * 1.4;
-  const angles = (params.angles as number[] | undefined) ?? [...config.defaultAngles];
+  const centerU = (center.x - frame.x0) / frame.w;
+  const centerV = (center.y - frame.y0) / frame.h;
+  const centerDivisor = config.centerDivisor;
+  if ([centerU, centerV].some((coordinate) =>
+    coordinate < config.centerRange[0] - EPS || coordinate > config.centerRange[1] + EPS ||
+    Math.abs(coordinate * centerDivisor - Math.round(coordinate * centerDivisor)) > EPS)) {
+    throw new RangeError('pall center must be a multiple of 1/24 within [8/24, 16/24]');
+  }
+  let angles: number[];
+  if (Array.isArray(params.angles)) {
+    angles = params.angles as number[];
+  } else {
+    const stemId = String(params.stemDirection ?? weightedChoice(config.stemDirections, random,
+      config.stemDirections.find(({ id }) => id === config.defaultStemDirection)! ).id).toUpperCase();
+    const stem = config.stemDirections.find(({ id }) => id === stemId);
+    if (!stem) throw new RangeError('pall stemDirection must be DOWN, UP, FLY, or HOIST');
+    const branchAngle = params.branchAngle === undefined
+      ? weightedChoice(config.branchAngles, random, config.branchAngles.find(({ angle }) => angle === config.defaultBranchAngle)!).angle
+      : finite(params.branchAngle, 'pall branchAngle');
+    if (!config.branchAngles.some(({ angle }) => Math.abs(angle - branchAngle) < EPS)) {
+      throw new RangeError('pall branchAngle must be 120 or 135 degrees');
+    }
+    angles = [stem.angle, stem.angle + branchAngle, stem.angle - branchAngle];
+  }
   if (!Array.isArray(angles) || angles.length !== 3 || angles.some((a) => !Number.isFinite(a))) {
     throw new RangeError('pall angles must contain three finite directions');
   }
@@ -324,38 +372,115 @@ function borderBands(
   ];
 }
 
+function resolveBordureParams(
+  params: Record<string, unknown>,
+  frame: FlagOrdinaryFrame,
+  height: number,
+  random?: () => number,
+): Record<string, unknown> {
+  const variants = params.variant === undefined
+    ? [...CONFIG.operators.O07.variants]
+    : [String(params.variant).toUpperCase()];
+  const minimumOpening = height / CONFIG.minimumThicknessDivisor;
+  const viable = variants.flatMap((variant) => {
+    if (!(CONFIG.operators.O07.variants as readonly string[]).includes(variant)) {
+      throw new RangeError('bordure variant must be PLAIN, DOUBLE, CHECKY, or ORLE');
+    }
+    const thicknessDivisors = variant === 'CHECKY'
+      ? CONFIG.operators.O07.checkyThicknessDivisors
+      : CONFIG.operators.O07.thicknessDivisors;
+    const thicknessBounds = thicknessDivisors.map((divisor) => height / divisor);
+    const thicknesses = params.thickness === undefined
+      ? thicknessBounds
+      : [range(params.thickness, thicknessBounds, 'bordure thickness')];
+    const gap = variant === 'DOUBLE' || variant === 'ORLE'
+      ? finite(params.gap ?? CONFIG.minimumGap, 'bordure gap')
+      : undefined;
+    if (gap !== undefined && gap < CONFIG.minimumGap) {
+      throw new RangeError(`bordure gap must be at least G_MIN (${CONFIG.minimumGap})`);
+    }
+    if (variant === 'ORLE' && gap! > height / 20) {
+      throw new RangeError('orle gap exceeds the configured maximum');
+    }
+    const inset = variant === 'ORLE' ? gap! : 0;
+    const legalThicknesses = thicknesses.filter((thickness) => {
+      const depth = variant === 'DOUBLE' ? 2 * thickness + gap! : thickness + inset;
+      return frame.w - 2 * depth >= minimumOpening &&
+        frame.h - 2 * depth >= minimumOpening;
+    });
+    return legalThicknesses.length ? [{ variant, gap, thicknesses: legalThicknesses }] : [];
+  });
+  if (!viable.length) throw new RangeError('bordure has no legal thickness for its available frame');
+  const drawIndex = (length: number) => {
+    const value = random?.() ?? 0.5;
+    if (!Number.isFinite(value) || value < 0 || value >= 1) {
+      throw new RangeError('Случайное значение для вариативности ординария должно быть в [0, 1)');
+    }
+    return Math.floor(value * length);
+  };
+  const selected = viable[drawIndex(viable.length)];
+  const thickness = selected.thicknesses[drawIndex(selected.thicknesses.length)];
+  return {
+    ...params,
+    variant: selected.variant,
+    thickness,
+    ...(selected.gap === undefined ? {} : { gap: selected.gap }),
+  };
+}
+
 function checkyBands(params: Record<string, unknown>, frame: FlagOrdinaryFrame, height: number): [FlagPolygonSet, FlagPolygonSet] {
   const t = range(params.thickness ?? height / CONFIG.operators.O07.defaultThicknessDivisor,
     CONFIG.operators.O07.thicknessDivisors.map((n) => height / n), 'bordure thickness');
-  const cellSize = finite(params.cellSize ?? height / CONFIG.operators.O07.defaultCheckCellDivisor, 'checky cellSize');
-  if (cellSize < height / CONFIG.minimumThicknessDivisor) throw new RangeError('checky cellSize cannot be below T_MIN');
-  const styledBorder = borderBands(frame, 0, t, height, params.line_style as FlagLineStyle | string | undefined);
-  const colors: [FlagPolygonSet, FlagPolygonSet] = [[], []];
-  const distribute = (length: number, desiredCellSize: number): number => {
-    const requested = Math.max(1, Math.round(length / desiredCellSize));
-    const minimumCount = Math.max(1, Math.floor(length / (height / CONFIG.minimumThicknessDivisor)));
-    return Math.min(requested, minimumCount);
-  };
-  const topBottomCount = distribute(frame.w, cellSize);
-  const horizontalStep = frame.w / topBottomCount;
-  for (let index = 0; index < topBottomCount; index += 1) {
-    const x0 = frame.x0 + index * horizontalStep;
-    const x1 = frame.x0 + (index + 1) * horizontalStep;
-    for (const y0 of [frame.y0, frame.y0 + frame.h - t]) {
-      const pieces = clipFlagPolygons([rectangle(x0, y0, x1, y0 + t)], [styledBorder]);
-      colors[index & 1].push(...pieces);
-    }
+  if (params.cellSize !== undefined &&
+      Math.abs(finite(params.cellSize, 'размер клетки CHECKY') - t) > EPS) {
+    throw new RangeError('размер клетки CHECKY должен совпадать с толщиной бордюра');
   }
-  const verticalLength = frame.h - 2 * t;
-  const sideCount = distribute(verticalLength, cellSize);
-  const verticalStep = verticalLength / sideCount;
-  for (let index = 0; index < sideCount; index += 1) {
-    const y0 = frame.y0 + t + index * verticalStep;
-    const y1 = frame.y0 + t + (index + 1) * verticalStep;
-    for (const x0 of [frame.x0, frame.x0 + frame.w - t]) {
-      const pieces = clipFlagPolygons([rectangle(x0, y0, x0 + t, y1)], [styledBorder]);
-      colors[(index + 1) & 1].push(...pieces);
-    }
+  const cellSize = t;
+  if (cellSize < height / CONFIG.minimumThicknessDivisor) throw new RangeError('checky cellSize cannot be below T_MIN');
+  const lineStyle = params.line_style as FlagLineStyle | string | undefined;
+  const styledBorder = borderBands(frame, 0, t, height, lineStyle);
+  const lineStyleType = typeof lineStyle === 'string' ? lineStyle : lineStyle?.type ?? 'STRAIGHT';
+  const useExactRectangles = lineStyleType.toUpperCase() === 'STRAIGHT';
+  const colors: [FlagPolygonSet, FlagPolygonSet] = [[], []];
+  const innerWidth = Math.max(EPS, frame.w - 2 * t);
+  const innerHeight = Math.max(EPS, frame.h - 2 * t);
+  const horizontalCount = Math.max(2, Math.round(innerWidth / cellSize));
+  const verticalCount = Math.max(2, Math.round(innerHeight / cellSize));
+  let sequence = 0;
+  const add = (x0: number, y0: number, x1: number, y1: number) => {
+    // Прямоугольная клетка уже лежит внутри прямоугольного бордюра.
+    // Триангуляция при повторном пересечении создавала тонкие ложные фрагменты.
+    const pieces = useExactRectangles
+      ? [rectangle(x0, y0, x1, y1)]
+      : clipFlagPolygons([rectangle(x0, y0, x1, y1)], [styledBorder]);
+    colors[sequence & 1].push(...pieces);
+    sequence += 1;
+  };
+  const left = frame.x0, right = frame.x0 + frame.w;
+  const top = frame.y0, bottom = frame.y0 + frame.h;
+  add(left, top, left + t, top + t);
+  for (let index = 0; index < horizontalCount; index += 1) {
+    const x0 = left + t + innerWidth * index / horizontalCount;
+    const x1 = left + t + innerWidth * (index + 1) / horizontalCount;
+    add(x0, top, x1, top + t);
+  }
+  add(right - t, top, right, top + t);
+  for (let index = 0; index < verticalCount; index += 1) {
+    const y0 = top + t + innerHeight * index / verticalCount;
+    const y1 = top + t + innerHeight * (index + 1) / verticalCount;
+    add(right - t, y0, right, y1);
+  }
+  add(right - t, bottom - t, right, bottom);
+  for (let index = horizontalCount - 1; index >= 0; index -= 1) {
+    const x0 = left + t + innerWidth * index / horizontalCount;
+    const x1 = left + t + innerWidth * (index + 1) / horizontalCount;
+    add(x0, bottom - t, x1, bottom);
+  }
+  add(left, bottom - t, left + t, bottom);
+  for (let index = verticalCount - 1; index >= 0; index -= 1) {
+    const y0 = top + t + innerHeight * index / verticalCount;
+    const y1 = top + t + innerHeight * (index + 1) / verticalCount;
+    add(left, y0, left + t, y1);
   }
   return colors;
 }
@@ -381,13 +506,20 @@ function bordureGeometry(params: Record<string, unknown>, frame: FlagOrdinaryFra
   return borderBands(frame, 0, t, height, params.line_style as FlagLineStyle | string | undefined);
 }
 
-function getGeometry(type: FlagOrdinaryType, params: Record<string, unknown>, frame: FlagOrdinaryFrame, height: number, widthOverride?: number): FlagPolygonSet {
+function getGeometry(
+  type: FlagOrdinaryType,
+  params: Record<string, unknown>,
+  frame: FlagOrdinaryFrame,
+  height: number,
+  widthOverride?: number,
+  random?: () => number,
+): FlagPolygonSet {
   switch (type) {
     case 'O01': return crossGeometry(params, frame, height, widthOverride);
     case 'O02': return saltireGeometry(params, frame, height, widthOverride);
     case 'O03': return bandGeometry(params, frame, height, widthOverride);
     case 'O04': return chevronGeometry(params, frame, height, widthOverride);
-    case 'O05': return pallGeometry(params, frame, height, widthOverride);
+    case 'O05': return pallGeometry(params, frame, height, widthOverride, random);
     case 'O06': return pileGeometry(params, frame);
     case 'O07': return bordureGeometry(params, frame, height);
     default: throw new RangeError(`${type} geometry is composite and cannot be requested directly`);
@@ -402,7 +534,7 @@ function fillFor(spec: FlagOrdinarySpec, fallback = 's2'): unknown {
   return spec.fill ?? fallback;
 }
 
-/** Offset each convex component so fimbration follows the figure's contour. */
+/** Смещает каждую выпуклую часть, чтобы фимбриация повторяла контур фигуры. */
 function offsetPolygon(polygon: FlagPolygon, distance: number): FlagPolygon {
   if (polygon.length < 3 || distance <= 0) return polygon.map(({ x, y }) => pt(x, y));
   const area = polygon.reduce((sum, a, index) => {
@@ -441,6 +573,49 @@ function idFor(spec: FlagOrdinarySpec, index: number): string {
   return spec.id ?? `${spec.type.toLowerCase()}-${index + 1}`;
 }
 
+function lineStyleCost(params: Record<string, unknown>): number {
+  const configured = params.line_style ?? params.lineStyle;
+  if (configured === undefined) return 0;
+  const kind = typeof configured === 'string'
+    ? configured
+    : String((configured as Record<string, unknown> | null)?.type ?? 'STRAIGHT');
+  return kind.toUpperCase() === 'STRAIGHT' ? 0 : CONFIG.costs.nonStraightBoundaryGroup;
+}
+
+function patternFillCost(fill: FlagOrdinarySpec['fill']): number {
+  return fill && typeof fill === 'object' && 'pattern' in fill ? CONFIG.costs.patternFill : 0;
+}
+
+function ordinaryContentCost(spec: FlagOrdinarySpec): number {
+  const params = spec.params ?? {};
+  const field = params.field as FlagFieldNode | undefined;
+  const additional = Number(params.additionalContentCost ?? 0);
+  if (!Number.isFinite(additional) || additional < 0) {
+    throw new RangeError(`${idFor(spec, 0)}.additionalContentCost must be non-negative`);
+  }
+  return (field ? flagFieldComplexityCost(field) : 0)
+    + (spec.children ?? []).reduce((sum, child) => sum + ordinaryTotalCost(child), 0)
+    + additional;
+}
+
+function ordinaryBaseCost(spec: FlagOrdinarySpec): number {
+  const params = spec.params ?? {};
+  const base = finite(spec.cost ?? CONFIG.costs.operators[spec.type], `${idFor(spec, 0)}.cost`);
+  if (base < 0) throw new RangeError(`${idFor(spec, 0)}.cost cannot be negative`);
+  const doubleBordure = spec.type === 'O07'
+    && String(params.variant ?? 'PLAIN').toUpperCase() === 'DOUBLE'
+    ? CONFIG.costs.doubleBordure
+    : 0;
+  const content = spec.type === 'O08'
+    ? CONFIG.costs.cantonContentMultiplier * ordinaryContentCost(spec)
+    : 0;
+  return base + doubleBordure + lineStyleCost(params) + patternFillCost(spec.fill) + content;
+}
+
+function ordinaryTotalCost(spec: FlagOrdinarySpec): number {
+  return ordinaryBaseCost(spec) + (spec.fimbration ? CONFIG.costs.fimbration : 0);
+}
+
 function emitShape(
   spec: FlagOrdinarySpec,
   frame: FlagOrdinaryFrame,
@@ -453,9 +628,12 @@ function emitShape(
   componentName = idFor(spec, index),
 ): void {
   const height = options.canvasHeight ?? CONFIG.canvasHeight;
+  if (type === 'O07') {
+    params = resolveBordureParams(params, frame, height, options.random);
+    spec = { ...spec, params };
+  }
   const inherited = options.clipChain ?? [];
-  const baseCost = finite(spec.cost ?? CONFIG.costs.default, `${componentName}.cost`);
-  if (baseCost < 0) throw new RangeError(`${componentName}.cost cannot be negative`);
+  const baseCost = ordinaryBaseCost(spec);
   const cost = baseCost + (spec.fimbration ? CONFIG.costs.fimbration : 0);
   result.totalCost += cost;
   const fimb = spec.fimbration;
@@ -467,7 +645,7 @@ function emitShape(
       const fill = offsetPolygons(borderBands(frame, 0, thickness, height, params.line_style as FlagLineStyle | string | undefined), delta);
       result.paintLayers.push({
         kind: 'ordinary', id: `${componentName}-fimbration`, operator: type,
-        fill: fimb.fill, polygons: clipped(fill, inherited), clipChain: inherited,
+        fill: fimb.fill, polygons: clipped(fill, inherited), validationPolygons: fill, clipChain: inherited,
         depth, cost: CONFIG.costs.fimbration, tags: ['ordinary', 'bordure', 'fimbration'], part: 'fimbration',
       });
     }
@@ -477,28 +655,29 @@ function emitShape(
     if (firstFill === secondFill) throw new RangeError('CHECKY bordure requires two distinct fill slots');
     result.paintLayers.push({
       kind: 'ordinary', id: `${componentName}-checky-a`, operator: type, fill: firstFill,
-      polygons: clipped(firstColor, inherited), clipChain: inherited, depth,
+      polygons: clipped(firstColor, inherited), validationPolygons: firstColor, clipChain: inherited, depth,
       cost: baseCost / 2, tags: ['ordinary', 'bordure', 'checky', 'checker-a'], part: 'main',
     });
     result.paintLayers.push({
       kind: 'ordinary', id: `${componentName}-checky-b`, operator: type, fill: secondFill,
-      polygons: clipped(secondColor, inherited), clipChain: inherited, depth,
+      polygons: clipped(secondColor, inherited), validationPolygons: secondColor, clipChain: inherited, depth,
       cost: baseCost / 2, tags: ['ordinary', 'bordure', 'checky', 'checker-b'], part: 'main',
     });
     return;
   }
   if (fimb) {
     const delta = range(fimb.delta, CONFIG.fimbration, `${componentName}.fimbration.delta`);
-    const expanded = offsetPolygons(getGeometry(type, params, frame, height), delta);
+    const expanded = offsetPolygons(getGeometry(type, params, frame, height, undefined, options.random), delta);
     result.paintLayers.push({
       kind: 'ordinary', id: `${componentName}-fimbration`, operator: type,
-      fill: fimb.fill, polygons: clipped(expanded, inherited), clipChain: inherited,
+      fill: fimb.fill, polygons: clipped(expanded, inherited), validationPolygons: expanded, clipChain: inherited,
       depth, cost: CONFIG.costs.fimbration, tags: ['fimbration'], part: 'fimbration',
     });
   }
+  const geometry = getGeometry(type, params, frame, height, undefined, options.random);
   result.paintLayers.push({
     kind: 'ordinary', id: componentName, operator: type, fill: fillFor(spec),
-    polygons: clipped(getGeometry(type, params, frame, height), inherited), clipChain: inherited,
+    polygons: clipped(geometry, inherited), validationPolygons: geometry, clipChain: inherited,
     depth, cost: baseCost, tags: ['ordinary'], part: 'main',
   });
 }
@@ -528,8 +707,13 @@ function addCanton(spec: FlagOrdinarySpec, frame: FlagOrdinaryFrame, options: Fl
   const { polygon, frame: innerFrame } = cantonGeometry(spec, frame);
   const clipChain = [...(options.clipChain ?? []), [polygon]];
   const id = idFor(spec, index);
-  const cantonCost = finite(spec.cost ?? CONFIG.costs.default, `${id}.cost`);
-  if (cantonCost < 0) throw new RangeError(`${id}.cost cannot be negative`);
+  const params = spec.params ?? {};
+  const additionalContentCost = Number(params.additionalContentCost ?? 0);
+  const cantonPaintCost = finite(spec.cost ?? CONFIG.costs.operators.O08, `${id}.cost`)
+    + lineStyleCost(params)
+    + patternFillCost(spec.fill)
+    + CONFIG.costs.cantonContentMultiplier * additionalContentCost;
+  const cantonCost = ordinaryBaseCost(spec);
   result.totalCost += cantonCost;
   if (spec.fimbration) {
     const delta = range(spec.fimbration.delta, CONFIG.fimbration, `${id}.fimbration.delta`);
@@ -543,7 +727,7 @@ function addCanton(spec: FlagOrdinarySpec, frame: FlagOrdinaryFrame, options: Fl
   }
   result.paintLayers.push({
     kind: 'canton', id, operator: 'O08', fill: fillFor(spec), polygons: clipped([polygon], options.clipChain ?? []),
-    clipChain: options.clipChain ?? [], depth, cost: cantonCost, tags: ['canton'],
+    clipChain: options.clipChain ?? [], depth, cost: cantonPaintCost, tags: ['canton'],
   });
   const fieldNode = spec.params?.field as FlagFieldNode | undefined;
   if (fieldNode) {
@@ -552,18 +736,24 @@ function addCanton(spec: FlagOrdinarySpec, frame: FlagOrdinaryFrame, options: Fl
       result.paintLayers.push({
         kind: 'ground', id: `${id}-${layer.op.toLowerCase()}-${layer.regionIndex ?? 'base'}`,
         operator: layer.op, fill: layer.slot, polygons: layer.polygons, clipChain: layer.clipChain,
-        depth: depth + 1, cost: 0, tags: ['canton-field'],
+        depth: depth + 1,
+        cost: field.paintLayers.length
+          ? CONFIG.costs.cantonContentMultiplier * field.complexityCost / field.paintLayers.length
+          : 0,
+        tags: ['canton-field'],
       });
     }
   }
   const children = spec.children ?? [];
   if (children.length) {
     const nested = buildFlagOrdinaries(children, innerFrame, { ...options, clipChain }, depth + 1);
-    result.paintLayers.push(...nested.paintLayers);
+    result.paintLayers.push(...nested.paintLayers.map((layer) => ({
+      ...layer,
+      cost: layer.cost * CONFIG.costs.cantonContentMultiplier,
+    })));
     result.ordinaryCount += nested.ordinaryCount;
     result.bordureCount += nested.bordureCount;
     result.cantonCount += nested.cantonCount;
-    result.totalCost += nested.totalCost;
     result.maxDepth = Math.max(result.maxDepth, nested.maxDepth);
   }
 }
@@ -604,46 +794,54 @@ function addUnion(spec: FlagOrdinarySpec, frame: FlagOrdinaryFrame, options: Fla
     throw new RangeError('union motif requires at least three distinct color slots');
   }
   const pinwheel = params.pinwheel === true;
-  const shift = pinwheel ? range(params.pinwheel_shift ?? 0, config.pinwheelShift.map((v) => v * baseT) as unknown as readonly number[], 'pinwheel shift') : 0;
+  if (pinwheel && !options.random) throw new TypeError('O09 PINWHEEL requires an injected seeded random source');
+  const shiftFraction = pinwheel
+    ? range(params.pinwheel_shift ?? (options.random!() * config.pinwheelShift[1]),
+      config.pinwheelShift, 'pinwheel shift')
+    : 0;
+  const shiftDirection = pinwheel ? (options.random!() < 0.5 ? -1 : 1) : 0;
   layers.forEach((layer) => {
     const componentClip = options.clipChain ?? [];
-    const splitSaltire = pinwheel && layer.type === 'O02';
+    const splitSaltire = pinwheel && layer.type === 'O02' && layer.name === `saltire-${saltireCount}`;
+    const shift = splitSaltire ? shiftFraction * layer.t : 0;
     const halves = splitSaltire ? [
-      { polygon: rectangle(frame.x0, frame.y0, frame.x0 + frame.w / 2, frame.y0 + frame.h), shift: -shift },
-      { polygon: rectangle(frame.x0 + frame.w / 2, frame.y0, frame.x0 + frame.w, frame.y0 + frame.h), shift },
+      { polygon: rectangle(frame.x0, frame.y0, frame.x0 + frame.w / 2, frame.y0 + frame.h), shift: -shiftDirection * shift },
+      { polygon: rectangle(frame.x0 + frame.w / 2, frame.y0, frame.x0 + frame.w, frame.y0 + frame.h), shift: shiftDirection * shift },
     ] : [{ polygon: undefined, shift: 0 }];
     for (const half of halves) {
-      const angle = layer.type === 'O02' ? Math.atan2(frame.h, frame.w) : 0;
-      const shiftX = Math.cos(angle) * half.shift;
-      const shiftY = Math.sin(angle) * half.shift;
       const center = (params.center as Record<string, unknown> | undefined) ?? CONFIG.defaultCenter;
       const paramsForGeometry = {
         ...layer.params,
         center: {
-          u: Number(center.u ?? CONFIG.defaultCenter.u) + shiftX / frame.w,
-          v: Number(center.v ?? CONFIG.defaultCenter.v) + shiftY / frame.h,
+          u: Number(center.u ?? CONFIG.defaultCenter.u),
+          v: Number(center.v ?? CONFIG.defaultCenter.v) + half.shift / frame.h,
         },
         thickness: layer.t,
       };
       const clips = half.polygon ? [...componentClip, [half.polygon]] : componentClip;
       if (layer.fimbration) {
         const delta = range(layer.fimbration.delta, CONFIG.fimbration, `union.${layer.name}.fimbration.delta`);
-        const expanded = offsetPolygons(getGeometry(layer.type, paramsForGeometry, frame, options.canvasHeight ?? CONFIG.canvasHeight, layer.t), delta);
+        const expanded = offsetPolygons(getGeometry(
+          layer.type, paramsForGeometry, frame, options.canvasHeight ?? CONFIG.canvasHeight, layer.t, options.random,
+        ), delta);
         result.paintLayers.push({
           kind: 'ordinary', id: `${idFor(spec, index)}-${layer.name}-fimbration`, operator: layer.type,
-          fill: layer.fimbration.fill, polygons: clipped(expanded, clips), clipChain: clips,
+          fill: layer.fimbration.fill, polygons: clipped(expanded, clips), validationPolygons: expanded, clipChain: clips,
           depth, cost: CONFIG.costs.fimbration / halves.length, tags: ['ordinary', 'fimbration'], part: 'fimbration',
         });
       }
+      const geometry = getGeometry(
+        layer.type, paramsForGeometry, frame, options.canvasHeight ?? CONFIG.canvasHeight, layer.t, options.random,
+      );
       result.paintLayers.push({
         kind: 'ordinary', id: `${idFor(spec, index)}-${layer.name}`, operator: layer.type,
-        fill: layer.fill, polygons: clipped(getGeometry(layer.type, paramsForGeometry, frame, options.canvasHeight ?? CONFIG.canvasHeight, layer.t), clips),
-        clipChain: clips, depth, cost: (spec.cost ?? CONFIG.costs.default) / layers.length / halves.length,
+        fill: layer.fill, polygons: clipped(geometry, clips), validationPolygons: geometry,
+        clipChain: clips, depth, cost: ordinaryBaseCost(spec) / layers.length / halves.length,
         tags: ['ordinary', 'union-motif'], part: 'main',
       });
     }
   });
-  result.totalCost += finite(spec.cost ?? CONFIG.costs.default, `${idFor(spec, index)}.cost`) + layers.reduce((sum, layer) => sum + (layer.fimbration ? CONFIG.costs.fimbration : 0), 0);
+  result.totalCost += ordinaryBaseCost(spec) + layers.reduce((sum, layer) => sum + (layer.fimbration ? CONFIG.costs.fimbration : 0), 0);
 }
 
 function buildFlagOrdinaries(specs: FlagOrdinarySpec[], frame: FlagOrdinaryFrame, options: FlagOrdinaryOptions, depth: number): FlagOrdinaryResult {
@@ -702,7 +900,7 @@ function validateOrdinaryTree(specs: FlagOrdinarySpec[], issues: FlagOrdinaryIss
   });
 }
 
-/** Build O01–O09 as ordered polygons with inherited clipping and canton subframes. */
+/** Строит O01–O09 как упорядоченные многоугольники с унаследованной обрезкой и рамками кантонов. */
 export function buildFlagOrdinaryLayers(
   specs: FlagOrdinarySpec[],
   frame: FlagOrdinaryFrame,
@@ -721,11 +919,10 @@ export function buildFlagOrdinaryLayers(
   if (result.ordinaryCount > LIMITS.maxOrdinaries) throw new RangeError(`ordinary count exceeds ${LIMITS.maxOrdinaries}`);
   if (result.cantonCount > LIMITS.maxCantons) throw new RangeError(`canton count exceeds ${LIMITS.maxCantons}`);
   if (result.bordureCount > LIMITS.maxBordures) throw new RangeError(`bordure count exceeds ${LIMITS.maxBordures}`);
-  if (result.totalCost > LIMITS.maxTotalCost + EPS) throw new RangeError(`ordinary cost ${result.totalCost} exceeds ${LIMITS.maxTotalCost}`);
   return result;
 }
 
-/** Return geometry and composition failures without mutating the supplied specs. */
+/** Возвращает ошибки геометрии и композиции, не изменяя переданные спецификации. */
 export function validateFlagOrdinaries(
   specs: FlagOrdinarySpec[],
   frame: FlagOrdinaryFrame,

@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "GBOj_nZq_JDTSkG-Qu5_E"
+uri = "file://artifacts/zero-strategy/generated-artifacts/flags/contact-sheet-200.html"
+type = "html"
+title = "Контактный лист генератора — 200 флагов"
+description = "Сбалансированная выборка всех 32 профилей, seed 1000–1199; контактный лист для просмотра и масштабирования."
+logical_id = "bde36851-9093-410f-86d6-2ed22c94833e"
+content_hash = "sha256:d6c695c609e69da9c20de143b6e4f7fb2873e8d3c130bf835bce88966463f0c4"
+size = 648832
+mtime_ms = 1793145167250
+storage_uri = "gcs://replit-rams-assets-spock/rams/assets/repl:ed5b3547-f0df-45b2-a110-dd5eaa1bcba1/bde36851-9093-410f-86d6-2ed22c94833e/9d52bd88-1766-4bce-bdf2-5376ba4c70b5"
+storage_version_token = "1793145290465193"
+content_type = "text/html"

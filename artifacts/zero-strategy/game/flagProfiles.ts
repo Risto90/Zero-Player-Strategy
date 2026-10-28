@@ -1,6 +1,9 @@
 import {
   FLAG_PROFILE_CONFIG,
   FLAG_PROFILE_DEFAULTS,
+  FLAG_HYBRID_SOURCE_WEIGHTS,
+  FLAG_PROFILE_HYBRID_PAIR_WEIGHTS,
+  FLAG_FALLBACK_PROFILE_CONFIG,
   FLAG_TAG_COMPATIBILITY,
   type FlagProfileConfig,
   type FlagProfileWeights,
@@ -15,7 +18,8 @@ export interface ProfileTagCheck {
 }
 
 export function getFlagProfile(id: string): FlagProfileConfig | undefined {
-  return FLAG_PROFILE_CONFIG.find((entry) => entry.id === id);
+  return FLAG_PROFILE_CONFIG.find((entry) => entry.id === id) ??
+    (FLAG_FALLBACK_PROFILE_CONFIG.id === id ? FLAG_FALLBACK_PROFILE_CONFIG : undefined);
 }
 
 export function availableFlagProfiles(era: number): FlagProfileConfig[] {
@@ -71,29 +75,31 @@ export function chooseHybridProfile(
   random: () => number,
   tags: readonly string[] = [],
 ): FlagProfileConfig | null {
-  const choices = primary.HYB
-    .map((id) => getFlagProfile(id))
-    .filter((entry): entry is FlagProfileConfig => !!entry && entry.eras.includes(era) && canUseHybridProfiles(primary, entry, tags).valid);
+  const choices = FLAG_PROFILE_HYBRID_PAIR_WEIGHTS
+    .filter(({ first, second }) => first === primary.id || second === primary.id)
+    .map((pair) => ({
+      profile: getFlagProfile(pair.first === primary.id ? pair.second : pair.first),
+      weight: pair.weight,
+    }))
+    .filter(({ profile }) => profile && era >= Math.min(...profile.eras) - 1 &&
+      era <= Math.max(...profile.eras) + 1 && canUseHybridProfiles(primary, profile, tags).valid);
   if (choices.length === 0) return null;
-  return choices[Math.min(choices.length - 1, Math.floor(checkedRandom(random) * choices.length))];
+  let target = checkedRandom(random) * choices.reduce((total, entry) => total + entry.weight, 0);
+  for (const choice of choices) {
+    target -= choice.weight;
+    if (target < 0) return choice.profile!;
+  }
+  return choices[choices.length - 1].profile!;
 }
 
-/**
- * Probabilities are explicit data/inputs. `unresolved` is returned for the
- * remaining probability because §13 does not define another style mode.
- */
+/** Вероятность гибрида по ответу равна дополнению чистоты до единицы. */
 export function chooseFlagProfileMode(
   random: () => number,
   purity = FLAG_PROFILE_DEFAULTS.purity,
-  hybridProbability = FLAG_PROFILE_DEFAULTS.hybridProbability,
-): FlagProfileMode {
-  if (!isProbability(purity) || !isProbability(hybridProbability) || purity + hybridProbability > 1) {
-    throw new RangeError('Profile mode probabilities must be in [0, 1] and sum to at most 1.');
-  }
+): Exclude<FlagProfileMode, 'unresolved'> {
+  if (!isProbability(purity)) throw new RangeError('Profile purity must be in [0, 1].');
   const value = checkedRandom(random);
-  if (value < purity) return 'pure';
-  if (value < purity + hybridProbability) return 'hybrid';
-  return 'unresolved';
+  return value < purity ? 'pure' : 'hybrid';
 }
 
 export interface HybridProfileMix {
@@ -104,14 +110,19 @@ export interface HybridProfileMix {
   charges: { CHG: FlagProfileConfig['CHG']; sourceProfileId: string };
 }
 
-/** Primary owns outline, aspect and palette; two explicit coin flips pick the other data groups. */
+/** Контур, аспект и палитра принадлежат базе; два источника выбираются одним взвешенным исходом. */
 export function mixHybridProfileProperties(
   primary: FlagProfileConfig,
   second: FlagProfileConfig,
   random: () => number,
 ): HybridProfileMix {
-  const fieldSource = checkedRandom(random) < 0.5 ? primary : second;
-  const chargeSource = checkedRandom(random) < 0.5 ? primary : second;
+  const outcome = chooseFlagProfileWeight<'donor-base' | 'base-donor' | 'donor-donor'>({
+    'donor-base': FLAG_HYBRID_SOURCE_WEIGHTS.donorBase,
+    'base-donor': FLAG_HYBRID_SOURCE_WEIGHTS.baseDonor,
+    'donor-donor': FLAG_HYBRID_SOURCE_WEIGHTS.donorDonor,
+  }, random);
+  const fieldSource = outcome === 'donor-base' || outcome === 'donor-donor' ? second : primary;
+  const chargeSource = outcome === 'base-donor' || outcome === 'donor-donor' ? second : primary;
   return {
     OUT: primary.OUT,
     ASP: primary.ASP,
@@ -155,3 +166,31 @@ function checkedRandom(random: () => number): number {
   }
   return value;
 }
+
+/** Проверяет парные ограничения гибридов при загрузке конфигурации. */
+export function validateFlagHybridPairConfig(): string[] {
+  const issues: string[] = [];
+  for (const pair of FLAG_PROFILE_HYBRID_PAIR_WEIGHTS) {
+    const first = getFlagProfile(pair.first), second = getFlagProfile(pair.second);
+    if (!first || !second || first.id === 'P28_FB' || second.id === 'P28_FB') {
+      issues.push(`Пара ${pair.first}–${pair.second} ссылается на неизвестный или резервный профиль.`);
+      continue;
+    }
+    if (!Number.isFinite(pair.weight) || pair.weight <= 0) {
+      issues.push(`Пара ${pair.first}–${pair.second} имеет недопустимый вес.`);
+    }
+    const rangesOverlap = Math.min(Math.max(...first.eras) + 1, Math.max(...second.eras) + 1) >=
+      Math.max(Math.min(...first.eras) - 1, Math.min(...second.eras) - 1);
+    if (!rangesOverlap) issues.push(`Эпохи пары ${pair.first}–${pair.second} не пересекаются даже после расширения на ±1.`);
+    if (!areFlagTagSetsCompatible([...(first.tags_allowed ?? []), ...(second.tags_allowed ?? [])], true)) {
+      issues.push(`Собственные теги пары ${pair.first}–${pair.second} нарушают матрицу совместимости.`);
+    }
+    if (!first.HYB.includes(second.id) || !second.HYB.includes(first.id)) {
+      issues.push(`Связь HYB пары ${pair.first}–${pair.second} не симметрична.`);
+    }
+  }
+  return issues;
+}
+
+const hybridPairIssues = validateFlagHybridPairConfig();
+if (hybridPairIssues.length) throw new Error(hybridPairIssues.join('\n'));

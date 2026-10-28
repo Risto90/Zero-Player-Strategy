@@ -2,8 +2,13 @@
 export const FLAG_VALIDATION_CONFIG = {
   referenceRasterHeight: 240,
   flagHeight: 1200,
-  minimumThicknessPx: 6,
-  minimumGapPx: 4,
+  physical: {
+    minimumThickness: 30,
+    minimumGap: 20,
+    validationFactor: 0.85,
+    unitsPerPixel: 2.5,
+    referenceUnitsPerPixel: 5,
+  },
   maximumComplexity: null as number | null,
   limits: {
     layers: 40,
@@ -13,10 +18,17 @@ export const FLAG_VALIDATION_CONFIG = {
     colors: 5,
   },
   components: {
+    highResolutionRasterHeight: 480,
+    highResolutionUnitsPerPixel: 2.5,
+    foregroundConnectivity: 8,
     minimumAreaShare: 0.003,
     forbiddenAreaShare: 0.0015,
     maximumOpeningLoss: 0.1,
     maximumClosingIncrease: 0.02,
+    openingRadiusPx: 5,
+    closingRadiusPx: 3,
+    acuteTipAngleDegrees: 60,
+    minimumVisibleLayerAreaShare: 0.0015,
     smallRasterHeight: 32,
     smallRasterComponentShare: 0.006,
     minimumSmallRasterRetention: 0.6,

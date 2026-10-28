@@ -3,10 +3,13 @@ import {
   applyFlagSymmetry,
   buildCounterchangeNode,
   chooseFlagSymmetry,
+  createMaximumSafeChargeSizeEvaluator,
   createRepeatNode,
   expandFlagRepeat,
   expandSymmetricPlacements,
   isValidChargePlacement,
+  maximumChargeSizeClearOfObstaclesAtPoint,
+  maximumSafeChargeSizeAtPoint,
   resolveChargePlacement,
   resolveFlagRepeatPlacements,
   snapChargeParameter,
@@ -34,6 +37,88 @@ const center = resolveChargePlacement({ anchor: 'A1', frame, safeArea: safe, siz
 assert.equal(center.u, 0.5);
 assert.equal(center.v, 0.5);
 assert.ok(isValidChargePlacement(center, frame, safe), 'center charge fits safe area');
+near(
+  maximumSafeChargeSizeAtPoint(
+    { u: 0.5, v: 0.5 },
+    { w: 0.2, h: 1 },
+    { minU: 0, minV: 0, maxU: 1, maxV: 1 },
+  ),
+  0.2,
+  'maximum safe diameter remains height-scaled on a narrow flag',
+);
+const centerObstacles = [
+  [{ u: 0, v: 0 }, { u: 1, v: 0 }, { u: 1, v: 0.4 }, { u: 0, v: 0.4 }],
+  [{ u: 0, v: 0.6 }, { u: 1, v: 0.6 }, { u: 1, v: 1 }, { u: 0, v: 1 }],
+  [{ u: 0, v: 0.4 }, { u: 0.4, v: 0.4 }, { u: 0.4, v: 0.6 }, { u: 0, v: 0.6 }],
+  [{ u: 0.6, v: 0.4 }, { u: 1, v: 0.4 }, { u: 1, v: 0.6 }, { u: 0.6, v: 0.6 }],
+];
+near(
+  maximumSafeChargeSizeAtPoint(
+    { u: 0.5, v: 0.5 },
+    { w: 1, h: 1 },
+    { minU: 0, minV: 0, maxU: 1, maxV: 1 },
+    1200,
+    centerObstacles,
+    0.01,
+  ),
+  0.18,
+  'bordure polygons limit the centered charge and preserve the required clearance',
+);
+const preparedClearance = createMaximumSafeChargeSizeEvaluator(
+  { w: 1, h: 1 },
+  { minU: 0, minV: 0, maxU: 1, maxV: 1 },
+  1200,
+  centerObstacles,
+  0.01,
+);
+for (const point of [
+  { u: 0.5, v: 0.5 },
+  { u: 0.5, v: 0.2 },
+  { u: 0.2, v: 0.5 },
+  { u: 0.8, v: 0.8 },
+  { u: 0.02, v: 0.5 },
+]) {
+  near(
+    preparedClearance(point),
+    maximumSafeChargeSizeAtPoint(
+      point,
+      { w: 1, h: 1 },
+      { minU: 0, minV: 0, maxU: 1, maxV: 1 },
+      1200,
+      centerObstacles,
+      0.01,
+    ),
+    'подготовленный оценщик должен совпадать с однократным расчётом',
+  );
+}
+assert.equal(
+  maximumSafeChargeSizeAtPoint(
+    { u: 0.5, v: 0.5 },
+    { w: 1, h: 1 },
+    { minU: 0, minV: 0, maxU: 1, maxV: 1 },
+    1200,
+    [[{ u: 0, v: 0.45 }, { u: 1, v: 0.45 }, { u: 1, v: 0.55 }, { u: 0, v: 0.55 }]],
+  ),
+  0,
+  'a central ordinary band leaves no safe diameter at the center anchor',
+);
+assert.equal(
+  maximumChargeSizeClearOfObstaclesAtPoint({ u: 0.5, v: 0.5 }, frame),
+  Number.POSITIVE_INFINITY,
+  'ordinary clearance alone must not replace safe-area placement checks',
+);
+assert.throws(
+  () => resolveChargePlacement({
+    anchor: 'A1',
+    frame: { w: 0.2, h: 1 },
+    safeArea: { minU: 0, minV: 0, maxU: 1, maxV: 1 },
+    size: 0.3,
+    snapAlreadyApplied: true,
+    rng: seeded(0.1),
+  }),
+  /не найдено безопасное размещение/,
+  'placement checks the height-scaled emblem radius even on a narrow flag',
+);
 const outlineFrame = { w: 2, h: 1 };
 const outlineSafeArea = [
   { x: 40, y: 40 }, { x: 2360, y: 40 }, { x: 2360, y: 1160 }, { x: 40, y: 1160 },
@@ -43,7 +128,11 @@ assert.ok(isValidChargePlacement(
   outlineFrame,
   outlineSafeArea,
 ), 'placement accepts safe-area coordinates from the outline geometry');
-assert.equal(resolveChargePlacement({ anchor: 'A2', frame, safeArea: safe, size: 0.2, rng: seeded(0.1) }).u, 0.325);
+assert.equal(resolveChargePlacement({ anchor: 'A2', frame, safeArea: safe, size: 0.2, rng: seeded(0.1) }).u, 0.25);
+const bannerA2 = resolveChargePlacement({
+  anchor: 'A2', frame, safeArea: safe, size: 0.2, references: { outlineType: 'BANNER' }, rng: seeded(0.1),
+});
+assert.deepEqual([bannerA2.u, bannerA2.v], [0.5, 0.25], 'у BANNER для A2 задан центр по x и одно из настроенных значений y');
 const ordinaryAnchor = resolveChargePlacement({ anchor: 'A3', frame, safeArea: safe, size: 0.2, references: { ordinaryCenter: { u: 0.3, v: 0.4 } }, rng: seeded(0.1) });
 assert.deepEqual([ordinaryAnchor.u, ordinaryAnchor.v, ordinaryAnchor.rotation, ordinaryAnchor.mirror], [0.3, 0.4, 0, false]);
 near(ordinaryAnchor.size, 0.20833333333333334, 'A3 size is snapped');
@@ -88,7 +177,7 @@ const free = resolveChargePlacement({
 assert.deepEqual([free.u, free.v], [0.25, 0.25], 'A10 skips a candidate too close to the safe-area edge');
 assert.throws(
   () => resolveChargePlacement({ anchor: 'A1', frame, safeArea: safe, size: 0.2, existing: [center], rng: seeded(0.1) }),
-  /minimum gaps/,
+  /не найдено безопасное размещение/,
 );
 assert.throws(() => resolveChargePlacement({ anchor: 'A1', frame, safeArea: safe, size: 0.2 }), /injected seeded random source/);
 
@@ -96,7 +185,7 @@ assert.equal(expandFlagRepeat('GRID', { rows: 2, cols: 3 }).length, 6);
 assert.equal(expandFlagRepeat('GRID', { rows: 2, cols: 3, stagger: 'HALF_OFFSET' }).length, 6);
 assert.equal(expandFlagRepeat('GRID', { rows: 2, cols: 3, stagger: 'ALTERNATING_6_5' }).length, 11);
 assert.equal(expandFlagRepeat('RING', { count: 12 }).length, 12);
-assert.equal(expandFlagRepeat('ARC', { count: 5, sweep: 180 }).length, 5);
+assert.equal(expandFlagRepeat('ARC', { count: 6, sweep: 180 }).length, 6);
 assert.equal(expandFlagRepeat('LINE', { count: 4, axis: 'VERTICAL' }).length, 4);
 assert.equal(expandFlagRepeat('CONSTELLATION', { constellation: 'SEVEN_STAR_DIPPER' }).length, 7);
 assert.throws(() => expandFlagRepeat('CONSTELLATION', { constellation: 'not-a-preset' }), /configured preset/);
@@ -112,7 +201,7 @@ assert.throws(() => resolveFlagRepeatPlacements({
 assert.throws(() => resolveFlagRepeatPlacements({
   kind: 'RING', count: 3, radius: 0.5, baseSize: 0.12,
   frame, safeArea: safe, rng: seeded(0.1),
-}), /outside safe_area/);
+}), /outside 0\.12\.\.0\.8/);
 
 const sample = [{ u: 0.2, v: 0.3, size: 0.15, rotation: 10, mirror: false }];
 const horizontal = expandSymmetricPlacements(sample, 'MIR_H');
@@ -120,6 +209,15 @@ assert.deepEqual(horizontal.map(({ u, v }) => [u, v]), [[0.2, 0.3], [0.8, 0.3]])
 assert.equal(expandSymmetricPlacements([{ ...sample[0], u: 0.5 }], 'MIR_H').length, 2, 'axis-centered asymmetric charges retain their reflected partner');
 assert.equal(expandSymmetricPlacements(sample, 'BOTH').length, 4);
 assert.equal(expandSymmetricPlacements(sample, 'ROT180').length, 2);
+const mirroredZeroRotation = expandSymmetricPlacements(
+  [{ u: 0.25, v: 0.25, size: 0.2, rotation: 0, mirror: false }],
+  'MIR_V',
+);
+assert.equal(
+  mirroredZeroRotation.some(({ rotation }) => Object.is(rotation, -0)),
+  false,
+  'отражение не должно создавать отрицательный ноль в JSON-параметрах',
+);
 assert.equal(chooseFlagSymmetry({ MIR_V: 2 }, seeded(0.5)), 'MIR_V');
 const mirroredTree = applyFlagSymmetry(fill, 'BOTH');
 assert.equal(mirroredTree.kind, 'group');

@@ -1,7 +1,30 @@
 import { FLAG_GENERATOR_CONFIG } from './flagGeneratorConfig';
 import { stampFlagHashes } from './flagNovelty';
 import { flagStageRandom } from './random';
-import { assertValidFlagSpec, type FlagSpec } from './flagSpec';
+import { assertValidFlagSpec, type FlagSpec, type JsonValue } from './flagSpec';
+
+export interface FlagGenerationDiagnostic {
+  attempt: number;
+  stage: string;
+  code: string;
+  measured: JsonValue | null;
+  threshold: JsonValue | null;
+  layerId: string | null;
+  layerIds: string[];
+  layerContributors?: {
+    layerId: string;
+    sourceId?: string | null;
+    parentId?: string | null;
+    anchor?: string | null;
+    operator: string | null;
+    module: string | null;
+    tags?: string[];
+  }[];
+  operator: string | null;
+  module: string | null;
+  profileId: string | null;
+  details: string[];
+}
 
 export type FlagGenerationStage =
   | 'S1_PROFILE'
@@ -17,14 +40,17 @@ export type FlagGenerationStage =
   | 'S1_FALLBACK';
 
 export interface FlagGenerationStats {
-  /** Candidate count, including the final P28 fallback when one was needed. */
+  /** Число кандидатов, включая резервные попытки P28_FB. */
   attempts: number;
   rejected_attempts: number;
   palette_attempts: number;
   fallback_used: boolean;
   fallback_profile_id: string | null;
   optional_layers_removed: number;
+  small_layers_removed: number;
   rejection_reasons: string[];
+  diagnostics: FlagGenerationDiagnostic[];
+  symmetry_downgrades: number;
 }
 
 export interface FlagGenerationContext {
@@ -55,11 +81,12 @@ export interface FlagGenerationHooks<Draft> {
   checkNovelty?(draft: Draft, context: FlagGenerationContext): FlagGenerationCheck;
   /** Return the next optional-layer id in the §14.5 removal order, or null. */
   removeLastOptionalLayer(draft: Draft, context: FlagGenerationContext): string | null;
-  /** Must construct the configured conservative reserve profile (P28). */
-  createFallback(profileId: 'P28', context: FlagGenerationContext): Draft;
+  /** Создаёт резервный профиль P28_FB с отдельными ограничениями. */
+  createFallback(profileId: 'P28_FB', context: FlagGenerationContext): Draft;
   /** Build the spec before rendering so its version and attempt stats are included. */
   buildFlagSpec(draft: Draft, context: FlagGenerationContext): FlagSpec;
   render?(spec: FlagSpec): string;
+  onStageTiming?(stage: FlagGenerationStage | 'render', durationMs: number): void;
 }
 
 export interface FlagGenerationResult {
@@ -209,9 +236,32 @@ function makeContext(
   };
 }
 
-function recordRejection(stats: FlagGenerationStats, stage: string, detail?: string): void {
+function recordRejection(
+  stats: FlagGenerationStats,
+  stage: string,
+  detail: string | undefined,
+  context: FlagGenerationContext,
+  draft?: unknown,
+): void {
   stats.rejected_attempts += 1;
   stats.rejection_reasons.push(detail ? `${stage}: ${detail}` : `${stage}: rejected`);
+  if (stats.diagnostics.some((item) => item.attempt === context.attempt + 1)) return;
+  const value = draft && typeof draft === 'object' ? draft as Record<string, unknown> : {};
+  const profile = value.profile && typeof value.profile === 'object'
+    ? value.profile as Record<string, unknown> : {};
+  stats.diagnostics.push({
+    attempt: context.attempt + 1,
+    stage,
+    code: 'GEN',
+    measured: null,
+    threshold: null,
+    layerId: null,
+    layerIds: [],
+    operator: typeof value.fieldOperator === 'string' ? value.fieldOperator : null,
+    module: null,
+    profileId: typeof profile.id === 'string' ? profile.id : null,
+    details: detail ? [detail] : ['Кандидат отклонён на стадии генерации'],
+  });
 }
 
 /**
@@ -241,7 +291,21 @@ export function generateFlag<Draft>(
     fallback_used: false,
     fallback_profile_id: null,
     optional_layers_removed: 0,
+    small_layers_removed: 0,
     rejection_reasons: [],
+    diagnostics: [],
+    symmetry_downgrades: 0,
+  };
+  const measure = <T>(stage: FlagGenerationStage | 'render', operation: () => T): T => {
+    const report = hooks.onStageTiming;
+    if (!report) return operation();
+    const now = () => typeof performance === 'undefined' ? Date.now() : performance.now();
+    const startedAt = now();
+    try {
+      return operation();
+    } finally {
+      report(stage, now() - startedAt);
+    }
   };
   const excludedOptionalLayerIds: string[] = [];
   const runAttempt = (fallback = false): { draft?: Draft; accepted: boolean } => {
@@ -251,23 +315,23 @@ export function generateFlag<Draft>(
     let draft: Draft | undefined;
     try {
       draft = fallback
-        ? hooks.createFallback(FLAG_GENERATOR_CONFIG.fallbackProfileId, context)
-        : hooks.selectProfile(context);
-      draft = hooks.selectOutline(draft, context);
-      draft = hooks.selectStyleAndComplexity(draft, context);
-      draft = hooks.compose(draft, context);
-      draft = hooks.enforceComplexityBudget(draft, context);
-      draft = hooks.solvePalette(draft, context);
-      draft = hooks.repairGeometry(draft, context);
-      const validation = hooks.validate(draft, context);
+        ? measure('S1_FALLBACK', () => hooks.createFallback(FLAG_GENERATOR_CONFIG.fallbackProfileId, context))
+        : measure('S1_PROFILE', () => hooks.selectProfile(context));
+      draft = measure('S2_OUTLINE', () => hooks.selectOutline(draft!, context));
+      draft = measure('S3_STYLE', () => hooks.selectStyleAndComplexity(draft!, context));
+      draft = measure('S4_COMPOSITION', () => hooks.compose(draft!, context));
+      draft = measure('S5_COMPLEXITY', () => hooks.enforceComplexityBudget(draft!, context));
+      draft = measure('S6_PALETTE', () => hooks.solvePalette(draft!, context));
+      draft = measure('S7_GEOMETRY', () => hooks.repairGeometry(draft!, context));
+      const validation = measure('S8_VALIDATION', () => hooks.validate(draft!, context));
       if (!passed(validation)) {
-        recordRejection(stats, 'S8_VALIDATION', reason(validation));
+        recordRejection(stats, 'S8_VALIDATION', reason(validation), context, draft);
         return { draft, accepted: false };
       }
       if (!fallback && hooks.checkNovelty) {
-        const novelty = hooks.checkNovelty(draft, context);
+        const novelty = measure('S9_NOVELTY', () => hooks.checkNovelty!(draft!, context));
         if (!passed(novelty)) {
-          recordRejection(stats, 'S9_NOVELTY', reason(novelty));
+          recordRejection(stats, 'S9_NOVELTY', reason(novelty), context, draft);
           return { draft, accepted: false };
         }
       }
@@ -275,7 +339,7 @@ export function generateFlag<Draft>(
       // Candidate-level infeasibility is a rejected attempt; programming errors
       // should be surfaced by throwing from a hook only when unrecoverable.
       if (!(error instanceof FlagGenerationAttemptError)) throw error;
-      recordRejection(stats, error.stage, error.message);
+      recordRejection(stats, error.stage, error.message, context, draft);
       return { draft, accepted: false };
     }
 
@@ -310,35 +374,49 @@ export function generateFlag<Draft>(
   if (!acceptedDraft) {
     stats.fallback_used = true;
     stats.fallback_profile_id = FLAG_GENERATOR_CONFIG.fallbackProfileId;
-    const result = runAttempt(true);
-    if (!result.accepted) {
-      throw new Error('P28 fallback failed the configured generation validation; no flag was returned.');
+    for (let fallbackAttempt = 0; fallbackAttempt < FLAG_GENERATOR_CONFIG.fallbackAttemptsMax; fallbackAttempt += 1) {
+      const result = runAttempt(true);
+      if (result.accepted) {
+        acceptedDraft = result.draft;
+        break;
+      }
     }
-    acceptedDraft = result.draft;
+    if (!acceptedDraft) {
+      const reasons = stats.rejection_reasons.slice(-FLAG_GENERATOR_CONFIG.fallbackAttemptsMax);
+      throw new Error(`P28 fallback failed the configured generation validation; no flag was returned. ${reasons.join(' | ')}`);
+    }
   }
 
   const finalContext = makeContext(seed, Math.max(0, stats.attempts - 1), excludedOptionalLayerIds, stats);
   if (acceptedDraft === undefined) throw new Error('flag generation ended without an accepted candidate.');
-  const flag = hooks.buildFlagSpec(acceptedDraft, finalContext);
-  flag.generator_version = version;
-  flag.seed = seed;
-  flag.meta.generation_stats = {
-    attempts: stats.attempts,
-    rejected_attempts: stats.rejected_attempts,
-    palette_attempts: stats.palette_attempts,
-    fallback_used: stats.fallback_used,
-    fallback_profile_id: stats.fallback_profile_id,
-    optional_layers_removed: stats.optional_layers_removed,
-    rejection_reasons: [...stats.rejection_reasons],
-  };
-  stampFlagHashes(flag);
-  assertValidFlagSpec(flag);
+  const flag = measure('S10_OUTPUT', () => {
+    const output = hooks.buildFlagSpec(acceptedDraft!, finalContext);
+    output.generator_version = version;
+    output.seed = seed;
+    output.meta.generation_stats = {
+      attempts: stats.attempts,
+      rejected_attempts: stats.rejected_attempts,
+      palette_attempts: stats.palette_attempts,
+      fallback_used: stats.fallback_used,
+      fallback_profile_id: stats.fallback_profile_id,
+      optional_layers_removed: stats.optional_layers_removed,
+      small_layers_removed: stats.small_layers_removed,
+      rejection_reasons: [...stats.rejection_reasons],
+      symmetry_downgrades: stats.symmetry_downgrades,
+      diagnostics: stats.diagnostics as unknown as import('./flagSpec').JsonObject[],
+    };
+    stampFlagHashes(output);
+    assertValidFlagSpec(output);
+    return output;
+  });
+  const svg = hooks.render ? measure('render', () => hooks.render!(flag)) : undefined;
   return {
     flag,
-    ...(hooks.render ? { svg: hooks.render(flag) } : {}),
+    ...(svg !== undefined ? { svg } : {}),
     stats: {
       ...stats,
       rejection_reasons: [...stats.rejection_reasons],
+      diagnostics: stats.diagnostics.map((item) => ({ ...item, layerIds: [...item.layerIds], details: [...item.details] })),
     },
   };
 }

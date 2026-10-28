@@ -24,7 +24,7 @@ assert.equal(rect.width, 1800);
 assert.equal(rect.height, 1200);
 assert.deepEqual(rect.boundary, [{ x: 0, y: 0 }, { x: 1800, y: 0 }, { x: 1800, y: 1200 }, { x: 0, y: 1200 }]);
 assert.ok(rect.safe_area.every(({ x, y }) => x >= 40 && x <= 1760 && y >= 40 && y <= 1160));
-assert.throws(() => buildFlagOutline({ type: 'RECT', aspect: 1.2 }), /configured values/);
+assert.throws(() => buildFlagOutline({ type: 'RECT', aspect: 1.21 }), /configured values/);
 for (const aspect of getOutlineAspectOptions('RECT')) {
   const candidate = buildFlagOutline({ type: 'RECT', aspect });
   assert.equal(candidate.width, Math.round(1200 * aspect));

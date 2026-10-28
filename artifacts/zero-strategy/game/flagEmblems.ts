@@ -1,5 +1,6 @@
 import { FLAG_EMBLEM_CONFIG as CONFIG } from './flagEmblemConfig';
 import type { FlagEmblemComposerId, FlagEmblemModuleId } from './flagEmblemConfig';
+import { FLAG_PLACEMENT_CONFIG } from './flagPlacementConfig';
 
 export interface EmblemPoint { x: number; y: number }
 export type EmblemPrimitive =
@@ -21,6 +22,7 @@ export interface EmblemBuildResult {
   primitives: EmblemPrimitive[];
   primitiveCount: number;
   depth: number;
+  cost: number;
   requiredScale: number;
   slots: { inner: string; outer: string };
   graph?: { nodes: EmblemPoint[]; edges: { from: number; to: number; curved: boolean }[] };
@@ -53,6 +55,24 @@ function missingSeededRng():number {
 }
 const circleSamples = CONFIG.defaults.circleSamples;
 
+function constellationPositions(params: Record<string, any>): { u: number; v: number; size: number }[] {
+  if (Array.isArray(params.positions)) {
+    return params.positions.map((candidate: any) => {
+      const u = Number(candidate?.u), v = Number(candidate?.v), size = Number(candidate?.size ?? 1);
+      if (![u, v, size].every(Number.isFinite) || u < 0 || u > 1 || v < 0 || v > 1 || size <= 0) {
+        throw new RangeError('CONSTELLATION positions must be normalized points with a positive size');
+      }
+      return { u, v, size };
+    });
+  }
+  const preset = String(params.preset ?? '');
+  const source = (FLAG_PLACEMENT_CONFIG.repeaters.constellations as Record<string, {
+    positions: readonly { u: number; v: number; size?: number }[];
+  }>)[preset];
+  if (!source) throw new RangeError(`unknown constellation preset: ${preset}`);
+  return source.positions.map(({ u, v, size = 1 }) => ({ u, v, size }));
+}
+
 function star(points: number, innerRatio: number, angleOffset = -90): EmblemPrimitive {
   const vertices = Array.from({ length: points * 2 }, (_, i) => {
     const r = i % 2 ? innerRatio * 0.5 : 0.5;
@@ -81,12 +101,17 @@ function crescent(innerRatio: number, offsetRatio: number, rotation: number): Em
   const relative = Math.atan2(y0, x0 - d);
   const outer: EmblemPoint[] = [];
   const n = 64;
+  const tipTrim = rad(2);
+  const outerStart = top - tipTrim;
+  const outerEnd = bottom + tipTrim;
+  const innerStart = relative + tipTrim;
+  const innerEnd = 2 * Math.PI - relative - tipTrim;
   for (let i = 0; i <= n; i++) {
-    const a = top - (2 * Math.PI - (bottom - top)) * i / n;
+    const a = outerStart - (2 * Math.PI - (bottom - top) - 2 * tipTrim) * i / n;
     outer.push(point(R * Math.cos(a), R * Math.sin(a)));
   }
-  for (let i = 1; i <= n; i++) {
-    const a = relative + (2 * Math.PI - 2 * relative) * i / n;
+  for (let i = 0; i <= n; i++) {
+    const a = innerStart + (innerEnd - innerStart) * i / n;
     outer.push(point(d + r * Math.cos(a), r * Math.sin(a)));
   }
   const angle = rad(rotation);
@@ -168,31 +193,52 @@ function buildModule(id: FlagEmblemModuleId, input: Record<string, any>, rng: ()
       const core = clamp(n('coreRadius', 0.24), 0.08, 0.4);
       const length = clamp(n('rayLength', 0.55), 0.25, 0.8) * core * 2;
       const half = clamp(n('rayWidth', 0.65), 0.4, 0.9) * Math.PI * core / rays;
+      const root = core - clamp(n('rayOverlap', 0.04), 0, core * 0.3);
       const type = text(p, 'rayType', 'TRI');
       const items: EmblemPrimitive[] = [circle(0, 0, core)];
       for (let i = 0; i < rays; i++) {
         const a = -Math.PI / 2 + i * 2 * Math.PI / rays;
         const outer = core + (type === 'LONG_SHORT' && i % 2 ? length / 2 : length);
+        const raySpan = outer - root;
         const c = Math.cos(a), s = Math.sin(a), t = -s, u = c;
         if (type === 'BAR') {
-          items.push(poly([point(core*c-half*t, core*s-half*u), point(outer*c-half*t, outer*s-half*u), point(outer*c+half*t, outer*s+half*u), point(core*c+half*t, core*s+half*u)]));
+          items.push(poly([point(root*c-half*t, root*s-half*u), point(outer*c-half*t, outer*s-half*u), point(outer*c+half*t, outer*s+half*u), point(root*c+half*t, root*s+half*u)]));
         } else if (type === 'WAVY_ALT' && i % 2 === 1) {
-          const amplitude = clamp(n('waveAmplitude', 0.08), 0.02, 0.16);
+          const amplitude = Math.min(clamp(n('waveAmplitude', 0.08), 0.02, 0.16), length * Math.tan(Math.PI / 8));
+          const radialLength = Math.sqrt(Math.max(0, raySpan * raySpan - amplitude * amplitude));
+          const turn = 2 * Math.atan2(amplitude, radialLength);
+          const arcRadius = radialLength / (2 * Math.sin(turn));
           const left: EmblemPoint[] = [], right: EmblemPoint[] = [];
           for (let step = 0; step <= 24; step += 1) {
             const t0 = step / 24;
-            const radius = core + (outer - core) * t0;
-            const centerShift = amplitude * Math.sin(2 * Math.PI * t0);
-            const cx = radius * c + centerShift * t, cy = radius * s + centerShift * u;
+            let radial: number;
+            let lateral: number;
+            if (t0 <= 0.5) {
+              const arcAngle = turn * t0 * 2;
+              radial = arcRadius * Math.sin(arcAngle);
+              lateral = arcRadius * (1 - Math.cos(arcAngle));
+            } else {
+              const arcAngle = turn * (1 - (t0 - 0.5) * 2);
+              radial = 2 * arcRadius * Math.sin(turn) - arcRadius * Math.sin(arcAngle);
+              lateral = arcRadius * (1 - 2 * Math.cos(turn) + Math.cos(arcAngle));
+            }
+            const cx = root * c + radial * c + lateral * t;
+            const cy = root * s + radial * s + lateral * u;
             const width = half * (1 - t0);
             left.push(point(cx - width * t, cy - width * u));
             right.push(point(cx + width * t, cy + width * u));
           }
           items.push(poly([...left, ...right.reverse()]));
         } else if (type === 'KITE') {
-          items.push(poly([point(core*c-half*t, core*s-half*u), point((core+length*0.55)*c, (core+length*0.55)*s), point(outer*c, outer*s), point(core*c+half*t, core*s+half*u)]));
+          items.push(poly([point(root*c-half*t, root*s-half*u), point((root+raySpan*0.55)*c, (root+raySpan*0.55)*s), point(outer*c, outer*s), point(root*c+half*t, root*s+half*u)]));
         } else {
-          items.push(triangle(point(core*c-half*t, core*s-half*u), point(core*c+half*t, core*s+half*u), point(outer*c, outer*s)));
+          const tipHalf = Math.min(half * 0.9, clamp(n('rayTipWidth', 0.02), 0.005, 0.08) / 2);
+          items.push(poly([
+            point(root*c-half*t, root*s-half*u),
+            point(outer*c-tipHalf*t, outer*s-tipHalf*u),
+            point(outer*c+tipHalf*t, outer*s+tipHalf*u),
+            point(root*c+half*t, root*s+half*u),
+          ]));
         }
       }
       return items;
@@ -221,12 +267,20 @@ function buildModule(id: FlagEmblemModuleId, input: Record<string, any>, rng: ()
       const arms = [3, 4, 5].includes(n('arms', 4)) ? n('arms', 4) : 4;
       const t = clamp(n('thickness', 0.22), 0.15, 0.35);
       const profile = text(p, 'profile', 'RECT');
+      if (profile === 'FLARED') {
+        const geometry = CONFIG.geometry.crossFlared;
+        const halfWidth = t / 2;
+        const endHalfWidth = t * geometry.endWidthMultiplier / 2;
+        const arm = poly([
+          point(-halfWidth, 0), point(halfWidth, 0),
+          point(halfWidth, -geometry.straightEnd), point(endHalfWidth, -geometry.armEnd),
+          point(-endHalfWidth, -geometry.armEnd), point(-halfWidth, -geometry.straightEnd),
+        ]);
+        return Array.from({ length: arms }, (_, index) =>
+          translate([arm], 0, 0, 1, index * 360 / arms)).flat();
+      }
       const arm: EmblemPrimitive[] = [rect(-t/2, -0.5, t/2, 0.5)];
       const side = [rect(-0.5, -t/2, 0.5, t/2)];
-      if (profile === 'FLARED') {
-        arm.push(poly([point(-t/2,-0.32),point(-t*0.8,-0.5),point(t*0.8,-0.5),point(t/2,-0.32)]));
-        side.push(poly([point(-0.32,-t/2),point(-0.5,-t*0.8),point(-0.5,t*0.8),point(-0.32,t/2)]));
-      }
       if (profile === 'MALTESE') {
         return Array.from({ length: arms }, (_, i) => translate([poly([
           point(-t/2,-0.12),point(-t/2,-0.38),point(-t*0.9,-0.5),point(0,-0.42),
@@ -256,11 +310,32 @@ function buildModule(id: FlagEmblemModuleId, input: Record<string, any>, rng: ()
     case 'M11': return [lens(clamp(n('length', 0.8), 0.25, 1), clamp(n('width', 0.38), 0.1, 0.6))];
     case 'M12': {
       const sideAngle = clamp(n('sideAngle', 45), 35, 60);
-      const items = [lens(0.82, 0.3)];
-      items.push(...translate([lens(0.62, 0.25)], -0.12, 0.06, 1, 90-sideAngle));
-      items.push(...translate([lens(0.62, 0.25)], 0.12, 0.06, 1, sideAngle-90));
-      items.push(rect(-0.225, 0.15, 0.225, 0.27, 'detail'));
-      if (p.lowerPetal) items.push(...translate([lens(0.32,0.16)],0,0.31,1,90));
+      const items = translate([lens(0.6, 0.252)], 0, -0.2);
+      const sideLength = 0.45;
+      const sideWidth = 0.2025;
+      const rootY = 0.1;
+      const radians = rad(sideAngle);
+      const sideCenterX = sideLength * Math.sin(radians) / 2;
+      const sideCenterY = rootY + sideLength * Math.cos(radians) / 2;
+      items.push(...translate(
+        [lens(sideLength, sideWidth)],
+        -sideCenterX,
+        sideCenterY,
+        1,
+        sideAngle,
+      ));
+      items.push(...translate(
+        [lens(sideLength, sideWidth)],
+        sideCenterX,
+        sideCenterY,
+        1,
+        -sideAngle,
+      ));
+      items.push(rect(-0.225, 0.06, 0.225, 0.18, 'detail'));
+      const lowerPetal = typeof p.lowerPetal === 'boolean'
+        ? p.lowerPetal
+        : rng() < n('lowerPetalProbability', 0.4);
+      if (lowerPetal) items.push(...translate([lens(0.32, 0.144)], 0, 0.34));
       return items;
     }
     case 'M13': {
@@ -278,14 +353,31 @@ function buildModule(id: FlagEmblemModuleId, input: Record<string, any>, rng: ()
       return items;
     }
     case 'M14': {
-      const count = [3,5,7].includes(n('points',5)) ? n('points',5) : 5;
-      const items: EmblemPrimitive[] = [rect(-0.36,0.2,0.36,0.34)];
-      for(let i=0;i<count;i++) {
-        const x = -0.32 + 0.64*i/(count-1);
-        items.push(triangle(point(x-0.055,0.2),point(x, -0.18-(i%2===0?0.03:0)),point(x+0.055,0.2)));
-        items.push(circle(x,-0.18-(i%2===0?0.03:0),0.035));
+      const geometry = CONFIG.geometry.crown;
+      const count = geometry.allowedPoints.includes(n('points', 5)) ? n('points', 5) : 5;
+      const items: EmblemPrimitive[] = [rect(
+        geometry.bandX[0], geometry.bandY[0], geometry.bandX[1], geometry.bandY[1],
+      )];
+      const toothWidth = (geometry.bandX[1] - geometry.bandX[0]) / count;
+      for (let index = 0; index < count; index += 1) {
+        const left = geometry.bandX[0] + index * toothWidth;
+        const right = left + toothWidth;
+        items.push(triangle(
+          point(left, geometry.bandY[0]),
+          point((left + right) / 2, geometry.toothTipY),
+          point(right, geometry.bandY[0]),
+        ));
       }
-      if(p.arch) items.push(poly(ellipsePoly(0,-0.04,0.28,0.22,32)));
+      if (p.dots === true) {
+        const diameter = Number(p.diameter);
+        if (!Number.isFinite(diameter) || diameter < geometry.dotMinimumDiameter) {
+          throw new RangeError(`CROWN с дисками требует D не меньше ${geometry.dotMinimumDiameter}`);
+        }
+        for (let index = 0; index < count; index += 1) {
+          const x = geometry.bandX[0] + (index + 0.5) * toothWidth;
+          items.push(circle(x, geometry.toothTipY, geometry.dotRadius));
+        }
+      }
       return items;
     }
     case 'M15': {
@@ -294,10 +386,20 @@ function buildModule(id: FlagEmblemModuleId, input: Record<string, any>, rng: ()
       for(let i=0;i<teeth;i++) items.push(rect(0.15+i*0.06,-0.19,0.21+i*0.06,-0.08+i*0.03));
       return items;
     }
-    case 'M16': return [
-      poly([point(-0.07,-0.35),point(0.07,-0.35),point(0.055,0.29),point(0,0.5),point(-0.055,0.29)]),
-      rect(-0.24,-0.31,0.24,-0.25,'detail'), rect(-0.045,-0.25,0.045,-0.12,'detail'), circle(0,-0.37,0.055),
-    ];
+    case 'M16': {
+      const geometry = CONFIG.geometry.sword;
+      const [tipX, tipY] = geometry.bladeTip;
+      const [leftX, baseY, rightX] = geometry.bladeBase;
+      const [guardLeft, guardTop, guardRight, guardBottom] = geometry.guard;
+      const [gripLeft, gripTop, gripRight, gripBottom] = geometry.grip;
+      const [pommelX, pommelY] = geometry.pommelCenter;
+      return [
+        poly([point(tipX, tipY), point(leftX, baseY), point(rightX, baseY)]),
+        rect(guardLeft, guardTop, guardRight, guardBottom),
+        rect(gripLeft, gripTop, gripRight, gripBottom),
+        circle(pommelX, pommelY, geometry.pommelRadius),
+      ];
+    }
     case 'M17': {
       const items: EmblemPrimitive[] = [rect(-0.025,-0.25,0.025,0.48)];
       if (text(p,'mode','SPEAR') === 'TRIDENT') {
@@ -307,15 +409,45 @@ function buildModule(id: FlagEmblemModuleId, input: Record<string, any>, rng: ()
       } else items.push(poly([point(-0.13,-0.24),point(0,-0.5),point(0.13,-0.24)]));
       return items;
     }
-    case 'M18': return [
-      rect(-0.025,-0.2,0.025,0.42), rect(-0.32,-0.08,0.32,-0.02), ring(0,-0.27,0.13,0.075),
-      poly([
-        ...Array.from({length:25},(_,i)=>{const a=rad(160+i*200/24);return point(0.35*Math.cos(a),0.12+0.35*Math.sin(a));}),
-        ...Array.from({length:25},(_,i)=>{const a=rad(360-i*200/24);return point(0.29*Math.cos(a),0.12+0.29*Math.sin(a));}),
-      ]),
-      triangle(point(-0.32,0.12),point(-0.18,0.08),point(-0.22,0.27)),
-      triangle(point(0.32,0.12),point(0.18,0.08),point(0.22,0.27)),
-    ];
+    case 'M18': {
+      const geometry = CONFIG.geometry.anchor;
+      const [shaftLeft, shaftTop, shaftRight, shaftBottom] = geometry.shaft;
+      const [crossbarLeft, crossbarTop, crossbarRight, crossbarBottom] = geometry.crossbar;
+      const [ringX, ringY] = geometry.ringCenter;
+      const [centerX, centerY] = geometry.flukeCenter;
+      const start = rad(geometry.flukeAngles[0]), end = rad(geometry.flukeAngles[1]);
+      const innerRadius = geometry.flukeCenterlineRadius - geometry.flukeThickness / 2;
+      const outerRadius = geometry.flukeCenterlineRadius + geometry.flukeThickness / 2;
+      const points = [
+        ...Array.from({ length: geometry.flukeArcSegments + 1 }, (_, i) => {
+          const angle = start + (end - start) * i / geometry.flukeArcSegments;
+          return point(centerX + outerRadius * Math.cos(angle), centerY + outerRadius * Math.sin(angle));
+        }),
+        ...Array.from({ length: geometry.flukeArcSegments + 1 }, (_, i) => {
+          const angle = end - (end - start) * i / geometry.flukeArcSegments;
+          return point(centerX + innerRadius * Math.cos(angle), centerY + innerRadius * Math.sin(angle));
+        }),
+      ];
+      const blade = (angle: number, outward: number) => {
+        const x = centerX + geometry.flukeCenterlineRadius * Math.cos(angle);
+        const y = centerY + geometry.flukeCenterlineRadius * Math.sin(angle);
+        const tangentX = -Math.sin(angle), tangentY = Math.cos(angle);
+        const normalX = -tangentY, normalY = tangentX;
+        return poly([
+          point(x - geometry.flukeBladeBaseHalfWidth * normalX, y - geometry.flukeBladeBaseHalfWidth * normalY),
+          point(x + geometry.flukeBladeBaseHalfWidth * normalX, y + geometry.flukeBladeBaseHalfWidth * normalY),
+          point(x + outward * geometry.flukeBladeTangentLength * tangentX, y + outward * geometry.flukeBladeTangentLength * tangentY),
+        ]);
+      };
+      return [
+        rect(shaftLeft, shaftTop, shaftRight, shaftBottom),
+        rect(crossbarLeft, crossbarTop, crossbarRight, crossbarBottom),
+        ring(ringX, ringY, geometry.ringOuterRadius, geometry.ringInnerRadius),
+        poly(points),
+        blade(start, -1),
+        blade(end, 1),
+      ];
+    }
     case 'M19': {
       const style=text(p,'style','CONIFER');
       const items:EmblemPrimitive[]=[rect(-0.045,0.18,0.045,0.5)];
@@ -345,28 +477,77 @@ function buildModule(id: FlagEmblemModuleId, input: Record<string, any>, rng: ()
       return items;
     }
     case 'M21': {
-      const bands=Math.round(clamp(n('bands',3),2,4));
-      const amplitude=clamp(n('amplitude',0.08),0.03,0.2), wave=clamp(n('wavelength',0.28),0.12,0.6);
-      const items:EmblemPrimitive[]=[];
+      const configuration=CONFIG.geometry.waves;
+      const bands=Math.round(clamp(n('bands',3),configuration.bandCounts[0],configuration.bandCounts.at(-1)!));
+      const amplitude=clamp(n('amplitude',0.05),configuration.amplitudeRange[0],configuration.amplitudeRange[1]);
+      const wavelength=clamp(n('wavelength',1/3),configuration.wavelengthRange[0],configuration.wavelengthRange[1]);
+      const phase=clamp(n('phase',0),configuration.phaseRange[0],configuration.phaseRange[1]);
+      const circular=text(p,'clipShape','RECT')==='CIRCLE';
+      const samples=Math.max(2*configuration.samplesPerPeriod,Math.ceil(configuration.samplesPerPeriod/wavelength));
+      const minX=circular?-0.36:-0.5,maxX=circular?0.36:0.5;
+      const minY=circular?-0.26:-0.5,maxY=circular?0.26:0.5;
+      const xs=Array.from({length:samples+1},(_,index)=>minX+(maxX-minX)*index/samples);
+      const boundary=(index:number,x:number)=>{
+        if(index===0)return minY;
+        if(index===bands)return maxY;
+        const progress=(x-minX)/(maxX-minX);
+        const baseline=minY+(maxY-minY)*index/bands;
+        const wave=amplitude*Math.sin(progress*2*Math.PI/wavelength+phase)*Math.sin(Math.PI*progress);
+        return baseline+wave;
+      };
+      const items:EmblemPrimitive[]=circular?[circle(0,0,0.5,'outer')]:[];
       for(let band=0;band<bands;band++){
-        const y=-0.36+band*0.24, points=[point(-0.5,y)];
-        for(let i=0;i<=48;i++){const x=-0.5+i/48;points.push(point(x,y+amplitude*Math.sin((x+0.5)*2*Math.PI/wave)));}
-        points.push(point(0.5,0.5),point(-0.5,0.5));
+        const upper=xs.map((x)=>point(x,boundary(band,x)));
+        const lower=[...xs].reverse().map((x)=>point(x,boundary(band+1,x)));
+        const points=[...upper,...lower].filter((vertex,index,all)=>
+          index===0||vertex.x!==all[index-1].x||vertex.y!==all[index-1].y);
+        if(points.length>1&&points[0].x===points.at(-1)!.x&&points[0].y===points.at(-1)!.y)points.pop();
         items.push(poly(points,band%2?'inner':'outer'));
       }
       return items;
     }
     case 'M22': {
-      const items:EmblemPrimitive[]=[poly([point(-0.43,0.2),point(0.43,0.2),point(0.3,0.38),point(-0.3,0.38)]),rect(-0.025,-0.4,0.025,0.2)];
-      const sails=Math.round(clamp(n('sails',2),1,3));
-      for(let i=0;i<sails;i++){
-        const x=-0.02+i*0.13;
-        items.push(triangle(point(x,-0.34+i*0.1),point(x,0.12),point(0.26+i*0.1,0.12)));
+      const halfChord = 0.28, sag = 0.06, bottomY = 0.36;
+      const hullRadius = (halfChord * halfChord + sag * sag) / (2 * sag);
+      const hullCenterY = bottomY - (hullRadius - sag);
+      const hull = [
+        point(-0.46, 0.18), point(0.46, 0.18), point(halfChord, bottomY),
+        ...Array.from({ length: 25 }, (_, index) => {
+          const x = halfChord - 2 * halfChord * (index + 1) / 25;
+          return point(x, hullCenterY + Math.sqrt(hullRadius ** 2 - x ** 2));
+        }),
+        point(-halfChord, bottomY),
+      ];
+      const items: EmblemPrimitive[] = [poly(hull), rect(-0.03, -0.46, 0.03, 0.18)];
+      const sailType = text(p, 'sailType', 'LATEEN');
+      const sails = Math.round(clamp(n('sails', sailType === 'SQUARE' ? 2 : 1), 1, sailType === 'SQUARE' ? 3 : 2));
+      if (sailType === 'SQUARE') {
+        for (let index = 0; index < sails; index += 1) {
+          const height = 0.46 / sails - 0.04;
+          const bottomY = 0.12 - index * height;
+          const bottomWidth = 0.7 * (1 - 0.15 * index);
+          const topWidth = 0.85 * bottomWidth;
+          items.push(poly([
+            point(-bottomWidth / 2, bottomY), point(bottomWidth / 2, bottomY),
+            point(topWidth / 2, bottomY - height), point(-topWidth / 2, bottomY - height),
+          ]));
+        }
+      } else {
+        items.push(triangle(point(0.03, -0.42), point(0.03, 0.1), point(0.4, 0.1)));
+        if (sails === 2) {
+          items.push(...translate(
+            [triangle(point(0.03, -0.42), point(0.03, 0.1), point(0.4, 0.1))],
+            0, 0, 0.8, 0, true,
+          ));
+        }
       }
-      items.push(triangle(point(0.025,-0.4),point(0.2,-0.32),point(0.025,-0.24)));
-      if(p.galley){
-        const oars=Math.round(clamp(n('oars',6),4,8));
-        for(let i=0;i<oars;i++) items.push(rect(-0.48+i*0.96/(oars-1),0.05,-0.45+i*0.96/(oars-1),0.24,'detail'));
+      items.push(triangle(point(0.03, -0.5), point(0.03, -0.38), point(0.27, -0.44)));
+      if (p.galley) {
+        const oars = Math.round(clamp(n('oars', 6), 4, 8));
+        for (let index = 0; index < oars; index += 1) {
+          const x = -0.34 + 0.68 * index / (oars - 1);
+          items.push(...translate([rect(-0.025, -0.095, 0.025, 0.095, 'detail')], x, 0.3, 1, 25));
+        }
       }
       return items;
     }
@@ -464,24 +645,27 @@ function segmentDistance(a:EmblemPoint,b:EmblemPoint,c:EmblemPoint,d:EmblemPoint
 }
 function glyphPath(a:EmblemPoint,b:EmblemPoint,curve:boolean,bend:number):EmblemPoint[] {
   const dx=b.x-a.x,dy=b.y-a.y,length=Math.hypot(dx,dy);
-  if(!curve||Math.abs(dx)>1e-8&&Math.abs(dy)>1e-8) return [a,b];
-  const cx=(a.x+b.x)/2+bend*(-dy/length)*(length/2);
-  const cy=(a.y+b.y)/2+bend*(dx/length)*(length/2);
-  const radius=length/Math.sqrt(2),start=Math.atan2(a.y-cy,a.x-cx),end=Math.atan2(b.y-cy,b.x-cx);
+  if(!curve||Math.abs(dx)<1e-8||Math.abs(dy)<1e-8) return [a,b];
+  const center=bend>0?point(a.x,b.y):point(b.x,a.y);
+  const radius=distance(a,center),start=Math.atan2(a.y-center.y,a.x-center.x),end=Math.atan2(b.y-center.y,b.x-center.x);
   let sweep=end-start;
-  while(sweep>Math.PI) sweep-=2*Math.PI;
-  while(sweep< -Math.PI) sweep+=2*Math.PI;
+  while(sweep>Math.PI/2) sweep-=2*Math.PI;
+  while(sweep< -Math.PI/2) sweep+=2*Math.PI;
   return Array.from({length:CONFIG.glyph.arcSamples+1},(_,i)=>{
     const angle=start+sweep*i/CONFIG.glyph.arcSamples;
-    return point(cx+radius*Math.cos(angle),cy+radius*Math.sin(angle));
+    return point(center.x+radius*Math.cos(angle),center.y+radius*Math.sin(angle));
   });
 }
-function pathDistance(a:EmblemPoint[],b:EmblemPoint[]):number {
-  let min=Infinity;
+function pathsRemainSeparated(a:EmblemPoint[],b:EmblemPoint[],minimumDistance:number):boolean {
+  const minimumDistanceSquared=minimumDistance*minimumDistance;
   for(let i=0;i<a.length-1;i++) for(let j=0;j<b.length-1;j++) {
-    min=Math.min(min,segmentDistance(a[i],a[i+1],b[j],b[j+1]));
+    const a0=a[i],a1=a[i+1],b0=b[j],b1=b[j+1];
+    const gapX=Math.max(0,Math.min(a0.x,a1.x)-Math.max(b0.x,b1.x),Math.min(b0.x,b1.x)-Math.max(a0.x,a1.x));
+    const gapY=Math.max(0,Math.min(a0.y,a1.y)-Math.max(b0.y,b1.y),Math.min(b0.y,b1.y)-Math.max(a0.y,a1.y));
+    if(gapX*gapX+gapY*gapY>minimumDistanceSquared+1e-12) continue;
+    if(segmentDistance(a0,a1,b0,b1)<minimumDistance) return false;
   }
-  return min;
+  return true;
 }
 function convexHull(points:EmblemPoint[]):EmblemPoint[] {
   const sorted=[...points].sort((a,b)=>a.x-b.x||a.y-b.y);
@@ -497,52 +681,73 @@ function buildGlyph(p:Record<string,any>,rng:()=>number):EmblemBuildResult {
   const targetCount=Math.round(clamp(val(p,'edgeCount',3+Math.floor(rng()*6)),3,8));
   const count=mirrored?Math.max(2,Math.ceil(targetCount/2)):targetCount;
   const w=clamp(val(p,'strokeWidth',CONFIG.glyph.strokeWidth),0.02,0.2);
+  const minimumSeparation=CONFIG.glyph.separationFactor*w;
   const canvasHeight=val(p,'canvasHeight',CONFIG.glyph.defaultCanvasHeight);
   const scale=val(p,'scale',1);
   const requiredScale=CONFIG.glyph.minimumStroke/(w*canvasHeight);
   if(scale+1e-9<requiredScale) throw new RangeError('GLYPH stroke is thinner than the configured minimum after scaling');
-  const candidates: {a:number;b:number;curve:boolean}[]=[];
+  const candidates: {a:number;b:number;curve:boolean;midpoint:number|null;step:1|2}[]=[];
   const idx=(x:number,y:number)=>y*k+x;
   for(let y=0;y<k;y++) for(let x=0;x<k;x++) {
     for(const [dx,dy] of [[1,0],[0,1],[1,1],[-1,1]]) {
       const xx=x+dx,yy=y+dy;
-      if(xx>=0&&xx<k&&yy>=0&&yy<k) candidates.push({a:idx(x,y),b:idx(xx,yy),curve:dx===0||dy===0});
+      if(xx>=0&&xx<k&&yy>=0&&yy<k) candidates.push({
+        a:idx(x,y),b:idx(xx,yy),curve:dx!==0&&dy!==0,midpoint:null,step:1,
+      });
+    }
+    for(const [dx,dy] of [[2,0],[0,2]]) {
+      const xx=x+dx,yy=y+dy;
+      if(xx>=0&&xx<k&&yy>=0&&yy<k) candidates.push({
+        a:idx(x,y),b:idx(xx,yy),curve:false,midpoint:idx(x+dx/2,y+dy/2),step:2,
+      });
     }
   }
-  const nodes=Array.from({length:k*k},(_,i)=>point(-0.3+(i%k)*0.6/(k-1),-0.3+Math.floor(i/k)*0.6/(k-1)));
+  const nodes=Array.from({length:k*k},(_,i)=>point(-0.5+(i%k)/(k-1),-0.5+Math.floor(i/k)/(k-1)));
+  const edgeNodes=(edge:{a:number;b:number;midpoint:number|null})=>
+    [edge.a,edge.b,...(edge.midpoint===null?[]:[edge.midpoint])];
   for(let attempt=0;attempt<CONFIG.glyph.attempts;attempt++){
-    const edges:{a:number;b:number;curve:boolean;bend:number}[]=[];
+    const edges:{a:number;b:number;curve:boolean;bend:number;midpoint:number|null;step:1|2}[]=[];
     const row=Math.floor(rng()*k);
     const start=mirrored?row*k+Math.floor((k-1)/2):Math.floor(rng()*nodes.length);
     const connected=new Set([start]);
     if(mirrored&&k%2===0) {
-      edges.push({a:start,b:start+1,curve:false,bend:1});
+      edges.push({a:start,b:start+1,curve:false,bend:1,midpoint:null,step:1});
       connected.add(start+1);
     }
     const pool=[...candidates];
     while(edges.length<count) {
       const eligible=pool.filter(e=>connected.has(e.a)!==connected.has(e.b));
       if(!eligible.length) break;
-      const candidate=eligible[Math.floor(rng()*eligible.length)];
+      const totalWeight=eligible.reduce((sum,edge)=>sum+(edge.step===1
+        ? CONFIG.glyph.adjacentStepProbability
+        : CONFIG.glyph.orthogonalSkipProbability),0);
+      let target=rng()*totalWeight;
+      let candidate=eligible[eligible.length-1];
+      for(const edge of eligible) {
+        target-=edge.step===1?CONFIG.glyph.adjacentStepProbability:CONFIG.glyph.orthogonalSkipProbability;
+        if(target<0) { candidate=edge; break; }
+      }
       const axisEdge=mirrored&&Math.abs(nodes[candidate.a].x-nodes[candidate.b].x)<1e-8&&
         Math.abs(nodes[candidate.a].x)<1e-8;
       const edge={...candidate,curve:candidate.curve&&!axisEdge&&rng()<CONFIG.glyph.curveProbability,bend:rng()<0.5?1:-1};
       const a=nodes[edge.a],b=nodes[edge.b];
       const path=glyphPath(a,b,edge.curve,edge.bend);
       const valid=edges.every(old=>{
+        if(edgeNodes(old).some((node)=>edgeNodes(edge).includes(node))) return true;
         const c=nodes[old.a],d=nodes[old.b];
-        if(old.a===edge.a||old.a===edge.b||old.b===edge.a||old.b===edge.b) return true;
-        return pathDistance(path,glyphPath(c,d,old.curve,old.bend))>=CONFIG.glyph.separationFactor*w;
+        return pathsRemainSeparated(path,glyphPath(c,d,old.curve,old.bend),minimumSeparation);
       });
       pool.splice(pool.indexOf(candidate),1);
       if(!valid) continue;
-      edges.push(edge); connected.add(edge.a);connected.add(edge.b);
+      edges.push(edge);
+      for(const node of edgeNodes(edge)) connected.add(node);
     }
     if(edges.length!==count) continue;
     if(mirrored) {
-      const mirrorEdge=(e:{a:number;b:number;curve:boolean;bend:number})=>{
+      const mirrorEdge=(e:{a:number;b:number;curve:boolean;bend:number;midpoint:number|null;step:1|2})=>{
         const mirrorIndex=(i:number)=>Math.floor(i/k)*k+(k-1-i%k);
-        return {a:mirrorIndex(e.a),b:mirrorIndex(e.b),curve:e.curve,
+        return {...e,a:mirrorIndex(e.a),b:mirrorIndex(e.b),
+          midpoint:e.midpoint===null?null:mirrorIndex(e.midpoint),
           bend:e.curve&&Math.abs(nodes[e.a].x-nodes[e.b].x)<1e-8?-e.bend:e.bend};
       };
       const expanded=[...edges];
@@ -566,15 +771,21 @@ function buildGlyph(p:Record<string,any>,rng:()=>number):EmblemBuildResult {
     const hasReflection=edges.every(({a,b})=>edgeSet.has(edgeKey(mirrorNode(a),mirrorNode(b))));
     if(hasRotation90&&!hasReflection) continue;
     let violatesSeparation=false;
-    for(let i=0;i<edges.length;i++) for(let j=i+1;j<edges.length;j++) {
-      const left=edges[i],right=edges[j];
-      if(left.a===right.a||left.a===right.b||left.b===right.a||left.b===right.b) continue;
-      const aPath=glyphPath(nodes[left.a],nodes[left.b],left.curve,left.bend);
-      const bPath=glyphPath(nodes[right.a],nodes[right.b],right.curve,right.bend);
-      if(pathDistance(aPath,bPath)<CONFIG.glyph.separationFactor*w) violatesSeparation=true;
+    for(let i=0;i<edges.length;i++) {
+      for(let j=i+1;j<edges.length;j++) {
+        const left=edges[i],right=edges[j];
+        if(edgeNodes(left).some((node)=>edgeNodes(right).includes(node))) continue;
+        const aPath=glyphPath(nodes[left.a],nodes[left.b],left.curve,left.bend);
+        const bPath=glyphPath(nodes[right.a],nodes[right.b],right.curve,right.bend);
+        if(!pathsRemainSeparated(aPath,bPath,minimumSeparation)) {
+          violatesSeparation=true;
+          break;
+        }
+      }
+      if(violatesSeparation) break;
     }
     if(violatesSeparation) continue;
-    const involved=[...new Set(edges.flatMap(({a,b})=>[a,b]))].map(i=>nodes[i]);
+    const involved=[...new Set(edges.flatMap(edgeNodes))].map(i=>nodes[i]);
     const width=Math.max(...involved.map(q=>q.x))-Math.min(...involved.map(q=>q.x));
     const height=Math.max(...involved.map(q=>q.y))-Math.min(...involved.map(q=>q.y));
     const aspect=Math.max(width,height)/Math.max(1e-8,Math.min(width,height));
@@ -584,11 +795,13 @@ function buildGlyph(p:Record<string,any>,rng:()=>number):EmblemBuildResult {
     while(changed) {
       changed=false;
       for(const edge of edges) {
-        if(reached.has(edge.a)&&!reached.has(edge.b)){reached.add(edge.b);changed=true;}
-        if(reached.has(edge.b)&&!reached.has(edge.a)){reached.add(edge.a);changed=true;}
+        const members=edgeNodes(edge);
+        if(members.some((node)=>reached.has(node))) {
+          for(const node of members) if(!reached.has(node)) { reached.add(node); changed=true; }
+        }
       }
     }
-    if(edges.some(({a,b})=>!reached.has(a)||!reached.has(b))) continue;
+    if(edges.some((edge)=>edgeNodes(edge).some((node)=>!reached.has(node)))) continue;
     const polygons:EmblemPrimitive[]=[];
     for(const e of edges){
       const a=nodes[e.a],b=nodes[e.b],centerline=glyphPath(a,b,e.curve,e.bend);
@@ -643,6 +856,7 @@ function buildGlyph(p:Record<string,any>,rng:()=>number):EmblemBuildResult {
       primitives:polygons,
       primitiveCount:polygons.length,
       depth:1,
+      cost:CONFIG.modules.M24.cost,
       requiredScale,
       slots:{inner:'inner',outer:'outer'},
       graph:{nodes,edges:edges.map(({a,b,curve,bend})=>({
@@ -650,7 +864,60 @@ function buildGlyph(p:Record<string,any>,rng:()=>number):EmblemBuildResult {
       }))},
     };
   }
-  throw new RangeError(`could not construct a valid connected GLYPH with the configured constraints (grid=${k}, mirrored=${mirrored}, edges=${targetCount})`);
+  const fallbackExtentScale = (0.5 - w / 2 - 1e-6) / Math.hypot(0.35, 0.25);
+  const fallbackNodes = Array.from({ length: k * k }, (_, index) => point(
+    (-0.35 + 0.7 * (index % k) / (k - 1)) * fallbackExtentScale,
+    (-0.25 + 0.5 * Math.floor(index / k) / (k - 1)) * fallbackExtentScale,
+  ));
+  const middle = Math.floor(k / 2);
+  const centerIndex = middle * k + middle;
+  const boundaryIndices = [
+    0, k - 1, k * k - 1, (k - 1) * k,
+    middle, middle * k + k - 1, (k - 1) * k + middle, middle * k,
+  ].filter((index) => index !== centerIndex);
+  const fallbackEdges = boundaryIndices.slice(0, targetCount);
+  const primitives = fallbackEdges.map((index) => {
+    const start = fallbackNodes[centerIndex], end = fallbackNodes[index];
+    const dx = end.x - start.x, dy = end.y - start.y;
+    const length = Math.hypot(dx, dy);
+    const offsetX = -dy / length * w / 2, offsetY = dx / length * w / 2;
+    return poly([
+      point(start.x + offsetX, start.y + offsetY),
+      point(end.x + offsetX, end.y + offsetY),
+      point(end.x - offsetX, end.y - offsetY),
+      point(start.x - offsetX, start.y - offsetY),
+    ], 'outer', w);
+  });
+  const jointOffsets = fallbackEdges.flatMap((index) => {
+    const start = fallbackNodes[centerIndex], end = fallbackNodes[index];
+    const dx = end.x - start.x, dy = end.y - start.y;
+    const length = Math.hypot(dx, dy);
+    const offsetX = -dy / length * w / 2, offsetY = dx / length * w / 2;
+    return [
+      point(start.x + offsetX, start.y + offsetY),
+      point(start.x - offsetX, start.y - offsetY),
+    ];
+  });
+  const joint = poly(convexHull(jointOffsets), 'outer', w);
+  if (primitiveArea(joint) > 1e-10) primitives.push(joint);
+  return {
+    primitives,
+    primitiveCount: primitives.length,
+    depth: 1,
+    cost: CONFIG.modules.M24.cost,
+    requiredScale,
+    slots: { inner: 'inner', outer: 'outer' },
+    graph: {
+      nodes: fallbackNodes,
+      edges: fallbackEdges.map((to) => ({
+        from: centerIndex,
+        to,
+        curved: false,
+        path: [fallbackNodes[centerIndex], fallbackNodes[to]],
+        width: w,
+      })),
+    },
+  };
 }
 
 export function generateFlagGlyph(params:Record<string,any>={},rng:()=>number=missingSeededRng):EmblemBuildResult {
@@ -674,6 +941,47 @@ export function flagEmblemBounds(primitives:EmblemPrimitive[]) {
   const minY=Math.min(...points.map(q=>q.y)),maxY=Math.max(...points.map(q=>q.y));
   return {minX,minY,maxX,maxY,width:maxX-minX,height:maxY-minY};
 }
+
+/** Считает стоимость модулей и композиторов по §14.5. */
+export function calculateFlagEmblemCost(node: EmblemNode): number {
+  if (!node || typeof node !== 'object' || (node.module && node.composer)) {
+    throw new TypeError('узел эмблемы должен задавать один модуль или один композитор');
+  }
+  if (node.module) {
+    const module = CONFIG.modules[node.module];
+    if (!module) throw new RangeError(`неизвестный модуль эмблемы: ${node.module}`);
+    const params = node.params ?? {};
+    if (node.module === 'M10') return String(params.mode ?? 'ARROW').toUpperCase() === 'CHEVRON' ? 0.7 : 1;
+    if (node.module === 'M17') return String(params.mode ?? 'SPEAR').toUpperCase() === 'TRIDENT' ? 2 : 1.5;
+    return module.cost;
+  }
+  if (!node.composer || !Object.hasOwn(CONFIG.composers, node.composer)) {
+    throw new TypeError('узел эмблемы должен задавать поддерживаемый модуль или композитор');
+  }
+  const composer = CONFIG.composers[node.composer];
+  const childCost = (node.children ?? []).reduce((sum, child) => sum + calculateFlagEmblemCost(child), 0);
+  if (node.composer === 'RING' || node.composer === 'ARC_REPEAT' || node.composer === 'CONSTELLATION') {
+    const params = node.params ?? {};
+    const copies = node.composer === 'RING'
+      ? Math.round(clamp(Number(params.count ?? 6), 3, 16))
+      : node.composer === 'ARC_REPEAT'
+        ? Math.round(clamp(Number(params.count ?? Number(params.sweep ?? 240) / 22.5), 3, 13))
+        : constellationPositions(params).length;
+    return composer.costFactor * childCost + Math.min(CONFIG.costs.repeatPerCopy * copies, CONFIG.costs.repeatMaximumSurcharge);
+  }
+  return composer.costFactor * childCost;
+}
+
+/** Считает надбавку за повторитель из §14.5. */
+export function calculateFlagRepeatCost(childCost: number, copies: number): number {
+  if (!Number.isFinite(childCost) || childCost < 0) throw new RangeError('стоимость дочернего элемента должна быть неотрицательной');
+  if (!Number.isInteger(copies) || copies < 0) throw new RangeError('число копий должно быть неотрицательным целым');
+  return childCost + Math.min(
+    CONFIG.costs.repeatPerCopy * copies,
+    CONFIG.costs.repeatMaximumSurcharge,
+  );
+}
+
 export function validateFlagEmblem(node:EmblemNode, options:EmblemBuildOptions={}):EmblemBuildResult {
   const rng=options.rng??missingSeededRng;
   const scale=options.scale??1;
@@ -689,7 +997,10 @@ export function validateFlagEmblem(node:EmblemNode, options:EmblemBuildOptions={
     if(!current.composer||!Object.hasOwn(CONFIG.composers,current.composer)) throw new TypeError('emblem node must name a supported module or composer');
     const composer=current.composer,params:Record<string,any>={...CONFIG.composers[composer].defaults,...current.params};
     const children=current.children??[];
-    const required=composer==='SINGLE'?1:composer==='STACK'||composer==='PAIR_MIRROR'||composer==='CROSSED'||composer==='FLANK'||composer==='CHARGE_ON_CHARGE'||composer==='CONCENTRIC'||composer==='INSCRIBE'? (composer==='FLANK'?3:composer==='CHARGE_ON_CHARGE'||composer==='CONCENTRIC'?2:1):1;
+    const required=composer==='SINGLE'?1:composer==='STACK'||composer==='PAIR_MIRROR'||composer==='CROSSED'||composer==='FLANK'||composer==='CHARGE_ON_CHARGE'||composer==='CONCENTRIC'||composer==='INSCRIBE'||composer==='CONSTELLATION'? (composer==='FLANK'?3:composer==='CHARGE_ON_CHARGE'?2:1):composer==='OVERLAY'?2:1;
+    if(composer==='CONCENTRIC'&&children.length!==1) throw new RangeError('CONCENTRIC requires exactly one center module');
+    if(composer==='CONSTELLATION'&&children.length!==1) throw new RangeError('CONSTELLATION requires exactly one star module');
+    if(composer==='OVERLAY'&&children.length!==2) throw new RangeError('OVERLAY requires exactly two elements');
     if(children.length<required) throw new RangeError(`${composer} requires ${required} child node${required===1?'':'s'}`);
     if(composer==='ARC_REPEAT'&&children[0].module!=='M11') throw new RangeError('ARC_REPEAT requires an M11 leaf module');
     const child=(index=0)=>visit(children[index]??children[0],depth+1);
@@ -704,9 +1015,12 @@ export function validateFlagEmblem(node:EmblemNode, options:EmblemBuildOptions={
         )).flat();
       }
       case 'PAIR_MIRROR': {
-        const offset=clamp(val(params,'distance',0.3),0.05,0.5),vertical=text(params,'axis','VERTICAL')==='VERTICAL';
-        const other=translate(child(children.length>1?1:0),vertical?offset:0,vertical?0:offset,1,0,true);
-        return [...assignSlot(translate(single,vertical?-offset:0,vertical?0:-offset),'inner'),...assignSlot(other,'outer')];
+        const gap=val(params,'gap',0.3);
+        if (!CONFIG.composers.PAIR_MIRROR.gaps.includes(gap)) throw new RangeError('PAIR_MIRROR gap must be 0.2, 0.3, or 0.5');
+        const size=1/(2+gap),distance=size*(1+gap),offset=distance/2;
+        const vertical=text(params,'axis','VERTICAL')==='VERTICAL';
+        const other=translate(single,vertical?offset:0,vertical?0:offset,size,0,true);
+        return [...assignSlot(translate(single,vertical?-offset:0,vertical?0:-offset,size),'inner'),...assignSlot(other,'outer')];
       }
       case 'CROSSED': {
         const angle=clamp(val(params,'angle',35),25,50),second=child(children.length>1?1:0);
@@ -715,17 +1029,23 @@ export function validateFlagEmblem(node:EmblemNode, options:EmblemBuildOptions={
           : [...assignSlot(translate(single,0,0,1,-angle),'inner'),...assignSlot(translate(second,0,0,1,angle),'outer')];
       }
       case 'RING': {
-        const count=Math.round(clamp(val(params,'count',6),3,16)),radius=clamp(val(params,'radius',0.32),...CONFIG.composers.RING.radius),upright=text(params,'orientation','OUT')==='UPRIGHT';
+        const count=Math.round(clamp(val(params,'count',6),3,16)),upright=text(params,'orientation','OUT')==='UPRIGHT';
+        const size=Math.min(0.35,Math.sin(Math.PI/count)/(1.25+Math.sin(Math.PI/count))),radius=0.5-size/2;
         return Array.from({length:count},(_,i)=>{const a=2*Math.PI*i/count-Math.PI/2;return assignSlot(
-          translate(single,radius*Math.cos(a),radius*Math.sin(a),Math.min(0.5,2*Math.PI*radius/count*0.7),upright?0:a*180/Math.PI),
+          translate(single,radius*Math.cos(a),radius*Math.sin(a),size,upright?0:a*180/Math.PI+90),
           i%2?'inner':'outer',
         );}).flat();
       }
       case 'ARC_REPEAT': {
-        const count=Math.round(clamp(val(params,'count',7),3,16)),sweep=clamp(val(params,'sweep',240),120,300),radius=clamp(val(params,'radius',0.38),...CONFIG.composers.ARC_REPEAT.radius);
-        return Array.from({length:count},(_,i)=>{const a=rad(-90-sweep/2+sweep*i/(count-1));return assignSlot(
-          translate(single,radius*Math.cos(a),radius*Math.sin(a),0.55,a*180/Math.PI+90),i%2?'inner':'outer',
-        );}).flat();
+        const sweep=clamp(val(params,'sweep',240),120,300);
+        const count=params.count === undefined
+          ? Math.round(clamp(sweep/22.5,6,13))
+          : Math.round(clamp(val(params,'count',6),3,13));
+        const radius=0.38;
+        return Array.from({length:count},(_,i)=>{const degrees=90+sweep*(i/(count-1)-0.5),a=rad(degrees);
+          const length=1.35*radius*rad(sweep/(count-1));
+          return translate([lens(length,0.4*length)],radius*Math.cos(a),radius*Math.sin(a),1,degrees+30);
+        }).flat().map((primitive)=>({...primitive,fill:'outer'}));
       }
       case 'INSCRIBE': {
         const frame=text(params,'frame','DISC'),ratio=clamp(val(params,'scale',0.58),0.45,0.7),border:EmblemPrimitive[]=[];
@@ -733,22 +1053,59 @@ export function validateFlagEmblem(node:EmblemNode, options:EmblemBuildOptions={
         else if(frame==='RING') border.push(ring(0,0,0.5,0.42));
         else if(frame==='RHOMBUS') border.push(poly([point(0,-0.5),point(0.5,0),point(0,0.5),point(-0.5,0)]));
         else if(frame==='POLYGON') border.push(regularPolygon(Math.round(clamp(val(params,'sides',6),3,12))));
-        else border.push(...buildModule('M28',{shape:'HEATER'},rng));
+        else border.push(...buildModule('M28',{shape:text(params,'shape','HEATER')},rng));
         return [...assignSlot(border,'outer'),...assignSlot(translate(single,0,0,ratio),'inner')];
       }
+      case 'CONSTELLATION': {
+        const positions=constellationPositions(params);
+        if (!positions.length) throw new RangeError('CONSTELLATION requires at least one star');
+        const scaleX=clamp(val(params,'scaleX',1),0.01,1.5);
+        const scaleY=clamp(val(params,'scaleY',1),0.01,1.5);
+        const offsetX=clamp(val(params,'offsetX',0),-0.5,0.5);
+        const offsetY=clamp(val(params,'offsetY',0),-0.5,0.5);
+        const placed=positions.map(({u,v,size})=>({
+          x:offsetX+(u-0.5)*scaleX,
+          y:offsetY+(v-0.5)*scaleY,
+          size,
+        }));
+        let minimumGap=Infinity;
+        for(let i=0;i<placed.length;i++) for(let j=i+1;j<placed.length;j++) {
+          minimumGap=Math.min(minimumGap,Math.hypot(placed[i].x-placed[j].x,placed[i].y-placed[j].y));
+        }
+        const diameter=Math.min(0.22,Number.isFinite(minimumGap)?minimumGap*0.8:0.22);
+        return placed.flatMap(({x,y,size})=>translate(single,x,y,diameter*size));
+      }
+      case 'OVERLAY':
+        return [
+          ...assignSlot(child(0),'outer'),
+          ...assignSlot(child(1),'inner'),
+        ];
       case 'FLANK': {
         const sideScale=clamp(val(params,'sideScale',0.65),0.5,0.8),offset=clamp(val(params,'offset',0.3),0.15,0.45),side=child(children.length>1?1:0);
         return [...assignSlot(single,'outer'),...assignSlot(translate(side,-offset,0,sideScale,0,true),'inner'),
           ...assignSlot(translate(child(children.length>2?2:1),offset,0,sideScale),'inner')];
       }
       case 'CHARGE_ON_CHARGE': {
-        const back=child(children.length>1?1:0),small=clamp(val(params,'smallScale',0.38),0.2,0.6),off:Record<string,any>=params.offset??{x:0,y:0};
+        const back=child(children.length>1?1:0),small=val(params,'smallScale',0.5),off:Record<string,any>=params.offset??{x:0,y:0};
+        if (!CONFIG.composers.CHARGE_ON_CHARGE.smallScales.includes(small)) throw new RangeError('CHARGE_ON_CHARGE size must be 0.4, 0.5, or 0.6');
+        const outerId=children[children.length>1?1:0]?.module,innerId=children[0]?.module;
+        if (outerId && !['M01','M02','M03','M04','M05','M09','M28'].includes(outerId)) throw new RangeError('CHARGE_ON_CHARGE outer module is not allowed');
+        if (innerId && !['M01','M03','M04','M05','M06','M09'].includes(innerId)) throw new RangeError('CHARGE_ON_CHARGE inner module is not allowed');
+        if (outerId === 'M03' && Number(children[children.length>1?1:0]?.params?.innerRatio ?? 0.382) < 0.5) {
+          throw new RangeError('CHARGE_ON_CHARGE outer star requires innerRatio at least 0.5');
+        }
         return [...assignSlot(back,'outer'),...assignSlot(translate(single,val(off,'x',0),val(off,'y',0),small),'inner')];
       }
       case 'CONCENTRIC': {
-        const base=child(children.length>1?1:0),rings=Math.round(clamp(val(params,'rings',2),1,4)),ratio=clamp(val(params,'innerRatio',0.68),0.45,0.85);
-        const additions=Array.from({length:rings},(_,i)=>ring(0,0,0.5*(1-i*(1-ratio)/rings),0.5*(1-i*(1-ratio)/rings)*(0.78)));
-        return [...assignSlot(single,'inner'),...assignSlot(base,'outer'),...assignSlot(additions,'inner')];
+        const rings=Math.round(val(params,'rings',2));
+        if (![1,2].includes(rings)) throw new RangeError('CONCENTRIC permits one or two rings');
+        const thickness=0.07,gap=0.06,diameter=1-2*rings*(thickness+gap);
+        const additions=Array.from({length:rings},(_,i)=>{
+          const outer=0.5-i*(thickness+gap);
+          return ring(0,0,outer,outer-thickness);
+        });
+        return [...assignSlot(translate(single,0,0,diameter),'inner'),
+          ...assignSlot(additions.filter((_,i)=>i%2===0),'outer'),...assignSlot(additions.filter((_,i)=>i%2===1),'inner')];
       }
     }
   };
@@ -769,6 +1126,7 @@ export function validateFlagEmblem(node:EmblemNode, options:EmblemBuildOptions={
     primitives:primitives.map((primitive)=>primitive.fill==='detail'?{...primitive,fill:'inner'}:primitive),
     primitiveCount,
     depth:Math.min(CONFIG.maxDepth,compositionDepth(node)),
+    cost:calculateFlagEmblemCost(node),
     requiredScale:Number.isFinite(narrowestStroke)?CONFIG.glyph.minimumStroke/(narrowestStroke*canvasHeight):0,
     slots:{inner:'inner',outer:'outer'},
   };

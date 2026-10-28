@@ -11,7 +11,7 @@ import { FLAG_PLACEMENT_CONFIG, type FlagConstellationId, type FlagSymmetryClass
 export { FLAG_PLACEMENT_CONFIG } from './flagPlacementConfig';
 export type { FlagConstellationId, FlagSymmetryClass } from './flagPlacementConfig';
 
-export type FlagChargeAnchor = 'A1' | 'A2' | 'A3' | 'A4' | 'A5' | 'A6' | 'A7' | 'A8' | 'A9' | 'A10';
+export type FlagChargeAnchor = 'A1' | 'A2' | 'A3' | 'A4' | 'A5' | 'A6' | 'A7' | 'A8' | 'A9' | 'A10' | 'A11';
 export type FlagRepeatKind = 'GRID' | 'RING' | 'ARC' | 'LINE' | 'CONSTELLATION';
 export interface PlacementPoint {
   u: number;
@@ -23,7 +23,7 @@ export interface ChargePlacement extends PlacementPoint {
   mirror: boolean;
 }
 export interface RepeatPlacement extends PlacementPoint {
-  /** Relative to the charge's base diameter, not to the frame. */
+  /** Относительный размер относительно диаметра базового заряда, а не рамки. */
   sizeMultiplier: number;
   rotation: number;
   mirror: boolean;
@@ -55,6 +55,14 @@ export interface PlacementReferences {
   corner?: 'TOP_HOIST' | 'TOP_FLY' | 'BOTTOM_HOIST' | 'BOTTOM_FLY';
   candidates?: PlacementPoint[];
   isCounterchange?: boolean;
+  profileId?: string;
+  outlineType?: string;
+  groupIndex?: number;
+  a2X?: number;
+  a2Y?: number;
+  a11X?: number;
+  quarters?: PlacementPoint[];
+  virtualCantonSize?: { w: number; h: number };
 }
 export interface ResolvePlacementOptions {
   anchor: FlagChargeAnchor;
@@ -68,10 +76,13 @@ export interface ResolvePlacementOptions {
   existing?: ExistingPlacement[];
   symmetry?: FlagSymmetryClass;
   rng?: () => number;
+  snapStep?: number;
+  snapAlreadyApplied?: boolean;
+  minimumSize?: number;
 }
 
 const EPSILON = 1e-9;
-const ANCHORS = new Set<FlagChargeAnchor>(['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10']);
+const ANCHORS = new Set<FlagChargeAnchor>(['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10', 'A11']);
 const REPEATERS = new Set<FlagRepeatKind>(['GRID', 'RING', 'ARC', 'LINE', 'CONSTELLATION']);
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const finite = (value: number, label: string): number => {
@@ -114,7 +125,7 @@ function safeAreaPolygon(area: PlacementSafeAreaInput, frame: PlacementFrame, ca
   ];
 }
 
-function pointInPolygon(point: PlacementPoint, polygon: PlacementPoint[]): boolean {
+function pointInPolygon(point: PlacementPoint, polygon: readonly PlacementPoint[]): boolean {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
     const a = polygon[i], b = polygon[j];
@@ -136,13 +147,155 @@ function distanceToSegment(point: PlacementPoint, a: PlacementPoint, b: Placemen
 }
 
 function physicalRadius(size: number, frame: PlacementFrame): number {
-  return size * Math.min(frame.w, frame.h) / 2;
+  // Размер заряда нормирован к высоте холста; узкая ширина не уменьшает его радиус.
+  return size * frame.h / 2;
 }
 
 function isSafe(point: PlacementPoint, radius: number, frame: PlacementFrame, polygon: PlacementPoint[]): boolean {
   if (!pointInPolygon(point, polygon)) return false;
   return polygon.every((vertex, index) =>
     distanceToSegment(point, vertex, polygon[(index + 1) % polygon.length], frame) + EPSILON >= radius);
+}
+
+export function maximumSafeChargeSizeAtPoint(
+  point: { u: number; v: number },
+  frame: PlacementFrame,
+  safeArea: PlacementSafeAreaInput,
+  canvasHeight = 1200,
+  obstacles: readonly (readonly PlacementPoint[])[] = [],
+  minimumGap = 0,
+): number {
+  validateFrame(frame);
+  finite(canvasHeight, 'canvas height');
+  if (canvasHeight <= 0) throw new RangeError('canvas height must be positive');
+  finite(minimumGap, 'minimum obstacle gap');
+  if (minimumGap < 0) throw new RangeError('minimum obstacle gap must not be negative');
+  const polygon = safeAreaPolygon(safeArea, frame, canvasHeight);
+  if (!pointInPolygon(point, polygon)) return 0;
+  let safeClearance = Infinity;
+  for (let index = 0; index < polygon.length; index += 1) {
+    safeClearance = Math.min(
+      safeClearance,
+      distanceToSegment(point, polygon[index], polygon[(index + 1) % polygon.length], frame),
+    );
+  }
+  return Math.min(
+    2 * safeClearance / frame.h,
+    maximumChargeSizeClearOfObstaclesAtPoint(point, frame, obstacles, minimumGap),
+  );
+}
+
+/** Создаёт оценщик для серии точек с общей рамкой, безопасной областью и препятствиями. */
+export function createMaximumSafeChargeSizeEvaluator(
+  frame: PlacementFrame,
+  safeArea: PlacementSafeAreaInput,
+  canvasHeight = 1200,
+  obstacles: readonly (readonly PlacementPoint[])[] = [],
+  minimumGap = 0,
+): (point: PlacementPoint) => number {
+  validateFrame(frame);
+  finite(canvasHeight, 'canvas height');
+  if (canvasHeight <= 0) throw new RangeError('canvas height must be positive');
+  finite(minimumGap, 'minimum obstacle gap');
+  if (minimumGap < 0) throw new RangeError('minimum obstacle gap must not be negative');
+
+  const safePolygon = safeAreaPolygon(safeArea, frame, canvasHeight);
+  type Segment = { ax: number; ay: number; dx: number; dy: number; lengthSquared: number };
+  const prepareSegments = (vertices: readonly PlacementPoint[]): Segment[] =>
+    vertices.map((a, index) => {
+      const b = vertices[(index + 1) % vertices.length];
+      const ax = a.u * frame.w;
+      const ay = a.v * frame.h;
+      const dx = b.u * frame.w - ax;
+      const dy = b.v * frame.h - ay;
+      return { ax, ay, dx, dy, lengthSquared: dx * dx + dy * dy };
+    });
+  const safeSegments = prepareSegments(safePolygon);
+  const preparedObstacles = obstacles.map((vertices) => {
+    if (vertices.length < 3) throw new RangeError('charge-placement obstacles must contain at least three points');
+    let minU = Number.POSITIVE_INFINITY;
+    let minV = Number.POSITIVE_INFINITY;
+    let maxU = Number.NEGATIVE_INFINITY;
+    let maxV = Number.NEGATIVE_INFINITY;
+    for (const vertex of vertices) {
+      minU = Math.min(minU, vertex.u);
+      minV = Math.min(minV, vertex.v);
+      maxU = Math.max(maxU, vertex.u);
+      maxV = Math.max(maxV, vertex.v);
+    }
+    return { vertices, minU, minV, maxU, maxV, segments: prepareSegments(vertices) };
+  });
+  const segmentDistance = (px: number, py: number, segment: Segment): number => {
+    const t = segment.lengthSquared === 0
+      ? 0
+      : clamp(
+        ((px - segment.ax) * segment.dx + (py - segment.ay) * segment.dy) /
+          segment.lengthSquared,
+        0,
+        1,
+      );
+    return Math.hypot(px - (segment.ax + t * segment.dx), py - (segment.ay + t * segment.dy));
+  };
+
+  return (point) => {
+    if (!pointInPolygon(point, safePolygon)) return 0;
+    finite(point.u, 'charge point u');
+    finite(point.v, 'charge point v');
+    const px = point.u * frame.w;
+    const py = point.v * frame.h;
+    let safeClearance = Number.POSITIVE_INFINITY;
+    for (const segment of safeSegments) {
+      safeClearance = Math.min(safeClearance, segmentDistance(px, py, segment));
+    }
+
+    let obstacleClearance = Number.POSITIVE_INFINITY;
+    for (const obstacle of preparedObstacles) {
+      const insideBounds = point.u >= obstacle.minU && point.u <= obstacle.maxU &&
+        point.v >= obstacle.minV && point.v <= obstacle.maxV;
+      if (insideBounds && pointInPolygon(point, obstacle.vertices)) return 0;
+      const dx = point.u < obstacle.minU
+        ? (obstacle.minU - point.u) * frame.w
+        : point.u > obstacle.maxU ? (point.u - obstacle.maxU) * frame.w : 0;
+      const dy = point.v < obstacle.minV
+        ? (obstacle.minV - point.v) * frame.h
+        : point.v > obstacle.maxV ? (point.v - obstacle.maxV) * frame.h : 0;
+      if (Math.hypot(dx, dy) >= obstacleClearance) continue;
+      for (const segment of obstacle.segments) {
+        obstacleClearance = Math.min(obstacleClearance, segmentDistance(px, py, segment));
+      }
+    }
+    const obstacleSize = Number.isFinite(obstacleClearance)
+      ? Math.max(0, 2 * (obstacleClearance - minimumGap) / frame.h)
+      : Number.POSITIVE_INFINITY;
+    return Math.min(2 * safeClearance / frame.h, obstacleSize);
+  };
+}
+
+export function maximumChargeSizeClearOfObstaclesAtPoint(
+  point: { u: number; v: number },
+  frame: PlacementFrame,
+  obstacles: readonly (readonly PlacementPoint[])[] = [],
+  minimumGap = 0,
+): number {
+  validateFrame(frame);
+  finite(point.u, 'charge point u');
+  finite(point.v, 'charge point v');
+  finite(minimumGap, 'minimum obstacle gap');
+  if (minimumGap < 0) throw new RangeError('minimum obstacle gap must not be negative');
+  let obstacleClearance = Infinity;
+  for (const obstacle of obstacles) {
+    if (obstacle.length < 3) throw new RangeError('charge-placement obstacles must contain at least three points');
+    if (pointInPolygon(point, obstacle)) return 0;
+    for (let index = 0; index < obstacle.length; index += 1) {
+      obstacleClearance = Math.min(
+        obstacleClearance,
+        distanceToSegment(point, obstacle[index], obstacle[(index + 1) % obstacle.length], frame),
+      );
+    }
+  }
+  return Number.isFinite(obstacleClearance)
+    ? Math.max(0, 2 * (obstacleClearance - minimumGap) / frame.h)
+    : Number.POSITIVE_INFINITY;
 }
 
 function hasClearance(
@@ -159,8 +312,14 @@ function hasClearance(
   });
 }
 
-/** Snap a charge diameter to H/24 (75%) or H/60 (25%) using the supplied seeded stream. */
-export function snapChargeSize(size: number, frame: PlacementFrame, rng: () => number, canvasHeight = 1200): number {
+/** Округляет диаметр заряда до H/24 (75 %) или H/60 (25 %) с заданным потоком случайных чисел. */
+export function snapChargeSize(
+  size: number,
+  frame: PlacementFrame,
+  rng: () => number,
+  canvasHeight = 1200,
+  minimumSize = 0,
+): number {
   validateFrame(frame);
   finite(size, 'charge size');
   finite(canvasHeight, 'canvas height');
@@ -169,7 +328,24 @@ export function snapChargeSize(size: number, frame: PlacementFrame, rng: () => n
   if (size < sizeRange[0] || size > sizeRange[1]) {
     throw new RangeError(`charge size must be in ${sizeRange[0]}..${sizeRange[1]}`);
   }
-  return snapValue(size, frame, rng, canvasHeight, sizeRange);
+  if (!Number.isFinite(minimumSize) || minimumSize < 0) throw new RangeError('minimum charge size must be nonnegative');
+  const lower = Math.max(sizeRange[0], minimumSize);
+  if (lower > sizeRange[1]) throw new RangeError(`minimum charge size ${lower} exceeds ${sizeRange[1]}`);
+  return Math.max(snapValue(size, frame, rng, canvasHeight, sizeRange), lower);
+}
+
+function snapSizeToPhysicalStep(size: number, frame: PlacementFrame, canvasHeight: number, step: number): number {
+  validateFrame(frame);
+  finite(size, 'charge size');
+  finite(canvasHeight, 'canvas height');
+  finite(step, 'snap step');
+  if (canvasHeight <= 0 || step <= 0) throw new RangeError('canvas height and snap step must be positive');
+  const bounds = FLAG_PLACEMENT_CONFIG.anchors.sizeRange;
+  if (size < bounds[0] || size > bounds[1]) throw new RangeError(`charge size must be in ${bounds[0]}..${bounds[1]}`);
+  const unit = step / (Math.min(frame.w, frame.h) * canvasHeight);
+  const minSteps = Math.ceil(bounds[0] / unit);
+  const maxSteps = Math.floor(bounds[1] / unit);
+  return clamp(Math.round(size / unit), minSteps, maxSteps) * unit;
 }
 
 function snapValue(
@@ -194,7 +370,7 @@ function snapValue(
   return steps * snapUnit;
 }
 
-/** Apply the same design grid to any dimensional charge parameter. */
+/** Применяет одну и ту же проектную сетку к любому размерному параметру заряда. */
 export function snapChargeParameter(value: number, frame: PlacementFrame, rng: () => number, canvasHeight = 1200): number {
   validateFrame(frame);
   finite(value, 'charge parameter');
@@ -223,18 +399,35 @@ function anchorPoint(
   frame: PlacementFrame,
   radius: number,
   canvasHeight: number,
+  random: () => number,
 ): PlacementPoint {
   switch (anchor) {
     case 'A1': return { u: 0.5, v: 0.5 };
-    case 'A2': return { u: (FLAG_PLACEMENT_CONFIG.anchors.hoistCenterX[0] + FLAG_PLACEMENT_CONFIG.anchors.hoistCenterX[1]) / 2, v: 0.5 };
+    case 'A2': {
+      if (references.outlineType === 'BANNER') {
+        const values = FLAG_PLACEMENT_CONFIG.anchors.bannerA2YValues;
+        const y = references.a2Y ?? values[Math.floor(random() * values.length)];
+        return { u: 0.5, v: y };
+      }
+      const values = references.profileId === 'P22'
+        ? [FLAG_PLACEMENT_CONFIG.anchors.p22HoistCenterX]
+        : FLAG_PLACEMENT_CONFIG.anchors.hoistCenterXValues;
+      const x = references.a2X ?? values[Math.floor(random() * values.length)];
+      return { u: x, v: 0.5 };
+    }
     case 'A3':
       if (!references.ordinaryCenter) throw new RangeError('A3 requires the center of an ordinary');
       return references.ordinaryCenter;
     case 'A4':
-      if (!references.cantonCenter) throw new RangeError('A4 requires the canton center');
-      return references.cantonCenter;
+      if (references.cantonCenter) return references.cantonCenter;
+      const config = FLAG_PLACEMENT_CONFIG.anchors;
+      const width = references.virtualCantonSize?.w ??
+        config.virtualCantonWidths[Math.floor(random() * config.virtualCantonWidths.length)];
+      const height = references.virtualCantonSize?.h ??
+        config.virtualCantonHeights[Math.floor(random() * config.virtualCantonHeights.length)];
+      return { u: width / 2, v: height / 2 };
     case 'A5': {
-      const quarters = [
+      const quarters = references.quarters ?? [
         { u: 0.25, v: 0.25 }, { u: 0.75, v: 0.25 },
         { u: 0.25, v: 0.75 }, { u: 0.75, v: 0.75 },
       ];
@@ -269,8 +462,17 @@ function anchorPoint(
         BOTTOM_HOIST: { u: margin / frame.w, v: 1 - margin / frame.h },
         BOTTOM_FLY: { u: 1 - margin / frame.w, v: 1 - margin / frame.h },
       };
-      if (!references.corner) throw new RangeError('A8 requires a named edge or corner');
-      return corners[references.corner];
+      if (references.corner) return corners[references.corner];
+      const entries = Object.entries(FLAG_PLACEMENT_CONFIG.anchors.cornerWeights) as [
+        NonNullable<PlacementReferences['corner']>, number,
+      ][];
+      const total = entries.reduce((sum, [, weight]) => sum + weight, 0);
+      let target = random() * total;
+      for (const [corner, weight] of entries) {
+        target -= weight;
+        if (target < 0) return corners[corner];
+      }
+      return corners[entries.at(-1)![0]];
     }
     case 'A9':
       if (!references.pileInterior) throw new RangeError('A9 requires the interior polygon of a PILE');
@@ -278,16 +480,31 @@ function anchorPoint(
     case 'A10':
       if (!references.candidates?.length) throw new RangeError('A10 requires ordered free-placement candidates');
       return references.candidates[0];
+    case 'A11': {
+      const config = FLAG_PLACEMENT_CONFIG.anchors;
+      const x = references.a11X ?? config.freePartCenterXValues[Math.floor(random() * config.freePartCenterXValues.length)];
+      const groupIndex = references.groupIndex;
+      const v = groupIndex === undefined
+        ? 0.5
+        : config.a11GroupY[groupIndex];
+      if (!Number.isFinite(v)) throw new RangeError('A11 group index must be 0 or 1');
+      return { u: x, v };
+    }
   }
 }
 
-/** Resolve A1–A10, apply SNAP to size, and reject unsafe or crowded placements. */
+/** Размещает заряд по якорям A1–A10, округляет размер и отклоняет небезопасные или слишком тесные размещения. */
 export function resolveChargePlacement(options: ResolvePlacementOptions): ChargePlacement {
   const { anchor, frame } = options;
   if (!ANCHORS.has(anchor)) throw new TypeError(`unsupported charge anchor: ${String(anchor)}`);
   validateFrame(frame);
   const random = rngRequired(options.rng);
-  const size = snapChargeSize(options.size, frame, random, options.canvasHeight);
+  const size = options.snapAlreadyApplied
+    ? Math.max(options.size, options.minimumSize ?? 0)
+    : options.snapStep
+      ? Math.max(snapSizeToPhysicalStep(options.size, frame, options.canvasHeight ?? 1200, options.snapStep),
+        options.minimumSize ?? 0)
+      : snapChargeSize(options.size, frame, random, options.canvasHeight, options.minimumSize);
   const radius = physicalRadius(size, frame);
   const canvasHeight = options.canvasHeight ?? 1200;
   const safeArea = safeAreaPolygon(options.safeArea, frame, canvasHeight);
@@ -296,7 +513,7 @@ export function resolveChargePlacement(options: ResolvePlacementOptions): Charge
   const references = options.references ?? {};
   const candidates = anchor === 'A10'
     ? references.candidates!
-    : [anchorPoint(anchor, references, frame, radius, canvasHeight)];
+    : [anchorPoint(anchor, references, frame, radius, canvasHeight, random)];
   const placementIsValid = (candidate: PlacementPoint) => {
     const placement = { ...candidate, size, rotation: options.rotation ?? 0, mirror: options.mirror ?? false };
     const copies = expandSymmetricPlacements([placement], options.symmetry ?? 'NONE');
@@ -309,7 +526,7 @@ export function resolveChargePlacement(options: ResolvePlacementOptions): Charge
   };
   const point = candidates.find(placementIsValid);
   if (!point) {
-    throw new RangeError(`${anchor} has no placement inside safe_area with the required minimum gaps`);
+    throw new RangeError(`${anchor}: не найдено безопасное размещение в safe_area с требуемыми зазорами`);
   }
   return {
     u: point.u,
@@ -318,6 +535,29 @@ export function resolveChargePlacement(options: ResolvePlacementOptions): Charge
     rotation: finite(options.rotation ?? 0, 'rotation'),
     mirror: options.mirror ?? false,
   };
+}
+
+export function resolveChargeGroupPlacements(options: ResolvePlacementOptions): ChargePlacement[] {
+  if (options.anchor !== 'A5') return [resolveChargePlacement(options)];
+  const random = rngRequired(options.rng);
+  const canvasHeight = options.canvasHeight ?? 1200;
+  const size = options.snapAlreadyApplied
+    ? Math.max(options.size, options.minimumSize ?? 0)
+    : options.snapStep
+      ? Math.max(snapSizeToPhysicalStep(options.size, options.frame, canvasHeight, options.snapStep),
+        options.minimumSize ?? 0)
+      : snapChargeSize(options.size, options.frame, random, canvasHeight, options.minimumSize);
+  const placements: ChargePlacement[] = [];
+  for (let quarter = 0; quarter < 4; quarter += 1) {
+    placements.push(resolveChargePlacement({
+      ...options,
+      size,
+      snapAlreadyApplied: true,
+      references: { ...options.references, quarter },
+      existing: [...(options.existing ?? []), ...placements],
+    }));
+  }
+  return placements;
 }
 
 export function isValidChargePlacement(
@@ -346,19 +586,21 @@ export interface RepeatOptions {
   rows?: number;
   cols?: number;
   count?: number;
+  baseSize?: number;
   stepX?: number;
   stepY?: number;
   stagger?: 'NONE' | 'HALF_OFFSET' | 'ALTERNATING_6_5';
   radius?: number;
   sweep?: number;
-  startAngle?: number;
+  centerDirection?: number;
   axis?: 'HORIZONTAL' | 'VERTICAL';
-  span?: number;
+  gapRatio?: number;
+  frame?: PlacementFrame;
   constellation?: FlagConstellationId;
   size?: number;
 }
 
-/** Expand a repeat operator into normalized charge centers and relative size multipliers. */
+/** Разворачивает повторитель в нормированные центры зарядов и относительные размеры. */
 export function expandFlagRepeat(kind: FlagRepeatKind, options: RepeatOptions = {}): RepeatPlacement[] {
   if (!REPEATERS.has(kind)) throw new TypeError(`unsupported repeat operator: ${String(kind)}`);
   const c = FLAG_PLACEMENT_CONFIG.repeaters;
@@ -375,7 +617,7 @@ export function expandFlagRepeat(kind: FlagRepeatKind, options: RepeatOptions = 
       points = [];
       for (let row = 0; row < rows; row += 1) {
         const rowCols = stagger === 'ALTERNATING_6_5'
-          ? (row % 2 === 0 ? c.grid.sixFiveRows.even : c.grid.sixFiveRows.odd)
+          ? (row % 2 === 0 ? c.grid.sixFiveRows.first : c.grid.sixFiveRows.second)
           : cols;
         const shift = stagger === 'HALF_OFFSET' && row % 2 ? stepX / 2 : 0;
         for (let col = 0; col < rowCols; col += 1) {
@@ -390,11 +632,11 @@ export function expandFlagRepeat(kind: FlagRepeatKind, options: RepeatOptions = 
     }
     case 'RING': {
       const count = boundedCount(options.count, c.ring.count, 6, 'RING count');
-      const radius = finite(options.radius ?? c.ring.defaultRadius, 'RING radius');
-      if (radius < c.ring.radius[0] || radius > c.ring.radius[1]) throw new RangeError('RING radius is outside the configured range');
+      const size = Math.min(c.ring.maximumSize, Math.sin(Math.PI / count) / (1.25 + Math.sin(Math.PI / count)));
+      const radius = 0.5 - size / 2;
       points = Array.from({ length: count }, (_, i) => {
         const angle = -Math.PI / 2 + 2 * Math.PI * i / count;
-        return { u: 0.5 + radius * Math.cos(angle), v: 0.5 + radius * Math.sin(angle), size: 1 };
+        return { u: 0.5 + radius * Math.cos(angle), v: 0.5 + radius * Math.sin(angle), size };
       });
       break;
     }
@@ -404,9 +646,11 @@ export function expandFlagRepeat(kind: FlagRepeatKind, options: RepeatOptions = 
       const radius = finite(options.radius ?? c.arc.defaultRadius, 'ARC radius');
       if (sweep < c.arc.sweep[0] || sweep > c.arc.sweep[1]) throw new RangeError('ARC sweep is outside the configured range');
       if (radius < c.arc.radius[0] || radius > c.arc.radius[1]) throw new RangeError('ARC radius is outside the configured range');
-      const start = finite(options.startAngle ?? c.arc.defaultStartAngle, 'ARC start angle');
+      const centerDirection = finite(options.centerDirection ?? c.arc.defaultCenterDirection, 'ARC center direction');
+      if (!(c.arc.centerDirections as readonly number[]).includes(centerDirection)) throw new RangeError('ARC center direction is not configured');
+      const start = centerDirection - sweep / 2;
       points = Array.from({ length: count }, (_, i) => {
-        const angle = (start - sweep / 2 + sweep * i / (count - 1)) * Math.PI / 180;
+        const angle = (start + sweep * i / (count - 1)) * Math.PI / 180;
         return { u: 0.5 + radius * Math.cos(angle), v: 0.5 + radius * Math.sin(angle), size: 1 };
       });
       break;
@@ -415,20 +659,40 @@ export function expandFlagRepeat(kind: FlagRepeatKind, options: RepeatOptions = 
       const count = boundedCount(options.count, c.line.count, c.line.defaultCount, 'LINE count');
       const axis = options.axis ?? c.line.defaultAxis;
       if (!c.line.axes.includes(axis)) throw new TypeError(`unsupported LINE axis: ${axis}`);
-      const span = finite(options.span ?? c.line.defaultSpan, 'LINE span');
-      if (span <= 0 || span > 1) throw new RangeError('LINE span must be in (0,1]');
+      const gapRatio = finite(options.gapRatio ?? c.line.defaultGapRatio, 'LINE gap ratio');
+      if (!(c.line.gapRatios as readonly number[]).includes(gapRatio)) throw new RangeError('LINE gap ratio is not configured');
+      const frame = options.frame ?? { w: 1, h: 1 };
+      validateFrame(frame);
+      const baseSize = finite(options.baseSize ?? 1, 'LINE base size');
+      if (baseSize <= 0) throw new RangeError('LINE base size must be positive');
+      const axisLength = axis === 'HORIZONTAL' ? frame.w : frame.h;
+      const sizeInAxis = baseSize * frame.h / axisLength;
+      const adjustedSize = Math.min(sizeInAxis, 0.9 * axisLength / (count + (count - 1) * gapRatio));
+      const sizeMultiplier = adjustedSize / sizeInAxis;
+      const pitch = adjustedSize * (1 + gapRatio) / axisLength;
       points = Array.from({ length: count }, (_, i) => {
-        const offset = count === 1 ? 0 : (i / (count - 1) - 0.5) * span;
+        const offset = (i - (count - 1) / 2) * pitch;
         return axis === 'HORIZONTAL'
-          ? { u: 0.5 + offset, v: 0.5, size: 1 }
-          : { u: 0.5, v: 0.5 + offset, size: 1 };
+          ? { u: 0.5 + offset, v: 0.5, size: sizeMultiplier }
+          : { u: 0.5, v: 0.5 + offset, size: sizeMultiplier };
       });
       break;
     }
     case 'CONSTELLATION': {
       const id = options.constellation;
       if (!id || !Object.hasOwn(c.constellations, id)) throw new TypeError('CONSTELLATION requires a configured preset id');
-      points = c.constellations[id].positions.map((position) => ({ ...position }));
+      const positions = c.constellations[id].positions;
+      let minimumDistanceFactor = Number.POSITIVE_INFINITY;
+      for (let first = 0; first < positions.length; first += 1) {
+        for (let second = first + 1; second < positions.length; second += 1) {
+          const a = positions[first], b = positions[second];
+          const distance = Math.hypot(a.u - b.u, a.v - b.v);
+          const divisor = ((a.size ?? 1) + (b.size ?? 1)) / 2;
+          minimumDistanceFactor = Math.min(minimumDistanceFactor, 0.8 * distance / divisor);
+        }
+      }
+      const baseStarSize = Math.min(0.22, minimumDistanceFactor);
+      points = positions.map(({ u, v, size }) => ({ u, v, size: (size ?? 1) * baseStarSize }));
       break;
     }
   }
@@ -461,7 +725,7 @@ export interface ResolveRepeatOptions extends RepeatOptions {
   rng: () => number;
 }
 
-/** Expand a repeat, snap each charge, and reject the full set if any copy violates spacing or safe_area. */
+/** Разворачивает повторитель, привязывает заряды к сетке и отклоняет набор при нарушении отступов или safe_area. */
 export function resolveFlagRepeatPlacements(options: ResolveRepeatOptions): ChargePlacement[] {
   validateFrame(options.frame);
   const { sizeRange } = FLAG_PLACEMENT_CONFIG.anchors;
@@ -513,9 +777,21 @@ export function createRepeatNode(child: FlagNode, kind: FlagRepeatKind, options:
 
 function reflectPlacement(placement: ChargePlacement, axis: 'X' | 'Y'): ChargePlacement {
   if (axis === 'X') {
-    return { ...placement, u: 1 - placement.u, rotation: 180 - placement.rotation, mirror: !placement.mirror };
+    const rotation = 180 - placement.rotation;
+    return {
+      ...placement,
+      u: 1 - placement.u,
+      rotation: Object.is(rotation, -0) ? 0 : rotation,
+      mirror: !placement.mirror,
+    };
   }
-  return { ...placement, v: 1 - placement.v, rotation: -placement.rotation, mirror: !placement.mirror };
+  const rotation = -placement.rotation;
+  return {
+    ...placement,
+    v: 1 - placement.v,
+    rotation: Object.is(rotation, -0) ? 0 : rotation,
+    mirror: !placement.mirror,
+  };
 }
 
 function samePlacement(a: ChargePlacement, b: ChargePlacement): boolean {
@@ -524,7 +800,7 @@ function samePlacement(a: ChargePlacement, b: ChargePlacement): boolean {
     a.mirror === b.mirror;
 }
 
-/** Add exact reflected partners, avoiding duplicate copies that lie on an axis. */
+/** Добавляет точные отражённые пары, не дублируя копии, лежащие на оси. */
 export function expandSymmetricPlacements(
   placements: ChargePlacement[],
   symmetry: FlagSymmetryClass,
@@ -553,7 +829,7 @@ function mirrored(node: FlagNode, axis: 'x' | 'y'): FlagNode {
   return { kind: 'mirror', axis, child: cloneNode(node) };
 }
 
-/** Apply a previously selected symmetry class around an already-composed operator tree. */
+/** Применяет выбранный класс симметрии к уже собранному дереву операторов. */
 export function applyFlagSymmetry(node: FlagNode, symmetry: FlagSymmetryClass): FlagNode {
   if (!FLAG_PLACEMENT_CONFIG.symmetry.classes.includes(symmetry)) throw new TypeError(`unsupported flag symmetry: ${symmetry}`);
   if (symmetry === 'NONE') return node;
@@ -640,7 +916,7 @@ export interface BuildCounterchangeOptions {
   chargeSlot: string;
 }
 
-/** Make two region-clipped copies whose charge color is the other region's background slot. */
+/** Создаёт две копии, обрезанные по областям, где цвет заряда соответствует фону другой области. */
 export function buildCounterchangeNode(child: FlagNode, options: BuildCounterchangeOptions): CounterchangeNode {
   const { first, second, chargeSlot } = options;
   if (!first.id || !second.id || first.id === second.id) throw new RangeError('counterchange needs two distinct region ids');

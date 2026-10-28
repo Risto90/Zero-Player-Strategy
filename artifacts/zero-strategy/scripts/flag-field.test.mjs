@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildFlagField,
+  flagFieldComplexityCost,
   flagPolygonSetArea,
   generateFlagBandWeights,
   validateFlagFieldTree,
@@ -28,8 +29,8 @@ const cases = [
   { op: 'G05', params: { px: 1 / 3, py: 3 / 5, slotsMode: 'AB/BB' } },
   { op: 'G06', params: { center: { u: 0.47, v: 0.55 }, slotsMode: 'TOP_DISTINCT' } },
   { op: 'G06', params: { center: { u: 0.5, v: 0.5 }, slotsMode: 'ALL_DISTINCT' } },
-  { op: 'G07', params: { angles: '90/135/135', startAngle: -90 } },
-  { op: 'G07', params: { angles: '120/120/120', startAngle: 25 } },
+  { op: 'G07', params: { angles: '90/135/135', startAngle: -135 } },
+  { op: 'G07', params: { angles: '120/120/120', startAngle: 0 } },
   { op: 'G08', params: { n: 8, colors: 2 } },
   { op: 'G08', params: { n: 12, colors: 2 } },
   { op: 'G08', params: { n: 16, colors: 3 } },
@@ -37,11 +38,11 @@ const cases = [
   { op: 'G09', params: { nx: 4, origin: 'CORNER' } },
   { op: 'G09', params: { nx: 7, origin: 'CENTER' } },
   { op: 'G09', params: { nx: 16, origin: 'CORNER' } },
-  { op: 'G10', params: { angle: 50, cellSize: 120, origin: 'CENTER' } },
-  { op: 'G10', params: { angle: 60, cellSize: 180, origin: 'CORNER' } },
-  { op: 'G10', params: { angle: 70, cellSize: 300, origin: 'CENTER' } },
+  { op: 'G10', params: { angle: 50, cellSize: 120, origin: 'CELL_CENTER' } },
+  { op: 'G10', params: { angle: 60, cellSize: 180, origin: 'NODE_CENTER' } },
+  { op: 'G10', params: { angle: 70, cellSize: 300, origin: 'CELL_CENTER' } },
   { op: 'G11', params: { n: 3, amplitude: 0.1, pattern: 'CYC' } },
-  { op: 'G11', params: { n: 7, vertex: { u: 0.62, v: 0.46 }, amplitude: 0.08, pattern: 'TRIAD' } },
+  { op: 'G11', params: { n: 7, orientation: 'UP', vertex: { u: 0.62, v: 0.25 }, amplitude: 0.08, pattern: 'TRIAD' } },
   { op: 'G11', params: { n: 9, amplitude: 0.05, pattern: 'CYC' } },
   { op: 'G12', params: { figure: 'circle', n: 2, weights: { kind: 'equal' } } },
   { op: 'G12', params: { figure: 'square', n: 3, weights: { kind: 'sym', ratio: 1 / 2 } } },
@@ -49,8 +50,11 @@ const cases = [
   { op: 'G12', params: { figure: 'rectangle', n: 6, weights: { kind: 'equal' } } },
 ];
 
+let compositionDraw = 0;
+const compositionRandom = () => (compositionDraw++ % 12) / 12;
 for (const { op, params } of cases) {
-  const result = buildFlagField({ op, params }, frame, { random: () => 0 });
+  const random = op === 'G02' && params?.weights?.kind === 'comp' ? compositionRandom : () => 0;
+  const result = buildFlagField({ op, params }, frame, { random });
   const area = result.regions.reduce((sum, region) => sum + region.area, 0);
   assert.ok(Math.abs(area - frameArea) < 0.02, `${op} partitions its complete frame: ${area} vs ${frameArea}`);
   assert.equal(result.paintLayers[0].kind, 'underpaint', `${op} paints its parent ground first`);
@@ -101,15 +105,23 @@ assert.ok(validateFlagFieldTree({
 const compWeights = generateFlagBandWeights(
   { kind: 'comp', total: 12 },
   4,
-  { frameHeight: 1200, canvasHeight: 1200, random: () => 0 },
+  { frameHeight: 1200, canvasHeight: 1200, random: compositionRandom },
 );
 assert.equal(compWeights.length, 4);
 assert.ok(Math.abs(compWeights.reduce((sum, weight) => sum + weight, 0) - 1) < 1e-12);
 assert.throws(() => generateFlagBandWeights({ kind: 'comp' }, 4), /deterministic random source/);
 assert.throws(() => generateFlagBandWeights({ kind: 'comp', total: 24 }, 13, {
-  frameHeight: 640, canvasHeight: 1200, random: () => 0,
-}), /feasible/);
+  frameHeight: 300, canvasHeight: 1200, random: compositionRandom,
+}), /T_MIN/);
 assert.throws(() => generateFlagBandWeights({ kind: 'equal' }, 13, { frameHeight: 300, canvasHeight: 1200 }), /T_MIN/);
+const accentAtMinimumThickness = generateFlagBandWeights({ kind: 'accent' }, 3, {
+  frameHeight: 260, canvasHeight: 1200, random: () => 0.99,
+});
+assert.ok(accentAtMinimumThickness.every((weight) => weight * 260 >= 30 - 1e-9),
+  'WG-accent excludes infeasible separator/ratio pairs before weighted selection');
+assert.throws(() => generateFlagBandWeights({ kind: 'accent', separator: 200 }, 3, {
+  frameHeight: 240, canvasHeight: 1200, random: () => 0.99,
+}), /T_MIN/);
 assert.deepEqual(
   buildFlagField({ op: 'G02', params: { n: 4, pattern: 'CYC' } }, frame).regions.map(({ slot }) => slot),
   ['s1', 's2', 's1', 's2'],
@@ -119,7 +131,52 @@ assert.throws(() => buildFlagField({ op: 'G02', params: { n: 4, pattern: 'MIRROR
 assert.equal(buildFlagField({ op: 'G08', params: { n: 24, colors: 3 } }, frame).regionCount, 3,
   'gyronny sector geometry may group repeated regions sharing a color slot');
 assert.throws(() => buildFlagField({ op: 'G03', params: { angle: 25 } }, frame), /30°/);
-assert.throws(() => buildFlagField({ op: 'G04', params: { mode: 'CHEVRON', vertex: { u: 0.51, v: 0.5 } } }, frame), /1\/24/);
+assert.throws(() => buildFlagField(
+  { op: 'G04', params: { mode: 'CHEVRON', vertex: { u: 0.51, v: 0.5 } } },
+  frame,
+  { random: () => 0 },
+), /1\/24/);
 assert.throws(() => buildFlagField({ op: 'G08', params: { center: { u: 0.7, v: 0.5 } } }, frame), /shift toward the pole/);
+
+for (const angle of [50, 60, 70]) {
+  const cellSize = 300;
+  const expectedSideLength = Math.hypot(
+    cellSize / 2,
+    cellSize / (2 * Math.tan(angle * Math.PI / 360)),
+  );
+  const rhombi = buildFlagField({
+    op: 'G10',
+    params: { angle, cellSize, origin: 'NODE_CENTER' },
+  }, { x0: 0, y0: 0, w: 1200, h: 1200 }, { canvasHeight: 1200 });
+  const fullCell = rhombi.regions.flatMap(({ polygons }) => polygons).find((polygon) =>
+    polygon.length === 4 && polygon.every((start, index) => {
+      const end = polygon[(index + 1) % polygon.length];
+      return Math.abs(Math.hypot(end.x - start.x, end.y - start.y) - expectedSideLength) < 1e-7;
+    }));
+  assert.ok(fullCell, `G10 angle ${angle} produces complete rhombus cells`);
+  const [origin, first, , fourth] = fullCell;
+  const a = { x: first.x - origin.x, y: first.y - origin.y };
+  const b = { x: fourth.x - origin.x, y: fourth.y - origin.y };
+  const measured = Math.acos((a.x * b.x + a.y * b.y) / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y))) * 180 / Math.PI;
+  assert.ok(Math.abs(measured - angle) < 1e-7, `G10 angle ${angle} is the rhombus interior angle`);
+}
+
+assert.equal(flagFieldComplexityCost({ op: 'G01' }), 0);
+assert.equal(flagFieldComplexityCost({ op: 'G02', params: { n: 4 } }), 1.7);
+assert.equal(flagFieldComplexityCost({ op: 'G02', params: { n: 4, line_style: 'WAVY' } }), 2.2);
+assert.equal(flagFieldComplexityCost({ op: 'G03', params: { n: 5 } }), 2);
+assert.equal(flagFieldComplexityCost({ op: 'G04' }), 1);
+assert.equal(flagFieldComplexityCost({ op: 'G05' }), 1.5);
+assert.equal(flagFieldComplexityCost({ op: 'G06' }), 1.5);
+assert.equal(flagFieldComplexityCost({ op: 'G07' }), 2);
+assert.equal(flagFieldComplexityCost({ op: 'G08', params: { n: 12 } }), 2.1);
+assert.equal(flagFieldComplexityCost({ op: 'G09' }), 2);
+assert.equal(flagFieldComplexityCost({ op: 'G10' }), 2);
+assert.equal(flagFieldComplexityCost({ op: 'G11', params: { n: 5 } }), 2.5);
+assert.equal(flagFieldComplexityCost({ op: 'G12', params: { n: 4 } }), 2);
+assert.equal(flagFieldComplexityCost({ op: 'G05', children: Array.from({ length: 4 }, () => ({ op: 'G01' })) }), 1.5);
+assert.equal(buildFlagField({ op: 'G10', params: { angle: 60, cellSize: 300, origin: 'CELL_CENTER' } }, {
+  x0: 0, y0: 0, w: 1200, h: 1200,
+}).complexityCost, 2);
 
 console.log('Flag field operators, WG/SP, clipping, shared areas, and tree limits passed.');

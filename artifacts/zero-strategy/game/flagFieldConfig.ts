@@ -1,12 +1,24 @@
 /**
- * Starting parameters for the §7 field operators.
+ * Начальные параметры операторов поля из §7.
  *
- * Keep numerical policy here so profiles and future tuning can override it
- * without changing the geometry implementation.
+ * Числовая политика хранится отдельно от построения геометрии.
  */
 export const FLAG_FIELD_CONFIG = {
   canvasHeight: 1200,
   minimumThicknessDivisor: 40,
+  costs: {
+    bands: { base: 0.5, perBand: 0.3 },
+    split2: 1,
+    quarterly: 1.5,
+    saltireDiv: 1.5,
+    pallDiv: 2,
+    gyronny: { base: 1.5, perWedge: 0.05 },
+    checky: 2,
+    lozengy: 2,
+    chevronny: { base: 1, perChevron: 0.3 },
+    concentricPerRegion: 0.5,
+    nonStraightBoundaryGroup: 0.5,
+  },
   limits: {
     maxRegions: 16,
     maxDepth: 2,
@@ -15,8 +27,17 @@ export const FLAG_FIELD_CONFIG = {
   weights: {
     symmetricRatios: [1 / 4, 1 / 3, 1 / 2, 2 / 3, 3 / 2, 2, 3, 4],
     compositionTotal: [6, 24],
-    accentSeparatorDivisors: [12, 6],
+    compositionMaxPartRatio: 6,
+    compositionAttempts: 50,
+    accentSeparatorDivisors: [12, 10, 8, 6],
+    accentSeparatorWeights: { 12: 2, 10: 2, 8: 3, 6: 1 },
+    accentRemainderRatios: [
+      { first: 1, second: 1, weight: 0.6 },
+      { first: 2, second: 3, weight: 0.2 },
+      { first: 3, second: 2, weight: 0.2 },
+    ],
     defaultAccentSeparatorDivisor: 8,
+    areaLimit: 16,
   },
   operators: {
     G02: { bands: [2, 13], defaultBands: 3, defaultAxis: 'H' },
@@ -26,10 +47,29 @@ export const FLAG_FIELD_CONFIG = {
       chevronVertexDivisor: 24,
       defaultChevronSlope: 0.5,
       defaultChevronVertex: { u: 0.5, v: 0.5 },
+      chevronOrientations: [
+        { id: 'RIGHT', weight: 3 },
+        { id: 'LEFT', weight: 1 },
+        { id: 'UP', weight: 1 },
+        { id: 'DOWN', weight: 1 },
+      ],
+      chevronAngles: [30, 45, 60, 'CORNER_TO_CORNER'],
+      defaultChevronAngle: 45,
+      chevronEdgeClearance: 2,
     },
     G05: { splitFractions: [1 / 2, 2 / 5, 3 / 8, 3 / 5, 1 / 3], defaultSplit: 0.5 },
     G06: { defaultCenter: { u: 0.5, v: 0.5 } },
-    G07: { defaultCenter: { u: 0.5, v: 0.5 }, defaultStartAngle: -90, angleSets: [[120, 120, 120], [90, 135, 135]] },
+    G07: {
+      defaultCenter: { u: 0.5, v: 0.5 },
+      centerDivisor: 24,
+      centerRange: [8 / 24, 16 / 24],
+      defaultStartAngle: -90,
+      angleSets: [[120, 120, 120], [90, 135, 135]],
+      startAngles: [
+        { angles: [120, 120, 120], values: [-90, 90, 0, 180], weights: [3, 1, 2, 1] },
+        { angles: [90, 135, 135], values: [-135, -45, 45, 135], weights: [4, 1, 2, 1] },
+      ],
+    },
     G08: {
       counts: [8, 12, 16, 24],
       colors: [2, 3],
@@ -38,20 +78,40 @@ export const FLAG_FIELD_CONFIG = {
       maximumPoleShift: 0.2,
       fanCenterRange: [-0.3, 1.3],
     },
-    G09: { columns: [4, 16], defaultColumns: 8, defaultOrigin: 'CORNER' },
+    G09: {
+      columns: [4, 16],
+      defaultColumns: 8,
+      defaultOrigin: 'CORNER',
+      minimumPartialCellFraction: 0.5,
+      centeredParitySearch: [0, 1, -1, 2, -2],
+    },
     G10: {
       angles: [50, 70],
       cellSizeDivisors: [10, 4],
       defaultAngle: 60,
       defaultCellSizeDivisor: 6,
-      defaultOrigin: 'CENTER',
+      defaultOrigin: 'CELL_CENTER',
+      centeringWeights: { CELL_CENTER: 0.7, NODE_CENTER: 0.3 },
+      defaultOrientation: 0,
     },
     G11: {
       bands: [3, 9],
       defaultBands: 3,
-      defaultAmplitude: 0.12,
-      maxAmplitudePerBand: 1,
-      defaultVertex: { u: 0.5, v: 0.5 },
+      angles: [30, 45, 60],
+      thicknessDivisors: [12, 10, 8, 6],
+      orientations: [
+        { id: 'UP', weight: 3 },
+        { id: 'DOWN', weight: 2 },
+        { id: 'LEFT', weight: 1 },
+        { id: 'RIGHT', weight: 1 },
+      ],
+      colorPatterns: [
+        { id: 'ALTERNATING_2', weight: 0.8 },
+        { id: 'CYCLIC_3', weight: 0.2 },
+      ],
+      defaultVertex: { u: 0.5, v: 0.25 },
+      defaultAngle: 45,
+      defaultThicknessDivisor: 8,
     },
     G12: {
       bands: [2, 6],

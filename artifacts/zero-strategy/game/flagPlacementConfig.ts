@@ -1,6 +1,6 @@
 /**
- * Configurable defaults for charge placement, repetition, and flag symmetry.
- * Coordinates in presets are normalized to their containing frame.
+ * Настраиваемые значения размещения зарядов, повторителей и симметрии флага.
+ * Координаты эталонных схем нормированы относительно рамки.
  */
 const point = (u: number, v: number, size = 1) => ({ u, v, size });
 
@@ -8,6 +8,14 @@ export const FLAG_PLACEMENT_CONFIG = {
   anchors: {
     sizeRange: [0.12, 0.8],
     hoistCenterX: [0.25, 0.4],
+    hoistCenterXValues: [0.25, 0.3, 0.35, 0.4],
+    bannerA2YValues: [0.25, 0.3, 0.35, 0.4],
+    p22HoistCenterX: 0.45,
+    freePartCenterXValues: [0.62, 0.68, 0.75],
+    virtualCantonWidths: [0.3, 0.35, 0.4],
+    virtualCantonHeights: [0.3, 0.4, 0.5],
+    cornerWeights: { TOP_HOIST: 4, BOTTOM_HOIST: 2, TOP_FLY: 2, BOTTOM_FLY: 2 },
+    a11GroupY: [1 / 3, 2 / 3],
     safeMargin: 40,
     minimumGap: 20,
     preferredSnapStep: 50,
@@ -22,43 +30,61 @@ export const FLAG_PLACEMENT_CONFIG = {
       staggerModes: ['NONE', 'HALF_OFFSET', 'ALTERNATING_6_5'],
       defaultStepX: 0.12,
       defaultStepY: 0.12,
-      sixFiveRows: { even: 6, odd: 5 },
+      sixFiveRows: { first: 6, second: 5 },
     },
-    ring: { count: [3, 16], radius: [0.2, 0.5], defaultRadius: 0.32 },
-    arc: { count: [3, 16], sweep: [120, 300], radius: [0.2, 0.5], defaultCount: 7, defaultSweep: 240, defaultRadius: 0.38, defaultStartAngle: -90 },
-    line: { count: [2, 16], axes: ['HORIZONTAL', 'VERTICAL'], defaultCount: 3, defaultAxis: 'HORIZONTAL', defaultSpan: 0.6 },
+    ring: { count: [3, 16], maximumSize: 0.35, defaultCount: 6 },
+    arc: {
+      count: [6, 13],
+      sweep: [120, 300],
+      radius: [0.2, 0.5],
+      centerDirections: [-90, 90, 0, 180],
+      defaultCount: 7,
+      defaultSweep: 240,
+      defaultRadius: 0.38,
+      defaultCenterDirection: -90,
+    },
+    line: {
+      count: [2, 16],
+      axes: ['HORIZONTAL', 'VERTICAL'],
+      gapRatios: [0.25, 0.5],
+      defaultCount: 3,
+      defaultAxis: 'HORIZONTAL',
+      defaultGapRatio: 0.25,
+    },
     constellations: {
       STAR_TRIANGLE: {
-        positions: [point(0.5, 0.22), point(0.29, 0.68), point(0.71, 0.68)],
+        positions: [point(0.5, 0.15), point(0.197, 0.675), point(0.803, 0.675)],
       },
       SOUTHERN_CROSS: {
-        positions: [point(0.48, 0.2), point(0.64, 0.48, 0.82), point(0.48, 0.76), point(0.3, 0.49, 0.78)],
+        positions: [point(0.5, 0.08, 1), point(0.5, 0.92, 1), point(0.22, 0.42, 0.85), point(0.8, 0.58, 0.85)],
       },
       FIVE_STAR: {
-        positions: [point(0.5, 0.19), point(0.79, 0.4), point(0.68, 0.75), point(0.32, 0.75), point(0.21, 0.4)],
+        positions: [point(0.5, 0.1), point(0.88, 0.376), point(0.735, 0.824), point(0.265, 0.824), point(0.12, 0.376)],
       },
       SEVEN_STAR_DIPPER: {
         positions: [
-          point(0.22, 0.33), point(0.38, 0.25), point(0.54, 0.29), point(0.61, 0.45),
-          point(0.75, 0.57), point(0.84, 0.69), point(0.93, 0.81),
+          point(0, 0.34, 0.9), point(0.16, 0.42, 0.9), point(0.32, 0.48), point(0.48, 0.5),
+          point(0.5, 0.76), point(0.88, 0.78), point(0.88, 0.44),
         ],
       },
       CIRCLE_12: {
         positions: Array.from({ length: 12 }, (_, i) => {
           const angle = -Math.PI / 2 + (2 * Math.PI * i) / 12;
-          return point(0.5 + 0.34 * Math.cos(angle), 0.5 + 0.34 * Math.sin(angle), 0.72);
+          return point(0.5 + 0.4 * Math.cos(angle), 0.5 + 0.4 * Math.sin(angle));
         }),
       },
       THREE_BELT: {
-        positions: [point(0.25, 0.5), point(0.5, 0.5), point(0.75, 0.5)],
+        positions: [point(0.14, 0.56), point(0.5, 0.5), point(0.86, 0.44)],
       },
       FIVE_CROSS: {
-        positions: [point(0.5, 0.5), point(0.5, 0.22), point(0.78, 0.5), point(0.5, 0.78), point(0.22, 0.5)],
+        positions: [point(0.5, 0.5, 1.2), point(0.5, 0.16), point(0.16, 0.5), point(0.84, 0.5), point(0.5, 0.84)],
       },
       HEXAGONAL_7: {
         positions: [
-          point(0.5, 0.5), point(0.5, 0.2), point(0.76, 0.35), point(0.76, 0.65),
-          point(0.5, 0.8), point(0.24, 0.65), point(0.24, 0.35),
+          point(0.5, 0.5), ...Array.from({ length: 6 }, (_, i) => {
+            const angle = -Math.PI / 2 + 2 * Math.PI * i / 6;
+            return point(0.5 + 0.3 * Math.cos(angle), 0.5 + 0.3 * Math.sin(angle));
+          }),
         ],
       },
     },

@@ -22,12 +22,18 @@ assert.deepEqual(FLAG_PROFILE_CONFIG.map(({ id }) => id), Array.from({ length: 3
 assert.ok(FLAG_PROFILE_CONFIG.every((profile) => profile.CHG?.groups?.[0] === 0 && profile.CHG.groups[1] === 3));
 assert.deepEqual(FLAG_CULTURE_PROFILE_BINDINGS, {}, 'game-culture mappings remain unassigned until specified');
 assert.equal(FLAG_PROFILE_DEFAULTS.purity, 0.88);
-assert.equal(FLAG_PROFILE_DEFAULTS.hybridProbability, 0);
-assert.equal(getFlagProfile('P04').CHG.anchors.A5, 3);
+assert.equal(FLAG_PROFILE_DEFAULTS.purity, 0.88);
+assert.equal(getFlagProfile('P04').CHG.anchors.A5, 6);
 assert.equal(getFlagProfile('P05').CHG.counterchange_weight, 2);
 assert.equal(getFlagProfile('P14').CHG.probability_any, 0.1);
 assert.equal(getFlagProfile('P19').CHG.probability_any, 0.05);
-assert.equal(getFlagProfile('P30').tags_allowed, null, 'profile names do not create cultural tag assignments');
+assert.deepEqual(getFlagProfile('P28').K, { '2': 3, '3': 5, '4': 2, '5': 0 });
+assert.deepEqual(getFlagProfile('P30').tags_allowed, ['mesoamerican', 'neutral']);
+assert.deepEqual(getFlagProfile('P28').PAL.free_colors, {
+  white: 5, red: 5, azure: 5, vert: 4, gold: 4, black: 3,
+  navy: 3, sky: 2, orange: 2, turquoise: 1, maroon: 1, saffron: 1,
+});
+assert.equal(getFlagProfile('P28_FB').SPECIAL.fallback, true);
 assert.deepEqual(availableFlagProfiles(0).map(({ id }) => id), ['P01', 'P02', 'P30']);
 assert.deepEqual(availableFlagProfiles(7), []);
 
@@ -42,19 +48,19 @@ assert.equal(areFlagTagSetsCompatible(['steppe', 'islamic'], true), true);
 assert.equal(isPureFlagStyle(getFlagProfile('P08'), ['islamic']).valid, true);
 assert.equal(isPureFlagStyle(getFlagProfile('P08'), ['christian']).valid, false);
 assert.equal(canUseHybridProfiles(getFlagProfile('P09'), getFlagProfile('P08')).valid, true);
-assert.equal(chooseHybridProfile(getFlagProfile('P09'), 2, () => 0)?.id, 'P08');
-assert.equal(chooseHybridProfile(getFlagProfile('P09'), 4, () => 0), null, 'second profile must be available in the chosen era');
-assert.equal(chooseHybridProfile(getFlagProfile('P08'), 2, () => 0), null, 'only configured HYB partners can be selected');
+assert.equal(chooseHybridProfile(getFlagProfile('P09'), 2, () => 0)?.id, 'P02');
+assert.equal(chooseHybridProfile(getFlagProfile('P09'), 4, () => 0)?.id, 'P08', 'expanded era ranges admit the configured donor');
+assert.equal(chooseHybridProfile(getFlagProfile('P08'), 2, () => 0)?.id, 'P09', 'only configured HYB partners can be selected');
 
 assert.equal(chooseFlagProfileMode(() => 0.1), 'pure');
-assert.equal(chooseFlagProfileMode(() => 0.9), 'unresolved', 'unspecified profile mode probability is not guessed');
-assert.equal(chooseFlagProfileMode(() => 0.9, 0.88, 0.12), 'hybrid');
-assert.throws(() => chooseFlagProfileMode(() => 0.5, 0.9, 0.2), /sum to at most 1/);
+assert.equal(chooseFlagProfileMode(() => 0.9), 'hybrid');
+assert.equal(chooseFlagProfileMode(() => 0.9, 0.88), 'hybrid');
+assert.equal(chooseFlagProfileMode(() => 0.5, 1), 'pure');
 
 const primary = getFlagProfile('P09');
 const second = getFlagProfile('P08');
 const mixed = mixHybridProfileProperties(primary, second, (() => {
-  const values = [0.8, 0.2];
+  const values = [0.1];
   return () => values.shift();
 })());
 assert.equal(mixed.OUT, primary.OUT);

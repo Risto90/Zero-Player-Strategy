@@ -2,12 +2,12 @@ import { FLAG_FIELD_CONFIG } from './flagFieldConfig';
 import { styleSharedFlagRegionBoundaries, type FlagLineStyle } from './flagLineStyles';
 
 /**
- * Geometry for the compositional flag-ground operators (§7).
+ * Геометрия композиционных операторов заполнения поля флага (§7).
  *
- * Geometry stays in floating-point flag coordinates until the SVG output
- * stage. Every operator partitions its frame into polygons; a clip chain is
- * kept separately so renderers can use the same parent boundaries and paint
- * the complete ground before its subdivisions.
+ * До этапа вывода SVG геометрия хранится в координатах флага с плавающей
+ * точкой. Каждый оператор разбивает свою рамку на многоугольники; цепочка
+ * обрезки хранится отдельно, чтобы рендереры использовали одинаковые границы
+ * родительских областей и сначала закрашивали всё поле, затем его части.
  */
 export interface FlagPoint {
   x: number;
@@ -30,18 +30,18 @@ export interface FlagFieldFrame {
 export interface FlagFieldNode {
   op: FlagFieldOperator;
   params?: Record<string, unknown>;
-  /** A child node for each generated region, in painter/region order. */
+  /** Дочерний узел для каждой полученной области в порядке отрисовки. */
   children?: FlagFieldNode[];
 }
 
 export interface FlagFieldOptions {
-  /** Height of the full flag in document units; T_MIN is H/40. */
+  /** Высота всего флага в единицах документа; T_MIN = H/40. */
   canvasHeight?: number;
-  /** Parent clip chain, ordered from the flag outline inward. */
+  /** Цепочка родительской обрезки в порядке от контура флага внутрь. */
   clipChain?: FlagPolygonSet[];
-  /** Deterministic random source, required only by WG-comp. */
+  /** Детерминированный источник случайных чисел для WG-comp и WG-accent. */
   random?: () => number;
-  /** Default color slots used by the SP mapping. */
+  /** Цветовые слоты по умолчанию для схем SP. */
   slots?: string[];
 }
 
@@ -49,10 +49,10 @@ export interface FlagFieldRegion {
   op: FlagFieldOperator;
   index: number;
   slot: string;
-  /** Source geometry before the inherited clipping chain is applied. */
+  /** Исходная геометрия до применения унаследованной цепочки обрезки. */
   polygons: FlagPolygonSet;
   clipChain: FlagPolygonSet[];
-  /** Convex polygon pieces after clipping; suitable for area checks/rasterizing. */
+  /** Выпуклые части многоугольника после обрезки; подходят для проверки площади и растеризации. */
   visiblePolygons: FlagPolygonSet;
   area: number;
   depth: number;
@@ -70,10 +70,11 @@ export interface FlagFieldPaintLayer {
 
 export interface FlagFieldResult {
   regions: FlagFieldRegion[];
-  /** Paint these in order. Each split paints its whole parent before its regions. */
+  /** Отрисовывать в этом порядке: сначала всё родительское поле, затем его области. */
   paintLayers: FlagFieldPaintLayer[];
   regionCount: number;
   maxDepth: number;
+  complexityCost: number;
 }
 
 export interface FlagFieldIssue {
@@ -183,7 +184,7 @@ function clipConvex(subject: FlagPolygon, clip: FlagPolygon): FlagPolygon {
   return result;
 }
 
-/** Ear-clips any simple polygon into non-overlapping triangles. */
+/** Разбивает простой многоугольник на неперекрывающиеся треугольники методом отсечения ушей. */
 function triangulate(input: FlagPolygon): FlagPolygonSet {
   const polygon = cleanPolygon(input);
   if (polygon.length < 3) return [];
@@ -278,6 +279,24 @@ function randomIndex(random: () => number, count: number): number {
   return Math.floor(value * count);
 }
 
+function weightedIndex(random: () => number, weights: readonly number[]): number {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  if (!Number.isFinite(total) || total <= 0 || weights.some((weight) => !Number.isFinite(weight) || weight < 0)) {
+    throw new RangeError('взвешенный выбор требует неотрицательных конечных весов с положительной суммой');
+  }
+  const value = random();
+  if (!Number.isFinite(value) || value < 0 || value >= 1) {
+    throw new RangeError('источник случайных чисел должен возвращать значения в [0, 1)');
+  }
+  const target = value * total;
+  let cumulative = 0;
+  for (let index = 0; index < weights.length; index += 1) {
+    cumulative += weights[index];
+    if (target < cumulative) return index;
+  }
+  return weights.length - 1;
+}
+
 function getRandom(params: Record<string, unknown>, fallback?: () => number): () => number {
   const random = typeof params.random === 'function' ? params.random as () => number : fallback;
   if (!random) throw new TypeError('WG-comp requires a deterministic random source');
@@ -296,33 +315,25 @@ function generateCompWeights(
   }
   const [minTotal, maxTotal] = FLAG_FIELD_CONFIG.weights.compositionTotal;
   const minimumTotal = Math.max(minTotal, n);
-  const totals: number[] = [];
-  for (let total = minimumTotal; total <= maxTotal; total += 1) {
-    const minimumPart = Math.max(1, Math.ceil(minBand * total / frameHeight - EPSILON));
-    if (n * minimumPart <= total && n * Math.floor(total / 2) >= total) totals.push(total);
+  const total = Number.isInteger(params.total)
+    ? params.total as number
+    : minimumTotal + randomIndex(random, maxTotal - minimumTotal + 1);
+  if (total < minimumTotal || total > maxTotal) {
+    throw new RangeError(`WG-comp total must be in [${minimumTotal}, ${maxTotal}]`);
   }
-  if (totals.length === 0) throw new RangeError('WG-comp has no valid total for this band count');
-  const total = Number.isInteger(params.total) ? params.total as number : totals[randomIndex(random, totals.length)];
-  if (!totals.includes(total)) throw new RangeError(`WG-comp total must be in [${minTotal}, ${maxTotal}] and feasible for the band count`);
   const maxPart = Math.floor(total / 2);
-  const minPart = Math.max(1, Math.ceil(minBand * total / frameHeight - EPSILON));
-  let remaining = total;
-  const parts: number[] = [];
-  for (let index = 0; index < n - 1; index += 1) {
-    const left = n - index - 1;
-    const candidates: number[] = [];
-    for (let part = minPart; part <= maxPart; part += 1) {
-      const rest = remaining - part;
-      if (rest >= left * minPart && rest <= left * maxPart) candidates.push(part);
-    }
-    if (candidates.length === 0) throw new RangeError('WG-comp could not form a valid weighted partition');
-    const part = candidates[randomIndex(random, candidates.length)];
-    parts.push(part);
-    remaining -= part;
+  for (let attempt = 0; attempt < FLAG_FIELD_CONFIG.weights.compositionAttempts; attempt += 1) {
+    const separators = new Set<number>();
+    while (separators.size < n - 1) separators.add(1 + randomIndex(random, total - 1));
+    const cuts = [0, ...[...separators].sort((a, b) => a - b), total];
+    const parts = cuts.slice(1).map((cut, index) => cut - cuts[index]);
+    const minimumPart = Math.min(...parts);
+    const maximumPart = Math.max(...parts);
+    if (maximumPart > maxPart || maximumPart / minimumPart > FLAG_FIELD_CONFIG.weights.compositionMaxPartRatio) continue;
+    if (parts.some((part) => part * frameHeight / total < minBand - EPSILON)) continue;
+    return parts;
   }
-  if (remaining < minPart || remaining > maxPart) throw new RangeError('WG-comp could not form a valid weighted partition');
-  parts.push(remaining);
-  return parts;
+  return Array(n).fill(1);
 }
 
 export function generateFlagBandWeights(
@@ -349,27 +360,48 @@ export function generateFlagBandWeights(
       weights = spec.variant === '11211' ? [1, 1, 2, 1, 1] : [1, 2, 1, 2, 1];
       break;
     case 'comp':
-      weights = generateCompWeights(
-        count,
-        { total: spec.total },
-        getRandom({ total: spec.total }, options.random),
-        frameHeight,
-        canvasHeight / FLAG_FIELD_CONFIG.minimumThicknessDivisor,
-      );
+      weights = count < 3
+        ? Array(count).fill(1)
+        : generateCompWeights(
+          count,
+          { total: spec.total },
+          getRandom({ total: spec.total }, options.random),
+          frameHeight,
+          canvasHeight / FLAG_FIELD_CONFIG.minimumThicknessDivisor,
+        );
       break;
     case 'accent': {
       if (count !== 3) throw new RangeError('WG-accent requires exactly three bands');
-      const [minDivisor, maxDivisor] = FLAG_FIELD_CONFIG.weights.accentSeparatorDivisors;
-      const min = canvasHeight / minDivisor;
-      const max = canvasHeight / maxDivisor;
-      const thickness = spec.separator ?? canvasHeight / FLAG_FIELD_CONFIG.weights.defaultAccentSeparatorDivisor;
-      if (!Number.isFinite(thickness) || thickness < min || thickness > max) {
-        throw new RangeError(`WG-accent separator must be between H/12 and H/6 (${min}..${max})`);
+      const random = getRandom({}, options.random);
+      const divisors = FLAG_FIELD_CONFIG.weights.accentSeparatorDivisors;
+      const minimumBand = canvasHeight / FLAG_FIELD_CONFIG.minimumThicknessDivisor;
+      const legalDivisors = divisors.flatMap((divisor) => {
+        const thickness = canvasHeight / divisor;
+        const remainder = frameHeight - thickness;
+        const ratios = FLAG_FIELD_CONFIG.weights.accentRemainderRatios.filter(({ first, second }) =>
+          Math.min(first, second) * remainder / (first + second) >= minimumBand - EPSILON);
+        return ratios.length ? [{ divisor, thickness, ratios }] : [];
+      });
+      if (!legalDivisors.length) {
+        throw new RangeError('WG-accent has no separator and remainder ratio that keep every band at least T_MIN');
       }
-      if (frameHeight - thickness < 2 * canvasHeight / FLAG_FIELD_CONFIG.minimumThicknessDivisor) {
-        throw new RangeError('WG-accent leaves a broad band thinner than T_MIN');
+      const chosen = spec.separator === undefined
+        ? legalDivisors[weightedIndex(random, legalDivisors.map(({ divisor }) =>
+          FLAG_FIELD_CONFIG.weights.accentSeparatorWeights[divisor as keyof typeof FLAG_FIELD_CONFIG.weights.accentSeparatorWeights]))]
+        : legalDivisors.find(({ divisor }) => Math.abs(canvasHeight / divisor - spec.separator!) < EPSILON);
+      if (!chosen) {
+        throw new RangeError('WG-accent has no separator and remainder ratio that keep every band at least T_MIN');
       }
-      weights = [(frameHeight - thickness) / 2, thickness, (frameHeight - thickness) / 2];
+      const ratio = chosen.ratios[
+        weightedIndex(random, chosen.ratios.map(({ weight }) => weight))
+      ];
+      const remainder = frameHeight - chosen.thickness;
+      const ratioTotal = ratio.first + ratio.second;
+      weights = [
+        remainder * ratio.first / ratioTotal,
+        chosen.thickness,
+        remainder * ratio.second / ratioTotal,
+      ];
       break;
     }
     case 'custom':
@@ -415,8 +447,9 @@ function patternSlots(patternValue: unknown, count: number, slots: string[]): st
       if (slots.length < 2) throw new RangeError('SP-CYC requires at least two slots');
       return Array.from({ length: count }, (_, i) => slots[i % 2]);
     case 'MIRROR': {
-      if (count !== 5 || slots.length < 3) throw new RangeError('SP-MIRROR is the five-band pattern ABCBA');
-      return [slots[0], slots[1], slots[2], slots[1], slots[0]];
+      if (count === 3 && slots.length >= 2) return [slots[0], slots[1], slots[0]];
+      if (count === 5 && slots.length >= 3) return [slots[0], slots[1], slots[2], slots[1], slots[0]];
+      throw new RangeError('SP-MIRROR supports the three-band pattern ABA or the five-band pattern ABCBA');
     }
     case 'TRIAD':
       if (slots.length < 3) throw new RangeError('SP-TRIAD requires three slots');
@@ -457,6 +490,64 @@ function bandPolygons(
     cursor = next;
   });
   return regions;
+}
+
+interface G09GridSelection {
+  nx: number;
+  rows: number;
+  extra: number;
+  cellSize: number;
+}
+
+function selectG09Grid(
+  frame: FlagFieldFrame,
+  requestedNx: number,
+  origin: 'CORNER' | 'CENTER',
+): G09GridSelection | null {
+  const config = FLAG_FIELD_CONFIG.operators.G09;
+  const candidateColumns = config.centeredParitySearch
+    .map((offset) => requestedNx + offset)
+    .filter((value, index, values) => value >= config.columns[0] && value <= config.columns[1] &&
+      values.indexOf(value) === index);
+  const selectRows = (columns: number): { rows: number; extra: number; cell: number } | null => {
+    const cell = frame.w / columns;
+    if (origin === 'CORNER') {
+      const remainder = frame.h - Math.floor(frame.h / cell) * cell;
+      if (remainder > EPSILON && remainder < cell * config.minimumPartialCellFraction - EPSILON) return null;
+      return { rows: Math.max(1, Math.ceil(frame.h / cell - EPSILON)), extra: 0, cell };
+    }
+    const idealRows = columns * frame.h / frame.w;
+    let rows = Math.max(1, Math.round(idealRows));
+    if (rows % 2 !== columns % 2) {
+      const lower = rows - 1;
+      const upper = rows + 1;
+      const candidates = [lower, upper].filter((candidate) => candidate >= 1 && candidate % 2 === columns % 2);
+      rows = candidates.reduce((best, candidate) =>
+        Math.abs(candidate - idealRows) < Math.abs(best - idealRows) ? candidate : best, candidates[0]);
+    }
+    const extra = (frame.h - rows * cell) / 2;
+    if (Math.abs(extra) > cell / 2 + EPSILON ||
+      (Math.abs(extra) > EPSILON && Math.abs(extra) < cell * config.minimumPartialCellFraction - EPSILON)) return null;
+    return { rows, extra, cell };
+  };
+  const selected = candidateColumns
+    .map((columns) => ({ columns, grid: selectRows(columns) }))
+    .find(({ grid }) => grid !== null);
+  if (!selected?.grid) return null;
+  return {
+    nx: selected.columns,
+    rows: selected.grid.rows,
+    extra: selected.grid.extra,
+    cellSize: selected.grid.cell,
+  };
+}
+
+export function isFlagG09ChoiceFeasible(
+  frame: FlagFieldFrame,
+  requestedNx: number,
+  origin: 'CORNER' | 'CENTER',
+): boolean {
+  return selectG09Grid(frame, requestedNx, origin) !== null;
 }
 
 function assertPointParam(params: Record<string, unknown>, name: string, defaults: { u: number; v: number }): { u: number; v: number } {
@@ -532,76 +623,177 @@ function makeBandPolygons(frame: FlagFieldFrame, boundaries: number[]): FlagPoly
   return result;
 }
 
-function chevronnyRegions(frame: FlagFieldFrame, params: Record<string, unknown>, count: number): FlagPolygonSet[] {
-  const apex = assertPointParam(params, 'vertex', FLAG_FIELD_CONFIG.operators.G11.defaultVertex);
-  const amplitude = params.amplitude === undefined ? FLAG_FIELD_CONFIG.operators.G11.defaultAmplitude : Number(params.amplitude);
-  const maxAmplitude = FLAG_FIELD_CONFIG.operators.G11.maxAmplitudePerBand / count;
-  if (!Number.isFinite(amplitude) || amplitude < 0 || amplitude > maxAmplitude) {
-    throw new RangeError(`G11 amplitude must be in [0, ${maxAmplitude}]`);
+function chevronnyRegions(
+  frame: FlagFieldFrame,
+  params: Record<string, unknown>,
+  requestedCount: number,
+  options: FlagFieldOptions,
+): FlagPolygonSet[] {
+  const config = FLAG_FIELD_CONFIG.operators.G11;
+  const angle = Number(params.angle ?? config.defaultAngle);
+  if (!config.angles.includes(angle as (typeof config.angles)[number])) {
+    throw new RangeError('G11 angle must be 30, 45, or 60 degrees');
   }
-  const boundary = (level: number): FlagPoint[] => {
-    const peak = level + amplitude;
+  let orientation = String(params.orientation ?? '').toUpperCase();
+  if (!orientation) {
+    if (!options.random) throw new TypeError('G11 weighted orientation selection requires a deterministic random source');
+    orientation = config.orientations[weightedIndex(options.random, config.orientations.map(({ weight }) => weight))].id;
+  }
+  const selectedOrientation = config.orientations.find(({ id }) => id === orientation);
+  if (!selectedOrientation) throw new RangeError('G11 orientation must be UP, DOWN, LEFT, or RIGHT');
+
+  const rawVertex = assertPointParam(params, 'vertex', config.defaultVertex);
+  const verticalAxis = orientation === 'UP' || orientation === 'DOWN';
+  const transverse = verticalAxis ? rawVertex.u : rawVertex.v;
+  const axisStart = verticalAxis ? rawVertex.v : rawVertex.u;
+  if (axisStart < 0.15 - EPSILON || axisStart > 0.35 + EPSILON ||
+    transverse < 0 || transverse > 1) {
+    throw new RangeError('G11 vertex must use an axis coordinate in [0.15, 0.35] and transverse coordinate in [0, 1]');
+  }
+
+  const canvasHeight = options.canvasHeight ?? FLAG_FIELD_CONFIG.canvasHeight;
+  const thicknessDivisor = Number(params.thicknessDivisor ?? config.defaultThicknessDivisor);
+  if (!config.thicknessDivisors.includes(thicknessDivisor as (typeof config.thicknessDivisors)[number])) {
+    throw new RangeError('G11 thickness divisor must be 12, 10, 8, or 6');
+  }
+  const thickness = canvasHeight / thicknessDivisor;
+  const beta = angle * Math.PI / 180;
+  if (thickness * Math.cos(beta) < canvasHeight / FLAG_FIELD_CONFIG.minimumThicknessDivisor - EPSILON) {
+    throw new RangeError('G11 projected strip thickness is below T_MIN');
+  }
+  const axisLength = verticalAxis ? frame.h : frame.w;
+  const transverseLength = verticalAxis ? frame.w : frame.h;
+  const slope = Math.tan(beta) * transverseLength / axisLength;
+  const step = thickness / axisLength;
+  const minimumGap = canvasHeight / 24;
+  let count = requestedCount;
+  while (count >= 3 && axisStart * axisLength + (count - 1) * thickness > axisLength - minimumGap + EPSILON) count -= 1;
+  if (count < 3) {
+    const smallerThickness = config.thicknessDivisors
+      .map((divisor) => canvasHeight / divisor)
+      .filter((candidate) => candidate < thickness)
+      .sort((a, b) => a - b)
+      .find((candidate) => axisStart * axisLength + 2 * candidate <= axisLength - minimumGap + EPSILON &&
+        candidate * Math.cos(beta) >= canvasHeight / FLAG_FIELD_CONFIG.minimumThicknessDivisor - EPSILON);
+    if (smallerThickness === undefined) throw new RangeError('G11 cannot fit three visible regions within the configured thickness constraints');
+    return chevronnyRegions(frame, { ...params, thicknessDivisor: canvasHeight / smallerThickness }, 3, options);
+  }
+
+  const toFrame = (u: number, v: number): FlagPoint => {
+    switch (orientation) {
+      case 'UP': return point(frame.x0 + u * frame.w, frame.y0 + v * frame.h);
+      case 'DOWN': return point(frame.x0 + u * frame.w, frame.y0 + (1 - v) * frame.h);
+      case 'RIGHT': return point(frame.x0 + v * frame.w, frame.y0 + u * frame.h);
+      default: return point(frame.x0 + (1 - v) * frame.w, frame.y0 + u * frame.h);
+    }
+  };
+  const boundary = (index: number): FlagPoint[] => {
+    const level = axisStart + index * step;
+    const leftLevel = Math.min(1, level + slope * transverse);
+    const rightLevel = Math.min(1, level + slope * (1 - transverse));
     return [
-      point(frame.x0, frame.y0 + level * frame.h),
-      point(frame.x0 + apex.u * frame.w, frame.y0 + peak * frame.h),
-      point(frame.x0 + frame.w, frame.y0 + level * frame.h),
+      toFrame(0, leftLevel),
+      toFrame(transverse, level),
+      toFrame(1, rightLevel),
     ];
   };
+  const outer = (level: number): FlagPoint[] => [toFrame(0, level), toFrame(1, level)];
   const result: FlagPolygonSet[] = [];
   for (let index = 0; index < count; index += 1) {
-    const lower = index === 0
-      ? [point(frame.x0, frame.y0), point(frame.x0 + frame.w, frame.y0)]
-      : boundary(index / count);
-    const upper = index === count - 1
-      ? [point(frame.x0, frame.y0 + frame.h), point(frame.x0 + frame.w, frame.y0 + frame.h)]
-      : boundary((index + 1) / count);
+    const lower = index === 0 ? outer(0) : boundary(index - 1);
+    const upper = index === count - 1 ? outer(1) : boundary(index);
     const polygon = cleanPolygon([...lower, ...upper.slice().reverse()]);
+    if (polygon.length < 3 || flagPolygonArea(polygon) <= EPSILON) {
+      throw new RangeError('G11 produced an empty area');
+    }
     result.push([polygon]);
   }
   return result;
 }
 
-function rotatedSquare(
-  center: FlagPoint,
-  size: number,
-  angle: number,
-  frame: FlagFieldFrame,
+function rhombusCell(
+  origin: FlagPoint,
+  horizontalDiagonal: number,
+  alpha: number,
   ix: number,
   iy: number,
 ): FlagPolygon {
-  const local = [
-    [-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5],
+  const halfHorizontal = horizontalDiagonal / 2;
+  const halfVertical = horizontalDiagonal / (2 * Math.tan(alpha / 2));
+  const ux = halfHorizontal;
+  const uy = halfVertical;
+  const vx = -halfHorizontal;
+  const vy = halfVertical;
+  const x = origin.x + ix * ux + iy * vx;
+  const y = origin.y + ix * uy + iy * vy;
+  return [
+    point(x, y),
+    point(x + ux, y + uy),
+    point(x + ux + vx, y + uy + vy),
+    point(x + vx, y + vy),
   ];
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
-  const cx = center.x + ix * size * c - iy * size * s;
-  const cy = center.y + ix * size * s + iy * size * c;
-  return local.map(([x, y]) => point(cx + size * (x * c - y * s), cy + size * (x * s + y * c)));
 }
 
-function lozengyRegions(frame: FlagFieldFrame, params: Record<string, unknown>, canvasHeight: number): FlagPolygonSet[] {
-  const [minAngle, maxAngle] = FLAG_FIELD_CONFIG.operators.G10.angles;
-  const alpha = Number(params.angle ?? FLAG_FIELD_CONFIG.operators.G10.defaultAngle) * Math.PI / 180;
+function lozengyRegions(
+  frame: FlagFieldFrame,
+  params: Record<string, unknown>,
+  canvasHeight: number,
+  options: FlagFieldOptions,
+): FlagPolygonSet[] {
+  const config = FLAG_FIELD_CONFIG.operators.G10;
+  const [minAngle, maxAngle] = config.angles;
+  const alphaDegrees = Number(params.angle ?? FLAG_FIELD_CONFIG.operators.G10.defaultAngle);
+  const alpha = alphaDegrees * Math.PI / 180;
   if (!Number.isFinite(alpha) || alpha < minAngle * Math.PI / 180 - EPSILON || alpha > maxAngle * Math.PI / 180 + EPSILON) {
     throw new RangeError('G10 angle must be in [50, 70] degrees');
   }
-  const [minCellDivisor, maxCellDivisor] = FLAG_FIELD_CONFIG.operators.G10.cellSizeDivisors;
-  const size = Number(params.cellSize ?? canvasHeight / FLAG_FIELD_CONFIG.operators.G10.defaultCellSizeDivisor);
+  const [minCellDivisor, maxCellDivisor] = config.cellSizeDivisors;
+  const size = Number(params.cellSize ?? canvasHeight / config.defaultCellSizeDivisor);
   if (!Number.isFinite(size) || size < canvasHeight / minCellDivisor || size > canvasHeight / maxCellDivisor) {
     throw new RangeError('G10 cellSize must be between H/10 and H/4');
   }
-  const originMode = String(params.origin ?? FLAG_FIELD_CONFIG.operators.G10.defaultOrigin).toUpperCase();
-  const center = originMode === 'CORNER'
-    ? point(frame.x0, frame.y0)
-    : point(frame.x0 + frame.w / 2, frame.y0 + frame.h / 2);
-  if (!['CENTER', 'CORNER'].includes(originMode)) throw new RangeError('G10 origin must be CENTER or CORNER');
-  const count = Math.ceil(Math.hypot(frame.w, frame.h) / size) + 3;
+  if (params.orientation !== undefined && Number(params.orientation) !== 0) {
+    throw new RangeError('G10 rhombus diagonals must remain parallel to the frame axes');
+  }
+  const originMode = String(params.origin ?? '').toUpperCase();
+  const centeringNames = Object.keys(config.centeringWeights) as Array<keyof typeof config.centeringWeights>;
+  const selectedMode = originMode || (() => {
+    if (!options.random) throw new TypeError('G10 weighted phase selection requires a deterministic random source');
+    return centeringNames[weightedIndex(options.random, centeringNames.map((key) => config.centeringWeights[key]))];
+  })();
+  if (!centeringNames.includes(selectedMode as (typeof centeringNames)[number])) {
+    throw new RangeError('G10 origin must be CELL_CENTER or NODE_CENTER');
+  }
+  const center = point(frame.x0 + frame.w / 2, frame.y0 + frame.h / 2);
+  const halfHorizontal = size / 2;
+  const halfVertical = size / (2 * Math.tan(alpha / 2));
+  const ux = halfHorizontal, uy = halfVertical;
+  const vx = -halfHorizontal, vy = halfVertical;
+  const origin = selectedMode === 'CELL_CENTER'
+    ? point(center.x, center.y - halfVertical)
+    : center;
+  const determinant = ux * vy - uy * vx;
+  const latticeCoordinates = (x: number, y: number): [number, number] => {
+    const dx = x - origin.x;
+    const dy = y - origin.y;
+    return [(dx * vy - dy * vx) / determinant, (ux * dy - uy * dx) / determinant];
+  };
+  const corners = [
+    point(frame.x0, frame.y0),
+    point(frame.x0 + frame.w, frame.y0),
+    point(frame.x0 + frame.w, frame.y0 + frame.h),
+    point(frame.x0, frame.y0 + frame.h),
+  ].map(({ x, y }) => latticeCoordinates(x, y));
+  const minI = Math.floor(Math.min(...corners.map(([i]) => i))) - 2;
+  const maxI = Math.ceil(Math.max(...corners.map(([i]) => i))) + 2;
+  const minJ = Math.floor(Math.min(...corners.map(([, j]) => j))) - 2;
+  const maxJ = Math.ceil(Math.max(...corners.map(([, j]) => j))) + 2;
   const results: FlagPolygonSet[] = [[], []];
-  for (let iy = -count; iy <= count; iy += 1) {
-    for (let ix = -count; ix <= count; ix += 1) {
-      const cell = rotatedSquare(center, size, alpha, frame, ix, iy);
+  for (let iy = minJ; iy <= maxJ; iy += 1) {
+    for (let ix = minI; ix <= maxI; ix += 1) {
+      const cell = rhombusCell(origin, size, alpha, ix, iy);
       const clipped = clipConvex(cell, rectPolygon(frame));
-      if (clipped.length >= 3) results[(ix + iy + (originMode === 'CENTER' ? count : 0)) & 1].push(clipped);
+      if (clipped.length >= 3) results[(ix + iy) & 1].push(clipped);
     }
   }
   return results;
@@ -725,7 +917,18 @@ function operatorRegions(
       polygons = axis === 'H'
         ? bandPolygons(frame, weights, 0, 1)
         : bandPolygons(frame, weights, 1, 0);
-      slots = patternSlots(params.pattern ?? params.sp, count, allSlots);
+      const weightSpec = readWeightSpec(params.weights);
+      if (weightSpec.kind === 'accent') {
+        if (count !== 3 || String(params.pattern ?? params.sp ?? 'SEP').toUpperCase() !== 'SEP') {
+          throw new RangeError('WG-accent требует n=3 и шаблон слотов SEP');
+        }
+        slots = [allSlots[0], allSlots[2], allSlots[1]];
+        if (slots.some((slot, index) => !slot || slots.indexOf(slot) !== index)) {
+          throw new RangeError('WG-accent требует три различных цветовых слота');
+        }
+      } else {
+        slots = patternSlots(params.pattern ?? params.sp, count, allSlots);
+      }
       break;
     }
     case 'G03': {
@@ -762,7 +965,7 @@ function operatorRegions(
           throw new RangeError('G04 PALE/FESS p must be one of the documented fractions');
         }
         polygons = bandPolygons(frame, [p, 1 - p], mode === 'PALE' ? 1 : 0, mode === 'PALE' ? 0 : 1);
-        // Keep order as left/right for PALE and top/bottom for FESS.
+        // Для PALE сохраняется порядок слева направо, для FESS — сверху вниз.
         slots = patternSlots(params.pattern ?? params.sp, 2, allSlots);
       } else if (mode === 'BEND') {
         const slash = String(params.diagonal ?? 'BACKSLASH').toUpperCase();
@@ -772,23 +975,73 @@ function operatorRegions(
           : lineCutRegions(frame, point(frame.x0 + frame.w, frame.y0), point(frame.x0, frame.y0 + frame.h));
         slots = patternSlots(params.pattern ?? params.sp, 2, allSlots);
       } else if (mode === 'CHEVRON') {
-        const vertex = assertPointParam(params, 'vertex', FLAG_FIELD_CONFIG.operators.G04.defaultChevronVertex);
-        const slope = Number(params.slope ?? FLAG_FIELD_CONFIG.operators.G04.defaultChevronSlope);
-        if (!Number.isFinite(slope) || Math.abs(slope) <= EPSILON ||
-          Math.abs(vertex.u * FLAG_FIELD_CONFIG.operators.G04.chevronVertexDivisor -
-            Math.round(vertex.u * FLAG_FIELD_CONFIG.operators.G04.chevronVertexDivisor)) > EPSILON ||
-          Math.abs(vertex.v * FLAG_FIELD_CONFIG.operators.G04.chevronVertexDivisor -
-            Math.round(vertex.v * FLAG_FIELD_CONFIG.operators.G04.chevronVertexDivisor)) > EPSILON) {
-          throw new RangeError('G04 CHEVRON requires a nonzero signed slope and vertex coordinates in multiples of 1/24');
+        const config = FLAG_FIELD_CONFIG.operators.G04;
+        const orientation = String(params.orientation ?? '').toUpperCase() || (() => {
+          if (!options.random) throw new TypeError('G04 weighted orientation selection requires a deterministic random source');
+          return config.chevronOrientations[
+            weightedIndex(options.random, config.chevronOrientations.map(({ weight }) => weight))
+          ].id;
+        })();
+        const orientationEntry = config.chevronOrientations.find(({ id }) => id === orientation);
+        if (!orientationEntry) throw new RangeError('G04 orientation must be RIGHT, LEFT, UP, or DOWN');
+        const vertex = assertPointParam(params, 'vertex', config.defaultChevronVertex);
+        const divisor = config.chevronVertexDivisor;
+        if (vertex.u < 3 / divisor || vertex.u > 21 / divisor || vertex.v < 3 / divisor || vertex.v > 21 / divisor ||
+          Math.abs(vertex.u * divisor - Math.round(vertex.u * divisor)) > EPSILON ||
+          Math.abs(vertex.v * divisor - Math.round(vertex.v * divisor)) > EPSILON) {
+          throw new RangeError('G04 vertex coordinates must be multiples of 1/24 in [3/24, 21/24]');
         }
-        const leftV = vertex.v + slope * vertex.u;
-        const rightV = vertex.v + slope * (1 - vertex.u);
-        if (leftV < -EPSILON || leftV > 1 + EPSILON || rightV < -EPSILON || rightV > 1 + EPSILON) {
-          throw new RangeError('G04 CHEVRON arms must meet the left and right frame edges');
+        const angleValue = params.angle ?? config.defaultChevronAngle;
+        const angleName = String(angleValue).toUpperCase();
+        const diagonalMode = angleName === 'CORNER_TO_CORNER';
+        const alpha = Number(angleValue) * Math.PI / 180;
+        if (!diagonalMode && !config.chevronAngles.includes(Number(angleValue) as 30 | 45 | 60)) {
+          throw new RangeError('G04 shoulder angle must be 30, 45, 60 degrees, or CORNER_TO_CORNER');
         }
-        const a = pointOnFrame(frame, 0, leftV);
-        const tip = pointOnFrame(frame, vertex.u, vertex.v);
-        const b = pointOnFrame(frame, 1, rightV);
+        const canvasHeight = options.canvasHeight ?? FLAG_FIELD_CONFIG.canvasHeight;
+        const clearance = config.chevronEdgeClearance * canvasHeight / FLAG_FIELD_CONFIG.minimumThicknessDivisor;
+        const directionByOrientation: Record<string, number> = { RIGHT: 0, LEFT: Math.PI, UP: -Math.PI / 2, DOWN: Math.PI / 2 };
+        const direction = directionByOrientation[orientation];
+        const vertexPoint = (u: number, v: number) => pointOnFrame(frame, u, v);
+        const getExits = (u: number, v: number): [FlagPoint, FlagPoint] => {
+          if (diagonalMode) {
+            if (orientation === 'RIGHT') return [point(frame.x0, frame.y0 + clearance), point(frame.x0, frame.y0 + frame.h - clearance)];
+            if (orientation === 'LEFT') return [point(frame.x0 + frame.w, frame.y0 + clearance), point(frame.x0 + frame.w, frame.y0 + frame.h - clearance)];
+            if (orientation === 'UP') return [point(frame.x0 + clearance, frame.y0 + frame.h), point(frame.x0 + frame.w - clearance, frame.y0 + frame.h)];
+            return [point(frame.x0 + clearance, frame.y0), point(frame.x0 + frame.w - clearance, frame.y0)];
+          }
+          const origin = vertexPoint(u, v);
+          const backwards = direction + Math.PI;
+          return [backwards - alpha, backwards + alpha].map((angle) => {
+            const distance = rayToRect(origin, angle, frame);
+            return point(origin.x + Math.cos(angle) * distance, origin.y + Math.sin(angle) * distance);
+          }) as [FlagPoint, FlagPoint];
+        };
+        const exitClearance = (exit: FlagPoint) => Math.min(
+          Math.hypot(exit.x - frame.x0, exit.y - frame.y0),
+          Math.hypot(exit.x - frame.x0 - frame.w, exit.y - frame.y0),
+          Math.hypot(exit.x - frame.x0 - frame.w, exit.y - frame.y0 - frame.h),
+          Math.hypot(exit.x - frame.x0, exit.y - frame.y0 - frame.h),
+        );
+        const endpointScore = (exits: [FlagPoint, FlagPoint]) => Math.min(...exits.map(exitClearance));
+        let selectedVertex = { u: vertex.u, v: vertex.v };
+        let exits = getExits(selectedVertex.u, selectedVertex.v);
+        if (endpointScore(exits) < clearance - EPSILON) {
+          let best: { u: number; v: number; exits: [FlagPoint, FlagPoint]; score: number } | null = null;
+          for (const du of [-1, 0, 1]) for (const dv of [-1, 0, 1]) {
+            if (du === 0 && dv === 0) continue;
+            const u = vertex.u + du / divisor, v = vertex.v + dv / divisor;
+            if (u < 3 / divisor || u > 21 / divisor || v < 3 / divisor || v > 21 / divisor) continue;
+            const candidateExits = getExits(u, v);
+            const score = endpointScore(candidateExits);
+            if (score >= clearance - EPSILON && (!best || score > best.score)) best = { u, v, exits: candidateExits, score };
+          }
+          if (!best) throw new RangeError('G04 cannot place both shoulder exits at least 2*T_MIN from a corner');
+          selectedVertex = { u: best.u, v: best.v };
+          exits = best.exits;
+        }
+        const [a, b] = exits;
+        const tip = vertexPoint(selectedVertex.u, selectedVertex.v);
         const path = [a, tip, b];
         const perimeterPosition = (p: FlagPoint): number => {
           const x = (p.x - frame.x0) / frame.w;
@@ -826,7 +1079,6 @@ function operatorRegions(
           cleanPolygon([...path.slice().reverse(), ...arc(a, b, 1).slice(1, -1)]),
         ].filter((polygon) => polygon.length >= 3);
         if (regions.length !== 2) throw new RangeError('G04 CHEVRON could not form two regions');
-        // The boundary polyline is shared exactly by both regions; perimeter arcs close each side.
         polygons = regions.map((polygon) => [polygon]);
         slots = patternSlots(params.pattern ?? params.sp, 2, allSlots);
       } else {
@@ -875,9 +1127,25 @@ function operatorRegions(
     }
     case 'G07': {
       const centerRelative = assertPointParam(params, 'center', FLAG_FIELD_CONFIG.operators.G07.defaultCenter);
+      const { centerDivisor, centerRange, startAngles } = FLAG_FIELD_CONFIG.operators.G07;
+      for (const coordinate of [centerRelative.u, centerRelative.v]) {
+        if (coordinate < centerRange[0] - EPSILON || coordinate > centerRange[1] + EPSILON ||
+          Math.abs(coordinate * centerDivisor - Math.round(coordinate * centerDivisor)) > EPSILON) {
+          throw new RangeError('G07 center coordinates must be multiples of 1/24 within [8/24, 16/24]');
+        }
+      }
       const center = pointOnFrame(frame, centerRelative.u, centerRelative.v);
       const angleSet = params.angles === '90/135/135' ? FLAG_FIELD_CONFIG.operators.G07.angleSets[1] : FLAG_FIELD_CONFIG.operators.G07.angleSets[0];
-      const start = Number(params.startAngle ?? FLAG_FIELD_CONFIG.operators.G07.defaultStartAngle) * Math.PI / 180;
+      const angleChoice = startAngles.find(({ angles }) => angles.every((angle, index) => angle === angleSet[index]));
+      if (!angleChoice) throw new RangeError('G07 angle layout is not configured');
+      const startDegrees = params.startAngle === undefined
+        ? (() => {
+          if (!options.random) throw new TypeError('G07 weighted start-angle selection requires a deterministic random source');
+          return angleChoice.values[weightedIndex(options.random, angleChoice.weights)];
+        })()
+        : Number(params.startAngle);
+      if (!(angleChoice.values as readonly number[]).includes(startDegrees)) throw new RangeError('G07 start angle is not in the selected layout');
+      const start = startDegrees * Math.PI / 180;
       const regions: FlagPolygonSet[] = [];
       let current = start;
       for (const degrees of angleSet) {
@@ -931,31 +1199,30 @@ function operatorRegions(
       break;
     }
     case 'G09': {
-      const nx = getCount(params, 'nx', FLAG_FIELD_CONFIG.operators.G09.defaultColumns,
+      const requestedNx = getCount(params, 'nx', FLAG_FIELD_CONFIG.operators.G09.defaultColumns,
         FLAG_FIELD_CONFIG.operators.G09.columns[0], FLAG_FIELD_CONFIG.operators.G09.columns[1]);
-      const ny = Math.max(1, Math.round(nx * frame.h / frame.w));
       const origin = String(params.origin ?? FLAG_FIELD_CONFIG.operators.G09.defaultOrigin).toUpperCase();
       if (origin !== 'CORNER' && origin !== 'CENTER') throw new RangeError('G09 origin must be CORNER or CENTER');
+      const selected = selectG09Grid(frame, requestedNx, origin);
+      if (!selected) throw new RangeError('G09 cannot satisfy the minimum half-cell edge condition for the requested nx');
+      const { nx, rows, extra, cellSize } = selected;
       const checkerPolygons: [FlagPolygonSet, FlagPolygonSet] = [[], []];
-      const cellSize = frame.w / nx;
-      const rows = Math.max(ny, Math.ceil(frame.h / cellSize));
-      const originX = origin === 'CENTER' ? frame.x0 + frame.w / 2 : frame.x0;
-      const originY = origin === 'CENTER' ? frame.y0 + frame.h / 2 : frame.y0;
-      const firstCol = origin === 'CENTER' ? -Math.ceil(nx / 2) - 1 : -1;
-      const lastCol = origin === 'CENTER' ? Math.ceil(nx / 2) + 1 : nx + 1;
-      const firstRow = origin === 'CENTER' ? -Math.ceil(rows / 2) - 1 : -1;
-      const lastRow = origin === 'CENTER' ? Math.ceil(rows / 2) + 1 : rows + 1;
-      for (let row = firstRow; row < lastRow; row += 1) {
-        for (let col = firstCol; col < lastCol; col += 1) {
-          const x0 = originX + col * cellSize;
-          const y0 = originY + row * cellSize;
+      const centerY = frame.y0 + frame.h / 2;
+      const gridTop = origin === 'CENTER' ? centerY - rows * cellSize / 2 : frame.y0;
+      const rowIndices = origin === 'CENTER' && extra > EPSILON
+        ? [-1, ...Array.from({ length: rows }, (_, index) => index), rows]
+        : Array.from({ length: rows }, (_, index) => index);
+      for (const row of rowIndices) {
+        for (let col = 0; col < nx; col += 1) {
+          const x0 = frame.x0 + col * cellSize;
+          const y0 = gridTop + row * cellSize;
           const cell = [
             point(x0, y0), point(x0 + cellSize, y0),
             point(x0 + cellSize, y0 + cellSize), point(x0, y0 + cellSize),
           ];
           const clipped = clipConvex(cell, frameRect);
           if (clipped.length > 0) {
-            checkerPolygons[(col + row) & 1].push(clipped);
+            checkerPolygons[(col + row + Math.floor(nx / 2) + Math.floor(rows / 2)) & 1].push(clipped);
           }
         }
       }
@@ -964,15 +1231,25 @@ function operatorRegions(
       break;
     }
     case 'G10':
-      polygons = lozengyRegions(frame, params, canvasHeight);
+      polygons = lozengyRegions(frame, params, canvasHeight, options);
       slots = polygons.map((_, index) => allSlots[index & 1]);
       break;
     case 'G11': {
       const count = getCount(params, 'n', FLAG_FIELD_CONFIG.operators.G11.defaultBands,
         FLAG_FIELD_CONFIG.operators.G11.bands[0], FLAG_FIELD_CONFIG.operators.G11.bands[1]);
-      polygons = chevronnyRegions(frame, params, count);
-      const mode = String(params.pattern ?? 'CYC').toUpperCase();
-      slots = patternSlots(mode, count, allSlots);
+      polygons = chevronnyRegions(frame, params, count, options);
+      const configuredPattern = params.pattern === undefined
+        ? (() => {
+          if (!options.random) throw new TypeError('G11 weighted slot-pattern selection requires a deterministic random source');
+          return FLAG_FIELD_CONFIG.operators.G11.colorPatterns[
+            weightedIndex(options.random, FLAG_FIELD_CONFIG.operators.G11.colorPatterns.map(({ weight }) => weight))
+          ].id;
+        })()
+        : String(params.pattern).toUpperCase();
+      const mode = configuredPattern === 'ALTERNATING_2' ? 'CYC'
+        : configuredPattern === 'CYCLIC_3' ? 'TRIAD'
+          : configuredPattern;
+      slots = patternSlots(mode, polygons.length, allSlots);
       break;
     }
     case 'G12': {
@@ -1015,6 +1292,55 @@ function childRegionCount(node: FlagFieldNode): number {
     case 'G11': return Number(params.n ?? FLAG_FIELD_CONFIG.operators.G11.defaultBands);
     case 'G12': return Number(params.n ?? FLAG_FIELD_CONFIG.operators.G12.defaultBands);
   }
+}
+
+function fieldBandCount(node: FlagFieldNode): number {
+  const params = node.params ?? {};
+  if (node.op === 'G08') return Number(params.n ?? FLAG_FIELD_CONFIG.operators.G08.defaultCount);
+  if (node.op === 'G02' || node.op === 'G03' || node.op === 'G11' || node.op === 'G12') {
+    const operator = FLAG_FIELD_CONFIG.operators[node.op];
+    return Number(params.n ?? operator.defaultBands);
+  }
+  return 0;
+}
+
+function nonStraightBoundaryCost(node: FlagFieldNode): number {
+  if (!['G02', 'G03', 'G04', 'G11'].includes(node.op)) return 0;
+  const params = node.params ?? {};
+  const configured = params.line_style ?? params.lineStyle ?? FLAG_FIELD_CONFIG.lineStyles.default;
+  const kind = typeof configured === 'string'
+    ? configured
+    : String((configured as Record<string, unknown> | null)?.type ?? 'STRAIGHT');
+  return kind.toUpperCase() === 'STRAIGHT' ? 0 : FLAG_FIELD_CONFIG.costs.nonStraightBoundaryGroup;
+}
+
+/** Считает стоимость оператора поля и всех вложенных разбиений по §14.5. */
+export function flagFieldComplexityCost(node: FlagFieldNode): number {
+  if (!node || typeof node !== 'object' || !['G01', 'G02', 'G03', 'G04', 'G05', 'G06', 'G07', 'G08', 'G09', 'G10', 'G11', 'G12'].includes(node.op)) {
+    throw new TypeError('узел поля должен быть оператором G01–G12');
+  }
+  const params = node.params ?? {};
+  const count = fieldBandCount(node);
+  let ownCost: number;
+  switch (node.op) {
+    case 'G01': ownCost = 0; break;
+    case 'G02':
+    case 'G03': ownCost = FLAG_FIELD_CONFIG.costs.bands.base + FLAG_FIELD_CONFIG.costs.bands.perBand * count; break;
+    case 'G04': ownCost = FLAG_FIELD_CONFIG.costs.split2; break;
+    case 'G05': ownCost = FLAG_FIELD_CONFIG.costs.quarterly; break;
+    case 'G06': ownCost = FLAG_FIELD_CONFIG.costs.saltireDiv; break;
+    case 'G07': ownCost = FLAG_FIELD_CONFIG.costs.pallDiv; break;
+    case 'G08': ownCost = FLAG_FIELD_CONFIG.costs.gyronny.base + FLAG_FIELD_CONFIG.costs.gyronny.perWedge * count; break;
+    case 'G09': ownCost = FLAG_FIELD_CONFIG.costs.checky; break;
+    case 'G10': ownCost = FLAG_FIELD_CONFIG.costs.lozengy; break;
+    case 'G11': ownCost = FLAG_FIELD_CONFIG.costs.chevronny.base + FLAG_FIELD_CONFIG.costs.chevronny.perChevron * count; break;
+    case 'G12': ownCost = FLAG_FIELD_CONFIG.costs.concentricPerRegion * count; break;
+  }
+  if (!Number.isFinite(ownCost) || ownCost < 0) throw new RangeError('стоимость поля должна быть неотрицательной');
+  return ownCost + nonStraightBoundaryCost(node) + (node.children ?? []).reduce(
+    (sum, child) => sum + flagFieldComplexityCost(child),
+    0,
+  );
 }
 
 export function validateFlagFieldTree(root: FlagFieldNode): FlagFieldIssue[] {
@@ -1115,7 +1441,7 @@ function buildNode(
   result.maxDepth = Math.max(result.maxDepth, depth + 1);
 }
 
-/** Build a bounded field operator tree, preserving parent clip chains and paint order. */
+/** Строит ограниченное дерево операторов поля, сохраняя цепочки обрезки и порядок отрисовки. */
 export function buildFlagField(
   root: FlagFieldNode,
   frame: FlagFieldFrame,
@@ -1126,10 +1452,11 @@ export function buildFlagField(
   if (issues.length > 0) {
     throw new RangeError(`invalid flag field tree:\n${issues.map(({ path, message }) => `- ${path}: ${message}`).join('\n')}`);
   }
-  const result: FlagFieldResult = { regions: [], paintLayers: [], regionCount: 0, maxDepth: 0 };
+  const result: FlagFieldResult = { regions: [], paintLayers: [], regionCount: 0, maxDepth: 0, complexityCost: 0 };
   buildNode(root, frame, 0, options.clipChain ?? [], options, result);
   if (result.regionCount > FLAG_FIELD_CONFIG.limits.maxRegions || result.maxDepth > FLAG_FIELD_CONFIG.limits.maxDepth) {
     throw new RangeError('flag field exceeds the documented region/depth limits');
   }
+  result.complexityCost = flagFieldComplexityCost(root);
   return result;
 }

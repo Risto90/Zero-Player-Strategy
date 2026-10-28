@@ -83,7 +83,7 @@ export const FLAG_OUTLINE_CONFIG = {
   types: {
     RECT: {
       weight: null,
-      aspects: [1, 1.25, 1.333, 1.375, 1.4, 1.5, 1.6, 1.667, 1.9, 2, 2.545],
+      aspects: [1, 1.2, 1.25, 1.321, 1.333, 1.375, 1.389, 1.4, 1.5, 1.6, 1.636, 1.667, 1.9, 2, 2.545],
     },
     SWALLOW: {
       weight: null,

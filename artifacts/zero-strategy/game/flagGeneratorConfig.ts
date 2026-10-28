@@ -1,9 +1,20 @@
-/** Pipeline policy from §14; numerical defaults live outside the generator code. */
+/** Политика конвейера из §14; числовые значения по умолчанию вынесены из кода генератора. */
 export const FLAG_GENERATOR_CONFIG = {
-  generatorVersion: '0.1.0',
+  generatorVersion: '1.0.6',
   attemptsMax: 50,
+  fallbackAttemptsMax: 200,
   maxOptionalLayerRemovals: 40,
-  fallbackProfileId: 'P28',
+  fallbackProfileId: 'P28_FB',
+  physical: {
+    minimumThickness: 30,
+    minimumGap: 20,
+    canvasHeight: 1200,
+  },
+  localRetries: {
+    charges: 8,
+    ordinaries: 4,
+    field: 1,
+  },
   complexityRemovalOrder: [
     'optional-charge-lowest-weight',
     'fimbriation',

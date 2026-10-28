@@ -101,7 +101,7 @@ assert.deepEqual(stableHooks.calls.slice(0, 9).map(([name]) => name), [
   'S1_PROFILE', 'S2_OUTLINE', 'S3_STYLE', 'S4_COMPOSITION', 'S5_COMPLEXITY',
   'S6_PALETTE', 'S7_GEOMETRY', 'S8_VALIDATION', 'S9_NOVELTY',
 ]);
-assert.equal(one.flag.generator_version, '0.1.0');
+assert.equal(one.flag.generator_version, '1.0.6');
 assert.equal(one.flag.seed, 'reproducible');
 assert.equal(one.flag.meta.generation_stats.attempts, 1);
 assert.equal(one.svg, JSON.stringify(one.flag));
@@ -123,16 +123,16 @@ assert.equal(trimmed.stats.optional_layers_removed, 1);
 assert.equal(trimmed.stats.fallback_used, false);
 
 const fallbackHooks = makeHooks({
-  validate: (draft) => draft.profile_id === 'P28',
+  validate: (draft) => draft.profile_id === 'P28_FB',
   removeLastOptionalLayer: () => null,
 });
 const fallback = generateFlag('fallback', fallbackHooks.hooks, { attempts_max: 1 });
-assert.equal(fallback.flag.profile_id, 'P28');
+assert.equal(fallback.flag.profile_id, 'P28_FB');
 assert.equal(fallback.stats.fallback_used, true);
-assert.equal(fallback.stats.fallback_profile_id, 'P28');
+assert.equal(fallback.stats.fallback_profile_id, 'P28_FB');
 assert.equal(fallback.stats.attempts, 2);
 assert.ok(fallback.flag.meta.generation_stats);
-assert.ok(fallbackHooks.calls.some(([name, , profile]) => name === 'S1_FALLBACK' && profile === 'P28'));
+assert.ok(fallbackHooks.calls.some(([name, , profile]) => name === 'S1_FALLBACK' && profile === 'P28_FB'));
 
 const retryHooks = makeHooks({
   compose: (draft, context) => {
