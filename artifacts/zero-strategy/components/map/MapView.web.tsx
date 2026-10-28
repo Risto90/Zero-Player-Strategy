@@ -681,16 +681,12 @@ function drawMapLabels(
   }
   pendingLabels.sort((a, b) =>
     Number(b.label.selected) - Number(a.label.selected) ||
-    Number(b.label.allFragments) - Number(a.label.allFragments) ||
     b.layout.fontSize - a.layout.fontSize ||
     a.label.key.localeCompare(b.label.key));
-  const labeledWholeCountryIds = new Set<number>();
   for (const pending of pendingLabels) {
-    if (!pending.label.allFragments && labeledWholeCountryIds.has(pending.label.countryId)) continue;
     if ([...occupiedLabels, ...cityIconBounds].some((bounds) =>
       labelBoundsOverlap(pending.bounds, bounds))) continue;
     occupiedLabels.push(pending.bounds);
-    if (pending.label.allFragments) labeledWholeCountryIds.add(pending.label.countryId);
     trackedCountryLabel(
       pending.label.text,
       pending.layout.x,
@@ -861,9 +857,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       if (city.name && cityLabelIds.has(city.id)) {
         const labelFontSize = cityLabelFontSize(view.scale, baseScaleRef.current);
         ctx.font = `600 ${labelFontSize}px "IBM Plex Sans", sans-serif`;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        const labelY = y - size / 2 - Math.max(3, labelFontSize * 0.3) - labelFontSize / 2;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        const labelY = y - size / 2 - Math.max(2, labelFontSize * 0.22);
         const textWidth = ctx.measureText(city.name).width;
         const flagSvg = city.emblemSpec ? renderFlagSpec(city.emblemSpec) : null;
         const flagImage = flagSvg
@@ -877,28 +873,33 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         const crownSize = city.capital ? labelFontSize * 1.45 : 0;
         const markWidth = flagSvg ? Math.max(flagWidth, crownSize) : crownSize;
         const gap = markWidth ? Math.max(4, labelFontSize * 0.35) : 0;
-        const labelWidth = textWidth + markWidth + gap;
-        const labelLeft = x - labelWidth / 2;
-        const textX = labelLeft + markWidth + gap;
+        const labelLeft = x - (textWidth + markWidth + gap) / 2;
+        const textCenter = labelLeft + markWidth + gap + textWidth / 2;
         const color = mapTextColor(game, city.pixel);
         ctx.lineWidth = Math.max(1, labelFontSize * 0.22);
         ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)';
         ctx.fillStyle = color;
         if (flagSvg && flagImage) {
-          ctx.drawImage(flagImage, labelLeft + (markWidth - flagWidth) / 2, labelY - flagHeight / 2, flagWidth, flagHeight);
+          ctx.drawImage(
+            flagImage,
+            labelLeft + (markWidth - flagWidth) / 2,
+            labelY - labelFontSize * 0.88,
+            flagWidth,
+            flagHeight,
+          );
           if (city.capital && iconFontsLoaded) {
             drawGoldCrown(
               ctx,
               labelLeft + markWidth / 2,
-              labelY - flagHeight / 2 - crownSize / 2 - 2,
+              labelY - labelFontSize * 0.88 - crownSize / 2 - 2,
               crownSize,
             );
           }
         } else if (city.capital && iconFontsLoaded) {
-          drawGoldCrown(ctx, labelLeft + markWidth / 2, labelY, crownSize);
+          drawGoldCrown(ctx, labelLeft + markWidth / 2, labelY - labelFontSize / 2, crownSize);
         }
-        ctx.strokeText(city.name, textX, labelY);
-        ctx.fillText(city.name, textX, labelY);
+        ctx.strokeText(city.name, textCenter, labelY);
+        ctx.fillText(city.name, textCenter, labelY);
       }
     }
     const cursor = cursorRef.current;

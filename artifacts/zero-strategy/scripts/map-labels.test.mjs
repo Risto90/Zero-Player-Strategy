@@ -114,8 +114,52 @@ assert.ok(entityMapLabels(world, 'religions', { kind: 'religion', id: 0 }, 2)
 assert.ok(entityMapLabels(world, 'origins', { kind: 'origin', id: 0 }, 2)
   .some((label) => label.text.length > 0), 'выбранная раса получает контурную подпись');
 const dividedLabels = countryMapLabels(world, 8, 'political', null).filter((label) => label.countryId === 2);
-assert.equal(dividedLabels.filter((label) => !label.allFragments).length, 2,
-  'раздельные территории страны получают отдельные подписи, если общая не помещается');
+assert.equal(dividedLabels.length, 2,
+  'разнесённые части страны получают отдельные подписи, когда их нельзя объединить в одну');
+assert.deepEqual(dividedLabels.map((label) => label.countryBounds.x0).sort((a, b) => a - b), [500, 570],
+  'подписи относятся к обоим отдельным фрагментам, а не только к общей рамке территории');
+for (let y = 150; y < 190; y += 1) {
+  for (let x = 620; x < 640; x += 1) owner[y * MAP_WIDTH + x] = 4;
+  for (let x = 644; x < 664; x += 1) owner[y * MAP_WIDTH + x] = 4;
+}
+world.countries.push({ id: 3, type: 'settled', name: 'Лирон', pixels: 1600, box: [620, 150, 663, 189] });
+world.version += 1;
+world.territoryVersion += 1;
+const groupedFragmentsLabel = countryMapLabels(world, 2, 'political', null)
+  .filter((label) => label.countryId === 3);
+assert.equal(groupedFragmentsLabel.length, 1,
+  'близкие раздельные фрагменты страны объединяются продовой схемой в одну подпись');
+assert.equal(groupedFragmentsLabel[0].allowBridge, true,
+  'общая подпись может проходить через промежуток между фрагментами');
+assert.deepEqual(
+  [groupedFragmentsLabel[0].countryBounds.x0, groupedFragmentsLabel[0].countryBounds.x1],
+  [620, 663],
+  'контур общей подписи охватывает оба близких фрагмента');
+const fittedGroupedFragments = countryLabelViewportLayout(
+  groupedFragmentsLabel[0],
+  2,
+  -1220,
+  -280,
+  320,
+  180,
+);
+const fittedGroupedTextWidth =
+  ([...'Лирон'].length * 0.62 + (['Лирон'].length - 1) * 0.16) *
+    fittedGroupedFragments.fontSize +
+  (['Лирон'].length - 1) * fittedGroupedFragments.letterSpacing;
+const fittedGroupedLabelLeft = fittedGroupedFragments.x - fittedGroupedTextWidth / 2;
+const fittedGroupedLabelRight = fittedGroupedFragments.x + fittedGroupedTextWidth / 2;
+const firstFragmentLeft = -1220 + 620 * 2;
+const firstFragmentRight = -1220 + 640 * 2;
+const secondFragmentLeft = -1220 + 644 * 2;
+const secondFragmentRight = -1220 + 664 * 2;
+assert.ok(
+  fittedGroupedFragments.visible &&
+    fittedGroupedLabelLeft < firstFragmentRight &&
+    fittedGroupedLabelRight > firstFragmentLeft &&
+    fittedGroupedLabelLeft < secondFragmentRight &&
+    fittedGroupedLabelRight > secondFragmentLeft,
+  'общая надпись действительно проходит над обоими близкими фрагментами');
 for (let left = 0; left < zoomedIn.length; left += 1) {
   for (let right = left + 1; right < zoomedIn.length; right += 1) {
     const a = zoomedIn[left];
