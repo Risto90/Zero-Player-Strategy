@@ -15,6 +15,9 @@ export interface GestureHost {
   tool(): MapTool;
   canPaint(): boolean;
   onInspect(info: PixelInfo | null): void;
+  /** Перемещение обзора можно показывать композитным сдвигом холстов без полного перерисовывания. */
+  onPanStart?(): void;
+  onPanEnd?(): void;
   /** Точка на рельефе для 3D-режима; остальные слои используют плоское преобразование. */
   mapPointAt?(x: number, y: number): Point;
   /** Курсор кисти в экранных координатах; null скрывает его. */
@@ -66,6 +69,7 @@ export class MapGestures {
     this.points.set(id, { x, y });
     if (this.points.size === 2) {
       if (this.kind === 'paint') host.game.endStroke();
+      if (this.kind === 'pan') host.onPanEnd?.();
       const { dist, mid } = this.pinchState();
       this.kind = 'pinch';
       this.pinchDist = dist;
@@ -83,7 +87,7 @@ export class MapGestures {
       host.setCursor({ x, y });
       const m = this.mapPoint(x, y);
       host.game.beginStroke(m.x, m.y);
-    }
+    } else host.onPanStart?.();
   }
 
   move(id: number, x: number, y: number): void {
@@ -117,6 +121,7 @@ export class MapGestures {
     const host = this.host;
     if (!this.points.has(id)) return;
     this.points.delete(id);
+    if (this.kind === 'pan') host.onPanEnd?.();
     if (this.kind === 'paint') {
       host.game.endStroke();
       host.setCursor(null);
@@ -131,6 +136,7 @@ export class MapGestures {
       // После жеста масштабирования оставшийся палец только перемещает карту.
       this.kind = 'pan';
       this.moved = true;
+      host.onPanStart?.();
     } else if (this.kind === 'paint') this.kind = 'none';
   }
 }

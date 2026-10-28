@@ -735,6 +735,9 @@ function drawMapLabels(
 }
 
 type ScreenPoint = { x: number; y: number };
+type MapDrawStage = 'pixelBuffer' | 'mapLayer' | 'cityInfluence' | 'labels' | 'cityMarks' | 'cursor';
+type MapDrawSample = { totalMs: number } & Partial<Record<MapDrawStage, number>>;
+type MapDrawWindow = Window & { __ZERO_STRATEGY_MAP_DRAW_TIMINGS__?: MapDrawSample[] };
 
 /** Браузерная карта: растровые слои, управление жестами и 3D-рельеф высот. */
 export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
@@ -762,12 +765,26 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const toolRef = useRef(tool);
   const canPaintRef = useRef(canPaint);
   const inspectRef = useRef(onInspect);
+  const compositorPanRef = useRef(false);
+  const compositorPanOriginRef = useRef<ViewTransform | null>(null);
   toolRef.current = tool;
   canPaintRef.current = canPaint;
   inspectRef.current = onInspect;
 
   const draw = useCallback(() => {
     frameRef.current = 0;
+    const drawSamples = typeof window === 'undefined'
+      ? undefined
+      : (window as MapDrawWindow).__ZERO_STRATEGY_MAP_DRAW_TIMINGS__;
+    const drawStartedAt = drawSamples ? performance.now() : 0;
+    let stageStartedAt = drawStartedAt;
+    const stageTimes: Partial<Record<MapDrawStage, number>> = {};
+    const finishStage = (stage: MapDrawStage) => {
+      if (!drawSamples) return;
+      const now = performance.now();
+      stageTimes[stage] = now - stageStartedAt;
+      stageStartedAt = now;
+    };
     const canvas = canvasRef.current;
     const terrainCanvas = terrainCanvasRef.current;
     const offscreen = offscreenRef.current;
@@ -775,6 +792,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (!canvas || !offscreen || !image) return;
     const octx = offscreen.getContext('2d');
     for (const s of game.renderer.flushSome(PAINT_BUDGET_MS)) octx?.putImageData(image, 0, 0, 0, s * STRIP_H, MAP_WIDTH, STRIP_H);
+    finishStage('pixelBuffer');
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const { width, height, dpr } = sizeRef.current;
@@ -813,7 +831,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
       drawRivers(ctx, game, view, baseScaleRef.current);
     }
+    finishStage('mapLayer');
     drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
+    finishStage('cityInfluence');
     const projectMapPoint = isElevation && terrainRendererRef.current
       ? (x: number, y: number) => terrainRendererRef.current?.projectMapPoint(
         x,
@@ -832,6 +852,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       projectMapPoint,
       avoidToolOverlay,
     );
+    finishStage('labels');
     const cityLabelIds = visibleCityLabelIds(
       game.world,
       mapMode,
@@ -902,6 +923,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         ctx.fillText(city.name, textCenter, labelY);
       }
     }
+    finishStage('cityMarks');
     const cursor = cursorRef.current;
     if (cursor) {
       const radius = game.brushRadius * view.scale;
@@ -914,11 +936,16 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       ctx.strokeStyle = 'rgba(30,26,20,0.9)';
       ctx.stroke();
     }
+    finishStage('cursor');
+    if (drawSamples && drawSamples.length < 5000) {
+      drawSamples.push({ ...stageTimes, totalMs: performance.now() - drawStartedAt });
+    }
     if (game.renderer.pending) frameRef.current = requestAnimationFrame(draw);
     else game.mapDrawn();
   }, [game, iconFontsLoaded]);
 
   const requestDraw = useCallback(() => {
+    if (compositorPanRef.current) return;
     if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
   }, [draw]);
   redrawRef.current = requestDraw;
@@ -953,12 +980,51 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     terrainRendererRef.current = null;
   }, []);
 
+  const beginCompositorPan = useCallback(() => {
+    if (game.getSnapshot().mapMode === 'elevation' || compositorPanRef.current) return;
+    compositorPanOriginRef.current = { ...viewRef.current };
+    compositorPanRef.current = true;
+    for (const surface of [canvasRef.current, terrainCanvasRef.current]) {
+      if (!surface) continue;
+      surface.style.transformOrigin = '0 0';
+      surface.style.willChange = 'transform';
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
+    }
+    frameRef.current = 0;
+  }, [game]);
+
+  const updateCompositorPan = useCallback((view: ViewTransform) => {
+    const origin = compositorPanOriginRef.current;
+    if (!compositorPanRef.current || !origin) return;
+    const ratio = view.scale / origin.scale;
+    const translateX = view.ox - ratio * origin.ox;
+    const translateY = view.oy - ratio * origin.oy;
+    const transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${ratio})`;
+    for (const surface of [canvasRef.current, terrainCanvasRef.current]) {
+      if (surface) surface.style.transform = transform;
+    }
+  }, []);
+
+  const endCompositorPan = useCallback(() => {
+    if (!compositorPanRef.current) return;
+    compositorPanRef.current = false;
+    compositorPanOriginRef.current = null;
+    for (const surface of [canvasRef.current, terrainCanvasRef.current]) {
+      if (!surface) continue;
+      surface.style.transform = '';
+      surface.style.transformOrigin = '';
+      surface.style.willChange = '';
+    }
+    requestDraw();
+  }, [requestDraw]);
+
   const applyView = useCallback(
     (view: ViewTransform) => {
       viewRef.current = view;
-      requestDraw();
+      if (compositorPanRef.current) updateCompositorPan(view);
+      else requestDraw();
     },
-    [requestDraw],
+    [requestDraw, updateCompositorPan],
   );
 
   useImperativeHandle(ref, () => ({
@@ -986,6 +1052,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         tool: () => toolRef.current,
         canPaint: () => canPaintRef.current,
         onInspect: (info) => inspectRef.current?.(info),
+        onPanStart: beginCompositorPan,
+        onPanEnd: endCompositorPan,
         mapPointAt: (x, y) => game.getSnapshot().mapMode === 'elevation'
           ? terrainRendererRef.current?.mapPointAt(x, y, viewRef.current, sizeRef.current, game.world) ??
             toMap(viewRef.current, x, y)
@@ -995,7 +1063,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           requestDraw();
         },
       }),
-    [game, applyView, requestDraw],
+    [game, applyView, requestDraw, beginCompositorPan, endCompositorPan],
   );
 
   // Изображение вне экрана использует тот же буфер памяти, что и пиксели отрисовщика.
@@ -1056,7 +1124,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   }, [applyView, onMapActivity]);
 
   const local = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = wrapRef.current?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
 
