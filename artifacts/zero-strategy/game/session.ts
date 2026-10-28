@@ -3,16 +3,28 @@ import type { MapKind } from './geography';
 
 /** The one game running in the app, shared between screens. */
 let current: Game | null = null;
+const sessionListeners = new Set<() => void>();
 
 export function currentGame(): Game | null {
   return current;
 }
 
+export function subscribeGameSession(listener: () => void): () => void {
+  sessionListeners.add(listener);
+  return () => sessionListeners.delete(listener);
+}
+
+function setCurrentGame(game: Game | null): void {
+  current = game;
+  for (const listener of sessionListeners) listener();
+}
+
 export function startNewGame(mapKind: MapKind, role: PlayerRole): Game {
   current?.discard();
-  current = Game.create(mapKind, role);
-  current.start();
-  return current;
+  const game = Game.create(mapKind, role);
+  setCurrentGame(game);
+  game.start();
+  return game;
 }
 
 export async function startNewGameCooperative(
@@ -22,9 +34,9 @@ export async function startNewGameCooperative(
 ): Promise<Game> {
   const next = await Game.createCooperative(mapKind, role, undefined, onProgress);
   current?.discard();
-  current = next;
-  current.start();
-  return current;
+  setCurrentGame(next);
+  next.start();
+  return next;
 }
 
 /** Loads the saved game from this device. Returns null if there is none. */
@@ -35,8 +47,8 @@ export async function continueSavedGame(): Promise<Game | null> {
   }
   const loaded = await Game.load();
   if (loaded) {
-    current = loaded;
-    current.start();
+    setCurrentGame(loaded);
+    loaded.start();
   }
   return current;
 }
@@ -54,6 +66,6 @@ export async function leaveGame(): Promise<void> {
 
 export async function deleteSavedGame(): Promise<void> {
   current?.discard();
-  current = null;
+  setCurrentGame(null);
   await Game.deleteSave();
 }

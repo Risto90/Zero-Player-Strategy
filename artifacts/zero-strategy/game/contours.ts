@@ -358,7 +358,7 @@ export class ScalarContourLayer {
 }
 
 export type ContourLayerName = 'land' | 'owner' | 'humidity' | 'temperature' | 'drainage' |
-  'density' | 'culture' | 'religion' | 'humanOrigins' | 'rivers' | 'water';
+  'density' | 'culture' | 'religion' | 'humanOrigins' | 'rivers' | 'water' | 'elevation' | 'cityIdAt';
 
 export interface ClimateContour {
   humidity: number;

@@ -1,5 +1,5 @@
 import { Feather } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { CardPanel } from '@/components/game/CardPanel';
@@ -59,11 +59,6 @@ declare global {
   }
 }
 
-function goHome() {
-  if (router.canGoBack()) router.back();
-  else router.replace('/');
-}
-
 function mapListCount(game: Game, snap: GameSnapshot): number | null {
   switch (snap.mapMode) {
     case 'political':
@@ -101,8 +96,6 @@ export default function PlayScreen() {
     };
   }, [game]);
 
-  useEffect(() => () => void leaveGame(), []);
-
   useEffect(() => {
     if (!game) return;
     const saveWhenHidden = () => {
@@ -126,6 +119,10 @@ function GameScreen({ game }: { game: Game }) {
   const notificationE2e = process.env.EXPO_PUBLIC_NOTIFICATION_E2E === 'true';
   if (notificationE2e) Game.notificationE2eFastMode = true;
   const snap = useGameSnapshot(game);
+  useFocusEffect(useCallback(() => {
+    game.setPlayScreenActive(true);
+    return () => game.setPlayScreenActive(false);
+  }, [game]));
   const { height, width } = useWindowDimensions();
   const mapRef = useRef<MapViewHandle>(null);
   const zoomTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -149,6 +146,7 @@ function GameScreen({ game }: { game: Game }) {
   const [zoomVisible, setZoomVisible] = useState(false);
   const [legendVisible, setLegendVisible] = useState(true);
   const [holdingNext, setHoldingNext] = useState(false);
+  const [exitRequested, setExitRequested] = useState(false);
   const longPressFired = useRef(false);
 
   const canBrush = snap.canPaint && !snap.busy;
@@ -386,6 +384,28 @@ function GameScreen({ game }: { game: Game }) {
     ? Math.max(0, Math.min(1, snap.card.ink / snap.card.inkTotal))
     : 0;
 
+  const requestExit = useCallback(() => {
+    if (!window.confirm('Выйти в меню? Сначала завершится текущий ход, затем игра сохранится.')) return;
+    setExitRequested(true);
+  }, []);
+
+  useEffect(() => {
+    if (!exitRequested || snap.busy || snap.card) return;
+    let active = true;
+    void leaveGame()
+      .then(() => {
+        if (active) router.replace('/');
+      })
+      .catch((error: Error) => {
+        if (!active) return;
+        setExitRequested(false);
+        setHint(`Не удалось сохранить игру: ${error.message}`);
+      });
+    return () => {
+      active = false;
+    };
+  }, [exitRequested, game, snap.busy, snap.card]);
+
   return (
     <View style={styles.screen}>
       <View style={styles.inkTrack} testID="map-ink-status" accessibilityLabel="Остаток чернил">
@@ -428,7 +448,7 @@ function GameScreen({ game }: { game: Game }) {
         )}
       </View>
       <View style={styles.topBar}>
-        <Pressable onPress={goHome} style={styles.homeButton} hitSlop={8} testID="link-home" accessibilityLabel="Меню">
+        <Pressable onPress={requestExit} style={styles.homeButton} hitSlop={8} testID="link-home" accessibilityLabel="Меню">
           <Feather name="chevron-left" size={17} color={c.secondaryForeground} />
           <Text style={styles.homeText}>Меню</Text>
         </Pressable>
@@ -438,8 +458,8 @@ function GameScreen({ game }: { game: Game }) {
           <Text style={styles.yearCaption}>ГОД</Text>
         </View>
         <View style={styles.actions}>
-          <Text style={[styles.timer, (!snap.drawing && (snap.paused || snap.secondsLeft <= 10)) && styles.timerHot]} testID="text-timer">
-            {snap.drawing ? '…' : `${String(Math.max(0, snap.secondsLeft)).padStart(2, '0')}с`}
+          <Text style={[styles.timer, (snap.paused || snap.secondsLeft <= 10) && styles.timerHot]} testID="text-timer">
+            {`${String(Math.max(0, snap.secondsLeft)).padStart(2, '0')}с`}
           </Text>
           <Pressable
             onPress={() => game.togglePause()}
@@ -661,6 +681,18 @@ function GameScreen({ game }: { game: Game }) {
             </Pressable>
           </View>
         )}
+        {exitRequested && (
+          <View style={styles.exitPending} testID="exit-waiting-for-turn">
+            <Text style={styles.exitPendingText}>
+              {snap.busy
+                ? 'Идёт текущий ход. Меню откроется после его завершения и сохранения.'
+                : 'Завершите текущие карты, чтобы игра могла безопасно сохраниться.'}
+            </Text>
+            <Pressable onPress={() => setExitRequested(false)} style={styles.exitCancel}>
+              <Text style={styles.exitCancelText}>Остаться в игре</Text>
+            </Pressable>
+          </View>
+        )}
       </View>
     </View>
   );
@@ -710,6 +742,10 @@ const styles = StyleSheet.create({
   listOverlay: { top: 48, maxWidth: 560, alignSelf: 'center', backgroundColor: c.card },
   logOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 10, backgroundColor: 'rgba(17,21,27,0.9)' },
   logCloseButton: { position: 'absolute', top: 6, right: 6, zIndex: 11, width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 22, borderWidth: 1, borderColor: 'rgba(245,238,232,0.4)', backgroundColor: 'rgba(17,21,27,0.96)' },
+  exitPending: { position: 'absolute', left: 10, right: 10, bottom: 58, zIndex: 80, alignItems: 'center', gap: 8, padding: 10, borderWidth: 1, borderColor: c.primary, borderRadius: 5, backgroundColor: c.card },
+  exitPendingText: { fontFamily: fonts.sans, fontSize: 12, color: c.foreground, textAlign: 'center' },
+  exitCancel: { minHeight: 32, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 4, backgroundColor: c.secondary },
+  exitCancelText: { fontFamily: fonts.sansMedium, fontSize: 12, color: c.secondaryForeground },
   overlayHeader: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingLeft: 11, borderBottomWidth: 1, borderBottomColor: c.border, backgroundColor: c.card },
   overlayTitle: { flex: 1, fontFamily: fonts.display, fontSize: 15, color: c.foreground },
   closeButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },

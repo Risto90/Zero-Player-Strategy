@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { useFocusEffect } from 'expo-router';
 import { useFonts } from 'expo-font';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Asset } from 'expo-asset';
@@ -756,6 +757,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const sizeRef = useRef({ width: 1, height: 1, dpr: 1 });
   const baseScaleRef = useRef(1);
   const frameRef = useRef(0);
+  const routeActiveRef = useRef(false);
+  const pageVisibleRef = useRef(true);
   const orbitPointerRef = useRef<number | null>(null);
   const orbitLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const cursorRef = useRef<{ x: number; y: number } | null>(null);
@@ -768,6 +771,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
 
   const draw = useCallback(() => {
     frameRef.current = 0;
+    if (!routeActiveRef.current || !pageVisibleRef.current) return;
     const canvas = canvasRef.current;
     const terrainCanvas = terrainCanvasRef.current;
     const offscreen = offscreenRef.current;
@@ -781,6 +785,17 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     const view = viewRef.current;
     const mapMode = game.getSnapshot().mapMode;
     const isElevation = mapMode === 'elevation';
+    const visibleBounds = {
+      x0: Math.max(0, Math.floor(-view.ox / view.scale) - 1),
+      y0: Math.max(0, Math.floor(-view.oy / view.scale) - 1),
+      x1: Math.min(MAP_WIDTH - 1, Math.ceil((width - view.ox) / view.scale) + 1),
+      y1: Math.min(MAP_HEIGHT - 1, Math.ceil((height - view.oy) / view.scale) + 1),
+    };
+    if (!isElevation && visibleBounds.x1 >= visibleBounds.x0 && visibleBounds.y1 >= visibleBounds.y0) {
+      for (const rect of game.renderer.flushVisible(PAINT_BUDGET_MS, visibleBounds)) {
+        octx?.putImageData(image, 0, 0, rect.x0, rect.y0, rect.x1 - rect.x0 + 1, rect.y1 - rect.y0 + 1);
+      }
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (isElevation) {
       ctx.clearRect(0, 0, width, height);
@@ -809,7 +824,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       if (terrainCanvas) terrainCanvas.style.display = 'none';
       ctx.fillStyle = colors.light.mapBackdrop;
       ctx.fillRect(0, 0, width, height);
-      ctx.imageSmoothingEnabled = view.scale < 1;
+      ctx.imageSmoothingEnabled = false;
       ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
       drawRivers(ctx, game, view, baseScaleRef.current);
     }
@@ -914,14 +929,41 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       ctx.strokeStyle = 'rgba(30,26,20,0.9)';
       ctx.stroke();
     }
-    if (game.renderer.pending) frameRef.current = requestAnimationFrame(draw);
+    if (!isElevation && game.renderer.hasPendingIn(visibleBounds)) frameRef.current = requestAnimationFrame(draw);
     else game.mapDrawn();
   }, [game, iconFontsLoaded]);
 
   const requestDraw = useCallback(() => {
-    if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
+    if (routeActiveRef.current && pageVisibleRef.current && !frameRef.current) {
+      frameRef.current = requestAnimationFrame(draw);
+    }
   }, [draw]);
   redrawRef.current = requestDraw;
+
+  useFocusEffect(useCallback(() => {
+    routeActiveRef.current = true;
+    requestDraw();
+    return () => {
+      routeActiveRef.current = false;
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
+      frameRef.current = 0;
+    };
+  }, [requestDraw]));
+
+  useEffect(() => {
+    const updatePageVisibility = () => {
+      pageVisibleRef.current = document.visibilityState !== 'hidden';
+      if (pageVisibleRef.current) {
+        requestDraw();
+      } else if (frameRef.current) {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = 0;
+      }
+    };
+    document.addEventListener('visibilitychange', updatePageVisibility);
+    updatePageVisibility();
+    return () => document.removeEventListener('visibilitychange', updatePageVisibility);
+  }, [requestDraw]);
 
   const mapMode = game.getSnapshot().mapMode;
   useEffect(() => {

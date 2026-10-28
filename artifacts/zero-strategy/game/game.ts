@@ -166,6 +166,8 @@ export interface GameSnapshot {
   busy: boolean;
   /** Изменения за год ещё отрисовываются; таймер ждёт завершения отрисовки. */
   drawing: boolean;
+  /** Ход игрока ожидает возвращения на страницу карты. */
+  offscreenTurnAlert: boolean;
   /** Ход ИИ во время продвижения мира, например: обработано 3 из 12 государств. */
   progress: { done: number; total: number } | null;
   /** Читаемый человеком прежний формат для основного игрового экрана. */
@@ -203,6 +205,7 @@ interface SavedGame {
   year: number;
   turn: number;
   paused?: boolean;
+  pausedForOffscreenTurn?: boolean;
   focusCountryId: number | null;
   card: Card | null;
   painterState?: CardPainterState | null;
@@ -262,6 +265,9 @@ export class Game {
   private layer: EntityLayer | null = null;
   private secondsLeft = TURN_SECONDS;
   private paused = false;
+  private pausedForOffscreenTurn = false;
+  private offscreenTurnAlert = false;
+  private playScreenActive = false;
   private pauseChangedDuringBusy = false;
   private busy = false;
   private resolvingAutomatically = false;
@@ -427,6 +433,9 @@ export class Game {
       ? 'elevation'
       : savedMapMode === 'colonization' || savedMapMode === 'nomads' ? 'political' : savedMapMode;
     game.paused = saved.paused ?? false;
+    game.pausedForOffscreenTurn = saved.pausedForOffscreenTurn ?? false;
+    game.offscreenTurnAlert = game.pausedForOffscreenTurn;
+    if (!game.paused && game.isCurrentPlayerCard()) game.pauseForOffscreenPlayerTurn();
     game.renderer.setView(game.mapMode, null);
     return game;
   }
@@ -500,6 +509,28 @@ export class Game {
     this.emit();
   }
 
+  /**
+   * Страница карты управляет только паузой личного хода и видимостью холста.
+   * Автоматические участники продолжают обрабатывать свои действия вне страницы.
+   */
+  setPlayScreenActive(active: boolean): void {
+    if (this.playScreenActive === active) return;
+    this.playScreenActive = active;
+    if (active) {
+      if (this.pausedForOffscreenTurn) {
+        this.paused = false;
+        this.pausedForOffscreenTurn = false;
+      }
+      this.offscreenTurnAlert = false;
+      this.emit();
+      this.scheduleSave();
+      return;
+    }
+    if (!this.busy && !this.paused && this.isCurrentPlayerCard()) {
+      this.pauseForOffscreenPlayerTurn();
+    }
+  }
+
   // ---------- таймер ----------
 
   start(): void {
@@ -544,7 +575,7 @@ export class Game {
   }
 
   private tick(): void {
-    if (this.paused || this.busy || this.drawing) return;
+    if (this.paused || this.busy) return;
     this.secondsLeft = Math.max(0, this.secondsLeft - 1);
     if (this.secondsLeft <= 0) void this.nextTurn(true);
     else this.emit();
@@ -553,6 +584,8 @@ export class Game {
   togglePause(): void {
     if (this.busy) this.pauseChangedDuringBusy = true;
     this.paused = !this.paused;
+    this.pausedForOffscreenTurn = false;
+    this.offscreenTurnAlert = false;
     this.emit();
     this.scheduleSave();
   }
@@ -1077,7 +1110,7 @@ export class Game {
       } finally {
         this.busy = false;
         this.pauseChangedDuringBusy = false;
-        this.drawing = this.renderer.pending;
+        this.drawing = false;
         this.emit(true);
         this.scheduleSave();
       }
@@ -1172,7 +1205,7 @@ export class Game {
       this.busy = false;
       this.pauseChangedDuringBusy = false;
       this.progress = null;
-      this.drawing = this.renderer.pending;
+      this.drawing = false;
       this.emit(true);
       this.scheduleSave();
     }
@@ -1259,6 +1292,9 @@ export class Game {
     this.painter = new CardPainter(this.world, card, this.brushMode, painterState);
     this.secondsLeft = TURN_SECONDS;
     if (!this.busy || !this.pauseChangedDuringBusy) this.paused = false;
+    if (this.isPlayerRecipient(recipient) && !this.playScreenActive) {
+      this.pauseForOffscreenPlayerTurn();
+    }
     this.setMessage(card.detail, recipient);
     const mode: MapMode =
       card.type === 'drought' || card.type === 'rain' ? 'humidity'
@@ -1278,6 +1314,30 @@ export class Game {
 
   private isPlayerControlled(countryId: number): boolean {
     return this.role === 'all' || (this.role === 'country' && this.focusCountryId === countryId);
+  }
+
+  private isPlayerRecipient(recipient: NotificationRecipient): boolean {
+    if (recipient.scope === 'world') return this.role === 'all' || this.role === 'world';
+    if (recipient.scope === 'country') return this.isPlayerControlled(recipient.countryId);
+    return false;
+  }
+
+  private isCurrentPlayerCard(): boolean {
+    const card = this.card;
+    if (!card) return false;
+    if (card.chronicleScope === 'world') return this.role === 'all' || this.role === 'world';
+    if (card.chronicleScope !== 'country') return false;
+    const countryId = card.chronicleCountryId ?? card.targetCountryId;
+    return countryId !== null && countryId !== undefined && this.isPlayerControlled(countryId);
+  }
+
+  private pauseForOffscreenPlayerTurn(): void {
+    if (this.role === 'observer' || this.paused) return;
+    this.paused = true;
+    this.pausedForOffscreenTurn = true;
+    this.offscreenTurnAlert = true;
+    this.emit();
+    this.scheduleSave();
   }
 
   private startInheritanceSplitCard(
@@ -2278,6 +2338,7 @@ export class Game {
       paused: this.paused,
       busy: this.busy,
       drawing: this.drawing,
+      offscreenTurnAlert: this.offscreenTurnAlert,
       progress: this.progress,
       log: this.log.slice(0, LOG_LIMIT).map((entry) => entry.year ? `${entry.year}: ${entry.text}` : entry.text),
       chronicle: this.log,
@@ -2467,6 +2528,7 @@ export class Game {
       year: this.year,
       turn: this.turn,
       paused: this.paused,
+      pausedForOffscreenTurn: this.pausedForOffscreenTurn,
       focusCountryId: this.focusCountryId,
       card: this.card ? { ...this.card } : null,
       painterState: this.painter?.snapshotState() ?? null,

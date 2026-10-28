@@ -11,6 +11,12 @@ export interface EntityLayer {
   id: number;
 }
 
+export interface VectorPaintInfo {
+  key: string;
+  color: string;
+  randomized: boolean;
+}
+
 type RGB = [number, number, number];
 
 export function hexToRgb(hex: string): RGB {
@@ -139,6 +145,7 @@ export class MapRenderer {
   private selectedCountryId: number | null = null;
   private readonly dirtyTiles = new Uint8Array(TILES);
   private dirtyCount = 0;
+  private revision = 0;
   /** Tile index to continue from, so a long repaint walks the map top to bottom. */
   private cursor = 0;
   /** Strips with freshly painted tiles that are not on screen yet. */
@@ -261,12 +268,14 @@ export class MapRenderer {
   }
 
   markAll(): void {
+    this.revision += 1;
     this.dirtyTiles.fill(1);
     this.dirtyCount = TILES;
   }
 
   /** Marks an area (plus a 1-pixel rim, whose borders may change) for repainting. */
   mark(rect: Rect): void {
+    this.revision += 1;
     const c0 = Math.max(0, Math.floor((rect.x0 - 1) / TILE_W));
     const c1 = Math.min(TILE_COLS - 1, Math.floor((rect.x1 + 1) / TILE_W));
     const r0 = Math.max(0, Math.floor((rect.y0 - 1) / STRIP_H));
@@ -284,6 +293,185 @@ export class MapRenderer {
 
   get pending(): boolean {
     return this.dirtyCount > 0;
+  }
+
+  get visualRevision(): number {
+    return this.revision;
+  }
+
+  /** Возвращает цвет одного неизменного интервала контуров, не обходя его точки. */
+  vectorPaintAt(pixel: number): VectorPaintInfo {
+    this.syncColors();
+    const w = this.world;
+    const rgb = (packed: number): string => {
+      const r = (packed & 255).toString(16).padStart(2, '0');
+      const g = ((packed >> 8) & 255).toString(16).padStart(2, '0');
+      const b = ((packed >> 16) & 255).toString(16).padStart(2, '0');
+      return `#${r}${g}${b}`;
+    };
+    const land = !!w.land[pixel];
+    if (!land) {
+      const depth = Math.max(0, Math.min(11000, -w.elevation[pixel]));
+      return { key: `sea-depth:${depth}`, color: rgb(SEA_DEPTH_COLORS[depth]), randomized: false };
+    }
+
+    const owner = w.owner[pixel];
+    let key = 'unclaimed';
+    let color = this.unclaimedPacked;
+    let randomized = false;
+    const biome = biomeOf(w.humidity[pixel], w.temperature[pixel], w.drainage[pixel]);
+    const countryKey = () => `country:${owner - 1}`;
+    switch (this.mode) {
+      case 'political':
+        if (owner > 0) {
+          key = countryKey();
+          color = this.countryColors[owner - 1] ?? this.unclaimedPacked;
+          randomized = true;
+        } else {
+          key = `unclaimed-biome:${biome}`;
+          color = this.unclaimedByBiome[biome];
+        }
+        break;
+      case 'cities': {
+        const cityId = w.cityIdAt[pixel];
+        const city = cityId >= 0 ? w.cities[cityId] : null;
+        if (city) {
+          key = `city-rank:${city.rank}`;
+          color = this.cityColors[city.rank - 1] ?? this.unclaimedPacked;
+        } else if (owner > 0) {
+          key = countryKey();
+          color = this.countryColors[owner - 1] ?? this.unclaimedPacked;
+          randomized = true;
+        } else {
+          key = `unclaimed-biome:${biome}`;
+          color = this.unclaimedByBiome[biome];
+        }
+        break;
+      }
+      case 'biomes':
+        key = `biome:${biome}`;
+        color = this.biomePacked[biome];
+        break;
+      case 'cultures':
+        if (owner > 0) {
+          key = `culture:${w.culture[pixel]}`;
+          color = this.compColor('culture', w.culture[pixel]);
+          randomized = true;
+        } else {
+          key = 'unclaimed';
+          color = this.unclaimedPacked;
+        }
+        break;
+      case 'religions':
+        if (owner > 0) {
+          key = `religion:${w.religion[pixel]}`;
+          color = this.compColor('religion', w.religion[pixel]);
+          randomized = true;
+        } else {
+          key = 'unclaimed';
+          color = this.unclaimedPacked;
+        }
+        break;
+      case 'humidity':
+      case 'temperature':
+      case 'drainage': {
+        const value = this.mode === 'humidity'
+          ? w.humidity[pixel]
+          : this.mode === 'temperature' ? w.temperature[pixel] : w.drainage[pixel];
+        key = `${this.mode}:${value}`;
+        color = this.ramps[this.mode][value];
+        break;
+      }
+      case 'density': {
+        const value = Math.min(100, Math.round(Math.log1p(w.density[pixel] + this.nomadDensity[pixel]) * 12));
+        key = `density:${value}`;
+        color = this.ramps.density[value];
+        break;
+      }
+      case 'origins': {
+        if (this.layer?.kind === 'origin') {
+          const share = this.originShareAt(pixel, this.layer.id);
+          const originColor = this.originColors[this.layer.id] ?? this.unclaimedPacked;
+          const originRGB = [originColor & 255, (originColor >> 8) & 255, (originColor >> 16) & 255] as RGB;
+          color = pack(mix([238, 233, 218], originRGB, share));
+          key = `origin:${this.layer.id}:${Math.round(share * 100)}`;
+        } else {
+          const origin = this.originAt(pixel);
+          if (origin) {
+            key = `origin:${origin - 1}`;
+            color = this.originColors[origin - 1];
+            randomized = true;
+          } else {
+            key = `unclaimed-biome:${biome}`;
+            color = this.unclaimedByBiome[biome];
+          }
+        }
+        break;
+      }
+      case 'elevation':
+        key = 'elevation-land';
+        color = this.unclaimedPacked;
+        break;
+    }
+    return { key, color: rgb(color), randomized };
+  }
+
+  hasPendingIn(bounds: Rect): boolean {
+    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
+    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
+    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
+    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
+    for (let row = r0; row <= r1; row += 1) {
+      for (let col = c0; col <= c1; col += 1) {
+        if (this.dirtyTiles[row * TILE_COLS + col]) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Снимает метки изменений, уже переданных в векторный слой видимого окна. */
+  acknowledge(bounds: Rect): void {
+    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
+    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
+    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
+    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
+    for (let row = r0; row <= r1; row += 1) {
+      for (let col = c0; col <= c1; col += 1) {
+        const tile = row * TILE_COLS + col;
+        if (!this.dirtyTiles[tile]) continue;
+        this.dirtyTiles[tile] = 0;
+        this.dirtyCount -= 1;
+      }
+    }
+  }
+
+  /** Обновляет только грязные фрагменты, пересекающие видимую область. */
+  flushVisible(budgetMs: number, bounds: Rect): Rect[] {
+    if (!this.hasPendingIn(bounds)) return [];
+    this.syncColors();
+    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
+    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
+    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
+    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
+    const started = Date.now();
+    const painted: Rect[] = [];
+    for (let row = r0; row <= r1; row += 1) {
+      for (let col = c0; col <= c1; col += 1) {
+        const tile = row * TILE_COLS + col;
+        if (!this.dirtyTiles[tile]) continue;
+        this.dirtyTiles[tile] = 0;
+        this.dirtyCount -= 1;
+        this.paintTile(col * TILE_W, row * STRIP_H);
+        painted.push({
+          x0: col * TILE_W,
+          y0: row * STRIP_H,
+          x1: (col + 1) * TILE_W - 1,
+          y1: (row + 1) * STRIP_H - 1,
+        });
+        if (Date.now() - started >= budgetMs) return painted;
+      }
+    }
+    return painted;
   }
 
   /** Repaints everything at once (tests and tools). */
