@@ -2,7 +2,6 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
-import { cityLabelFontSize } from '@/game/cityVisibility';
 import { Terrain3DRenderer } from './Terrain3DRenderer';
 import {
   countryLabelViewportLayout,
@@ -13,7 +12,7 @@ import {
   riverVisibilityScale,
   shouldShowCityMarks,
   shouldShowGeographyMarks,
-  visibleCityLabelIds,
+  visibleCityLabelLayouts,
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
 import { discoveredRiverPaths } from '@/game/geographyGeometry';
@@ -644,17 +643,24 @@ function drawMapLabels(
     });
   }
   pendingLabels.sort((a, b) =>
-    Number(b.label.selected) - Number(a.label.selected) ||
     Number(b.label.allFragments) - Number(a.label.allFragments) ||
+    Number(b.label.selected) - Number(a.label.selected) ||
+    Number(Boolean(a.label.fragmentOnly)) - Number(Boolean(b.label.fragmentOnly)) ||
     b.layout.fontSize - a.layout.fontSize ||
     a.label.key.localeCompare(b.label.key));
   const labeledWholeCountryIds = new Set<number>();
+  const placedClusterKeys = new Set<string>();
   for (const pending of pendingLabels) {
     if (!pending.label.allFragments && labeledWholeCountryIds.has(pending.label.countryId)) continue;
+    if (pending.label.fragmentOnly && pending.label.clusterKey &&
+        placedClusterKeys.has(pending.label.clusterKey)) continue;
     if ([...occupiedLabels, ...cityIconBounds].some((bounds) =>
       labelBoundsOverlap(pending.bounds, bounds))) continue;
     occupiedLabels.push(pending.bounds);
     if (pending.label.allFragments) labeledWholeCountryIds.add(pending.label.countryId);
+    else if (!pending.label.fragmentOnly && pending.label.clusterKey) {
+      placedClusterKeys.add(pending.label.clusterKey);
+    }
     trackedCountryLabel(
       pending.label.text,
       pending.layout.x,
@@ -797,7 +803,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       projectMapPoint,
       avoidToolOverlay,
     );
-    const cityLabelIds = visibleCityLabelIds(
+    const cityLabelLayouts = visibleCityLabelLayouts(
       game.world,
       mapMode,
       view.scale,
@@ -807,27 +813,37 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       width,
       height,
       occupiedMapLabels,
+      (text, fontSize) => {
+        ctx.save();
+        ctx.font = `600 ${fontSize}px "IBM Plex Sans", sans-serif`;
+        const measured = ctx.measureText(text).width;
+        ctx.restore();
+        return measured;
+      },
     );
     if (shouldShowCityMarks(mapMode)) for (const city of game.world.cities) {
       const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
       const zoomRank = cityVisibilityRank(city, hasPort);
       if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
       const icon = cityImagesRef.current[cityIconIndex(city, hasPort)];
-      if (!icon?.complete || icon.naturalWidth === 0) continue;
       const size = hasPort ? 30 + city.rank : 24 + city.rank;
       const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
       const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
       if (x + size < 0 || y + size < 0 || x - size > width || y - size > height) continue;
-      ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
-      if (city.name && cityLabelIds.has(city.id)) {
-        const labelFontSize = cityLabelFontSize(view.scale, baseScaleRef.current);
+      if (icon?.complete && icon.naturalWidth > 0) {
+        ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
+      }
+      const cityLabel = cityLabelLayouts.get(city.id);
+      if (city.name && cityLabel) {
+        const labelFontSize = cityLabel.fontSize;
         ctx.font = `600 ${labelFontSize}px "IBM Plex Sans", sans-serif`;
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'bottom';
-        const labelY = y - size / 2 - Math.max(2, labelFontSize * 0.22);
+        ctx.textBaseline = 'middle';
+        const labelX = cityLabel.x;
+        const labelY = cityLabel.y;
         const textWidth = ctx.measureText(city.name).width;
         const crownWidth = city.capital ? labelFontSize * 1.1 : 0;
-        const labelLeft = x - (textWidth + crownWidth) / 2;
+        const labelLeft = labelX - (textWidth + crownWidth) / 2;
         const labelCenter = labelLeft + crownWidth + textWidth / 2;
         const color = mapTextColor(game, city.pixel);
         ctx.lineWidth = Math.max(1, labelFontSize * 0.22);
@@ -835,14 +851,15 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         ctx.fillStyle = color;
         if (city.capital) {
           const crownSize = labelFontSize * 1.1;
+          const crownBaseY = labelY + labelFontSize * 0.34;
           ctx.beginPath();
-          ctx.moveTo(labelLeft, labelY - 1);
-          ctx.lineTo(labelLeft + crownSize * 0.1, labelY - crownSize * 0.75);
-          ctx.lineTo(labelLeft + crownSize * 0.3, labelY - crownSize * 0.35);
-          ctx.lineTo(labelLeft + crownSize * 0.5, labelY - crownSize * 0.75);
-          ctx.lineTo(labelLeft + crownSize * 0.7, labelY - crownSize * 0.35);
-          ctx.lineTo(labelLeft + crownSize * 0.9, labelY - crownSize * 0.75);
-          ctx.lineTo(labelLeft + crownSize, labelY - 1);
+          ctx.moveTo(labelLeft, crownBaseY - 1);
+          ctx.lineTo(labelLeft + crownSize * 0.1, crownBaseY - crownSize * 0.75);
+          ctx.lineTo(labelLeft + crownSize * 0.3, crownBaseY - crownSize * 0.35);
+          ctx.lineTo(labelLeft + crownSize * 0.5, crownBaseY - crownSize * 0.75);
+          ctx.lineTo(labelLeft + crownSize * 0.7, crownBaseY - crownSize * 0.35);
+          ctx.lineTo(labelLeft + crownSize * 0.9, crownBaseY - crownSize * 0.75);
+          ctx.lineTo(labelLeft + crownSize, crownBaseY - 1);
           ctx.closePath();
           ctx.fillStyle = '#d0a239';
           ctx.fill();
