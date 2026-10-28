@@ -49,9 +49,35 @@ function xmlEscape(value: string): string {
     .replaceAll('"', '&quot;').replaceAll("'", '&apos;');
 }
 
-type VectorMapPartNode = { node: SVGGElement; markup: string };
+type VectorMapPartNode = { node: SVGGElement; markup: string; order: number };
 type VectorMapTileMarkup = { revision: number; parts: VectorMapSvgPart[] };
 type VectorMapTilePartsCache = { sceneKey: string; tiles: Map<number, VectorMapTileMarkup> };
+
+function compareVectorParts(first: VectorMapSvgPart, second: VectorMapSvgPart): number {
+  return first.order - second.order || first.key.localeCompare(second.key);
+}
+
+function ensureVectorPartNode(
+  svg: SVGSVGElement,
+  part: VectorMapSvgPart,
+  cache: Map<string, VectorMapPartNode>,
+): VectorMapPartNode {
+  let entry = cache.get(part.key);
+  if (!entry || entry.node.parentNode !== svg) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    node.setAttribute('data-map-part', part.key);
+    node.setAttribute('pointer-events', 'none');
+    entry = { node, markup: '', order: part.order };
+    cache.set(part.key, entry);
+  }
+  entry.node.setAttribute('data-map-order', String(part.order));
+  entry.order = part.order;
+  if (entry.markup !== part.markup) {
+    entry.node.innerHTML = part.markup;
+    entry.markup = part.markup;
+  }
+  return entry;
+}
 
 function updateVectorMapSvgParts(
   svg: SVGSVGElement,
@@ -66,20 +92,44 @@ function updateVectorMapSvgParts(
   }
 
   for (const [index, part] of parts.entries()) {
-    let entry = cache.get(part.key);
-    if (!entry || entry.node.parentNode !== svg) {
-      const node = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-      node.setAttribute('data-map-part', part.key);
-      node.setAttribute('pointer-events', 'none');
-      entry = { node, markup: '' };
-      cache.set(part.key, entry);
-    }
-    if (entry.markup !== part.markup) {
-      entry.node.innerHTML = part.markup;
-      entry.markup = part.markup;
-    }
+    const entry = ensureVectorPartNode(svg, part, cache);
     const current = svg.children[index] ?? null;
     if (current !== entry.node) svg.insertBefore(entry.node, current);
+  }
+}
+
+function updateVectorMapSvgTileParts(
+  svg: SVGSVGElement,
+  tileId: number,
+  parts: readonly VectorMapSvgPart[],
+  cache: Map<string, VectorMapPartNode>,
+): void {
+  const prefix = `tile:${tileId}:`;
+  const wanted = new Set(parts.map((part) => part.key));
+  for (const [key, entry] of cache) {
+    if (!key.startsWith(prefix) || wanted.has(key)) continue;
+    entry.node.remove();
+    cache.delete(key);
+  }
+  for (const part of [...parts].sort(compareVectorParts)) {
+    const entry = ensureVectorPartNode(svg, part, cache);
+    let next: Element | null = null;
+    for (const child of svg.children) {
+      if (child === entry.node) continue;
+      const childKey = child.getAttribute('data-map-part');
+      const childEntry = childKey ? cache.get(childKey) : undefined;
+      if (childEntry && compareVectorParts(part, {
+        key: childKey!,
+        order: childEntry.order,
+        markup: childEntry.markup,
+      }) < 0) {
+        next = child;
+        break;
+      }
+    }
+    if (entry.node.parentNode !== svg || entry.node.nextElementSibling !== next) {
+      svg.insertBefore(entry.node, next);
+    }
   }
 }
 
@@ -350,6 +400,62 @@ type LabelScreenBounds = { left: number; top: number; right: number; bottom: num
 type MapLabelLayout = { occupied: LabelScreenBounds[]; svg: string };
 const mapLabelLayoutCaches = new WeakMap<object, Map<string, MapLabelLayout>>();
 
+function mapLabelLayoutCacheKey(
+  game: MapViewProps['game'],
+  view: ViewTransform,
+  baseScale: number,
+  width: number,
+  height: number,
+  labels: readonly CountryMapLabel[],
+  labelsRevision: number,
+  avoidToolOverlay: boolean,
+): string {
+  const snapshot = game.getSnapshot();
+  return [
+    snapshot.mapMode,
+    snapshot.layer?.kind ?? '',
+    snapshot.layer?.id ?? '',
+    snapshot.selectedCountryId ?? '',
+    labelsRevision,
+    game.world.geographyRevision,
+    view.scale.toPrecision(9),
+    view.ox.toPrecision(9),
+    view.oy.toPrecision(9),
+    baseScale.toPrecision(9),
+    width,
+    height,
+    avoidToolOverlay ? 1 : 0,
+    labels.map((label) => `${label.key}\u0001${label.text}`).join('\u0002'),
+  ].join('\u0003');
+}
+
+function cachedMapLabelLayout(world: object, key: string): MapLabelLayout | null {
+  const cache = mapLabelLayoutCaches.get(world);
+  const saved = cache?.get(key);
+  if (!cache || !saved) return null;
+  cache.delete(key);
+  cache.set(key, saved);
+  return saved;
+}
+
+function saveMapLabelLayout(world: object, key: string, result: MapLabelLayout): void {
+  let cache = mapLabelLayoutCaches.get(world);
+  if (!cache) {
+    cache = new Map();
+    mapLabelLayoutCaches.set(world, cache);
+  }
+  cache.set(key, result);
+  while (cache.size > 32) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+function nextMapRenderFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 function mapLabelSourceRevision(game: MapViewProps['game'], mode: MapMode): string {
   const contourLayers: readonly ContourLayerName[] = mode === 'cultures'
     ? ['owner', 'culture']
@@ -549,7 +655,7 @@ function measuredCountryTextWidthFactor(ctx: CanvasRenderingContext2D, value: st
   return factor;
 }
 
-function drawMapLabels(
+async function drawMapLabels(
   ctx: CanvasRenderingContext2D,
   game: MapViewProps['game'],
   view: ViewTransform,
@@ -558,35 +664,26 @@ function drawMapLabels(
   height: number,
   labels: readonly CountryMapLabel[],
   labelsRevision: number,
+  shouldContinue: () => boolean,
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
   avoidToolOverlay = false,
-): MapLabelLayout {
+): Promise<MapLabelLayout | null> {
+  if (!shouldContinue()) return null;
   const snapshot = game.getSnapshot();
-  const cacheKey = [
-    snapshot.mapMode,
-    snapshot.layer?.kind ?? '',
-    snapshot.layer?.id ?? '',
-    snapshot.selectedCountryId ?? '',
-    labelsRevision,
-    game.world.geographyRevision,
-    view.scale.toPrecision(9),
-    view.ox.toPrecision(9),
-    view.oy.toPrecision(9),
-    baseScale.toPrecision(9),
-    width,
-    height,
-    avoidToolOverlay ? 1 : 0,
-    labels.map((label) => `${label.key}\u0001${label.text}`).join('\u0002'),
-  ].join('\u0003');
+  const cacheKey = mapLabelLayoutCacheKey(
+    game, view, baseScale, width, height, labels, labelsRevision, avoidToolOverlay,
+  );
   if (!projectMapPoint) {
-    const cache = mapLabelLayoutCaches.get(game.world);
-    const cached = cache?.get(cacheKey);
-    if (cache && cached) {
-      cache.delete(cacheKey);
-      cache.set(cacheKey, cached);
-      return cached;
-    }
+    const cached = cachedMapLabelLayout(game.world, cacheKey);
+    if (cached) return cached;
   }
+  let workSliceStarted = performance.now();
+  const yieldIfNeeded = async (): Promise<boolean> => {
+    if (performance.now() - workSliceStarted < 8) return shouldContinue();
+    await nextMapRenderFrame();
+    workSliceStarted = performance.now();
+    return shouldContinue();
+  };
   const elements: string[] = [];
   const ratio = view.scale / Math.max(baseScale, 0.0001);
   const text = (value: string, x: number, y: number, size: number, color: string, maxWidth?: number) => {
@@ -789,26 +886,29 @@ function drawMapLabels(
         bottom: layout.y + extentY + margin,
       },
     });
+    if (!await yieldIfNeeded()) return null;
   }
   pendingLabels.sort((a, b) =>
     Number(b.label.selected) - Number(a.label.selected) ||
     b.layout.fontSize - a.layout.fontSize ||
     a.label.key.localeCompare(b.label.key));
   for (const pending of pendingLabels) {
-    if ([...occupiedLabels, ...cityIconBounds].some((bounds) =>
-      labelBoundsOverlap(pending.bounds, bounds))) continue;
-    occupiedLabels.push(pending.bounds);
-    trackedCountryLabel(
-      pending.label.text,
-      pending.layout.x,
-      pending.layout.y,
-      pending.layout.fontSize,
-      pending.layout.letterSpacing,
-      pending.color,
-      pending.layout.angle,
-      pending.layout.path,
-      pending.layout.lines,
-    );
+    if (![...occupiedLabels, ...cityIconBounds].some((bounds) =>
+      labelBoundsOverlap(pending.bounds, bounds))) {
+      occupiedLabels.push(pending.bounds);
+      trackedCountryLabel(
+        pending.label.text,
+        pending.layout.x,
+        pending.layout.y,
+        pending.layout.fontSize,
+        pending.layout.letterSpacing,
+        pending.color,
+        pending.layout.angle,
+        pending.layout.path,
+        pending.layout.lines,
+      );
+    }
+    if (!await yieldIfNeeded()) return null;
   }
 
   for (const { feature, active, isVolcano, x, y, size } of featureMarks) {
@@ -836,17 +936,7 @@ function drawMapLabels(
   drawRiverNames(ctx, game, view, baseScale, width, height, projectMapPoint, occupiedLabels, cityIconBounds, elements);
   const result = { occupied: occupiedLabels, svg: elements.join('') };
   if (!projectMapPoint) {
-    let cache = mapLabelLayoutCaches.get(game.world);
-    if (!cache) {
-      cache = new Map();
-      mapLabelLayoutCaches.set(game.world, cache);
-    }
-    cache.set(cacheKey, result);
-    while (cache.size > 32) {
-      const oldest = cache.keys().next().value;
-      if (oldest === undefined) break;
-      cache.delete(oldest);
-    }
+    saveMapLabelLayout(game.world, cacheKey, result);
   }
   return result;
 }
@@ -869,6 +959,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const terrainRendererRef = useRef<Terrain3DRenderer | null>(null);
   const terrainErrorRef = useRef<string | null>(null);
   const vectorCoverageRef = useRef<{ sceneKey: string; bounds: VectorMapViewport } | null>(null);
+  const vectorBuildJobRef = useRef<{ key: string; generation: number } | null>(null);
+  const vectorBuildGenerationRef = useRef(0);
   const mapLabelDataRef = useRef<{
     scope: string;
     sourceRevision: string;
@@ -876,8 +968,14 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     revision: number;
     labels: CountryMapLabel[];
   } | null>(null);
+  const mapLabelLayoutJobRef = useRef<{ key: string; generation: number } | null>(null);
+  const mapLabelLayoutGenerationRef = useRef(0);
+  const mapLabelLayoutResultRef = useRef<{ key: string; result: MapLabelLayout } | null>(null);
+  const overlayLabelViewRef = useRef<ViewTransform | null>(null);
+  const overlaySceneKeyRef = useRef('');
+  const overlaySizeRef = useRef({ width: 0, height: 0 });
   const cityImagesRef = useRef<(HTMLImageElement | null)[]>([]);
-  const redrawRef = useRef<() => void>(() => {});
+  const redrawRef = useRef<(force?: boolean) => void>(() => {});
   const viewRef = useRef<ViewTransform>({ scale: 1, ox: 0, oy: 0 });
   const sizeRef = useRef({ width: 1, height: 1, dpr: 1 });
   const baseScaleRef = useRef(1);
@@ -926,13 +1024,6 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       y1: Math.min(MAP_HEIGHT - 1, Math.ceil((height - view.oy) / view.scale) + 1),
     };
     const visibleBoundsKey = `${visibleBounds.x0}:${visibleBounds.y0}:${visibleBounds.x1}:${visibleBounds.y1}`;
-    const padding = 128;
-    const renderBounds = {
-      x0: Math.max(0, Math.floor((visibleBounds.x0 - padding) / padding) * padding),
-      y0: Math.max(0, Math.floor((visibleBounds.y0 - padding) / padding) * padding),
-      x1: Math.min(MAP_WIDTH, Math.ceil((visibleBounds.x1 + padding) / padding) * padding),
-      y1: Math.min(MAP_HEIGHT - 1, Math.ceil((visibleBounds.y1 + padding) / padding) * padding),
-    };
     const layer = game.renderer.layer;
     const sceneKey = `${mapMode}:${layer?.kind ?? ''}:${layer?.id ?? ''}:${snapshot.selectedCountryId ?? ''}:${snapshot.role}:${snapshot.focusCountry?.id ?? 'world'}`;
     const cachedCoverage = vectorCoverageRef.current;
@@ -958,47 +1049,106 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       game.mapDrawn();
       return;
     }
-    if (needsVectorUpdate && visibleBounds.x1 >= visibleBounds.x0 && visibleBounds.y1 >= visibleBounds.y0) {
-      const vectorBuildStarted = performance.now();
-      let tileCache = vectorTilePartsRef.current;
-      if (tileCache.sceneKey !== sceneKey) {
-        tileCache = { sceneKey, tiles: new Map() };
-        vectorTilePartsRef.current = tileCache;
-      }
-      let rebuiltTiles = 0;
-      const vectorParts: VectorMapSvgPart[] = [];
-      for (const tile of game.renderer.vectorTilesIn(renderBounds)) {
-        let cached = tileCache.tiles.get(tile.id);
-        if (!cached || cached.revision !== tile.revision) {
-          cached = {
-            revision: tile.revision,
-            parts: buildVectorMapSvgTileParts(game, tile.bounds, tile.id),
-          };
-          tileCache.tiles.set(tile.id, cached);
-          rebuiltTiles += 1;
-        }
-        vectorParts.push(...cached.parts);
-      }
-      vectorParts.push(...buildVectorMapSvgNomadParts(game));
-      vectorParts.sort((first, second) => first.order - second.order || first.key.localeCompare(second.key));
-      updateVectorMapSvgParts(vectorSvg, vectorParts, vectorPartNodesRef.current);
-      recordMapPerformanceTiming({
-        stage: 'vector-map-tile-build',
-        mode: mapMode,
-        count: rebuiltTiles,
-        durationMs: performance.now() - vectorBuildStarted,
-        busy: snapshot.busy,
-        worldVersion: game.world.version,
-        countryCount: game.world.countries.length,
+    const vectorTiles = game.renderer.vectorTilesIn(visibleBounds);
+    const vectorBuildKey = `${sceneKey}:${visibleBoundsKey}`;
+    const runningVectorJob = vectorBuildJobRef.current;
+    if (runningVectorJob && runningVectorJob.key !== vectorBuildKey) {
+      vectorBuildGenerationRef.current += 1;
+      vectorBuildJobRef.current = null;
+    }
+    let tileCache = vectorTilePartsRef.current;
+    if (tileCache.sceneKey !== sceneKey) {
+      updateVectorMapSvgParts(vectorSvg, [], vectorPartNodesRef.current);
+      tileCache = { sceneKey, tiles: new Map() };
+      vectorTilePartsRef.current = tileCache;
+      vectorCoverageRef.current = null;
+    }
+    if (!cameraGestureActiveRef.current && needsVectorUpdate &&
+      visibleBounds.x1 >= visibleBounds.x0 && visibleBounds.y1 >= visibleBounds.y0) {
+      const staleTiles = vectorTiles.filter((tile) => {
+        const cached = tileCache.tiles.get(tile.id);
+        return !cached || cached.revision !== tile.revision;
       });
-      vectorCoverageRef.current = { sceneKey, bounds: renderBounds };
-      game.renderer.acknowledge({ ...renderBounds, x1: renderBounds.x1 - 1 });
+      if (staleTiles.length > 0) {
+        const currentJob = vectorBuildJobRef.current;
+        if (!currentJob || currentJob.key !== vectorBuildKey) {
+          const generation = ++vectorBuildGenerationRef.current;
+          vectorBuildJobRef.current = { key: vectorBuildKey, generation };
+          const vectorBuildStarted = performance.now();
+          void (async () => {
+            let workSliceStarted = performance.now();
+            for (const tile of staleTiles) {
+              if (vectorBuildGenerationRef.current !== generation ||
+                !routeActiveRef.current || !pageVisibleRef.current) return;
+              const parts = buildVectorMapSvgTileParts(game, tile.bounds, tile.id);
+              tileCache.tiles.set(tile.id, { revision: tile.revision, parts });
+              updateVectorMapSvgTileParts(vectorSvg, tile.id, parts, vectorPartNodesRef.current);
+              if (performance.now() - workSliceStarted >= 8) {
+                await nextMapRenderFrame();
+                workSliceStarted = performance.now();
+                if (vectorBuildGenerationRef.current !== generation ||
+                  !routeActiveRef.current || !pageVisibleRef.current) return;
+              }
+            }
+            if (vectorBuildGenerationRef.current !== generation ||
+              !routeActiveRef.current || !pageVisibleRef.current) return;
+            const latestTiles = game.renderer.vectorTilesIn(visibleBounds);
+            const hasUnbuiltRevision = latestTiles.some((tile) => {
+              const cached = tileCache.tiles.get(tile.id);
+              return !cached || cached.revision !== tile.revision;
+            });
+            if (hasUnbuiltRevision) {
+              vectorBuildJobRef.current = null;
+              redrawRef.current();
+              return;
+            }
+            const vectorParts: VectorMapSvgPart[] = [];
+            for (const tile of latestTiles) {
+              const cached = tileCache.tiles.get(tile.id);
+              if (cached) vectorParts.push(...cached.parts);
+            }
+            vectorParts.push(...buildVectorMapSvgNomadParts(game));
+            vectorParts.sort(compareVectorParts);
+            updateVectorMapSvgParts(vectorSvg, vectorParts, vectorPartNodesRef.current);
+            vectorCoverageRef.current = { sceneKey, bounds: visibleBounds };
+            game.renderer.acknowledge(visibleBounds);
+            recordMapPerformanceTiming({
+              stage: 'vector-map-tile-build',
+              mode: mapMode,
+              count: staleTiles.length,
+              durationMs: performance.now() - vectorBuildStarted,
+              busy: snapshot.busy,
+              worldVersion: game.world.version,
+              countryCount: game.world.countries.length,
+            });
+            vectorBuildJobRef.current = null;
+            redrawRef.current();
+          })().catch((error) => {
+            if (vectorBuildGenerationRef.current === generation) {
+              vectorBuildJobRef.current = null;
+            }
+            console.error('Не удалось обновить векторную плитку карты:', error);
+          });
+        }
+      } else {
+        const vectorParts: VectorMapSvgPart[] = [];
+        for (const tile of vectorTiles) {
+          const cached = tileCache.tiles.get(tile.id);
+          if (cached) vectorParts.push(...cached.parts);
+        }
+        vectorParts.push(...buildVectorMapSvgNomadParts(game));
+        vectorParts.sort(compareVectorParts);
+        updateVectorMapSvgParts(vectorSvg, vectorParts, vectorPartNodesRef.current);
+        vectorCoverageRef.current = { sceneKey, bounds: visibleBounds };
+        game.renderer.acknowledge(visibleBounds);
+      }
     }
     if (!cameraGestureActiveRef.current) {
       vectorSvg.setAttribute(
         'viewBox',
         `${-view.ox / view.scale} ${-view.oy / view.scale} ${width / view.scale} ${height / view.scale}`,
       );
+      vectorSvg.style.transform = 'none';
     }
     overlaySvg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     const overlayElements: string[] = [];
@@ -1024,10 +1174,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       }
     } else {
       if (terrainCanvas) terrainCanvas.style.display = 'none';
-      if (drawOverlay) overlayElements.push(drawRiversSvg(game, view, width, height, baseScaleRef.current));
     }
     if (drawOverlay) {
-      overlayElements.push(drawCityInfluenceSvg(game, view, width, height, baseScaleRef.current));
       const measureContext = getTextMeasureContext();
       const projectMapPoint = isElevation && terrainRendererRef.current
         ? (x: number, y: number) => terrainRendererRef.current?.projectMapPoint(
@@ -1038,6 +1186,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         ) ?? null
         : undefined;
       let labelResult: MapLabelLayout = { occupied: [], svg: '' };
+      let layoutReady = true;
+      let labelsCount = 0;
       if (measureContext) {
         const scope = `${mapMode}:${snapshot.layer?.kind ?? ''}:${snapshot.layer?.id ?? ''}:${snapshot.selectedCountryId ?? ''}`;
         const cachedLabels = mapLabelDataRef.current;
@@ -1086,27 +1236,83 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
             durationMs: performance.now() - labelStartedAt,
           });
         }
-        const labelLayoutStartedAt = performance.now();
-        labelResult = drawMapLabels(
-          measureContext,
+        const labelData = mapLabelDataRef.current;
+        const labels = labelData?.labels ?? [];
+        const labelsRevision = labelData?.revision ?? 0;
+        labelsCount = labels.length;
+        const layoutKey = mapLabelLayoutCacheKey(
           game,
           view,
           baseScaleRef.current,
           width,
           height,
-          mapLabelDataRef.current?.labels ?? [],
-          mapLabelDataRef.current?.revision ?? 0,
-          projectMapPoint,
+          labels,
+          labelsRevision,
           avoidToolOverlay,
         );
-        recordMapPerformanceTiming({
-          stage: 'label-layout',
-          mode: mapMode,
-          count: mapLabelDataRef.current?.labels.length ?? 0,
-          durationMs: performance.now() - labelLayoutStartedAt,
-        });
+        const localLayout = mapLabelLayoutResultRef.current;
+        const readyLayout = localLayout?.key === layoutKey
+          ? localLayout.result
+          : (!projectMapPoint ? cachedMapLabelLayout(game.world, layoutKey) : null);
+        if (readyLayout) {
+          labelResult = readyLayout;
+          mapLabelLayoutResultRef.current = { key: layoutKey, result: labelResult };
+        } else {
+          layoutReady = false;
+          const currentJob = mapLabelLayoutJobRef.current;
+          if (!currentJob || currentJob.key !== layoutKey) {
+            const generation = ++mapLabelLayoutGenerationRef.current;
+            mapLabelLayoutJobRef.current = { key: layoutKey, generation };
+            const layoutStartedAt = performance.now();
+            void drawMapLabels(
+              measureContext,
+              game,
+              view,
+              baseScaleRef.current,
+              width,
+              height,
+              labels,
+              labelsRevision,
+              () => routeActiveRef.current
+                && pageVisibleRef.current
+                && mapLabelLayoutGenerationRef.current === generation,
+              projectMapPoint,
+              avoidToolOverlay,
+            ).then((result) => {
+              if (mapLabelLayoutGenerationRef.current !== generation) return;
+              mapLabelLayoutJobRef.current = null;
+              if (!result) return;
+              mapLabelLayoutResultRef.current = { key: layoutKey, result };
+              recordMapPerformanceTiming({
+                stage: 'label-layout',
+                mode: mapMode,
+                count: labelsCount,
+                durationMs: performance.now() - layoutStartedAt,
+                busy: snapshot.busy,
+                worldVersion: game.world.version,
+                countryCount: game.world.countries.length,
+              });
+              redrawRef.current();
+            }).catch((error) => {
+              if (mapLabelLayoutGenerationRef.current === generation) {
+                mapLabelLayoutJobRef.current = null;
+              }
+              console.error('Не удалось расположить подписи карты:', error);
+            });
+          }
+        }
+        const pendingJob = mapLabelLayoutJobRef.current;
+        if (layoutReady && pendingJob && pendingJob.key !== layoutKey) {
+          mapLabelLayoutGenerationRef.current += 1;
+          mapLabelLayoutJobRef.current = null;
+        }
       }
-      overlayElements.push(labelResult.svg);
+      if (layoutReady) {
+        if (!isElevation) {
+          overlayElements.push(drawRiversSvg(game, view, width, height, baseScaleRef.current));
+        }
+        overlayElements.push(drawCityInfluenceSvg(game, view, width, height, baseScaleRef.current));
+        overlayElements.push(labelResult.svg);
       const cityLabelStartedAt = performance.now();
       const cityLabelIds = visibleCityLabelIds(
         game.world,
@@ -1197,7 +1403,20 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         overlayElements.push(svgText(`3D-рельеф недоступен: ${terrainErrorRef.current}`, width / 2, height / 2, 15, '#f0e7d2', '#241e18', 2));
       }
       overlaySvg.innerHTML = overlayElements.join('');
+      overlaySvg.style.transform = 'none';
+      overlayLabelViewRef.current = { ...view };
+      overlaySceneKeyRef.current = sceneKey;
+      overlaySizeRef.current = { width, height };
       game.renderer.acknowledgeOverlay(visibleBounds);
+      } else if (overlaySceneKeyRef.current !== sceneKey ||
+        overlaySizeRef.current.width !== width ||
+        overlaySizeRef.current.height !== height) {
+        overlaySvg.innerHTML = '';
+        overlaySvg.style.transform = 'none';
+        overlayLabelViewRef.current = null;
+        overlaySceneKeyRef.current = sceneKey;
+        overlaySizeRef.current = { width, height };
+      }
     }
     game.mapDrawn();
     lastDrawStateRef.current = {
@@ -1234,12 +1453,15 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       routeActiveRef.current = false;
       cameraGestureActiveRef.current = false;
       cameraGestureBaseRef.current = null;
+      mapLabelLayoutGenerationRef.current += 1;
+      mapLabelLayoutJobRef.current = null;
+      vectorBuildGenerationRef.current += 1;
+      vectorBuildJobRef.current = null;
       if (wheelEndTimerRef.current !== null) {
         window.clearTimeout(wheelEndTimerRef.current);
         wheelEndTimerRef.current = null;
       }
       if (vectorSvgRef.current) vectorSvgRef.current.style.transform = 'none';
-      if (overlaySvgRef.current) overlaySvgRef.current.style.transform = 'none';
       if (terrainCanvasRef.current) terrainCanvasRef.current.style.transform = 'none';
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
       frameRef.current = 0;
@@ -1251,9 +1473,15 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       pageVisibleRef.current = document.visibilityState !== 'hidden';
       if (pageVisibleRef.current) {
         requestDraw();
-      } else if (frameRef.current) {
-        cancelAnimationFrame(frameRef.current);
-        frameRef.current = 0;
+      } else {
+        mapLabelLayoutGenerationRef.current += 1;
+        mapLabelLayoutJobRef.current = null;
+        vectorBuildGenerationRef.current += 1;
+        vectorBuildJobRef.current = null;
+        if (frameRef.current) {
+          cancelAnimationFrame(frameRef.current);
+          frameRef.current = 0;
+        }
       }
     };
     document.addEventListener('visibilitychange', updatePageVisibility);
@@ -1296,13 +1524,20 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       viewRef.current = view;
       if (cameraGestureActiveRef.current) {
         const base = cameraGestureBaseRef.current ?? view;
-        const ratio = view.scale / base.scale;
-        const transform = `translate3d(${view.ox - ratio * base.ox}px, ${view.oy - ratio * base.oy}px, 0) scale(${ratio})`;
-        for (const element of [vectorSvgRef.current, overlaySvgRef.current, terrainCanvasRef.current]) {
+        const transformFrom = (source: ViewTransform) => {
+          const ratio = view.scale / source.scale;
+          return `translate3d(${view.ox - ratio * source.ox}px, ${view.oy - ratio * source.oy}px, 0) scale(${ratio})`;
+        };
+        const transform = transformFrom(base);
+        for (const element of [vectorSvgRef.current, terrainCanvasRef.current]) {
           if (element) {
             element.style.transformOrigin = '0 0';
             element.style.transform = transform;
           }
+        }
+        if (overlaySvgRef.current) {
+          overlaySvgRef.current.style.transformOrigin = '0 0';
+          overlaySvgRef.current.style.transform = transformFrom(overlayLabelViewRef.current ?? base);
         }
         requestDraw(false);
       } else requestDraw();
@@ -1314,7 +1549,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (cameraGestureActiveRef.current) return;
     cameraGestureActiveRef.current = true;
     cameraGestureBaseRef.current = { ...viewRef.current };
-    for (const element of [vectorSvgRef.current, overlaySvgRef.current, terrainCanvasRef.current]) {
+    for (const element of [vectorSvgRef.current, terrainCanvasRef.current]) {
       if (element) element.style.transform = 'none';
     }
   }, []);
@@ -1326,9 +1561,6 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (wheelEndTimerRef.current !== null) {
       window.clearTimeout(wheelEndTimerRef.current);
       wheelEndTimerRef.current = null;
-    }
-    for (const element of [vectorSvgRef.current, overlaySvgRef.current, terrainCanvasRef.current]) {
-      if (element) element.style.transform = 'none';
     }
     requestDraw();
   }, [requestDraw]);

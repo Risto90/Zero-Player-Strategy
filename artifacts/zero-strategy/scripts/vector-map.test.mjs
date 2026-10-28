@@ -135,7 +135,11 @@ assert.match(tileParts.map((part) => part.markup).join(''), /data-contour="count
   'изменяемая плитка сохраняет контурную заливку государства');
 
 const mapView = readFileSync(resolve(process.cwd(), 'components/map/MapView.web.tsx'), 'utf8');
-assert.match(mapView, /vectorTilesIn\(renderBounds\)/u, 'отрисовка получает только плитки видимого окна');
+assert.match(mapView, /vectorTilesIn\(visibleBounds\)/u, 'отрисовка выбирает плитки только видимой области');
+assert.match(mapView, /vectorCoverageRef\.current = \{ sceneKey, bounds: visibleBounds \}/u,
+  'кэш покрытия не включает область за пределами экрана');
+assert.match(mapView, /game\.renderer\.acknowledge\(visibleBounds\)/u,
+  'изменения за пределами экрана остаются ожидающими отрисовки');
 assert.match(mapView, /buildVectorMapSvgTileParts\(game, tile\.bounds, tile\.id\)/u,
   'изменённый контур пересобирается отдельно от неизменённых плиток');
 assert.match(mapView, /updateVectorMapSvgParts\(vectorSvg, vectorParts, vectorPartNodesRef\.current\)/u,
