@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useFonts } from 'expo-font';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useFocusEffect } from 'expo-router';
 import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
@@ -932,6 +933,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const sizeRef = useRef({ width: 1, height: 1, dpr: 1 });
   const baseScaleRef = useRef(1);
   const frameRef = useRef(0);
+  const routeFocusedRef = useRef(false);
   const panActiveRef = useRef(false);
   const orbitPointerRef = useRef<number | null>(null);
   const orbitLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -945,6 +947,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
 
   const draw = useCallback(() => {
     frameRef.current = 0;
+    if (!routeFocusedRef.current ||
+        (typeof document !== 'undefined' && document.visibilityState === 'hidden') ||
+        game.getSnapshot().busy) return;
     const drawSamples = typeof window === 'undefined'
       ? undefined
       : (window as MapDrawWindow).__ZERO_STRATEGY_MAP_DRAW_TIMINGS__;
@@ -1130,9 +1135,36 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   }, [game, iconFontsLoaded]);
 
   const requestDraw = useCallback(() => {
+    if (!routeFocusedRef.current ||
+        (typeof document !== 'undefined' && document.visibilityState === 'hidden') ||
+        game.getSnapshot().busy) return;
     if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
   }, [draw]);
   redrawRef.current = requestDraw;
+
+  useFocusEffect(useCallback(() => {
+    routeFocusedRef.current = true;
+    requestDraw();
+    return () => {
+      routeFocusedRef.current = false;
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
+      frameRef.current = 0;
+    };
+  }, [requestDraw]));
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const updateVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        if (frameRef.current) cancelAnimationFrame(frameRef.current);
+        frameRef.current = 0;
+      } else if (routeFocusedRef.current) {
+        requestDraw();
+      }
+    };
+    document.addEventListener('visibilitychange', updateVisibility);
+    return () => document.removeEventListener('visibilitychange', updateVisibility);
+  }, [requestDraw]);
 
   const mapMode = game.getSnapshot().mapMode;
   useEffect(() => {

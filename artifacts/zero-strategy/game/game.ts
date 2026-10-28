@@ -216,7 +216,7 @@ interface SavedGame {
 
 const OBSERVER_SECONDS = 3;
 /** Работа разбивается на отрезки такой длительности, чтобы экран не зависал. */
-const SLICE_MS = 12;
+const SLICE_MS = 8;
 const EMPTY_TEST_LEGEND: Legend = {
   countries: [],
   cultures: [],
@@ -235,8 +235,15 @@ function onSaveFile<T>(op: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** Даёт интерфейсу обновиться между отрезками работы. */
-export const nextFrame = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+/** Передаёт управление браузеру до следующего кадра, не удерживая основной поток симуляцией. */
+export const nextFrame = (): Promise<void> => new Promise((resolve) => {
+  if (typeof requestAnimationFrame === 'function' &&
+      (typeof document === 'undefined' || document.visibilityState !== 'hidden')) {
+    requestAnimationFrame(() => resolve());
+  } else {
+    setTimeout(resolve, 0);
+  }
+});
 
 export class Game {
   readonly renderer: MapRenderer;
@@ -464,7 +471,8 @@ export class Game {
   private emit(mapChanged = false): void {
     this.snapshot = null;
     this.listeners.forEach((listener) => listener());
-    if (mapChanged) this.mapListeners.forEach((listener) => listener());
+    // Во время пакетного хода холст не нужен ИИ: копим грязные контуры и обновляем карту один раз в конце.
+    if (mapChanged && !this.busy) this.mapListeners.forEach((listener) => listener());
   }
 
   private setMessage(message: string, recipient: NotificationRecipient = this.messageRecipient): void {
