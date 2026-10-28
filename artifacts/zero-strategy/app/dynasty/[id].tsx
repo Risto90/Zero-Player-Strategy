@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react
 import {
   Animated,
   PanResponder,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -152,8 +151,8 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
     [game.world.version, model.nodes],
   );
   const familyName = familyMembers[0]?.familyName ?? model.nodes.find((node) => node.isDynastyMember)?.person.familyName ?? 'Династия';
-  const safeTop = insets.top + (Platform.OS === 'web' ? 67 : 0);
-  const safeBottom = insets.bottom + (Platform.OS === 'web' ? 34 : 0);
+  const safeTop = insets.top + 67;
+  const safeBottom = insets.bottom + 34;
 
   const centerPoint = (point: { x: number; y: number }, width = viewport.width, height = viewport.height) => {
     if (width <= 0 || height <= 0) return;

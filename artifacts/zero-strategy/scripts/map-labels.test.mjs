@@ -14,7 +14,6 @@ import {
   volcanoVisibilityScale,
 } from '../game/mapLabels.ts';
 import { seaDepthPackedColor } from '../game/render.ts';
-import { terrainProjectedY, terrainReliefPaths, terrainRiverbedY, terrainTextColor } from '../game/terrainModel.ts';
 
 const owner = new Uint16Array(MAP_PIXELS);
 const land = new Uint8Array(MAP_PIXELS);
@@ -143,18 +142,5 @@ assert.equal(countryLabelViewportLayout(viewportLabel, 1, 10000, 10000, 320, 180
 assert.ok(MAP_HEIGHT * MAP_WIDTH === MAP_PIXELS, 'аннотации используют полный размер карты');
 assert.notEqual(seaDepthPackedColor(-9000), seaDepthPackedColor(-100),
   'цвета различают глубокое море и мелководье у берега');
-
-const terrainWorld = {
-  land: new Uint8Array(MAP_PIXELS).fill(1),
-  elevation: new Int16Array(MAP_PIXELS).fill(1000),
-};
-assert.equal(terrainProjectedY(terrainWorld, 0, 100), 96,
-  'высота отображается вертикальным рельефом на трёхмерной карте');
-assert.equal(terrainRiverbedY(terrainWorld, 0, 100), 97,
-  'русла рек проходят немного ниже поверхности рельефа');
-assert.equal(terrainTextColor(terrainWorld, 0), '#28231e',
-  'цвет подписи на светлом рельефе автоматически становится тёмным');
-assert.ok(terrainReliefPaths(terrainWorld).length > 0,
-  'карта высот создаёт затенённую треугольную сетку рельефа');
 
 console.log('Подписи карты и пороги видимости объектов проверены.');

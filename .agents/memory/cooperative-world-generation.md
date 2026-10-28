@@ -1,9 +1,9 @@
 ---
-name: Cooperative world generation
-description: Keep slow startup work responsive on mobile without changing seeded map results.
+name: Пошаговая генерация мира
+description: Не блокировать браузерный интерфейс при создании мира и сохранять детерминированный результат.
 ---
-The app's mobile startup path should break expensive map preparation into bounded work slices that yield to the UI. Keep it output-identical to the synchronous generator, which remains useful for tests and non-interactive callers.
+Браузерный путь создания мира разбивает дорогую подготовку карты на ограниченные отрезки и уступает управление интерфейсу. Результат должен совпадать с синхронным генератором, который остаётся полезным для тестов и невзаимодействующих вызовов.
 
-**Why:** synchronous map generation blocked Android's startup UI; async startup now has a regression test comparing map data against the original synchronous path.
+**Why:** синхронная генерация блокировала интерфейс при запуске браузерной игры; асинхронный путь проверяется на совпадение данных с исходным синхронным путём.
 
-**How to apply:** when changing seeded geography, update both paths and keep parity checks for both the real-world and random maps.
+**How to apply:** при изменении генерации карты обновлять оба пути и сохранять проверки совпадения для реального и случайного миров.

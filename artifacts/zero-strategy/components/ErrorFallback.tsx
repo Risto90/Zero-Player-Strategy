@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -40,12 +39,6 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
     }
     return details;
   };
-
-  const monoFont = Platform.select({
-    ios: 'Menlo',
-    android: 'monospace',
-    default: 'monospace',
-  });
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -150,7 +143,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
                       styles.errorText,
                       {
                         color: colors.foreground,
-                        fontFamily: monoFont,
+                         fontFamily: 'monospace',
                       },
                     ]}
                     selectable

@@ -15,6 +15,8 @@ export interface GestureHost {
   tool(): MapTool;
   canPaint(): boolean;
   onInspect(info: PixelInfo | null): void;
+  /** Точка на рельефе для 3D-режима; остальные слои используют плоское преобразование. */
+  mapPointAt?(x: number, y: number): Point;
   /** Brush cursor in screen coordinates, or null to hide it. */
   setCursor(point: Point | null): void;
 }
@@ -22,8 +24,8 @@ export interface GestureHost {
 type Kind = 'none' | 'paint' | 'pan' | 'pinch';
 
 /**
- * One finger paints (brush) or pans; the city tool places a city on tap.
- * A short tap with the hand tool inspects the point. Shared by the phone and web map views.
+ * One pointer paints (brush) or pans; the city tool places a city on tap.
+ * A short tap with the hand tool inspects the point.
  */
 export class MapGestures {
   private readonly points = new Map<number, Point>();
@@ -34,6 +36,10 @@ export class MapGestures {
   private pinchMid: Point = { x: 0, y: 0 };
 
   constructor(private readonly host: GestureHost) {}
+
+  private mapPoint(x: number, y: number): Point {
+    return this.host.mapPointAt?.(x, y) ?? toMap(this.host.getView(), x, y);
+  }
 
   /** Syncs with the full list of touches currently on the map. */
   sync(touches: { id: number; x: number; y: number }[]): void {
@@ -75,7 +81,7 @@ export class MapGestures {
     this.moved = false;
     if (paint) {
       host.setCursor({ x, y });
-      const m = toMap(host.getView(), x, y);
+      const m = this.mapPoint(x, y);
       host.game.beginStroke(m.x, m.y);
     }
   }
@@ -102,7 +108,7 @@ export class MapGestures {
       host.setView(clampView({ scale: view.scale, ox: view.ox + x - previous.x, oy: view.oy + y - previous.y }, width, height));
     } else if (this.kind === 'paint') {
       host.setCursor({ x, y });
-      const m = toMap(host.getView(), x, y);
+      const m = this.mapPoint(x, y);
       host.game.strokeTo(m.x, m.y);
     }
   }
@@ -116,7 +122,7 @@ export class MapGestures {
       host.setCursor(null);
     }
     if (this.kind === 'pan' && !this.moved) {
-      const m = toMap(host.getView(), this.start.x, this.start.y);
+      const m = this.mapPoint(this.start.x, this.start.y);
       if (host.tool() === 'city') host.game.selectCityAt(m.x, m.y);
       else if (host.tool() === 'hand') host.onInspect(host.game.inspect(m.x, m.y));
     }

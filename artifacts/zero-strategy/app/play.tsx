@@ -1,7 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CardPanel } from '@/components/game/CardPanel';
 import { InspectCard } from '@/components/game/InspectCard';
@@ -11,7 +11,7 @@ import { MapLegend } from '@/components/game/MapLegend';
 import { MapControls } from '@/components/game/MapControls';
 import { ModeTabs } from '@/components/game/ModeTabs';
 import { Loading } from '@/components/Loading';
-import { MapView } from '@/components/map/MapView';
+import { MapView } from '@/components/map/MapView.web';
 import type { MapTool, MapViewHandle } from '@/components/map/types';
 import colors, { fonts } from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
@@ -105,10 +105,16 @@ export default function PlayScreen() {
 
   useEffect(() => {
     if (!game) return;
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'background' || state === 'inactive') void game.saveNow();
-    });
-    return () => sub.remove();
+    const saveWhenHidden = () => {
+      if (document.visibilityState === 'hidden') void game.saveNow();
+    };
+    const saveBeforeExit = () => void game.saveNow();
+    document.addEventListener('visibilitychange', saveWhenHidden);
+    window.addEventListener('pagehide', saveBeforeExit);
+    return () => {
+      document.removeEventListener('visibilitychange', saveWhenHidden);
+      window.removeEventListener('pagehide', saveBeforeExit);
+    };
   }, [game]);
 
   if (failed) return <Loading text={`Не удалось открыть сохранение: ${failed}`} />;
@@ -117,8 +123,7 @@ export default function PlayScreen() {
 }
 
 function GameScreen({ game }: { game: Game }) {
-  const notificationE2e = Platform.OS === 'web' &&
-    process.env.EXPO_PUBLIC_NOTIFICATION_E2E === 'true';
+  const notificationE2e = process.env.EXPO_PUBLIC_NOTIFICATION_E2E === 'true';
   if (notificationE2e) Game.notificationE2eFastMode = true;
   const snap = useGameSnapshot(game);
   const insets = useSafeAreaInsets();
@@ -160,8 +165,8 @@ function GameScreen({ game }: { game: Game }) {
   const activeNotification = pendingNotifications[0] ?? null;
   const canOpenChoices = canOpenEvent && snap.card?.choices?.length === 2;
   const showTools = 1 + Number(canBrush) + Number(canPlaceCity) + Number(canOpenChoices) >= 2;
-  const webTopInset = Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top;
-  const webBottomInset = Platform.OS === 'web' ? Math.max(insets.bottom, 34) : insets.bottom;
+  const webTopInset = Math.max(insets.top, 67);
+  const webBottomInset = Math.max(insets.bottom, 34);
   const mapHeight = Math.max(160, height - webTopInset - webBottomInset - 72);
   const overlayHeight = Math.max(140, Math.min(620, mapHeight - 56));
 
@@ -299,7 +304,7 @@ function GameScreen({ game }: { game: Game }) {
   }, [activeNotification?.id, snap.role]);
 
   useEffect(() => {
-    if (Platform.OS !== 'web' || process.env.EXPO_PUBLIC_NOTIFICATION_E2E !== 'true') return;
+    if (process.env.EXPO_PUBLIC_NOTIFICATION_E2E !== 'true') return;
     const previousPersist = Game.persist;
     const previousPause = Game.pause;
     const previousFastMode = Game.notificationE2eFastMode;
@@ -327,7 +332,7 @@ function GameScreen({ game }: { game: Game }) {
   }, [game]);
 
   useEffect(() => {
-    if (Platform.OS !== 'web' || process.env.EXPO_PUBLIC_PERF_BENCHMARK !== 'true') return;
+    if (process.env.EXPO_PUBLIC_PERF_BENCHMARK !== 'true') return;
     const previousPersist = Game.persist;
     Game.persist = false;
     game.stop();
@@ -393,7 +398,7 @@ function GameScreen({ game }: { game: Game }) {
         {activeCard && (
           <View style={styles.cardTitleAnchor}>
             <Pressable
-              onPress={() => setCardHelpOpen((open) => Platform.OS === 'web' ? true : !open)}
+              onPress={() => setCardHelpOpen(true)}
               onHoverIn={openCardHelp}
               onHoverOut={closeCardHelp}
               onFocus={openCardHelp}

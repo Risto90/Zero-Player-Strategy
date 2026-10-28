@@ -1,5 +1,5 @@
 - [Zero Strategy balance](zero-strategy-balance.md) — split/faith weights kept low until merge/conquest exists; simulate 150 years in Node to check.
-- [Delivery target](delivery-target.md) — production should open the mobile browser game; the Expo Go launch page is obsolete, but development runtime is not being removed here.
+- [Браузерная реализация](delivery-target.md) — Zero Strategy существует только в браузере; нативные экраны и мобильные варианты кода нужно удалять.
 - [Entity list share bars](entity-list-share-bars.md) — preserve the existing horizontal, entity-colored proportion fill in shared list rows; cities omit it.
 - [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
 - [Map redraw and timer](map-redraw-timer.md) — timer starts only after full redraw; every world mutation must mark its renderer area.
@@ -14,7 +14,7 @@
 - [Consulate and partition](consulate-partition.md) — combined inheritance allocates consul seats by city-limited capacity; keep this exception out of ordinary partition rules.
 - [Card save and resume](save-resume-card-state.md) — a saved map does not capture transient per-card brush progress; resume parity must compare completed outcomes.
 - [Nomad cohort conservation](nomad-cohort-conservation.md) — keep each faith and atheist population exact when splitting nomad cohorts; avoid rounding subgroup shares.
-- [Cooperative world generation](cooperative-world-generation.md) — mobile startup generation must yield between bounded work slices and remain output-identical to the synchronous generator.
+- [Пошаговая генерация мира](cooperative-world-generation.md) — браузерная генерация уступает управление интерфейсу и совпадает с синхронным результатом.
 - [Task handling](task-handling.md) — when the user refers to an existing task, continue that task instead of creating a replacement.
 - [Chronicle object links](chronicle-object-links.md) — record event links explicitly; never infer them from legacy prose, and account for IDs that shift on removal.
 - [City regression runtime](city-regression-runtime.md) — the full city regression suite may exceed short validation windows; keep UI checks targeted and handle performance separately.

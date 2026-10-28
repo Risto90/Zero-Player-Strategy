@@ -1,9 +1,9 @@
 ---
-name: Delivery target
-description: Current production delivery target for Zero Strategy and the boundary with its development runtime.
+name: Браузерная реализация
+description: Поддерживаемая версия Zero Strategy работает только в браузере; мобильные реализации исключены.
 ---
-Production should open Zero Strategy directly in a mobile browser; the published Expo Go launch page is no longer the delivery target. The separate browser-production task changes the production bundle and server path, not necessarily the development runtime or dependencies.
+У Zero Strategy только браузерная реализация. Нативные экраны, карта для телефона и платформенные ветки под iOS/Android не являются целевыми и должны удаляться, а не развиваться. Expo используется как инструмент сборки и запуска браузерной версии.
 
-**Why:** the user pointed to the browser-production task and chose to finish the ink task without changing Expo or the browser launch flow.
+**Why:** 28 октября 2026 года пользователь уточнил, что приложение существует только в браузере и попросил удалить ненужный код для телефона.
 
-**How to apply:** distinguish production delivery from the app's development toolchain. Do not remove Expo dependencies or workflow as part of unrelated game-engine tasks; make those changes only as part of an explicitly approved migration.
+**How to apply:** сохранять один браузерный интерфейс и один браузерный рендерер карты. Не создавать нативные реализации и не добавлять ветки поведения для телефона; оставлять только зависимости Expo, необходимые для браузерной сборки.

@@ -3,6 +3,7 @@ import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
 import { cityLabelFontSize } from '@/game/cityVisibility';
+import { Terrain3DRenderer } from './Terrain3DRenderer';
 import {
   countryLabelViewportLayout,
   countryMapLabels,
@@ -16,15 +17,14 @@ import {
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
 import { discoveredRiverPaths } from '@/game/geographyGeometry';
-import { terrainProjectedY, terrainReliefPaths, terrainRiverbedY, terrainTextColor } from '@/game/terrainModel';
-import { STRIP_H } from '@/game/render';
+import { seaDepthPackedColor, STRIP_H } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
 import { circleHatchLines } from './cityInfluenceHatching';
 import { isCityVisibleAtZoom } from './cityIconMath';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
-import { centerOnMapPoint, clampView, initialView, minScale, zoomAround } from './viewMath';
+import { centerOnMapPoint, clampView, initialView, minScale, toMap, zoomAround } from './viewMath';
 
 function rgba(hex: string, alpha: number) {
   const value = Number.parseInt(hex.slice(1), 16);
@@ -80,8 +80,13 @@ function drawCityInfluence(
 }
 
 function mapTextColor(game: MapViewProps['game'], pixel: number): string {
-  if (game.getSnapshot().mapMode === 'elevation') return terrainTextColor(game.world, pixel);
-  const packed = game.renderer.pixels[pixel] ?? 0xffeeeeee;
+  let packed = game.renderer.pixels[pixel] ?? 0xffeeeeee;
+  if (game.getSnapshot().mapMode === 'elevation') {
+    const elevation = game.world.elevation[pixel] ?? 0;
+    packed = elevation < 0
+      ? seaDepthPackedColor(elevation)
+      : (135 << 16) | (163 << 8) | 174;
+  }
   const red = packed & 255;
   const green = (packed >>> 8) & 255;
   const blue = (packed >>> 16) & 255;
@@ -94,24 +99,6 @@ const RIVER_COLORS: Record<number, string> = {
   2: '#377497',
   3: '#22537d',
 };
-const terrainPathCache = new WeakMap<MapViewProps['game']['world'], Path2D[]>();
-
-function drawTerrainRelief(ctx: CanvasRenderingContext2D, game: MapViewProps['game'], view: ViewTransform) {
-  let paths = terrainPathCache.get(game.world);
-  if (!paths) {
-    paths = terrainReliefPaths(game.world).map((facet) => new Path2D(facet.path));
-    terrainPathCache.set(game.world, paths);
-  }
-  const facets = terrainReliefPaths(game.world);
-  ctx.save();
-  ctx.translate(view.ox, view.oy);
-  ctx.scale(view.scale, view.scale);
-  facets.forEach((facet, index) => {
-    ctx.fillStyle = facet.color;
-    ctx.fill(paths![index]);
-  });
-  ctx.restore();
-}
 
 function drawRivers(
   ctx: CanvasRenderingContext2D,
@@ -132,10 +119,7 @@ function drawRivers(
     for (let index = 0; index < segment.contourPoints.length; index += 1) {
       const point = segment.contourPoints[index];
       const x = view.ox + point.x * view.scale;
-      const mapY = game.getSnapshot().mapMode === 'elevation'
-        ? terrainProjectedY(game.world, Math.floor(point.y) * MAP_WIDTH + Math.floor(point.x), point.y)
-        : point.y;
-      const y = view.oy + mapY * view.scale;
+      const y = view.oy + point.y * view.scale;
       if (index === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -180,6 +164,7 @@ function drawRiverNames(
   baseScale: number,
   width: number,
   height: number,
+  projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
 ) {
   const byRiver = new Map<number, ReturnType<typeof discoveredRiverPaths>>();
   for (const segment of discoveredRiverPaths(game.world)) {
@@ -194,31 +179,40 @@ function drawRiverNames(
   ctx.textBaseline = 'middle';
   for (const segments of byRiver.values()) {
     const segment = segments.reduce((best, item) => item.length > best.length ? item : best);
+    const points = projectMapPoint
+      ? segment.points.map((point) => projectMapPoint(point.x, point.y))
+      : segment.points.map((point) => ({
+        x: view.ox + point.x * view.scale,
+        y: view.oy + point.y * view.scale,
+      }));
+    if (points.some((point) => point === null)) continue;
+    const screenPoints = points as ScreenPoint[];
+    let screenLength = 0;
+    for (let index = 1; index < screenPoints.length; index += 1) {
+      screenLength += Math.hypot(
+        screenPoints[index].x - screenPoints[index - 1].x,
+        screenPoints[index].y - screenPoints[index - 1].y,
+      );
+    }
     const characters = [...(segment.name ?? '')];
     const widths = characters.map((character) => ctx.measureText(character).width);
     const tracking = fontSize * 0.1;
     const textWidth = widths.reduce((sum, item) => sum + item, 0) + Math.max(0, characters.length - 1) * tracking;
-    const screenLength = segment.length * view.scale;
-    if (view.scale < 6 || segment.width * view.scale < fontSize || screenLength < textWidth + 4) continue;
-    const midpoint = pointAlongPath(segment.points, segment.length / 2);
-    const centerX = view.ox + midpoint.x * view.scale;
-    const midpointPixel = Math.floor(midpoint.y) * MAP_WIDTH + Math.floor(midpoint.x);
-    const mapY = game.getSnapshot().mapMode === 'elevation'
-      ? terrainRiverbedY(game.world, midpointPixel, midpoint.y)
-      : midpoint.y;
-    const centerY = view.oy + mapY * view.scale;
+    const screenWidth = projectMapPoint
+      ? segment.width * (screenLength / Math.max(1, segment.length))
+      : segment.width * view.scale;
+    if (view.scale < 6 || screenWidth < fontSize || screenLength < textWidth + 4) continue;
+    const midpoint = pointAlongPath(screenPoints, screenLength / 2);
+    const centerX = midpoint.x;
+    const centerY = midpoint.y;
     if (centerX < -100 || centerY < -30 || centerX > width + 100 || centerY > height + 30) continue;
 
     let cursor = (screenLength - textWidth) / 2;
     for (let index = 0; index < widths.length; index += 1) {
       const characterWidth = widths[index];
-      const location = pointAlongPath(segment.points, (cursor + characterWidth / 2) / view.scale);
-      const x = view.ox + location.x * view.scale;
-      const pointPixel = Math.floor(location.y) * MAP_WIDTH + Math.floor(location.x);
-      const pointY = game.getSnapshot().mapMode === 'elevation'
-        ? terrainRiverbedY(game.world, pointPixel, location.y)
-        : location.y;
-      const y = view.oy + pointY * view.scale;
+      const location = pointAlongPath(screenPoints, cursor + characterWidth / 2);
+      const x = location.x;
+      const y = location.y;
       let angle = location.angle;
       if (angle > Math.PI / 2 || angle < -Math.PI / 2) angle += Math.PI;
       ctx.save();
@@ -258,6 +252,7 @@ function drawMapLabels(
   baseScale: number,
   width: number,
   height: number,
+  projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
 ) {
   const snapshot = game.getSnapshot();
   const text = (value: string, x: number, y: number, size: number, color: string, maxWidth?: number) => {
@@ -323,11 +318,12 @@ function drawMapLabels(
       ? volcanoVisibilityScale(baseScale, feature.activityIntervalYears, feature.eruptionIntensity)
       : geographicVisibilityScale(baseScale, feature.elevation);
     if (view.scale < visibilityScale) continue;
-    const x = view.ox + (feature.pixel % MAP_WIDTH) * view.scale;
-    const mapY = snapshot.mapMode === 'elevation'
-      ? terrainProjectedY(game.world, feature.pixel)
-      : Math.floor(feature.pixel / MAP_WIDTH);
-    const y = view.oy + mapY * view.scale;
+    const mapX = feature.pixel % MAP_WIDTH;
+    const mapY = Math.floor(feature.pixel / MAP_WIDTH);
+    const projected = projectMapPoint?.(mapX, mapY);
+    if (projectMapPoint && !projected) continue;
+    const x = projected?.x ?? view.ox + mapX * view.scale;
+    const y = projected?.y ?? view.oy + mapY * view.scale;
     if (x < -24 || y < -30 || x > width + 24 || y > height + 30) continue;
     const size = Math.max(5, Math.min(11, 6 + ratio * 1.5));
     ctx.beginPath();
@@ -346,13 +342,18 @@ function drawMapLabels(
     }
   }
 
-  drawRiverNames(ctx, game, view, baseScale, width, height);
+  drawRiverNames(ctx, game, view, baseScale, width, height, projectMapPoint);
 }
 
-/** Предварительный просмотр карты в браузере: холст 2D и те же жесты, что на телефоне. */
+type ScreenPoint = { x: number; y: number };
+
+/** Браузерная карта: растровые слои, управление жестами и 3D-рельеф высот. */
 export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView({ game, tool, canPaint, onInspect, onMapActivity }, ref) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
+  const terrainRendererRef = useRef<Terrain3DRenderer | null>(null);
+  const terrainErrorRef = useRef<string | null>(null);
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<ImageData | null>(null);
   const cityImagesRef = useRef<(HTMLImageElement | null)[]>([]);
@@ -360,6 +361,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const sizeRef = useRef({ width: 1, height: 1, dpr: 1 });
   const baseScaleRef = useRef(1);
   const frameRef = useRef(0);
+  const orbitPointerRef = useRef<number | null>(null);
+  const orbitLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const cursorRef = useRef<{ x: number; y: number } | null>(null);
   const toolRef = useRef(tool);
   const canPaintRef = useRef(canPaint);
@@ -371,6 +374,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const draw = useCallback(() => {
     frameRef.current = 0;
     const canvas = canvasRef.current;
+    const terrainCanvas = terrainCanvasRef.current;
     const offscreen = offscreenRef.current;
     const image = imageRef.current;
     if (!canvas || !offscreen || !image) return;
@@ -380,16 +384,50 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (!ctx) return;
     const { width, height, dpr } = sizeRef.current;
     const view = viewRef.current;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = colors.light.mapBackdrop;
-    ctx.fillRect(0, 0, width, height);
-    ctx.imageSmoothingEnabled = view.scale < 1;
-    ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
-    if (game.getSnapshot().mapMode === 'elevation') drawTerrainRelief(ctx, game, view);
-    drawRivers(ctx, game, view, baseScaleRef.current);
-    drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
-    drawMapLabels(ctx, game, view, baseScaleRef.current, width, height);
     const mapMode = game.getSnapshot().mapMode;
+    const isElevation = mapMode === 'elevation';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (isElevation) {
+      ctx.clearRect(0, 0, width, height);
+      if (terrainCanvas) {
+        terrainCanvas.style.display = 'block';
+        if (!terrainRendererRef.current && !terrainErrorRef.current) {
+          try {
+            terrainRendererRef.current = new Terrain3DRenderer(terrainCanvas);
+          } catch (error) {
+            terrainErrorRef.current = error instanceof Error ? error.message : String(error);
+            console.error('Не удалось создать 3D-рельеф:', error);
+          }
+        }
+        if (terrainRendererRef.current) {
+          terrainRendererRef.current.render(game.world, view, { width, height, dpr }, baseScaleRef.current);
+        }
+      }
+      if (terrainErrorRef.current) {
+        ctx.fillStyle = '#241e18';
+        ctx.font = '600 15px "IBM Plex Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`3D-рельеф недоступен: ${terrainErrorRef.current}`, width / 2, height / 2, width - 32);
+      }
+    } else {
+      if (terrainCanvas) terrainCanvas.style.display = 'none';
+      ctx.fillStyle = colors.light.mapBackdrop;
+      ctx.fillRect(0, 0, width, height);
+      ctx.imageSmoothingEnabled = view.scale < 1;
+      ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
+      drawRivers(ctx, game, view, baseScaleRef.current);
+    }
+    drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
+    const projectMapPoint = isElevation && terrainRendererRef.current
+      ? (x: number, y: number) => terrainRendererRef.current?.projectMapPoint(
+        x,
+        y,
+        sizeRef.current,
+        game.world,
+      ) ?? null
+      : undefined;
+    drawMapLabels(ctx, game, view, baseScaleRef.current, width, height, projectMapPoint);
     const cityLabelIds = visibleCityLabelIds(
       game.world,
       mapMode,
@@ -464,6 +502,11 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
   }, [draw]);
 
+  const mapMode = game.getSnapshot().mapMode;
+  useEffect(() => {
+    requestDraw();
+  }, [mapMode, requestDraw]);
+
   useEffect(() => {
     const images = CITY_ICON_SOURCES.map((source, index) => {
       const asset = Asset.fromModule(source);
@@ -483,6 +526,11 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       for (const image of images) if (image) image.onload = null;
     };
   }, [requestDraw]);
+
+  useEffect(() => () => {
+    terrainRendererRef.current?.dispose();
+    terrainRendererRef.current = null;
+  }, []);
 
   const applyView = useCallback(
     (view: ViewTransform) => {
@@ -517,6 +565,10 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         tool: () => toolRef.current,
         canPaint: () => canPaintRef.current,
         onInspect: (info) => inspectRef.current?.(info),
+        mapPointAt: (x, y) => game.getSnapshot().mapMode === 'elevation'
+          ? terrainRendererRef.current?.mapPointAt(x, y, viewRef.current, sizeRef.current, game.world) ??
+            toMap(viewRef.current, x, y)
+          : toMap(viewRef.current, x, y),
         setCursor: (point) => {
           cursorRef.current = point;
           requestDraw();
@@ -545,7 +597,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   useEffect(() => {
     const wrap = wrapRef.current;
     const canvas = canvasRef.current;
-    if (!wrap || !canvas) return;
+    const terrainCanvas = terrainCanvasRef.current;
+    if (!wrap || !canvas || !terrainCanvas) return;
     let first = true;
     const observer = new ResizeObserver(() => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -556,6 +609,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       canvas.height = Math.round(height * dpr);
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
+      terrainCanvas.style.width = `${width}px`;
+      terrainCanvas.style.height = `${height}px`;
       baseScaleRef.current = initialView(width, height).scale;
       applyView(first ? initialView(width, height) : clampView(viewRef.current, width, height));
       first = false;
@@ -587,23 +642,62 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   return (
     <div ref={wrapRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden', touchAction: 'none' }}>
       <canvas
+        ref={terrainCanvasRef}
+        aria-hidden
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'none',
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+        }}
+      />
+      <canvas
         ref={canvasRef}
         data-testid="map-canvas"
-        style={{ display: 'block', touchAction: 'none', cursor: tool === 'brush' && canPaint ? 'crosshair' : 'grab' }}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'block',
+          background: 'transparent',
+          touchAction: 'none',
+          cursor: tool === 'brush' && canPaint ? 'crosshair' : 'grab',
+        }}
         onPointerEnter={onMapActivity}
         onPointerDown={(event) => {
           onMapActivity?.();
           event.currentTarget.setPointerCapture(event.pointerId);
           const p = local(event);
+          if (event.button === 2 && game.getSnapshot().mapMode === 'elevation') {
+            event.preventDefault();
+            orbitPointerRef.current = event.pointerId;
+            orbitLastRef.current = p;
+            return;
+          }
+          if (event.button !== 0) return;
           gestures.down(event.pointerId, p.x, p.y);
         }}
         onPointerMove={(event) => {
           onMapActivity?.();
           const p = local(event);
+          if (orbitPointerRef.current === event.pointerId) {
+            terrainRendererRef.current?.orbit(p.x - orbitLastRef.current.x, p.y - orbitLastRef.current.y);
+            orbitLastRef.current = p;
+            requestDraw();
+            return;
+          }
           gestures.move(event.pointerId, p.x, p.y);
         }}
-        onPointerUp={(event) => gestures.up(event.pointerId)}
-        onPointerCancel={(event) => gestures.up(event.pointerId)}
+        onPointerUp={(event) => {
+          if (orbitPointerRef.current === event.pointerId) orbitPointerRef.current = null;
+          else gestures.up(event.pointerId);
+        }}
+        onPointerCancel={(event) => {
+          if (orbitPointerRef.current === event.pointerId) orbitPointerRef.current = null;
+          else gestures.up(event.pointerId);
+        }}
+        onContextMenu={(event) => event.preventDefault()}
       />
     </div>
   );
