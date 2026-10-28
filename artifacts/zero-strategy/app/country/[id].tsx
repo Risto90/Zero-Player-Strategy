@@ -6,8 +6,7 @@ import colors, { fonts } from '@/constants/colors';
 import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt, pct } from '@/game/format';
 import { ageStage, GOVERNMENTS, MODIFIERS, personDeathStatus } from '@/game/government';
-import { currentGame } from '@/game/session';
-import { useGameSnapshot } from '@/game/useGame';
+import { useGameSession, useGameSnapshot } from '@/game/useGame';
 import { countryCandidates, countryRulerHistory, expectedHeirFor, rulers } from '@/game/succession';
 import type { Game } from '@/game/game';
 import type { Country } from '@/game/world';
@@ -33,8 +32,9 @@ const c = colors.light;
 
 export default function CountryPage() {
   const { id: rawId } = useLocalSearchParams<{ id: string }>();
-  const game = currentGame();
-  if (!game) return <MissingProfile title="Игра не открыта" />;
+  const { game, loading, error } = useGameSession();
+  if (loading) return <MissingProfile title="Загружаем сохранённую игру…" />;
+  if (!game) return <MissingProfile title={error ? `Не удалось открыть игру: ${error}` : 'Игра не открыта'} />;
   return <CountryProfile game={game} countryId={Number(rawId)} />;
 }
 

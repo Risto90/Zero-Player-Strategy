@@ -10,6 +10,7 @@ import { mulberry32 } from '../game/random.ts';
 
 const root = process.cwd();
 const screen = readFileSync(resolve(root, 'app/play.tsx'), 'utf8');
+const layout = readFileSync(resolve(root, 'app/_layout.tsx'), 'utf8');
 const mapView = readFileSync(resolve(root, 'components/map/MapView.web.tsx'), 'utf8');
 const mapControls = readFileSync(resolve(root, 'components/game/MapControls.tsx'), 'utf8');
 const cardPanel = readFileSync(resolve(root, 'components/game/CardPanel.tsx'), 'utf8');
@@ -57,6 +58,8 @@ assert.match(screen, /void game\.saveNow\(\)/,
   'уход со страницы игры сохраняет игру без остановки таймера');
 assert.doesNotMatch(screen, /leaveGame/,
   'переход на другую страницу не завершает игровую сессию');
+assert.match(layout, /name="play" options=\{\{[^}]*freezeOnBlur: false/,
+  'экран игры не замораживается при открытии другой страницы');
 
 function makePauseGate() {
   let entered;
