@@ -948,8 +948,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const draw = useCallback(() => {
     frameRef.current = 0;
     if (!routeFocusedRef.current ||
-        (typeof document !== 'undefined' && document.visibilityState === 'hidden') ||
-        game.getSnapshot().busy) return;
+        (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return;
     const drawSamples = typeof window === 'undefined'
       ? undefined
       : (window as MapDrawWindow).__ZERO_STRATEGY_MAP_DRAW_TIMINGS__;
@@ -1136,8 +1135,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
 
   const requestDraw = useCallback(() => {
     if (!routeFocusedRef.current ||
-        (typeof document !== 'undefined' && document.visibilityState === 'hidden') ||
-        game.getSnapshot().busy) return;
+        (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return;
     if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
   }, [draw]);
   redrawRef.current = requestDraw;

@@ -471,8 +471,7 @@ export class Game {
   private emit(mapChanged = false): void {
     this.snapshot = null;
     this.listeners.forEach((listener) => listener());
-    // Во время пакетного хода холст не нужен ИИ: копим грязные контуры и обновляем карту один раз в конце.
-    if (mapChanged && !this.busy) this.mapListeners.forEach((listener) => listener());
+    if (mapChanged) this.mapListeners.forEach((listener) => listener());
   }
 
   private setMessage(message: string, recipient: NotificationRecipient = this.messageRecipient): void {
