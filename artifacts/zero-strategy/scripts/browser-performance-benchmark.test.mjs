@@ -123,6 +123,41 @@ class ObserverPerformanceBenchmark {
     }, null, { timeout: timeoutMs, polling: 50 });
   }
 
+  async panDuringTurn(index) {
+    const map = this.page.getByTestId('map-canvas');
+    const bounds = await map.boundingBox();
+    assert.ok(bounds && bounds.width > 180 && bounds.height > 100, 'Для проверки перетаскивания нужна видимая карта.');
+    const before = await this.page.evaluate(() => {
+      const mapElement = document.querySelector('[data-testid="map-canvas"]');
+      return {
+        startedAt: performance.now(),
+        viewBox: mapElement?.parentElement?.querySelector('svg')?.getAttribute('viewBox') ?? null,
+        firstFrameGap: window.__performanceFrameGaps.length,
+      };
+    });
+    const x = bounds.x + bounds.width * 0.7;
+    const y = bounds.y + bounds.height * 0.6;
+    const direction = index % 2 ? -1 : 1;
+    await this.page.mouse.move(x, y);
+    await this.page.mouse.down();
+    await this.page.mouse.move(x + direction * 80, y + direction * 40, { steps: 8 });
+    await this.page.mouse.up();
+    await this.page.evaluate(() => new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    ));
+    const result = await this.page.evaluate((before) => {
+      const mapElement = document.querySelector('[data-testid="map-canvas"]');
+      const viewBox = mapElement?.parentElement?.querySelector('svg')?.getAttribute('viewBox') ?? null;
+      return {
+        durationMs: performance.now() - before.startedAt,
+        viewChanged: viewBox !== before.viewBox,
+        frameGaps: window.__performanceFrameGaps.slice(before.firstFrameGap),
+      };
+    }, before);
+    assert.ok(result.viewChanged, `Перетаскивание в ходе ${index} должно сдвинуть карту.`);
+    return result;
+  }
+
   async measureTurn(index) {
     const before = await this.page.evaluate(() => {
       const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
@@ -133,7 +168,10 @@ class ObserverPerformanceBenchmark {
       };
     });
 
-    await this.page.evaluate(() => window.__ZERO_STRATEGY_PERFORMANCE_TEST__.advanceTurn());
+    await this.page.evaluate(() => {
+      void window.__ZERO_STRATEGY_PERFORMANCE_TEST__.advanceTurn();
+    });
+    const pan = await this.panDuringTurn(index);
     await this.page.waitForFunction((previousYear) => {
       const state = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
       return !!state && state.year > previousYear && !state.busy && !state.drawing && state.progress === null;
@@ -150,6 +188,7 @@ class ObserverPerformanceBenchmark {
         events: bridge.takeSamples(),
         stages: bridge.takeStages(),
         frameGaps,
+        pan,
       };
     }, { index, before });
 
@@ -157,7 +196,9 @@ class ObserverPerformanceBenchmark {
     const resolved = result.events.filter((event) => event.cardType !== null);
     const slowest = [...resolved].sort((a, b) => b.durationMs - a.durationMs)[0];
     const slowestStage = [...result.stages].sort((a, b) => b.durationMs - a.durationMs)[0];
-    console.log(`Ход ${index}/${this.years}, год ${result.year}: ${result.durationMs.toFixed(1)} мс, событий ${resolved.length}${slowest ? `, медленнейшее ${slowest.cardType}: выбор ${slowest.drawDurationMs.toFixed(1)} мс, выполнение ${slowest.resolutionDurationMs.toFixed(1)} мс` : ''}${slowestStage ? `; этап ${slowestStage.stage} (${slowestStage.cardType}): ${slowestStage.durationMs.toFixed(1)} мс` : ''}.`);
+    const maximumPanFrameGap = Math.max(0, ...pan.frameGaps);
+    const maximumTurnFrameGap = Math.max(0, ...result.frameGaps);
+    console.log(`Ход ${index}/${this.years}, год ${result.year}: ${result.durationMs.toFixed(1)} мс, событий ${resolved.length}${slowest ? `, медленнейшее ${slowest.cardType}: выбор ${slowest.drawDurationMs.toFixed(1)} мс, выполнение ${slowest.resolutionDurationMs.toFixed(1)} мс` : ''}${slowestStage ? `; этап ${slowestStage.stage} (${slowestStage.cardType}): ${slowestStage.durationMs.toFixed(1)} мс` : ''}; перетаскивание ${pan.durationMs.toFixed(1)} мс, максимальный разрыв кадров хода ${maximumTurnFrameGap.toFixed(1)} мс, во время перетаскивания ${maximumPanFrameGap.toFixed(1)} мс.`);
     return result;
   }
 
@@ -166,6 +207,8 @@ class ObserverPerformanceBenchmark {
     const events = this.turns.flatMap(({ events: samples }) => samples.filter((sample) => sample.cardType !== null));
     const stages = this.turns.flatMap(({ stages: samples }) => samples);
     const allFrameGaps = this.turns.flatMap(({ frameGaps }) => frameGaps);
+    const panSamples = this.turns.map(({ pan }) => pan);
+    const panFrameGaps = panSamples.flatMap(({ frameGaps }) => frameGaps);
     const median = (values) => {
       if (!values.length) return 0;
       const ordered = [...values].sort((a, b) => a - b);
@@ -201,6 +244,11 @@ class ObserverPerformanceBenchmark {
       eventsExecutionOverOneSecond: events.filter(({ resolutionDurationMs }) => resolutionDurationMs > 1000).length,
       maximumFrameGapMs: Math.max(0, ...allFrameGaps),
       framesOver50Ms: allFrameGaps.filter((gap) => gap > 50).length,
+      medianPanMs: median(panSamples.map(({ durationMs }) => durationMs)),
+      maximumPanMs: Math.max(0, ...panSamples.map(({ durationMs }) => durationMs)),
+      maximumPanFrameGapMs: Math.max(0, ...panFrameGaps),
+      panFramesOver50Ms: panFrameGaps.filter((gap) => gap > 50).length,
+      panViewChanges: panSamples.filter(({ viewChanged }) => viewChanged).length,
       slowEvents,
     };
     console.log(`Итог браузерного замера: ${JSON.stringify(summary, null, 2)}`);
