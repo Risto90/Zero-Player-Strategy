@@ -21,6 +21,7 @@ import { StyleSheet, View, type GestureResponderEvent, type LayoutChangeEvent } 
 import { makeMutable, useAnimatedReaction, useDerivedValue, useSharedValue, type SharedValue } from 'react-native-reanimated';
 import colors from '@/constants/colors';
 import { MAP_WIDTH } from '@/game/config';
+import { cityLabelFontSize } from '@/game/cityVisibility';
 import { STRIP_H, STRIPS } from '@/game/render';
 import {
   countryLabelViewportLayout,
@@ -29,10 +30,11 @@ import {
   geographicVisibilityScale,
   shouldShowCityMarks,
   shouldShowGeographyMarks,
+  visibleCityLabelIds,
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
 import { discoveredRiverPaths, riverVisibilityScale } from '@/game/geographyGeometry';
-import { terrainProjectedRiverPath, terrainProjectedY, terrainReliefPaths } from '@/game/terrainModel';
+import { terrainProjectedRiverPath, terrainProjectedY, terrainReliefPaths, terrainTextColor } from '@/game/terrainModel';
 import { cityInfluenceRadius } from '@/game/settlements';
 import type { GeographyFeature } from '@/game/geographyFeatures';
 import type { City, World } from '@/game/world';
@@ -46,7 +48,7 @@ import { centerOnMapPoint, clampView, initialView, minScale, zoomAround } from '
 const NEAREST = { filter: FilterMode.Nearest, mipmap: MipmapMode.None };
 const LINEAR = { filter: FilterMode.Linear, mipmap: MipmapMode.None };
 
-type CityMarkerData = { city: City; iconIndex: number; labelColor: string };
+type CityMarkerData = { city: City; iconIndex: number; labelColor: string; showLabel: boolean };
 
 function contrastColor(packed: number): string {
   const red = packed & 255;
@@ -55,15 +57,16 @@ function contrastColor(packed: number): string {
   return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255 > 0.56 ? '#28231e' : '#fff7df';
 }
 
-function CityMarker({ city, iconIndex, image, counterScale, labelColor, font }: CityMarkerData & {
+function CityMarker({ city, iconIndex, image, counterScale, labelColor, font, labelScale, showLabel }: CityMarkerData & {
   image: SkImage | null;
   counterScale: ReturnType<typeof useDerivedValue<{ scale: number }[]>>;
+  labelScale: ReturnType<typeof useDerivedValue<{ scale: number }[]>>;
   font: ReturnType<typeof useFont>;
 }) {
   const x = city.pixel % MAP_WIDTH;
   const y = Math.floor(city.pixel / MAP_WIDTH);
   const size = iconIndex >= 6 ? 30 + city.rank : 24 + city.rank;
-  const label = city.name ?? '';
+  const label = showLabel ? city.name ?? '' : '';
   const labelWidth = label.length * 5.2;
   const labelY = y - size / 2 - 3;
   const crown = useMemo(() => {
@@ -74,7 +77,7 @@ function CityMarker({ city, iconIndex, image, counterScale, labelColor, font }: 
     <Group origin={{ x, y }} transform={counterScale}>
       {image && <SkiaImage image={image} x={x - size / 2} y={y - size / 2} width={size} height={size} fit="contain" sampling={LINEAR} />}
       {label && font && (
-        <>
+        <Group origin={{ x, y: labelY }} transform={labelScale}>
           {city.capital && <Path path={crown} color="#c5952e" />}
           <SkiaText
             x={x - labelWidth / 2 + (city.capital ? 4 : 0)}
@@ -92,7 +95,7 @@ function CityMarker({ city, iconIndex, image, counterScale, labelColor, font }: 
             font={font}
             color={labelColor}
           />
-        </>
+        </Group>
       )}
     </Group>
   );
@@ -108,21 +111,25 @@ function CityMarkerLayer({ zoomRank, cities, scale, baseScale, images, font }: {
 }) {
   const visible = useDerivedValue(() => isCityVisibleAtZoom(scale.value, baseScale.value, zoomRank) ? 1 : 0);
   const counterScale = useDerivedValue(() => [{ scale: 1 / Math.max(scale.value, 0.08) }]);
+  const labelScale = useDerivedValue(() => [{
+    scale: cityLabelFontSize(scale.value, baseScale.value) / 9,
+  }]);
   return (
     <Group opacity={visible}>
-      {cities.map(({ city, iconIndex, labelColor }) => (
+      {cities.map(({ city, iconIndex, labelColor, showLabel }) => (
         <CityMarker key={city.id} city={city} iconIndex={iconIndex} image={images[iconIndex]} counterScale={counterScale}
-          labelColor={labelColor} font={font} />
+          labelColor={labelColor} font={font} labelScale={labelScale} showLabel={showLabel} />
       ))}
     </Group>
   );
 }
 
-function CityMarkers({ world, scale, baseScale, mapPixels }: {
+function CityMarkers({ world, scale, baseScale, mapPixels, cityLabelIds }: {
   world: World;
   scale: SharedValue<number>;
   baseScale: SharedValue<number>;
   mapPixels: Uint32Array;
+  cityLabelIds: Set<number>;
 }) {
   const image0 = useImage(CITY_ICON_SOURCES[0]);
   const image1 = useImage(CITY_ICON_SOURCES[1]);
@@ -143,7 +150,12 @@ function CityMarkers({ world, scale, baseScale, mapPixels }: {
     const hasPort = world.isCoastal(city.pixel) || world.knownRivers[city.pixel] > 0;
     const zoomRank = cityVisibilityRank(city, hasPort);
     const list = byZoomRank.get(zoomRank) ?? [];
-    list.push({ city, iconIndex: cityIconIndex(city, hasPort), labelColor: contrastColor(mapPixels[city.pixel] ?? 0xffeeeeee) });
+    list.push({
+      city,
+      iconIndex: cityIconIndex(city, hasPort),
+      labelColor: contrastColor(mapPixels[city.pixel] ?? 0xffeeeeee),
+      showLabel: cityLabelIds.has(city.id),
+    });
     byZoomRank.set(zoomRank, list);
   }
   return [...byZoomRank].map(([zoomRank, cities]) => (
@@ -349,10 +361,10 @@ function MapAnnotations({ game, scale, labelScale, baseScale, ox, oy, width, hei
       })}
       {showGeography && game.world.peaks.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`peak-${feature.id}`} feature={feature}
         volcano={false} scale={scale} baseScale={baseScale} font={smallFont} world={game.world} relief={relief}
-        color={contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
+        color={relief ? terrainTextColor(game.world, feature.pixel) : contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
       {showGeography && game.world.volcanoes.filter((feature) => feature.discoveredBy.length > 0).map((feature) => <GeographyPointMark key={`volcano-${feature.id}`} feature={feature}
         volcano scale={scale} baseScale={baseScale} font={smallFont} world={game.world} relief={relief}
-        color={contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
+        color={relief ? terrainTextColor(game.world, feature.pixel) : contrastColor(game.renderer.pixels[feature.pixel] ?? 0xffeeeeee)} />)}
       {riverNameSegments.map((segment) => <RiverNameMark key={`river-${segment.riverId}`} segment={segment}
         scale={scale} baseScale={baseScale} font={riverFont} />)}
     </>
@@ -592,6 +604,17 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     gestures.sync(touches(event));
   };
   const onRelease = () => gestures.releaseAll();
+  const snapshot = game.getSnapshot();
+  const cityLabelIds = useMemo(() => visibleCityLabelIds(
+    game.world,
+    snapshot.mapMode,
+    viewRef.current.scale,
+    initialView(sizeRef.current.width, sizeRef.current.height).scale,
+    viewRef.current.ox,
+    viewRef.current.oy,
+    sizeRef.current.width,
+    sizeRef.current.height,
+  ), [game.world, labelRevision, snapshot.mapMode]);
 
   return (
     <View style={styles.wrap} onLayout={onLayout}>
@@ -605,7 +628,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           <MapAnnotations game={game} scale={scale} labelScale={viewRef.current.scale} baseScale={markerBaseScale} ox={ox} oy={oy}
             width={viewportWidth} height={viewportHeight} labelRevision={labelRevision} />
           {shouldShowCityMarks(game.getSnapshot().mapMode) &&
-            <CityMarkers world={game.world} scale={scale} baseScale={markerBaseScale} mapPixels={game.renderer.pixels} />}
+            <CityMarkers world={game.world} scale={scale} baseScale={markerBaseScale} mapPixels={game.renderer.pixels}
+              cityLabelIds={cityLabelIds} />}
         </Group>
         <Group opacity={cursorOpacity}>
           <Circle cx={cursorX} cy={cursorY} r={cursorR} style="stroke" strokeWidth={3} color="rgba(255,255,255,0.9)" />

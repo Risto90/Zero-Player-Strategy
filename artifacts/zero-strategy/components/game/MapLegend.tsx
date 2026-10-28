@@ -90,6 +90,7 @@ function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
       return (
         <View style={styles.elevationLegend}>
           <View style={styles.rampContents}>
+            <Text style={styles.keyText}>Глубина моря</Text>
             <Text style={styles.scaleLabel}>−11 км</Text>
             <LinearGradient colors={RAMPS.elevation as [string, string, ...string[]]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.ramp} />
             <Text style={styles.scaleLabel}>0 м</Text>
@@ -102,10 +103,6 @@ function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
             <View style={styles.key}>
               <Text style={[styles.peakSwatch, { color: '#55483c' }]}>▲</Text>
               <Text style={styles.keyText}>Вершины</Text>
-            </View>
-            <View style={styles.key}>
-              <Text style={[styles.peakSwatch, { color: '#b36b39' }]}>▲</Text>
-              <Text style={styles.keyText}>Уснувшие вулканы</Text>
             </View>
             <View style={styles.key}>
               <Text style={[styles.peakSwatch, { color: '#b43a2d' }]}>▲</Text>

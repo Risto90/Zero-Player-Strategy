@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
+import { cityLabelFontSize } from '@/game/cityVisibility';
 import {
   countryLabelViewportLayout,
   countryMapLabels,
@@ -11,10 +12,11 @@ import {
   riverVisibilityScale,
   shouldShowCityMarks,
   shouldShowGeographyMarks,
+  visibleCityLabelIds,
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
 import { discoveredRiverPaths } from '@/game/geographyGeometry';
-import { terrainProjectedY, terrainReliefPaths } from '@/game/terrainModel';
+import { terrainProjectedY, terrainReliefPaths, terrainRiverbedY, terrainTextColor } from '@/game/terrainModel';
 import { STRIP_H } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
@@ -78,6 +80,7 @@ function drawCityInfluence(
 }
 
 function mapTextColor(game: MapViewProps['game'], pixel: number): string {
+  if (game.getSnapshot().mapMode === 'elevation') return terrainTextColor(game.world, pixel);
   const packed = game.renderer.pixels[pixel] ?? 0xffeeeeee;
   const red = packed & 255;
   const green = (packed >>> 8) & 255;
@@ -201,7 +204,7 @@ function drawRiverNames(
     const centerX = view.ox + midpoint.x * view.scale;
     const midpointPixel = Math.floor(midpoint.y) * MAP_WIDTH + Math.floor(midpoint.x);
     const mapY = game.getSnapshot().mapMode === 'elevation'
-      ? terrainProjectedY(game.world, midpointPixel, midpoint.y)
+      ? terrainRiverbedY(game.world, midpointPixel, midpoint.y)
       : midpoint.y;
     const centerY = view.oy + mapY * view.scale;
     if (centerX < -100 || centerY < -30 || centerX > width + 100 || centerY > height + 30) continue;
@@ -213,7 +216,7 @@ function drawRiverNames(
       const x = view.ox + location.x * view.scale;
       const pointPixel = Math.floor(location.y) * MAP_WIDTH + Math.floor(location.x);
       const pointY = game.getSnapshot().mapMode === 'elevation'
-        ? terrainProjectedY(game.world, pointPixel, location.y)
+        ? terrainRiverbedY(game.world, pointPixel, location.y)
         : location.y;
       const y = view.oy + pointY * view.scale;
       let angle = location.angle;
@@ -386,7 +389,18 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     drawRivers(ctx, game, view, baseScaleRef.current);
     drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
     drawMapLabels(ctx, game, view, baseScaleRef.current, width, height);
-    if (shouldShowCityMarks(game.getSnapshot().mapMode)) for (const city of game.world.cities) {
+    const mapMode = game.getSnapshot().mapMode;
+    const cityLabelIds = visibleCityLabelIds(
+      game.world,
+      mapMode,
+      view.scale,
+      baseScaleRef.current,
+      view.ox,
+      view.oy,
+      width,
+      height,
+    );
+    if (shouldShowCityMarks(mapMode)) for (const city of game.world.cities) {
       const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
       const zoomRank = cityVisibilityRank(city, hasPort);
       if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
@@ -397,28 +411,30 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
       if (x + size < 0 || y + size < 0 || x - size > width || y - size > height) continue;
       ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
-      if (city.name) {
-        ctx.font = '600 9px "IBM Plex Sans", sans-serif';
+      if (city.name && cityLabelIds.has(city.id)) {
+        const labelFontSize = cityLabelFontSize(view.scale, baseScaleRef.current);
+        ctx.font = `600 ${labelFontSize}px "IBM Plex Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
-        const labelY = y - size / 2 - 2;
+        const labelY = y - size / 2 - Math.max(2, labelFontSize * 0.22);
         const textWidth = ctx.measureText(city.name).width;
-        const crownWidth = city.capital ? 8 : 0;
+        const crownWidth = city.capital ? labelFontSize * 1.1 : 0;
         const labelLeft = x - (textWidth + crownWidth) / 2;
         const labelCenter = labelLeft + crownWidth + textWidth / 2;
         const color = mapTextColor(game, city.pixel);
-        ctx.lineWidth = 2;
+        ctx.lineWidth = Math.max(1, labelFontSize * 0.22);
         ctx.strokeStyle = color === '#fff7df' ? 'rgba(35,30,24,0.75)' : 'rgba(255,248,229,0.85)';
         ctx.fillStyle = color;
         if (city.capital) {
+          const crownSize = labelFontSize * 1.1;
           ctx.beginPath();
           ctx.moveTo(labelLeft, labelY - 1);
-          ctx.lineTo(labelLeft + 1, labelY - 7);
-          ctx.lineTo(labelLeft + 3, labelY - 4);
-          ctx.lineTo(labelLeft + 5, labelY - 7);
-          ctx.lineTo(labelLeft + 7, labelY - 4);
-          ctx.lineTo(labelLeft + 9, labelY - 7);
-          ctx.lineTo(labelLeft + 10, labelY - 1);
+          ctx.lineTo(labelLeft + crownSize * 0.1, labelY - crownSize * 0.75);
+          ctx.lineTo(labelLeft + crownSize * 0.3, labelY - crownSize * 0.35);
+          ctx.lineTo(labelLeft + crownSize * 0.5, labelY - crownSize * 0.75);
+          ctx.lineTo(labelLeft + crownSize * 0.7, labelY - crownSize * 0.35);
+          ctx.lineTo(labelLeft + crownSize * 0.9, labelY - crownSize * 0.75);
+          ctx.lineTo(labelLeft + crownSize, labelY - 1);
           ctx.closePath();
           ctx.fillStyle = '#d0a239';
           ctx.fill();

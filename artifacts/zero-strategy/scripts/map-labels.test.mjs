@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from '../game/config.ts';
 import { MapContours } from '../game/contours.ts';
 import { CompositionTable } from '../game/composition.ts';
+import { cityLabelFontSize } from '../game/cityVisibility.ts';
 import {
   countryLabelViewportLayout,
   countryMapLabels,
@@ -9,10 +10,11 @@ import {
   geographicVisibilityScale,
   shouldShowCityMarks,
   shouldShowGeographyMarks,
+  visibleCityLabelIds,
   volcanoVisibilityScale,
 } from '../game/mapLabels.ts';
 import { seaDepthPackedColor } from '../game/render.ts';
-import { terrainProjectedY, terrainReliefPaths } from '../game/terrainModel.ts';
+import { terrainProjectedY, terrainReliefPaths, terrainRiverbedY, terrainTextColor } from '../game/terrainModel.ts';
 
 const owner = new Uint16Array(MAP_PIXELS);
 const land = new Uint8Array(MAP_PIXELS);
@@ -49,6 +51,13 @@ const world = {
   cultureTable: new CompositionTable(),
   religionTable: new CompositionTable(),
   humanOriginTable: new CompositionTable(),
+  cities: [
+    { id: 10, name: 'Главный город', pixel: 80 * MAP_WIDTH + 80, rank: 6, capital: true },
+    { id: 11, name: 'Соседний город', pixel: 80 * MAP_WIDTH + 80, rank: 6, capital: false },
+    { id: 12, name: 'Малый город', pixel: 80 * MAP_WIDTH + 100, rank: 1, capital: false },
+  ],
+  knownRivers: new Uint8Array(MAP_PIXELS),
+  isCoastal: () => false,
   cultures: [{ id: 0, name: 'Народ' }],
   religions: [{ id: 0, name: 'Вера' }],
   countries: [
@@ -70,70 +79,82 @@ world.contours = new MapContours((name) => world[name], () => world.version);
 
 const zoomedOut = countryMapLabels(world, 0.3, 'political', 1);
 const zoomedIn = countryMapLabels(world, 2, 'political', 1);
-assert.equal(zoomedOut.some((label) => label.countryId === 0), false, 'small country labels stay hidden when they cannot fit');
-assert.ok(zoomedIn.some((label) => label.countryId === 0), 'the settled country label appears when its area can fit it');
-assert.ok(zoomedIn.some((label) => label.countryId === 1 && label.selected), 'the selected nomadic country is labelled on the political layer');
+assert.equal(zoomedOut.some((label) => label.countryId === 0), false, 'маленькая подпись страны скрыта, пока не помещается');
+assert.ok(zoomedIn.some((label) => label.countryId === 0), 'подпись осёдлой страны появляется, когда помещается в её область');
+assert.ok(zoomedIn.some((label) => label.countryId === 1 && label.selected), 'выбранное кочевье подписано на карте государств');
 assert.ok(countryMapLabels(world, 2, 'cities', 1).some((label) => label.countryId === 1),
-  'selected nomadic labels also appear on the city layer');
+  'подписи кочевий также появляются на карте городов');
+assert.ok(countryMapLabels(world, 2, 'political', null).some((label) => label.countryId === 1),
+  'названия кочевий видны и без выбора страны');
 assert.equal(countryMapLabels(world, 2, 'humidity', 1).length, 0,
-  'state names are absent from climate layers');
+  'подписи государств скрыты на климатических слоях');
 assert.equal(countryMapLabels(world, 1, 'humidity', 1).some((label) => label.countryId === 1), false,
-  'nomadic labels remain hidden outside the political layer');
-assert.equal(countryMapLabels(world, 1, 'political', null).some((label) => label.countryId === 1), false,
-  'unselected nomadic countries are not labelled');
-assert.equal(shouldShowCityMarks('political'), true, 'cities are visible on the political layer');
-assert.equal(shouldShowCityMarks('cities'), true, 'cities are visible on the city layer');
-assert.equal(shouldShowCityMarks('elevation'), false, 'cities are hidden on the elevation layer');
-assert.equal(shouldShowGeographyMarks('political'), true, 'mountains are visible on the political layer');
-assert.equal(shouldShowGeographyMarks('elevation'), true, 'mountains are visible on the elevation layer');
-assert.equal(shouldShowGeographyMarks('cultures'), false, 'mountains are hidden on the culture layer');
+  'кочевье не подписывается на климатическом слое');
+assert.equal(shouldShowCityMarks('political'), true, 'города видны на карте государств');
+assert.equal(shouldShowCityMarks('cities'), true, 'города видны на карте городов');
+assert.equal(shouldShowCityMarks('elevation'), false, 'города скрыты на карте высот');
+assert.ok(cityLabelFontSize(8, 1) > cityLabelFontSize(1, 1),
+  'названия городов увеличиваются при приближении карты');
+const cityNameIds = visibleCityLabelIds(world, 'political', 1, 1, 0, 0, 320, 180);
+assert.ok(cityNameIds.has(10), 'для видимой столицы показывается подпись');
+assert.equal(cityNameIds.has(11), false, 'перекрывающиеся подписи городов не рисуются друг поверх друга');
+assert.equal(cityNameIds.has(12), false, 'подпись города скрыта, пока не виден его значок');
+assert.equal(visibleCityLabelIds(world, 'elevation', 10, 1, 0, 0, 320, 180).size, 0,
+  'значки и подписи городов отсутствуют на карте высот');
+assert.equal(shouldShowGeographyMarks('political'), true, 'горы видны на карте государств');
+assert.equal(shouldShowGeographyMarks('elevation'), true, 'горы видны на карте высот');
+assert.equal(shouldShowGeographyMarks('cultures'), false, 'горы скрыты на карте культур');
 assert.ok(entityMapLabels(world, 'cultures', { kind: 'culture', id: 0 }, 2)
-  .some((label) => label.text === 'Народ'), 'the selected culture receives a contour-based map label');
+  .some((label) => label.text === 'Народ'), 'выбранная культура получает контурную подпись');
 assert.ok(entityMapLabels(world, 'religions', { kind: 'religion', id: 0 }, 2)
-  .some((label) => label.text === 'Вера'), 'the selected religion receives a contour-based map label');
+  .some((label) => label.text === 'Вера'), 'выбранная религия получает контурную подпись');
 assert.ok(entityMapLabels(world, 'origins', { kind: 'origin', id: 0 }, 2)
-  .some((label) => label.text.length > 0), 'the selected race receives a contour-based map label');
+  .some((label) => label.text.length > 0), 'выбранная раса получает контурную подпись');
 const dividedLabels = countryMapLabels(world, 8, 'political', null).filter((label) => label.countryId === 2);
-assert.equal(dividedLabels.length, 2, 'disconnected country parts receive independent labels when no shared label fits');
+assert.equal(dividedLabels.length, 2, 'раздельные территории страны получают отдельные подписи, если общая не помещается');
 for (let left = 0; left < zoomedIn.length; left += 1) {
   for (let right = left + 1; right < zoomedIn.length; right += 1) {
     const a = zoomedIn[left];
     const b = zoomedIn[right];
     assert.ok(Math.abs(a.x - b.x) * 2 >= a.width + b.width || Math.abs(a.y - b.y) * 2 >= a.height + b.height,
-      'visible country names do not overlap');
+      'видимые подписи стран не накладываются друг на друга');
   }
 }
-assert.equal(geographicVisibilityScale(1, 6500), 1, 'the highest peaks can appear at the base zoom');
+assert.equal(geographicVisibilityScale(1, 6500), 1, 'самые высокие вершины видны при общем масштабе');
 assert.ok(geographicVisibilityScale(1, 700) > geographicVisibilityScale(1, 6500),
-  'lower peaks require a closer map scale');
-assert.equal(volcanoVisibilityScale(1, 4, 3), 1, 'frequent and powerful eruptions can appear at world scale');
-assert.ok(volcanoVisibilityScale(1, 60, 1) >= 8.7, 'a mild eruption every sixty years needs close zoom');
+  'низкие вершины становятся видны только при приближении');
+assert.equal(volcanoVisibilityScale(1, 4, 3), 1, 'частые мощные извержения видны при общем масштабе');
+assert.ok(volcanoVisibilityScale(1, 60, 1) >= 8.7, 'слабое извержение раз в шестьдесят лет видно только вблизи');
 assert.ok(volcanoVisibilityScale(1, 4, 3) < volcanoVisibilityScale(1, 60, 1),
-  'volcano visibility follows eruption recurrence and intensity');
+  'видимость вулкана зависит от частоты и силы извержений');
 const viewportLabel = zoomedIn.find((label) => label.countryId === 0);
 const fitted = countryLabelViewportLayout(viewportLabel, 100, -5000, -5000, 320, 180);
-assert.ok(fitted.fontSize <= 140, 'country labels do not grow beyond the visible viewport');
+assert.ok(fitted.fontSize <= 140, 'подписи стран не увеличиваются за пределы видимой области');
 assert.ok(fitted.x >= 8 && fitted.x <= 312 && fitted.y >= 8 && fitted.y <= 172,
-  'country labels remain inside the visible viewport');
+  'подписи стран остаются внутри видимой области');
 const measuredWidthFactor = 1.1;
 const fittedMeasured = countryLabelViewportLayout(viewportLabel, 100, -5000, -5000, 320, 180, measuredWidthFactor);
 const measuredTextWidth = fittedMeasured.fontSize * measuredWidthFactor;
-assert.ok(fittedMeasured.x - measuredTextWidth / 2 >= 6 &&
-  fittedMeasured.x + measuredTextWidth / 2 <= 314,
-  'country labels fit the viewport using the rendered glyph width');
+assert.ok(fittedMeasured.x - measuredTextWidth / 2 >= 8 &&
+  fittedMeasured.x + measuredTextWidth / 2 <= 312,
+  'подписи помещаются по ширине отображаемых букв');
 assert.equal(countryLabelViewportLayout(viewportLabel, 1, 10000, 10000, 320, 180).visible, false,
-  'a country label is hidden when its territory is outside the viewport');
-assert.ok(MAP_HEIGHT * MAP_WIDTH === MAP_PIXELS, 'map annotations use the full map dimensions');
+  'подпись скрывается, когда территория страны вне экрана');
+assert.ok(MAP_HEIGHT * MAP_WIDTH === MAP_PIXELS, 'аннотации используют полный размер карты');
 assert.notEqual(seaDepthPackedColor(-9000), seaDepthPackedColor(-100),
-  'sea-depth colors distinguish deep water from coastal water');
+  'цвета различают глубокое море и мелководье у берега');
 
 const terrainWorld = {
   land: new Uint8Array(MAP_PIXELS).fill(1),
   elevation: new Int16Array(MAP_PIXELS).fill(1000),
 };
 assert.equal(terrainProjectedY(terrainWorld, 0, 100), 96,
-  'height is represented as vertical relief in the generated 3D view');
+  'высота отображается вертикальным рельефом на трёхмерной карте');
+assert.equal(terrainRiverbedY(terrainWorld, 0, 100), 97,
+  'русла рек проходят немного ниже поверхности рельефа');
+assert.equal(terrainTextColor(terrainWorld, 0), '#28231e',
+  'цвет подписи на светлом рельефе автоматически становится тёмным');
 assert.ok(terrainReliefPaths(terrainWorld).length > 0,
-  'the elevation model produces a shaded triangle mesh');
+  'карта высот создаёт затенённую треугольную сетку рельефа');
 
-console.log('Map labels and geographic visibility thresholds passed.');
+console.log('Подписи карты и пороги видимости объектов проверены.');

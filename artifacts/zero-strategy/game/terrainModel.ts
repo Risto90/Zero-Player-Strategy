@@ -8,6 +8,7 @@ export interface TerrainReliefPath {
 
 const GRID_STEP = 24;
 const HEIGHT_EXAGGERATION = 0.004;
+const RIVER_BED_DEPTH_METERS = 250;
 const MATERIAL: readonly [number, number, number] = [151, 151, 129];
 const SHADE_COUNT = 12;
 const LIGHT = normalize3(-0.45, -0.58, 0.68);
@@ -43,6 +44,30 @@ function triangleShade(a: [number, number, number], b: [number, number, number],
 /** Высота смещает точку вверх по экрану в проекции рельефа и на слое высот. */
 export function terrainProjectedY(world: World, pixel: number, mapY = Math.floor(pixel / MAP_WIDTH)): number {
   return mapY - Math.max(0, world.elevation[pixel] ?? 0) * HEIGHT_EXAGGERATION;
+}
+
+/** Русло немного ниже соседней поверхности; правило влияет только на визуальную проекцию. */
+export function terrainRiverbedY(world: World, pixel: number, mapY = Math.floor(pixel / MAP_WIDTH)): number {
+  return terrainProjectedY(world, pixel, mapY) + RIVER_BED_DEPTH_METERS * HEIGHT_EXAGGERATION;
+}
+
+/** Выбирает контрастный цвет подписи по затенению рельефа под её координатой. */
+export function terrainTextColor(world: World, pixel: number): string {
+  const x = pixel % MAP_WIDTH;
+  const y = Math.floor(pixel / MAP_WIDTH);
+  const west = world.elevation[y * MAP_WIDTH + Math.max(0, x - GRID_STEP)] ?? 0;
+  const east = world.elevation[y * MAP_WIDTH + Math.min(MAP_WIDTH - 1, x + GRID_STEP)] ?? 0;
+  const north = world.elevation[Math.max(0, y - GRID_STEP) * MAP_WIDTH + x] ?? 0;
+  const south = world.elevation[Math.min(MAP_HEIGHT - 1, y + GRID_STEP) * MAP_WIDTH + x] ?? 0;
+  const normal = normalize3(
+    -((east - west) * HEIGHT_EXAGGERATION) / (GRID_STEP * 2),
+    -((south - north) * HEIGHT_EXAGGERATION) / (GRID_STEP * 2),
+    1,
+  );
+  const illumination = Math.max(0, normal[0] * LIGHT[0] + normal[1] * LIGHT[1] + normal[2] * LIGHT[2]);
+  const brightness = 0.48 + illumination * 0.7;
+  const materialLuminance = (0.2126 * MATERIAL[0] + 0.7152 * MATERIAL[1] + 0.0722 * MATERIAL[2]) / 255;
+  return materialLuminance * brightness > 0.45 ? '#28231e' : '#fff7df';
 }
 
 /**
@@ -105,7 +130,7 @@ export function terrainProjectedRiverPath(
     const x = Math.max(0, Math.min(MAP_WIDTH - 1, Math.floor(point.x)));
     const y = Math.max(0, Math.min(MAP_HEIGHT - 1, Math.floor(point.y)));
     const pixel = y * MAP_WIDTH + x;
-    const projectedY = point.y - Math.max(0, world.elevation[pixel]) * HEIGHT_EXAGGERATION;
+    const projectedY = terrainRiverbedY(world, pixel, point.y);
     return `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${projectedY.toFixed(2)}`;
   }).join(' ');
   return close ? `${path} Z` : path;

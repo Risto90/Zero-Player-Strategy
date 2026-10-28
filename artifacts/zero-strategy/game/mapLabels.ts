@@ -1,5 +1,6 @@
 import { ContourArea, type ContourBounds, type ContourSpan } from './contours';
 import { MAP_HEIGHT, MAP_WIDTH } from './config';
+import { cityLabelFontSize, cityVisibilityRank, isCityVisibleAtZoom } from './cityVisibility';
 import { HUMAN_ORIGINS } from './human';
 import type { EntityLayer, MapMode } from './render';
 import type { Country, World } from './world';
@@ -244,23 +245,30 @@ export function countryMapLabels(
 ): CountryMapLabel[] {
   if (!shouldShowStateLabels(mode)) return [];
   const labels: CountryMapLabel[] = [];
-  if (selectedCountryId !== null) {
-    const selected = selectedNomadLabel(world, selectedCountryId);
-    if (selected && (scale === null || labelVisible(selected.key, selected.fontSize * scale))) {
-      labels.push({ ...selected, selected: true });
-    }
+  const nomads = world.countries
+    .filter((country) => country.type === 'nomadic')
+    .map((country) => ({ country, core: selectedNomadLabel(world, country.id) }))
+    .filter((entry): entry is { country: Country; core: LabelCore } => entry.core !== null)
+    .sort((a, b) =>
+      Number(b.country.id === selectedCountryId) - Number(a.country.id === selectedCountryId) ||
+      b.core.fontSize - a.core.fontSize ||
+      a.country.id - b.country.id);
+  for (const { country, core } of nomads) {
+    if (scale !== null && !labelVisible(core.key, core.fontSize * scale)) continue;
+    const label: CountryMapLabel = { ...core, selected: country.id === selectedCountryId };
+    if (!labels.some((placed) => overlaps(label, placed))) labels.push(label);
   }
-  const blocked = labels[0];
-  for (const core of settledCountryLabels(world)) {
+  const settled = [...settledCountryLabels(world)].sort((a, b) => b.fontSize - a.fontSize || a.countryId - b.countryId);
+  for (const core of settled) {
     if (scale !== null && !labelVisible(core.key, core.fontSize * scale)) continue;
     const label: CountryMapLabel = { ...core, selected: false };
-    if (blocked && overlaps(label, blocked)) {
+    if (labels.some((placed) => overlaps(label, placed))) {
       const country = world.countries[core.countryId];
       const area = country ? countryArea(world, country) : null;
       const candidates = (area ? labelCandidates(area) : [])
         .filter((point) => area && labelCoverage(area, point.x, point.y, label.width, label.height) > 0.5)
         .map((point) => ({ ...label, ...point }))
-        .filter((candidate) => !overlaps(candidate, blocked))
+        .filter((candidate) => labels.every((placed) => !overlaps(candidate, placed)))
         .sort((a, b) => {
           const centerX = (core.countryBounds.x0 + core.countryBounds.x1) / 2;
           const centerY = (core.countryBounds.y0 + core.countryBounds.y1) / 2;
@@ -275,7 +283,7 @@ export function countryMapLabels(
           label.x + label.width / 2,
           label.y + label.height / 2,
         ];
-      }
+      } else continue;
     }
     labels.push(label);
   }
@@ -426,6 +434,99 @@ export function entityMapLabels(
 
 export function shouldShowCityMarks(mode: MapMode): boolean {
   return mode === 'political' || mode === 'cities';
+}
+
+/** Подбирает подписи только для видимых значков города, не допуская наложения названий. */
+export function visibleCityLabelIds(
+  world: World,
+  mode: MapMode,
+  scale: number,
+  baseScale: number,
+  ox: number,
+  oy: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): Set<number> {
+  const visible = new Set<number>();
+  if (!shouldShowCityMarks(mode)) return visible;
+
+  const cellSize = 64;
+  const occupied = new Map<string, { left: number; top: number; right: number; bottom: number }[]>();
+  const keysFor = (rect: { left: number; top: number; right: number; bottom: number }) => {
+    const keys: string[] = [];
+    for (let x = Math.floor(rect.left / cellSize); x <= Math.floor(rect.right / cellSize); x += 1) {
+      for (let y = Math.floor(rect.top / cellSize); y <= Math.floor(rect.bottom / cellSize); y += 1) {
+        keys.push(`${x}:${y}`);
+      }
+    }
+    return keys;
+  };
+  const isFree = (rect: { left: number; top: number; right: number; bottom: number }) => {
+    const checked = new Set<object>();
+    for (const key of keysFor(rect)) {
+      for (const other of occupied.get(key) ?? []) {
+        if (checked.has(other)) continue;
+        checked.add(other);
+        if (rect.left < other.right && rect.right > other.left && rect.top < other.bottom && rect.bottom > other.top) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  const occupy = (rect: { left: number; top: number; right: number; bottom: number }) => {
+    for (const key of keysFor(rect)) {
+      const bucket = occupied.get(key) ?? [];
+      bucket.push(rect);
+      occupied.set(key, bucket);
+    }
+  };
+
+  const candidates = world.cities
+    .map((city) => {
+      const hasPort = world.isCoastal(city.pixel) || world.knownRivers[city.pixel] > 0;
+      return { city, hasPort, zoomRank: cityVisibilityRank(city, hasPort) };
+    })
+    .filter(({ city, zoomRank }) => city.name && isCityVisibleAtZoom(scale, baseScale, zoomRank))
+    .sort((a, b) =>
+      Number(b.city.capital) - Number(a.city.capital) ||
+      b.city.rank - a.city.rank ||
+      a.zoomRank - b.zoomRank ||
+      a.city.id - b.city.id);
+
+  for (const { city, hasPort } of candidates) {
+    let fontSize = cityLabelFontSize(scale, baseScale);
+    const textUnits = [...(city.name ?? '')].length * 0.62 + Number(city.capital) * 1.1;
+    fontSize = Math.min(fontSize, Math.max(0, viewportWidth - 16) / Math.max(1, textUnits));
+    if (fontSize < 8) continue;
+
+    const x = ox + (city.pixel % MAP_WIDTH) * scale;
+    const y = oy + Math.floor(city.pixel / MAP_WIDTH) * scale;
+    const iconSize = hasPort ? 30 + city.rank : 24 + city.rank;
+    const width = ([...(city.name ?? '')].length * 0.62 + Number(city.capital) * 1.1) * fontSize;
+    const height = fontSize * 1.2;
+    const labelBottom = y - iconSize / 2 - Math.max(2, fontSize * 0.22);
+    const label = {
+      left: x - width / 2 - 3,
+      right: x + width / 2 + 3,
+      top: labelBottom - height,
+      bottom: labelBottom + 2,
+    };
+    if (
+      label.left < 8 || label.right > viewportWidth - 8 ||
+      label.top < 8 || label.bottom > viewportHeight - 8 ||
+      !isFree(label)
+    ) continue;
+    visible.add(city.id);
+    occupy(label);
+    occupy({
+      left: x - iconSize / 2 - 2,
+      right: x + iconSize / 2 + 2,
+      top: y - iconSize / 2 - 2,
+      bottom: y + iconSize / 2 + 2,
+    });
+  }
+  return visible;
 }
 
 export function shouldShowGeographyMarks(mode: MapMode): boolean {
