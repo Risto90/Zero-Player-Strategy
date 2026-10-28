@@ -192,6 +192,8 @@ class ObserverPerformanceBenchmark {
   async measureTurn(index) {
     const before = await this.page.evaluate(() => {
       const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
+      const mapTimings = window.__ZERO_STRATEGY_MAP_LABEL_TIMINGS__;
+      if (mapTimings) mapTimings.length = 0;
       return {
         year: bridge.getSnapshot().year,
         startedAt: performance.now(),
@@ -261,6 +263,7 @@ class ObserverPerformanceBenchmark {
         durationMs: performance.now() - before.startedAt,
         events: bridge.takeSamples(),
         stages: bridge.takeStages(),
+        mapTimings: window.__ZERO_STRATEGY_MAP_LABEL_TIMINGS__?.splice(0) ?? [],
         frameGaps,
         pan,
       };
@@ -280,6 +283,7 @@ class ObserverPerformanceBenchmark {
     const durations = this.turns.map(({ durationMs }) => durationMs);
     const events = this.turns.flatMap(({ events: samples }) => samples.filter((sample) => sample.cardType !== null));
     const stages = this.turns.flatMap(({ stages: samples }) => samples);
+    const mapTimings = this.turns.flatMap(({ mapTimings: samples = [] }) => samples);
     const allFrameGaps = this.turns.flatMap(({ frameGaps }) => frameGaps);
     const panSamples = this.turns.map(({ pan }) => pan);
     const panFrameGaps = panSamples.flatMap(({ frameGaps }) => frameGaps);
@@ -303,6 +307,25 @@ class ObserverPerformanceBenchmark {
       total.count += 1;
       total.totalMs += sample.durationMs;
       total.maximumMs = Math.max(total.maximumMs, sample.durationMs);
+      totals.set(key, total);
+      return totals;
+    }, new Map()).values()].sort((a, b) => b.totalMs - a.totalMs);
+    const mapTimingTotals = [...mapTimings.reduce((totals, sample) => {
+      const key = `${sample.mode}:${sample.stage}`;
+      const total = totals.get(key) ?? {
+        mode: sample.mode,
+        stage: sample.stage,
+        calls: 0,
+        totalMs: 0,
+        maximumMs: 0,
+        itemCount: 0,
+        busyCalls: 0,
+      };
+      total.calls += 1;
+      total.totalMs += sample.durationMs;
+      total.maximumMs = Math.max(total.maximumMs, sample.durationMs);
+      total.itemCount += sample.count ?? 0;
+      total.busyCalls += sample.busy ? 1 : 0;
       totals.set(key, total);
       return totals;
     }, new Map()).values()].sort((a, b) => b.totalMs - a.totalMs);
@@ -331,6 +354,7 @@ class ObserverPerformanceBenchmark {
       maximumCardResolutionMs: Math.max(0, ...events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
       slowStages,
       stageTotals,
+      mapTimingTotals,
       eventsExecutionOverOneSecond: events.filter(({ resolutionDurationMs }) => resolutionDurationMs > 1000).length,
       maximumFrameGapMs: Math.max(0, ...allFrameGaps),
       framesOver50Ms: allFrameGaps.filter((gap) => gap > 50).length,

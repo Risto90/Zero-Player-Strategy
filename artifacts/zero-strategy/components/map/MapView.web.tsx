@@ -358,7 +358,7 @@ function recordMapPerformanceTiming(timing: MapPerformanceTiming): void {
   };
   const timings = diagnosticWindow.__ZERO_STRATEGY_MAP_LABEL_TIMINGS__ ??= [];
   timings.push(timing);
-  if (timings.length > 100) timings.shift();
+  if (timings.length > 2000) timings.shift();
 }
 
 function labelBoundsOverlap(a: LabelScreenBounds, b: LabelScreenBounds): boolean {
@@ -857,6 +857,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
 
   const draw = useCallback(() => {
     frameRef.current = 0;
+    const profileDraw = process.env.EXPO_PUBLIC_PERF_BENCHMARK === 'true';
+    const drawStartedAt = profileDraw ? performance.now() : 0;
     if (!routeActiveRef.current || !pageVisibleRef.current) return;
     const vectorSvg = vectorSvgRef.current;
     const overlaySvg = overlaySvgRef.current;
@@ -1132,6 +1134,16 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       mode: mapMode,
       overlayRevision: overlayRevisionRef.current,
     };
+    if (profileDraw) {
+      recordMapPerformanceTiming({
+        stage: 'map-frame',
+        mode: mapMode,
+        durationMs: performance.now() - drawStartedAt,
+        busy: snapshot.busy,
+        worldVersion: game.world.version,
+        countryCount: game.world.countries.length,
+      });
+    }
   }, [game, iconFontsLoaded]);
 
   const requestDraw = useCallback((force = true) => {
