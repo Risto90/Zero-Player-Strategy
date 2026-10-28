@@ -216,7 +216,7 @@ interface SavedGame {
 
 const OBSERVER_SECONDS = 3;
 /** Работа разбивается на отрезки такой длительности, чтобы экран не зависал. */
-const SLICE_MS = 8;
+const SLICE_MS = 12;
 const EMPTY_TEST_LEGEND: Legend = {
   countries: [],
   cultures: [],
@@ -235,15 +235,8 @@ function onSaveFile<T>(op: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** Передаёт управление браузеру до следующего кадра, не удерживая основной поток симуляцией. */
-export const nextFrame = (): Promise<void> => new Promise((resolve) => {
-  if (typeof requestAnimationFrame === 'function' &&
-      (typeof document === 'undefined' || document.visibilityState !== 'hidden')) {
-    requestAnimationFrame(() => resolve());
-  } else {
-    setTimeout(resolve, 0);
-  }
-});
+/** Отдаёт управление очереди событий между порциями расчёта, не привязывая ход к кадрам карты. */
+export const nextFrame = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 export class Game {
   readonly renderer: MapRenderer;
