@@ -97,14 +97,14 @@ function persistVectorColors(game: Game, cache: CachedVectorColor): void {
   }
 }
 
-function contourPath(area: ContourArea): string {
-  const stride = MAP_WIDTH + 1;
+export function contourPath(area: ContourArea): string {
   const commands: string[] = [];
   for (const ring of area.rings()) {
-    if (ring.length < 4) continue;
-    let path = `M${ring[0] % stride} ${Math.floor(ring[0] / stride)}`;
-    for (let index = 1; index < ring.length; index += 1) {
-      path += `L${ring[index] % stride} ${Math.floor(ring[index] / stride)}`;
+    // Кольцо хранит пары координат x/y, а не линейные индексы вершин.
+    if (ring.length < 6) continue;
+    let path = `M${ring[0]} ${ring[1]}`;
+    for (let index = 2; index + 1 < ring.length; index += 2) {
+      path += `L${ring[index]} ${ring[index + 1]}`;
     }
     commands.push(`${path}Z`);
   }

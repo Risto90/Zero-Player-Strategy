@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Game } from '../game/game.ts';
+import { ContourArea } from '../game/contours.ts';
 import { MAP_HEIGHT, MAP_WIDTH } from '../game/config.ts';
 import { World } from '../game/world.ts';
-import { buildVectorMapSvg } from '../components/map/vectorMap.ts';
+import { buildVectorMapSvg, contourPath } from '../components/map/vectorMap.ts';
 
 Game.persist = false;
 const world = World.create('random', 61_407);
@@ -27,6 +28,10 @@ for (const pixel of points) {
   world.drainage[pixel] = 50;
 }
 world.recountCountries();
+
+const rectangle = contourPath(ContourArea.rectangle({ x0: 10, y0: 20, x1: 12, y1: 23 }));
+assert.equal(rectangle, 'M10 20L13 20L13 24L10 24Z',
+  'SVG получает координаты кольца как пары x/y, сохраняя реальную область суши');
 
 const game = new Game(world, 'observer');
 const center = points[Math.floor(points.length / 2)];
