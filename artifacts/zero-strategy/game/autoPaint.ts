@@ -49,20 +49,30 @@ class ContourTerritoryStrategy {
 
   async runCooperatively(yieldControl: () => Promise<void>): Promise<void> {
     const steps = this.plan();
+    // Пустые области не меняют контуры: объединяем восемь проверок, но после изменения сразу отдаём управление.
+    const emptyPaintYieldInterval = 8;
+    let emptyAreasSinceYield = 0;
     let stepStarted = this.onMeasure ? performance.now() : 0;
     let step = steps.next();
     this.onMeasure?.('подготовка следующего контура кисти', performance.now() - stepStarted);
     while (!step.done) {
       const { area, pixel, startArea } = step.value;
+      const changedBefore = this.painter.changed.length;
       const spent = this.actions.contourCooperatively
         ? await this.actions.contourCooperatively(area, pixel, startArea, this.onMeasure)
         : this.actions.contour!(area, pixel, startArea);
-      const yieldStarted = this.onMeasure ? performance.now() : 0;
-      await yieldControl();
-      this.onMeasure?.(
-        spent > 0 ? 'передача управления после заливки' : 'передача управления после пустой области',
-        performance.now() - yieldStarted,
-      );
+      const didChange = this.painter.changed.length > changedBefore;
+      if (didChange) emptyAreasSinceYield = 0;
+      else emptyAreasSinceYield += 1;
+      if (didChange || emptyAreasSinceYield >= emptyPaintYieldInterval) {
+        const yieldStarted = this.onMeasure ? performance.now() : 0;
+        await yieldControl();
+        this.onMeasure?.(
+          didChange ? 'передача управления после изменения' : 'передача управления после пустых областей',
+          performance.now() - yieldStarted,
+        );
+        emptyAreasSinceYield = 0;
+      }
       stepStarted = this.onMeasure ? performance.now() : 0;
       step = steps.next(spent);
       this.onMeasure?.('поиск следующего контура кисти', performance.now() - stepStarted);

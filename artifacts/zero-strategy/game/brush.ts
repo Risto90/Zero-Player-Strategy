@@ -882,9 +882,16 @@ export class CardPainter {
       step = steps.next();
       onMeasure?.('обработка блока контура', performance.now() - stepStarted);
     }
-    const refreshStarted = onMeasure ? performance.now() : 0;
-    onChunk();
-    onMeasure?.('уведомление карты о кисти', performance.now() - refreshStarted);
+    const finalTouched = this.strokeTouched.length;
+    if (finalTouched > publishedTouched) {
+      // Последний шаг может добавить пиксели после предыдущей передачи управления; публикуем их до следующего участника.
+      const publishStarted = onMeasure ? performance.now() : 0;
+      this.publishCooperativeChanges(publishedTouched, finalTouched);
+      onMeasure?.('публикация контуров кисти', performance.now() - publishStarted);
+      const refreshStarted = onMeasure ? performance.now() : 0;
+      onChunk();
+      onMeasure?.('уведомление карты о кисти', performance.now() - refreshStarted);
+    }
     return step.value;
   }
 
