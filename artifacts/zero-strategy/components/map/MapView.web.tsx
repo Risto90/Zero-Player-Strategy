@@ -709,7 +709,7 @@ function drawMapLabels(
     const old = placements.get(label.key);
     const touched = !sameWorld || !changedContour ||
       label.area.intersect(changedContour).size > 0;
-    if (touched || old?.text !== label.text ||
+    if (touched || (old && old.text !== label.text) ||
         (!old && !attempted.has(label.key))) {
       needsLayout.add(label.key);
       attempted.delete(label.key);
