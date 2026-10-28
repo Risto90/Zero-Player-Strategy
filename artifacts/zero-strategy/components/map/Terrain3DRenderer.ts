@@ -4,7 +4,7 @@ import { difference, type MultiPolygon } from 'polygon-clipping';
 import { MAP_HEIGHT, MAP_WIDTH } from '../../game/config';
 import type { Game } from '../../game/game';
 import { discoveredRiverPaths, riverVisibilityScale } from '../../game/geographyGeometry';
-import { seaDepthPackedColor } from '../../game/render';
+import { ELEVATION_COLOR_STOPS, seaDepthPackedColor } from '../../game/render';
 import type { ViewTransform } from './types';
 
 type World = Game['world'];
@@ -22,7 +22,9 @@ const MAX_TERRAIN_SUBDIVISION_DEPTH = 6;
 const RIVER_CARVE_BASE_METERS = 180;
 const CAMERA_FOV = 42;
 const LAND_SURFACE_OFFSET = 0.00015;
-const LAND_COLOR = '#aea387';
+const MIN_ELEVATION_TEXTURE_HEIGHT = 0;
+const MAX_ELEVATION_TEXTURE_HEIGHT = ELEVATION_COLOR_STOPS[ELEVATION_COLOR_STOPS.length - 1][0];
+export const ELEVATION_TEXTURE_WIDTH = 512;
 
 function packedChannels(packed: number): [number, number, number] {
   return [packed & 255, (packed >>> 8) & 255, (packed >>> 16) & 255];
@@ -110,6 +112,7 @@ export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
     .size([TERRAIN_CONTOUR_COLUMNS, TERRAIN_CONTOUR_ROWS])
     .thresholds(levels)(Array.from(sampledHeights)) as ContourGeometry[];
   const positions: number[] = [];
+  const elevationUvs: number[] = [];
   const indices: number[] = [];
   const vertexIndices = new Map<string, number>();
 
@@ -127,15 +130,25 @@ export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
   const addVertex = (point: THREE.Vector2): number => {
     const mapX = ((point.x + 1) / 2) * (MAP_WIDTH - 1);
     const mapY = (point.y + 0.5) * (MAP_HEIGHT - 1);
-    const height = Math.max(
+    const elevation = Math.max(
       0,
       sampleElevation(world, mapX, mapY) - riverCarveMeters(world, mapX, mapY),
-    ) * HEIGHT_SCALE + LAND_SURFACE_OFFSET;
+    );
+    const height = elevation * HEIGHT_SCALE + LAND_SURFACE_OFFSET;
     const key = `${Math.round(point.x * 1e6)}:${Math.round(point.y * 1e6)}:${Math.round(height * 1e6)}`;
     const existing = vertexIndices.get(key);
     if (existing !== undefined) return existing;
     const index = positions.length / 3;
     positions.push(point.x, height, point.y);
+    elevationUvs.push(
+      THREE.MathUtils.clamp(
+        (elevation - MIN_ELEVATION_TEXTURE_HEIGHT) /
+          (MAX_ELEVATION_TEXTURE_HEIGHT - MIN_ELEVATION_TEXTURE_HEIGHT),
+        0,
+        1,
+      ),
+      0.5,
+    );
     vertexIndices.set(key, index);
     return index;
   };
@@ -193,10 +206,59 @@ export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(elevationUvs, 2));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   return geometry;
+}
+
+function hexChannels(hex: string): [number, number, number] {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+function elevationColorAt(elevation: number): [number, number, number] {
+  const bounded = THREE.MathUtils.clamp(
+    elevation,
+    MIN_ELEVATION_TEXTURE_HEIGHT,
+    MAX_ELEVATION_TEXTURE_HEIGHT,
+  );
+  let upper = 1;
+  while (upper < ELEVATION_COLOR_STOPS.length - 1 && bounded > ELEVATION_COLOR_STOPS[upper][0]) {
+    upper += 1;
+  }
+  const [lowerHeight, lowerHex] = ELEVATION_COLOR_STOPS[upper - 1];
+  const [upperHeight, upperHex] = ELEVATION_COLOR_STOPS[upper];
+  const lower = hexChannels(lowerHex);
+  const higher = hexChannels(upperHex);
+  const fraction = (bounded - lowerHeight) / (upperHeight - lowerHeight);
+  return lower.map((channel, index) => Math.round(channel + (higher[index] - channel) * fraction)) as
+    [number, number, number];
+}
+
+/** Цветовая текстура сохраняет прежнюю гипсометрическую шкалу карты. */
+export function buildElevationColorTexture(): THREE.DataTexture {
+  const data = new Uint8Array(ELEVATION_TEXTURE_WIDTH * 4);
+  for (let column = 0; column < ELEVATION_TEXTURE_WIDTH; column += 1) {
+    const elevation = MIN_ELEVATION_TEXTURE_HEIGHT +
+      column / (ELEVATION_TEXTURE_WIDTH - 1) *
+      (MAX_ELEVATION_TEXTURE_HEIGHT - MIN_ELEVATION_TEXTURE_HEIGHT);
+    const [red, green, blue] = elevationColorAt(elevation);
+    const offset = column * 4;
+    data[offset] = red;
+    data[offset + 1] = green;
+    data[offset + 2] = blue;
+    data[offset + 3] = 255;
+  }
+  const texture = new THREE.DataTexture(data, ELEVATION_TEXTURE_WIDTH, 1, THREE.RGBAFormat);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearFilter;
+  texture.wrapS = THREE.ClampToEdgeWrapping;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 /** Создаёт плоскую текстуру глубин моря под контурной 3D-сушей. */
@@ -238,6 +300,7 @@ export class Terrain3DRenderer {
   private readonly riverGroup = new THREE.Group();
   private terrainMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | null = null;
   private seaMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null;
+  private elevationColorTexture: THREE.DataTexture | null = null;
   private world: World | null = null;
   private terrainGeographyVersion = -1;
   private riverGeographyVersion = -1;
@@ -298,8 +361,11 @@ export class Terrain3DRenderer {
     if (changedWorld || this.terrainGeographyVersion !== world.geographyRevision) {
       const geometry = buildTerrainGeometry(world);
       if (!this.terrainMesh) {
+        this.elevationColorTexture = buildElevationColorTexture();
         const material = new THREE.MeshStandardMaterial({
-          color: LAND_COLOR,
+          color: '#ffffff',
+          map: this.elevationColorTexture,
+          vertexColors: false,
           roughness: 0.94,
           metalness: 0,
           side: THREE.DoubleSide,
@@ -495,6 +561,8 @@ export class Terrain3DRenderer {
     this.disposed = true;
     this.terrainMesh?.geometry.dispose();
     this.terrainMesh?.material.dispose();
+    this.elevationColorTexture?.dispose();
+    this.elevationColorTexture = null;
     if (this.terrainMesh) this.scene.remove(this.terrainMesh);
     if (this.seaMesh) {
       this.seaMesh.material.map?.dispose();

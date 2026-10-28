@@ -17,7 +17,7 @@ import {
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
 import { discoveredRiverPaths } from '@/game/geographyGeometry';
-import { seaDepthPackedColor, STRIP_H } from '@/game/render';
+import { elevationPackedColor, seaDepthPackedColor, STRIP_H } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
 import { circleHatchLines } from './cityInfluenceHatching';
@@ -85,7 +85,7 @@ function mapTextColor(game: MapViewProps['game'], pixel: number): string {
     const elevation = game.world.elevation[pixel] ?? 0;
     packed = elevation < 0
       ? seaDepthPackedColor(elevation)
-      : (135 << 16) | (163 << 8) | 174;
+      : elevationPackedColor(elevation);
   }
   const red = packed & 255;
   const green = (packed >>> 8) & 255;

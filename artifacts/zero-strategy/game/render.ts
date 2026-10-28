@@ -35,6 +35,17 @@ function shade(color: number, factor: number): number {
 
 /** Морская батиметрия остаётся видна под всеми тематическими слоями карты. */
 export const SEA_DEPTH_RAMP = ['#17374d', '#24526b', '#39748a', '#8bb5b3'] as const;
+export const ELEVATION_COLOR_STOPS: readonly [number, string][] = [
+  [-11000, '#143046'],
+  [-4000, '#326582'],
+  [-200, '#84b6be'],
+  [0, '#dcd3b2'],
+  [500, '#769d69'],
+  [1500, '#aa9d69'],
+  [3000, '#946c4e'],
+  [6000, '#d4cbb8'],
+  [8800, '#f7f5ee'],
+];
 const SEA_DEPTH_STOPS: readonly [number, RGB][] = [
   [0, hexToRgb(SEA_DEPTH_RAMP[3])],
   [1000, hexToRgb(SEA_DEPTH_RAMP[2])],
@@ -61,13 +72,26 @@ export function seaDepthPackedColor(elevation: number): number {
   return SEA_DEPTH_COLORS[depth];
 }
 
+export function elevationPackedColor(elevation: number): number {
+  const bounded = Math.max(ELEVATION_COLOR_STOPS[0][0], Math.min(
+    ELEVATION_COLOR_STOPS[ELEVATION_COLOR_STOPS.length - 1][0],
+    elevation,
+  ));
+  let stop = 1;
+  while (stop < ELEVATION_COLOR_STOPS.length - 1 && bounded > ELEVATION_COLOR_STOPS[stop][0]) stop += 1;
+  const [lowHeight, lowHex] = ELEVATION_COLOR_STOPS[stop - 1];
+  const [highHeight, highHex] = ELEVATION_COLOR_STOPS[stop];
+  const amount = (bounded - lowHeight) / (highHeight - lowHeight);
+  return pack(mix(hexToRgb(lowHex), hexToRgb(highHex), amount));
+}
+
 /** Colour ramps for value layers (0–100). */
 export const RAMPS: Record<'humidity' | 'temperature' | 'drainage' | 'density' | 'elevation', string[]> = {
   humidity: ['#c9a66b', '#d9cf98', '#9fbf8c', '#5f9c8f', '#2f6f86'],
   temperature: ['#eef1f4', '#8fb3cf', '#a9c48b', '#e0c065', '#c96a43'],
   drainage: ['#56756a', '#8aa38c', '#c8c4a0', '#c9a776', '#a8794c'],
   density: ['#efe8d2', '#d8c08c', '#c08a52', '#93512f', '#5e2a1d'],
-  elevation: [...SEA_DEPTH_RAMP],
+  elevation: ELEVATION_COLOR_STOPS.filter(([height]) => height >= 0).map(([, color]) => color),
 };
 
 export const CITY_COLORS = ['#a66f3d', '#bf6741', '#b2493e', '#8f3036', '#672433', '#431c2e'] as const;

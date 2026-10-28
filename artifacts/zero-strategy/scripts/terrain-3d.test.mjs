@@ -1,8 +1,11 @@
 import { strict as assert } from 'node:assert';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from '../game/config.ts';
+import { ELEVATION_COLOR_STOPS, elevationPackedColor } from '../game/render.ts';
 import {
   buildSeaDepthTexture,
+  buildElevationColorTexture,
   buildTerrainGeometry,
+  ELEVATION_TEXTURE_WIDTH,
   SEA_DEPTH_TEXTURE_HEIGHT,
   SEA_DEPTH_TEXTURE_WIDTH,
   TERRAIN_CONTOUR_COLUMNS,
@@ -34,10 +37,15 @@ const world = { land, elevation, knownRivers };
 const geometry = buildTerrainGeometry(world);
 const positions = geometry.getAttribute('position');
 const indices = geometry.getIndex();
+const elevationUvs = geometry.getAttribute('uv');
 assert.ok(positions.count > 0, 'контуры высот создают геометрию суши');
 assert.ok(positions.count < TERRAIN_CONTOUR_COLUMNS * TERRAIN_CONTOUR_ROWS * 8,
   'модель состоит из контурных площадок, а не из регулярной сетки пикселей');
 assert.ok(indices && indices.count > 0, 'контурные площадки и склоны состоят из треугольников');
+assert.ok(elevationUvs && elevationUvs.count === positions.count,
+  'каждая вершина рельефа получает координату цветовой текстуры высот');
+assert.ok(elevationUvs.getX(0) >= 0 && elevationUvs.getX(0) <= 1,
+  'высота каждой вершины адресует оттенок в пределах гипсометрической шкалы');
 
 let lowest = Infinity;
 let highest = -Infinity;
@@ -69,6 +77,23 @@ for (let index = 0; index < indices.count; index += 3) {
 }
 assert.ok(longestGroundEdge < 0.06, 'адаптивное деление не оставляет крупных плоских граней');
 geometry.dispose();
+
+const elevationTexture = buildElevationColorTexture();
+assert.equal(elevationTexture.image.width, ELEVATION_TEXTURE_WIDTH,
+  'цвета рельефа хранятся в текстуре высот, а не задаются одним цветом материала');
+assert.equal(elevationTexture.image.height, 1, 'цветовая шкала высоты является одномерной текстурой');
+assert.equal(elevationTexture.image.data[3], 255, 'текстура высот полностью непрозрачна');
+assert.deepEqual(
+  [...elevationTexture.image.data.slice(0, 3)],
+  [0xdc, 0xd3, 0xb2],
+  'нулевая высота использует прежний цвет береговой отметки',
+);
+assert.ok(elevationTexture.image.data.some((channel, index) => index % 4 === 0 && channel > 200),
+  'высокие участки используют восстановленные светлые оттенки');
+const firstLandColor = elevationPackedColor(0);
+assert.equal(firstLandColor & 255, Number.parseInt(ELEVATION_COLOR_STOPS[3][1].slice(1, 3), 16),
+  'контраст подписей опирается на тот же цвет высоты, что и текстура рельефа');
+elevationTexture.dispose();
 
 const seaTexture = buildSeaDepthTexture(world);
 const depthPixels = seaTexture.image.data;
