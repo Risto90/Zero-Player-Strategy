@@ -97,6 +97,7 @@
   "dependencies": {
     "d3-contour": "^4.0.2",
     "expo-asset": "~58.0.18",
+    "polygon-clipping": "^0.15.7",
     "react-native-safe-area-context": "^5.10.1",
     "three": "^0.186.1"
   }

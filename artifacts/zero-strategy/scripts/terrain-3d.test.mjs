@@ -19,9 +19,10 @@ for (let y = 0; y < MAP_HEIGHT; y += 1) {
     elevation[pixel] = -5000;
   }
 }
-for (let y = 360; y < 660; y += 1) {
-  for (let x = 900; x < 1140; x += 1) {
-    elevation[y * MAP_WIDTH + x] = 8500;
+for (let y = 300; y < 720; y += 1) {
+  for (let x = 800; x < 1240; x += 1) {
+    const distance = Math.hypot((x - 1024) / 220, (y - 510) / 210);
+    elevation[y * MAP_WIDTH + x] = Math.max(0, Math.round((1 - distance) * 8500));
   }
 }
 for (let y = 180; y < 840; y += 1) {
@@ -41,16 +42,32 @@ assert.ok(indices && indices.count > 0, 'контурные площадки и 
 let lowest = Infinity;
 let highest = -Infinity;
 let westernmost = Infinity;
+const distinctHeights = new Set();
 for (let index = 0; index < positions.count; index += 1) {
   const x = positions.getX(index);
   const y = positions.getY(index);
   westernmost = Math.min(westernmost, x);
   lowest = Math.min(lowest, y);
   highest = Math.max(highest, y);
+  distinctHeights.add(y.toFixed(4));
 }
 assert.ok(lowest >= 0, 'модель содержит только сушу и не поднимает подводный рельеф');
 assert.ok(westernmost > -0.7, 'контур побережья исключает морскую часть из геометрии суши');
 assert.ok(highest > 0.09, 'высокие точки формируют заметный положительный рельеф');
+assert.ok(distinctHeights.size > 10, 'адаптивное деление контурных площадок сохраняет непрерывные склоны');
+
+let longestGroundEdge = 0;
+for (let index = 0; index < indices.count; index += 3) {
+  const triangle = [indices.getX(index), indices.getX(index + 1), indices.getX(index + 2)];
+  for (let edge = 0; edge < 3; edge += 1) {
+    const first = triangle[edge];
+    const second = triangle[(edge + 1) % 3];
+    const dx = positions.getX(first) - positions.getX(second);
+    const dz = positions.getZ(first) - positions.getZ(second);
+    longestGroundEdge = Math.max(longestGroundEdge, Math.hypot(dx, dz));
+  }
+}
+assert.ok(longestGroundEdge < 0.06, 'адаптивное деление не оставляет крупных плоских граней');
 geometry.dispose();
 
 const seaTexture = buildSeaDepthTexture(world);

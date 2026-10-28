@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { contours } from 'd3-contour';
+import { difference, type MultiPolygon } from 'polygon-clipping';
 import { MAP_HEIGHT, MAP_WIDTH } from '../../game/config';
 import type { Game } from '../../game/game';
 import { discoveredRiverPaths, riverVisibilityScale } from '../../game/geographyGeometry';
@@ -14,8 +15,10 @@ export const TERRAIN_CONTOUR_COLUMNS = 512;
 export const TERRAIN_CONTOUR_ROWS = 256;
 export const SEA_DEPTH_TEXTURE_WIDTH = 1024;
 export const SEA_DEPTH_TEXTURE_HEIGHT = 512;
-const HEIGHT_SCALE = 0.000012;
+const HEIGHT_SCALE = 0.00003;
 const HEIGHT_CONTOUR_STEP_METERS = 250;
+const MAX_TERRAIN_TRIANGLE_EDGE = 0.03;
+const MAX_TERRAIN_SUBDIVISION_DEPTH = 6;
 const RIVER_CARVE_BASE_METERS = 180;
 const CAMERA_FOV = 42;
 const LAND_SURFACE_OFFSET = 0.00015;
@@ -67,21 +70,20 @@ function riverCarveMeters(world: World, x: number, y: number): number {
   return (RIVER_CARVE_BASE_METERS + strongest * 55) * bestWeight;
 }
 
-function terrainHeightMeters(elevation: number): number {
-  return Math.max(0, Math.floor(elevation / HEIGHT_CONTOUR_STEP_METERS) * HEIGHT_CONTOUR_STEP_METERS);
-}
-
 function mapPosition(world: World, x: number, y: number, carveRiver = false): THREE.Vector3 {
   const elevation = sampleElevation(world, x, y) -
     (carveRiver ? riverCarveMeters(world, x, y) : 0);
   return new THREE.Vector3(
     (x / (MAP_WIDTH - 1)) * 2 - 1,
-    terrainHeightMeters(elevation) * HEIGHT_SCALE + LAND_SURFACE_OFFSET,
+    Math.max(0, elevation) * HEIGHT_SCALE + LAND_SURFACE_OFFSET,
     (y / (MAP_HEIGHT - 1)) - 0.5,
   );
 }
 
-/** Строит контурные площадки высот; растры кистей и игровые слои эта сетка не меняет. */
+/**
+ * Контуры задают полосы высот суши; адаптивно дробятся только длинные грани,
+ * а не каждый пиксель. Эта геометрия служит только 3D-отрисовке.
+ */
 export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
   const sampledHeights = new Float64Array(TERRAIN_CONTOUR_COLUMNS * TERRAIN_CONTOUR_ROWS);
   let maximumHeight = 0;
@@ -103,13 +105,13 @@ export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
   for (let elevation = HEIGHT_CONTOUR_STEP_METERS; elevation <= maximumHeight; elevation += HEIGHT_CONTOUR_STEP_METERS) {
     levels.push(elevation);
   }
+  if (levels[levels.length - 1] < maximumHeight) levels.push(maximumHeight);
   const heightContours = contours()
     .size([TERRAIN_CONTOUR_COLUMNS, TERRAIN_CONTOUR_ROWS])
-    .thresholds(levels)(sampledHeights) as ContourGeometry[];
+    .thresholds(levels)(Array.from(sampledHeights)) as ContourGeometry[];
   const positions: number[] = [];
   const indices: number[] = [];
-  let vertexBase = 0;
-  let previousY = LAND_SURFACE_OFFSET;
+  const vertexIndices = new Map<string, number>();
 
   const mapPoint = (point: number[]): THREE.Vector2 => new THREE.Vector2(
     (point[0] / (TERRAIN_CONTOUR_COLUMNS - 1)) * 2 - 1,
@@ -122,50 +124,71 @@ export function buildTerrainGeometry(world: World): THREE.BufferGeometry {
     }
     return points;
   };
+  const addVertex = (point: THREE.Vector2): number => {
+    const mapX = ((point.x + 1) / 2) * (MAP_WIDTH - 1);
+    const mapY = (point.y + 0.5) * (MAP_HEIGHT - 1);
+    const height = Math.max(
+      0,
+      sampleElevation(world, mapX, mapY) - riverCarveMeters(world, mapX, mapY),
+    ) * HEIGHT_SCALE + LAND_SURFACE_OFFSET;
+    const key = `${Math.round(point.x * 1e6)}:${Math.round(point.y * 1e6)}:${Math.round(height * 1e6)}`;
+    const existing = vertexIndices.get(key);
+    if (existing !== undefined) return existing;
+    const index = positions.length / 3;
+    positions.push(point.x, height, point.y);
+    vertexIndices.set(key, index);
+    return index;
+  };
+  const addTriangle = (
+    a: THREE.Vector2,
+    b: THREE.Vector2,
+    c: THREE.Vector2,
+    depth = 0,
+  ): void => {
+    const abLength = a.distanceToSquared(b);
+    const bcLength = b.distanceToSquared(c);
+    const caLength = c.distanceToSquared(a);
+    if (
+      depth < MAX_TERRAIN_SUBDIVISION_DEPTH &&
+      Math.max(abLength, bcLength, caLength) > MAX_TERRAIN_TRIANGLE_EDGE ** 2
+    ) {
+      const ab = a.clone().add(b).multiplyScalar(0.5);
+      const bc = b.clone().add(c).multiplyScalar(0.5);
+      const ca = c.clone().add(a).multiplyScalar(0.5);
+      addTriangle(a, ab, ca, depth + 1);
+      addTriangle(ab, b, bc, depth + 1);
+      addTriangle(ca, bc, c, depth + 1);
+      addTriangle(ab, bc, ca, depth + 1);
+      return;
+    }
+    indices.push(addVertex(a), addVertex(b), addVertex(c));
+  };
 
-  for (const heightContour of heightContours) {
-    const surfaceY = terrainHeightMeters(heightContour.value) * HEIGHT_SCALE + LAND_SURFACE_OFFSET;
-    for (const polygon of heightContour.coordinates) {
+  for (let contourIndex = 0; contourIndex < heightContours.length; contourIndex += 1) {
+    const heightContour = heightContours[contourIndex];
+    const nextContour = heightContours[contourIndex + 1];
+    const isoband = nextContour
+      ? difference(
+        heightContour.coordinates as MultiPolygon,
+        nextContour.coordinates as MultiPolygon,
+      )
+      : heightContour.coordinates;
+
+    for (const polygon of isoband) {
       const rings = polygon.map(normalizedRing).filter((ring) => ring.length >= 3);
       const [outer, ...holes] = rings;
       if (!outer) continue;
 
       const triangles = THREE.ShapeUtils.triangulateShape(outer, holes);
       const polygonPoints = [outer, ...holes].flat();
-      for (const point of polygonPoints) {
-        positions.push(point.x, surfaceY, point.y);
-      }
       for (const triangle of triangles) {
-        indices.push(
-          vertexBase + triangle[0],
-          vertexBase + triangle[1],
-          vertexBase + triangle[2],
+        addTriangle(
+          polygonPoints[triangle[0]],
+          polygonPoints[triangle[1]],
+          polygonPoints[triangle[2]],
         );
       }
-      vertexBase += polygonPoints.length;
-
-      if (surfaceY > previousY) {
-        for (const ring of rings) {
-          for (let index = 0; index < ring.length; index += 1) {
-            const a = ring[index];
-            const b = ring[(index + 1) % ring.length];
-            const wallBase = vertexBase;
-            positions.push(
-              a.x, previousY, a.y,
-              b.x, previousY, b.y,
-              b.x, surfaceY, b.y,
-              a.x, surfaceY, a.y,
-            );
-            indices.push(
-              wallBase, wallBase + 1, wallBase + 2,
-              wallBase, wallBase + 2, wallBase + 3,
-            );
-            vertexBase += 4;
-          }
-        }
-      }
     }
-    previousY = Math.max(previousY, surfaceY);
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -451,9 +474,9 @@ export class Terrain3DRenderer {
       this.camera,
     );
     this.scene.updateMatrixWorld(true);
-    const surfaces = [this.terrainMesh, this.seaMesh].filter(
-      (mesh): mesh is THREE.Mesh => mesh !== null,
-    );
+    const surfaces: THREE.Object3D[] = [];
+    if (this.terrainMesh) surfaces.push(this.terrainMesh);
+    if (this.seaMesh) surfaces.push(this.seaMesh);
     const hit = this.raycaster.intersectObjects(surfaces, false)[0];
     if (hit) {
       return {
