@@ -177,7 +177,7 @@ class ObserverPerformanceBenchmark {
       return !!state && state.year > previousYear && !state.busy && !state.drawing && state.progress === null;
     }, before.year, { timeout: this.timeoutMs, polling: 50 });
 
-    const result = await this.page.evaluate(({ index, before }) => {
+    const result = await this.page.evaluate(({ index, before, pan }) => {
       const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
       const state = bridge.getSnapshot();
       const frameGaps = window.__performanceFrameGaps.splice(before.firstFrameGap);
@@ -190,7 +190,7 @@ class ObserverPerformanceBenchmark {
         frameGaps,
         pan,
       };
-    }, { index, before });
+    }, { index, before, pan });
 
     this.turns.push(result);
     const resolved = result.events.filter((event) => event.cardType !== null);
