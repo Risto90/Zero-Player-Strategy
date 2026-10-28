@@ -21,6 +21,7 @@ export interface PaintActions {
     area: ContourArea,
     seed?: number,
     startArea?: ContourArea,
+    onMeasure?: (stage: string, durationMs: number) => void,
   ): Promise<number>;
   contoursCooperatively?(areas: readonly ContourArea[]): Promise<number>;
 }
@@ -52,7 +53,7 @@ class ContourTerritoryStrategy {
     while (!step.done) {
       const { area, pixel, startArea } = step.value;
       const spent = this.actions.contourCooperatively
-        ? await this.actions.contourCooperatively(area, pixel, startArea)
+        ? await this.actions.contourCooperatively(area, pixel, startArea, this.onMeasure)
         : this.actions.contour!(area, pixel, startArea);
       await yieldControl();
       step = steps.next(spent);

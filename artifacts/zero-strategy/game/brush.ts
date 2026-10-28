@@ -848,8 +848,9 @@ export class CardPainter {
     startArea: ContourArea | undefined,
     yieldControl: () => Promise<void>,
     onChunk: () => void,
+    onMeasure?: (stage: string, durationMs: number) => void,
   ): Promise<number> {
-    return this.paintContoursCooperatively([area], seed, startArea, yieldControl, onChunk);
+    return this.paintContoursCooperatively([area], seed, startArea, yieldControl, onChunk, onMeasure);
   }
 
   async paintContoursCooperatively(
@@ -858,19 +859,32 @@ export class CardPainter {
     startArea: ContourArea | undefined,
     yieldControl: () => Promise<void>,
     onChunk: () => void,
+    onMeasure?: (stage: string, durationMs: number) => void,
   ): Promise<number> {
     const steps = this.paintContoursSteps(areas, seed, startArea);
     let publishedTouched = this.strokeTouched.length;
+    let stepStarted = onMeasure ? performance.now() : 0;
     let step = steps.next();
+    onMeasure?.('обработка блока контура', performance.now() - stepStarted);
     while (!step.done) {
       const currentTouched = this.strokeTouched.length;
+      const publishStarted = onMeasure ? performance.now() : 0;
       this.publishCooperativeChanges(publishedTouched, currentTouched);
+      onMeasure?.('публикация контуров кисти', performance.now() - publishStarted);
       publishedTouched = currentTouched;
+      const refreshStarted = onMeasure ? performance.now() : 0;
       onChunk();
+      onMeasure?.('уведомление карты о кисти', performance.now() - refreshStarted);
+      const yieldStarted = onMeasure ? performance.now() : 0;
       await yieldControl();
+      onMeasure?.('передача управления между блоками кисти', performance.now() - yieldStarted);
+      stepStarted = onMeasure ? performance.now() : 0;
       step = steps.next();
+      onMeasure?.('обработка блока контура', performance.now() - stepStarted);
     }
+    const refreshStarted = onMeasure ? performance.now() : 0;
     onChunk();
+    onMeasure?.('уведомление карты о кисти', performance.now() - refreshStarted);
     return step.value;
   }
 

@@ -1583,6 +1583,16 @@ export class Game {
         refreshVisibleMap,
       );
     };
+    const onMeasure = this.performanceTracking
+      ? (stage: string, durationMs: number) => {
+        this.performanceStageSamples.push({
+          year: this.year,
+          cardType: card.type,
+          stage,
+          durationMs,
+        });
+      }
+      : undefined;
     const actions: PaintActions = {
       beginStroke: (x, y) => this.dispatchAction({ type: 'beginStroke', x, y }),
       dab: (x, y, radius) => this.dispatchAction({ type: 'dab', x, y, radius }) as number,
@@ -1599,23 +1609,13 @@ export class Game {
         areas: areas.map((area) => area.spans),
       }) as number,
       dabCooperatively: cooperativeDab,
-      contourCooperatively: (area, seed, startArea) => painter.paintContourCooperatively(
-        area, seed, startArea, yieldControl, refreshVisibleMap,
+      contourCooperatively: (area, seed, startArea, measure) => painter.paintContourCooperatively(
+        area, seed, startArea, yieldControl, refreshVisibleMap, measure,
       ),
       contoursCooperatively: (areas) => painter.paintContoursCooperatively(
         areas, undefined, undefined, yieldControl, refreshVisibleMap,
       ),
     };
-    const onMeasure = this.performanceTracking
-      ? (stage: string, durationMs: number) => {
-        this.performanceStageSamples.push({
-          year: this.year,
-          cardType: card.type,
-          stage,
-          durationMs,
-        });
-      }
-      : undefined;
     await this.measurePerformanceStageCooperatively(card.type, 'автоматическая кисть', () =>
       autoPaintCooperatively(painter, actions, onMeasure, yieldControl));
     this.measurePerformanceStage(card.type, 'обновление после покраски', () => this.afterPaint());
