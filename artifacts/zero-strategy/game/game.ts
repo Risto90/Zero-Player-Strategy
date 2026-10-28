@@ -244,7 +244,22 @@ function onSaveFile<T>(op: () => Promise<T>): Promise<T> {
 }
 
 /** Даёт интерфейсу обновиться между отрезками работы. */
-export const nextFrame = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+let yieldChannel: MessageChannel | null = null;
+const yieldQueue: Array<() => void> = [];
+
+export const nextFrame = (): Promise<void> => new Promise((resolve) => {
+  if (typeof window === 'undefined' || typeof MessageChannel === 'undefined') {
+    setTimeout(resolve, 0);
+    return;
+  }
+  if (!yieldChannel) {
+    yieldChannel = new MessageChannel();
+    yieldChannel.port1.onmessage = () => yieldQueue.shift()?.();
+  }
+  yieldQueue.push(resolve);
+  // Канал сообщений уступает основной поток без задержки таймера.
+  yieldChannel.port2.postMessage(undefined);
+});
 
 export class Game {
   readonly renderer: MapRenderer;
