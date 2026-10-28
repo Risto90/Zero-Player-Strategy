@@ -898,18 +898,15 @@ export class CardPainter {
   private publishCooperativeChanges(from: number, to: number): void {
     if (to <= from) return;
     const rows = new Set<number>();
-    let x0 = MAP_WIDTH, y0 = MAP_HEIGHT, x1 = -1, y1 = -1;
     for (let index = from; index < to; index += 1) {
       const pixel = this.strokeTouched[index];
-      const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
+      const y = Math.floor(pixel / MAP_WIDTH);
       rows.add(y);
-      x0 = Math.min(x0, x); x1 = Math.max(x1, x);
-      y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      this.markDirtyTilePixel(pixel);
     }
     const layers = contourLayersForCard(this.card.type);
     for (const layer of layers) this.dirtyLayers.add(layer);
     if (this.card.type !== 'nomadExpand') this.world.contours.changedRows(rows, layers);
-    this.markDirty(x0 - 1, y0 - 1, x1 + 1, y1 + 1);
   }
 
   /** Несколько областей одного события обрабатываются за одну синхронизацию и инвалидацию слоёв. */
@@ -972,7 +969,13 @@ export class CardPainter {
         };
       }, { x0: MAP_WIDTH, y0: MAP_HEIGHT, x1: -1, y1: -1 });
       const dirty = x1 >= x0 ? { x0, y0, x1, y1 } : fallbackBounds;
-      this.markDirty(dirty.x0 - 1, dirty.y0 - 1, dirty.x1 + 1, dirty.y1 + 1);
+      if (this.strokeTouched.length === touchedStart) {
+        this.markDirty(dirty.x0 - 1, dirty.y0 - 1, dirty.x1 + 1, dirty.y1 + 1);
+      } else {
+        for (let index = touchedStart; index < this.strokeTouched.length; index += 1) {
+          this.markDirtyTilePixel(this.strokeTouched[index]);
+        }
+      }
       const names = contourLayersForCard(this.card.type);
       for (const name of names) this.dirtyLayers.add(name);
       if (this.card.type !== 'nomadExpand') {
@@ -1560,12 +1563,18 @@ export class CardPainter {
   }
 
   private markDirtyPixel(p: number): void {
-    const tileCols = 8, tileRows = 16;
-    const tileWidth = MAP_WIDTH / tileCols, tileHeight = MAP_HEIGHT / tileRows;
-    const x = p % MAP_WIDTH, y = Math.floor(p / MAP_WIDTH);
     const layers: ContourLayerName[] = ['density', 'culture', 'religion', 'humanOrigins'];
+    const y = Math.floor(p / MAP_WIDTH);
     if (this.card.type !== 'nomadExpand') this.world.contours.changedRows([y], layers);
     for (const layer of layers) this.dirtyLayers.add(layer);
+    this.markDirtyTilePixel(p);
+  }
+
+  private markDirtyTilePixel(pixel: number): void {
+    // Координаты выбирают только затронутые плитки SVG-кэша; геометрию задают контуры.
+    const tileCols = 8, tileRows = 16;
+    const tileWidth = MAP_WIDTH / tileCols, tileHeight = MAP_HEIGHT / tileRows;
+    const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
     const col = Math.floor(x / tileWidth), row = Math.floor(y / tileHeight);
     const key = row * tileCols + col;
     if (this.dirtyTileKeys.has(key)) return;
