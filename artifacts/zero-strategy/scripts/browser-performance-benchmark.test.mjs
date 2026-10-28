@@ -291,6 +291,21 @@ class ObserverPerformanceBenchmark {
     };
     const slowEvents = [...events].sort((a, b) => b.resolutionDurationMs - a.resolutionDurationMs).slice(0, 10);
     const slowStages = [...stages].sort((a, b) => b.durationMs - a.durationMs).slice(0, 10);
+    const stageTotals = [...stages.reduce((totals, sample) => {
+      const key = `${sample.cardType}:${sample.stage}`;
+      const total = totals.get(key) ?? {
+        cardType: sample.cardType,
+        stage: sample.stage,
+        count: 0,
+        totalMs: 0,
+        maximumMs: 0,
+      };
+      total.count += 1;
+      total.totalMs += sample.durationMs;
+      total.maximumMs = Math.max(total.maximumMs, sample.durationMs);
+      totals.set(key, total);
+      return totals;
+    }, new Map()).values()].sort((a, b) => b.totalMs - a.totalMs).slice(0, 20);
     const eventTypes = Object.groupBy(events, ({ cardType }) => cardType);
     const summary = {
       turns: this.turns.length,
@@ -315,6 +330,7 @@ class ObserverPerformanceBenchmark {
       maximumCardDrawMs: Math.max(0, ...events.map(({ drawDurationMs }) => drawDurationMs)),
       maximumCardResolutionMs: Math.max(0, ...events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
       slowStages,
+      stageTotals,
       eventsExecutionOverOneSecond: events.filter(({ resolutionDurationMs }) => resolutionDurationMs > 1000).length,
       maximumFrameGapMs: Math.max(0, ...allFrameGaps),
       framesOver50Ms: allFrameGaps.filter((gap) => gap > 50).length,
