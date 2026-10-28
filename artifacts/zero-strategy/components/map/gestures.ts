@@ -26,8 +26,8 @@ export interface GestureHost {
 type Kind = 'none' | 'paint' | 'pan' | 'pinch';
 
 /**
- * One pointer paints (brush) or pans; the city tool places a city on tap.
- * A short tap with the hand tool inspects the point.
+ * Одно касание рисует кистью или перемещает карту; инструмент города ставит город по нажатию.
+ * Короткое нажатие инструментом руки осматривает выбранную точку.
  */
 export class MapGestures {
   private readonly points = new Map<number, Point>();

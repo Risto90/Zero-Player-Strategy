@@ -304,6 +304,9 @@ function riverTextPathIsReadable(points: readonly ScreenPoint[], fontSize: numbe
 
 type LabelScreenBounds = { left: number; top: number; right: number; bottom: number };
 
+type MapLabelLayout = { occupied: LabelScreenBounds[]; svg: string };
+const mapLabelLayoutCaches = new WeakMap<object, Map<string, MapLabelLayout>>();
+
 function labelBoundsOverlap(a: LabelScreenBounds, b: LabelScreenBounds): boolean {
   return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
@@ -460,8 +463,38 @@ function drawMapLabels(
   height: number,
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
   avoidToolOverlay = false,
-): { occupied: LabelScreenBounds[]; svg: string } {
+): MapLabelLayout {
   const snapshot = game.getSnapshot();
+  const labels = [
+    ...countryMapLabels(game.world, null, snapshot.mapMode, snapshot.selectedCountryId, false),
+    ...entityMapLabels(game.world, snapshot.mapMode, snapshot.layer, undefined, false),
+  ];
+  const cacheKey = [
+    snapshot.mapMode,
+    snapshot.layer?.kind ?? '',
+    snapshot.layer?.id ?? '',
+    snapshot.selectedCountryId ?? '',
+    game.renderer.visualRevision,
+    game.world.territoryVersion,
+    game.world.geographyRevision,
+    view.scale.toPrecision(9),
+    view.ox.toPrecision(9),
+    view.oy.toPrecision(9),
+    baseScale.toPrecision(9),
+    width,
+    height,
+    avoidToolOverlay ? 1 : 0,
+    labels.map((label) => `${label.key}\u0001${label.text}`).join('\u0002'),
+  ].join('\u0003');
+  if (!projectMapPoint) {
+    const cache = mapLabelLayoutCaches.get(game.world);
+    const cached = cache?.get(cacheKey);
+    if (cache && cached) {
+      cache.delete(cacheKey);
+      cache.set(cacheKey, cached);
+      return cached;
+    }
+  }
   const elements: string[] = [];
   const ratio = view.scale / Math.max(baseScale, 0.0001);
   const text = (value: string, x: number, y: number, size: number, color: string, maxWidth?: number) => {
@@ -603,10 +636,6 @@ function drawMapLabels(
     })),
   ];
 
-  const labels = [
-    ...countryMapLabels(game.world, null, snapshot.mapMode, snapshot.selectedCountryId, false),
-    ...entityMapLabels(game.world, snapshot.mapMode, snapshot.layer, undefined, false),
-  ];
   const pendingLabels: {
     label: (typeof labels)[number];
     layout: ReturnType<typeof countryLabelViewportLayout>;
@@ -705,7 +734,21 @@ function drawMapLabels(
   }
 
   drawRiverNames(ctx, game, view, baseScale, width, height, projectMapPoint, occupiedLabels, cityIconBounds, elements);
-  return { occupied: occupiedLabels, svg: elements.join('') };
+  const result = { occupied: occupiedLabels, svg: elements.join('') };
+  if (!projectMapPoint) {
+    let cache = mapLabelLayoutCaches.get(game.world);
+    if (!cache) {
+      cache = new Map();
+      mapLabelLayoutCaches.set(game.world, cache);
+    }
+    cache.set(cacheKey, result);
+    while (cache.size > 32) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+  }
+  return result;
 }
 
 type ScreenPoint = { x: number; y: number };

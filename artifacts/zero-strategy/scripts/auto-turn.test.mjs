@@ -7,6 +7,7 @@ import { AUTO_TURN_HOLD_MS } from '../game/holdConfirmation.ts';
 import { World } from '../game/world.ts';
 
 const screen = readFileSync(resolve(process.cwd(), 'app/play.tsx'), 'utf8');
+const layout = readFileSync(resolve(process.cwd(), 'app/_layout.tsx'), 'utf8');
 
 function makeFixture(seed) {
   const world = World.create('random', seed);
@@ -63,9 +64,9 @@ Game.persist = false;
 Game.pause = async () => {};
 
 try {
-  assert.equal(AUTO_TURN_HOLD_MS, 3000, 'the confirmation duration is exactly three seconds');
+  assert.equal(AUTO_TURN_HOLD_MS, 3000, 'подтверждение автохода длится ровно три секунды');
 
-  // Expiration triggers automatic completion only after the map reports a full draw.
+  // Истечение времени автоматически завершает карту независимо от состояния отрисовки.
   {
     const { world, pixels } = makeFixture(61_401);
     const game = new Game(world, 'all');
@@ -80,27 +81,27 @@ try {
     });
     game.dispatchAction({ type: 'endStroke' });
     const manuallyPaintedHumidity = world.humidity[pixels[20]];
-    assert.ok(card.ink < card.inkTotal, 'the player can make a partial card action');
+    assert.ok(card.ink < card.inkTotal, 'игрок может частично выполнить действие карты');
     const year = game.getSnapshot().year;
-    assert.equal(game.getSnapshot().canCompleteCard, false, 'remaining ink still requires the automatic hold');
+    assert.equal(game.getSnapshot().canCompleteCard, false, 'для оставшихся чернил нужно удерживать кнопку автохода');
     await game.nextTurn();
-    assert.equal(game.getSnapshot().year, year, 'a short press cannot skip unfinished card work');
-    assert.ok(game.getSnapshot().card, 'an unfinished card remains active after a short press');
+    assert.equal(game.getSnapshot().year, year, 'короткое нажатие не пропускает незавершённую карту');
+    assert.ok(game.getSnapshot().card, 'после короткого нажатия незавершённая карта остаётся активной');
     game.secondsLeft = 1;
     game.tick();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(game.getSnapshot().year, year + 1, 'timeout automatically completes the remaining card and advances the year');
+    assert.equal(game.getSnapshot().year, year + 1, 'таймер автоматически завершает карту и переводит игру на следующий год');
     assert.equal(world.humidity[pixels[20]], manuallyPaintedHumidity,
-      'the existing brush state is reused instead of applying the player-painted pixel twice');
-    assert.equal(card.ink, 0, 'the automatic strategy spends the remaining quota on legal climate targets');
-    assert.equal(game.getSnapshot().drawing, false, 'simulation completion does not wait for the map renderer');
+      'автоматическое завершение использует состояние кисти и не закрашивает действие игрока повторно');
+    assert.equal(card.ink, 0, 'автоматическая стратегия расходует остаток чернил на допустимые климатические цели');
+    assert.equal(game.getSnapshot().drawing, false, 'завершение расчёта не ждёт отрисовку карты');
     const nextTurnSeconds = game.secondsLeft;
     game.tick();
-    assert.equal(game.secondsLeft, nextTurnSeconds - 1, 'the timer continues independently of map redraws');
+    assert.equal(game.secondsLeft, nextTurnSeconds - 1, 'таймер продолжает идти независимо от перерисовки карты');
     game.discard();
   }
 
-  // A blank city card uses the automatic placement strategy without bypassing its city rule.
+  // Автоматическая стратегия размещает город только при соблюдении правил карты города.
   {
     const { world, country } = makeFixture(61_402);
     const game = new Game(world, 'all');
@@ -109,18 +110,18 @@ try {
     const oldCityCount = world.cities.filter((city) => city.countryId === country.id).length;
     game.startCard(card);
     const year = game.getSnapshot().year;
-    assert.equal(game.getSnapshot().canCompleteCard, false, 'a required city blocks ordinary completion');
+    assert.equal(game.getSnapshot().canCompleteCard, false, 'обязательное основание города не позволяет завершить карту досрочно');
     await game.nextTurn();
-    assert.equal(game.getSnapshot().year, year, 'a short press cannot bypass required city placement');
+    assert.equal(game.getSnapshot().year, year, 'короткое нажатие не обходит обязательное размещение города');
     await game.nextTurn(true);
-    assert.equal(card.cityPlaced, true, 'automatic completion places the required city');
+    assert.equal(card.cityPlaced, true, 'автоматическое завершение основывает обязательный город');
     assert.equal(world.cities.filter((city) => city.countryId === country.id).length, oldCityCount + 1,
-      'a blank city card creates exactly one city');
-    assert.equal(game.getSnapshot().year, year + 1, 'the city card completes through the ordinary turn flow');
+      'пустая карта города создаёт ровно один город');
+    assert.equal(game.getSnapshot().year, year + 1, 'карта города завершается обычным ходом');
     game.discard();
   }
 
-  // Spent ink plus a placed city makes the ordinary next button finish the card.
+  // Потраченные чернила и основанный город позволяют завершить карту обычным нажатием.
   {
     const { world, country } = makeFixture(61_404);
     const game = new Game(world, 'all');
@@ -133,14 +134,14 @@ try {
     });
     game.startCard(card);
     const year = game.getSnapshot().year;
-    assert.equal(game.getSnapshot().canCompleteCard, true, 'an exhausted card with its city placed is ready to finish');
+    assert.equal(game.getSnapshot().canCompleteCard, true, 'карту с основанным городом и потраченными чернилами можно завершить');
     await game.nextTurn();
-    assert.equal(game.getSnapshot().year, year + 1, 'a short press ends a ready card and advances the year');
-    assert.notEqual(game.getSnapshot().card?.title, card.title, 'the completed card is no longer the active player card');
+    assert.equal(game.getSnapshot().year, year + 1, 'короткое нажатие завершает готовую карту и переводит игру на следующий год');
+    assert.notEqual(game.getSnapshot().card?.title, card.title, 'завершённая карта больше не активна');
     game.discard();
   }
 
-  // An explicit choice stays selected when the rest of an action-free card is automated.
+  // Автоматическое завершение карты без действий сохраняет выбранный игроком вариант.
   {
     const { world } = makeFixture(61_403);
     const game = new Game(world, 'all');
@@ -160,12 +161,12 @@ try {
       return dispatch(action);
     };
     await game.nextTurn(true);
-    assert.equal(card.selectedChoice, 1, 'auto-turn preserves the player-selected choice');
-    assert.equal(automaticChoiceChanges, 0, 'auto-turn does not replace the selected choice with a random one');
+    assert.equal(card.selectedChoice, 1, 'автоход сохраняет выбранный игроком вариант');
+    assert.equal(automaticChoiceChanges, 0, 'автоход не заменяет выбор игрока случайным вариантом');
     game.discard();
   }
 
-  // Only an unpaused player card is suspended when its owner leaves the map.
+  // При уходе со страницы приостанавливается только незавершённый ход игрока.
   {
     const { world } = makeFixture(61_405);
     const game = new Game(world, 'all');
@@ -173,21 +174,21 @@ try {
     game.startCard(makeCard('rain'));
     game.secondsLeft = 23;
     game.setPlayScreenActive(false);
-    assert.equal(game.getSnapshot().paused, true, 'leaving Play pauses the active player card');
-    assert.equal(game.getSnapshot().offscreenTurnAlert, true, 'the off-screen pause is visible to the app shell');
+    assert.equal(game.getSnapshot().paused, true, 'уход со страницы Play приостанавливает карту игрока');
+    assert.equal(game.getSnapshot().offscreenTurnAlert, true, 'оболочка приложения получает признак паузы вне страницы');
     game.tick();
-    assert.equal(game.secondsLeft, 23, 'the player-card timer stays paused away from Play');
+    assert.equal(game.secondsLeft, 23, 'таймер карты игрока не идёт за пределами Play');
     game.setPlayScreenActive(true);
-    assert.equal(game.getSnapshot().paused, false, 'returning to Play resumes the automatic off-screen pause');
-    assert.equal(game.getSnapshot().offscreenTurnAlert, false, 'returning clears the off-screen alert');
+    assert.equal(game.getSnapshot().paused, false, 'возвращение на Play снимает автоматическую паузу');
+    assert.equal(game.getSnapshot().offscreenTurnAlert, false, 'возвращение убирает предупреждение о паузе');
     game.tick();
-    assert.equal(game.secondsLeft, 22, 'the resumed player timer continues counting down');
+    assert.equal(game.secondsLeft, 22, 'после возвращения таймер карты игрока продолжает отсчёт');
 
     game.togglePause();
     game.setPlayScreenActive(false);
     game.setPlayScreenActive(true);
-    assert.equal(game.getSnapshot().paused, true, 'leaving and returning does not undo a manual pause');
-    assert.equal(game.getSnapshot().offscreenTurnAlert, false, 'manual pause does not show an off-screen-turn alert');
+    assert.equal(game.getSnapshot().paused, true, 'уход и возвращение не отменяют ручную паузу');
+    assert.equal(game.getSnapshot().offscreenTurnAlert, false, 'ручная пауза не включает предупреждение о ходе вне страницы');
     game.discard();
   }
 
@@ -197,8 +198,8 @@ try {
     game.startCard(makeCard('rain'));
     game.secondsLeft = 23;
     game.setPlayScreenActive(false);
-    assert.equal(game.getSnapshot().paused, false, 'observer automation is not paused by leaving Play');
-    assert.equal(game.getSnapshot().offscreenTurnAlert, false, 'observer mode never shows the player-turn alert');
+    assert.equal(game.getSnapshot().paused, false, 'уход со страницы не приостанавливает наблюдателя');
+    assert.equal(game.getSnapshot().offscreenTurnAlert, false, 'в режиме наблюдателя нет предупреждения о ходе игрока');
     game.discard();
   }
 } finally {
@@ -207,16 +208,26 @@ try {
 }
 
 assert.match(screen, /<View style=\{styles\.titleRow\}>[\s\S]*?Zero Strategy[\s\S]*?<View style=\{styles\.topBar\}>/,
-  'the game title is on its own line above the top bar');
+  'название игры размещено над верхней панелью');
 assert.match(screen, /onLongPress=\{snap\.card && !snap\.canCompleteCard && !snap\.busy \? \(\) => \{[\s\S]*?game\.nextTurn\(true\)/,
-  'the platform long-press handler starts automatic card completion');
+  'долгое нажатие запускает автоматическое завершение карты');
 assert.match(screen, /delayLongPress=\{AUTO_TURN_HOLD_MS\}/,
-  'automatic completion requires a full three-second hold');
+  'для автоматического завершения нужно удерживать кнопку все три секунды');
 assert.match(screen, /onPressOut=\{\(\) => setHoldingNext\(false\)\}/,
-  'releasing early clears the hold hint');
+  'при раннем отпускании скрывается подсказка удержания');
 assert.match(screen, /if \(!snap\.card \|\| snap\.canCompleteCard\) void game\.nextTurn\(\)/,
-  'a short press finishes only cards the game marks ready');
+  'короткое нажатие завершает только готовую карту');
 assert.match(screen, /Удерживайте 3 секунды для автохода/,
-  'the active hold shows the three-second confirmation hint');
+  'во время удержания показывается подсказка о трёх секундах');
+assert.match(layout, /Stack\.Screen name="play" options=\{\{[^}]*freezeOnBlur: false/u,
+  'страница Play остаётся активной в стеке при открытии других страниц');
+assert.match(screen, /game\.setPlayScreenActive\(true\)[\s\S]*?game\.setPlayScreenActive\(false\)/u,
+  'карта сообщает игре о входе и выходе со страницы Play, не останавливая сессию');
+assert.match(screen, /window\.confirm\('Выйти в меню\?/u,
+  'выход в меню требует подтверждения');
+assert.match(screen, /if \(!exitRequested \|\| snap\.busy \|\| snap\.card\) return;/u,
+  'выход ждёт завершения хода и действий игрока');
+assert.match(screen, /void leaveGame\(\)/u,
+  'перед переходом в меню игра сохраняется и закрывается');
 
-console.log('Automatic turn, mandatory city, timer independence, and hold-confirmation checks passed.');
+console.log('Проверки хода, таймера, паузы вне Play и подтверждения выхода завершены.');

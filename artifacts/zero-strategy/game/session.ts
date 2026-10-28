@@ -1,7 +1,7 @@
 import { Game, type PlayerRole } from './game';
 import type { MapKind } from './geography';
 
-/** The one game running in the app, shared between screens. */
+/** Единственная текущая игра приложения, общая для всех экранов. */
 let current: Game | null = null;
 const sessionListeners = new Set<() => void>();
 
@@ -39,7 +39,7 @@ export async function startNewGameCooperative(
   return next;
 }
 
-/** Loads the saved game from this device. Returns null if there is none. */
+/** Загружает сохранённую игру с устройства или возвращает null, если сохранения нет. */
 export async function continueSavedGame(): Promise<Game | null> {
   if (current) {
     current.start();
@@ -57,7 +57,7 @@ export async function hasSavedGame(): Promise<boolean> {
   return current !== null || (await Game.hasSave());
 }
 
-/** Pauses the running game and saves it. It stays in memory, so "continue" is instant. */
+/** Останавливает таймер и сохраняет игру, оставляя её в памяти для быстрого продолжения. */
 export async function leaveGame(): Promise<void> {
   if (!current) return;
   current.stop();

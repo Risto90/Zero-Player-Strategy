@@ -1175,6 +1175,7 @@ export class Game {
       for (let i = 0; i < jobs.length; i += 1) {
         if (this.disposed) return;
         const job = jobs[i];
+        const mapRevisionBefore = this.renderer.visualRevision;
         if (this.performanceTracking) {
           const startedAt = performance.now();
           const result = job.run();
@@ -1190,6 +1191,7 @@ export class Game {
         } else {
           job.run();
         }
+        if (this.renderer.visualRevision !== mapRevisionBefore) this.emit(true);
         if (Date.now() - sliceStart >= SLICE_MS || i === jobs.length - 1) {
           this.progress = { done: i + 1, total: jobs.length };
           this.emit();

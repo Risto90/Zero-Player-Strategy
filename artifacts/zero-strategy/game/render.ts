@@ -91,7 +91,7 @@ export function elevationPackedColor(elevation: number): number {
   return pack(mix(hexToRgb(lowHex), hexToRgb(highHex), amount));
 }
 
-/** Colour ramps for value layers (0–100). */
+/** Цветовые шкалы тематических слоёв со значениями от 0 до 100. */
 export const RAMPS: Record<'humidity' | 'temperature' | 'drainage' | 'density' | 'elevation', string[]> = {
   humidity: ['#c9a66b', '#d9cf98', '#9fbf8c', '#5f9c8f', '#2f6f86'],
   temperature: ['#eef1f4', '#8fb3cf', '#a9c48b', '#e0c065', '#c96a43'],
@@ -109,14 +109,14 @@ function rampColor(stops: RGB[], t: number): RGB {
 }
 
 
-/** The map is repainted in tiles; a strip is one full-width row of tiles (the unit uploaded to the GPU). */
+/** Растровый тестовый буфер обновляется плитками; полоса — полный ряд плиток, передаваемый видеокарте. */
 export const STRIPS = 16;
 export const STRIP_H = MAP_HEIGHT / STRIPS;
 const TILE_COLS = 8;
 const TILE_W = MAP_WIDTH / TILE_COLS;
 const TILES = TILE_COLS * STRIPS;
 
-/** Biome for every (humidity, temperature, drainage) triple, filled on first use (255 = not yet known). */
+/** Биом для каждой комбинации влажности, температуры и дренажа; 255 означает, что значение ещё не вычислялось. */
 const biomeTable = new Uint8Array(101 * 101 * 101).fill(255);
 function biomeOf(h: number, t: number, d: number): number {
   const i = (h * 101 + t) * 101 + d;
@@ -130,14 +130,14 @@ function biomeOf(h: number, t: number, d: number): number {
 
 const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, humidity: 5, temperature: 6, drainage: 7, density: 4, elevation: 8, cities: 9, origins: 11 };
 
-// Neighbour bits of `nb`: which of the 4 neighbours are land, plus whether the pixel touches water.
+// Биты соседей `nb`: какие из четырёх соседних точек относятся к суше и соприкасается ли точка с водой.
 const LEFT = 1;
 const RIGHT = 2;
 const UP = 4;
 const DOWN = 8;
 const COAST = 16;
 
-/** Paints the map into a 32-bit RGBA pixel buffer, a few tiles at a time. */
+/** Рисует тестовый растр в 32-битный буфер RGBA, обновляя за раз несколько плиток. */
 export class MapRenderer {
   readonly pixels = new Uint32Array(MAP_PIXELS);
   mode: MapMode = 'political';
@@ -146,9 +146,9 @@ export class MapRenderer {
   private readonly dirtyTiles = new Uint8Array(TILES);
   private dirtyCount = 0;
   private revision = 0;
-  /** Tile index to continue from, so a long repaint walks the map top to bottom. */
+  /** Индекс плитки для продолжения долгого прохода сверху вниз. */
   private cursor = 0;
-  /** Strips with freshly painted tiles that are not on screen yet. */
+  /** Полосы обновлённых плиток, которые ещё не переданы видимой области. */
   private readonly unsent = new Uint8Array(STRIPS);
   private countryColors: number[] = [];
   private cultureColors: number[] = [];
@@ -166,7 +166,7 @@ export class MapRenderer {
   private readonly originColors = HUMAN_ORIGINS.map((origin) => pack(hexToRgb(HUMAN_ORIGIN_COLORS[origin.id])));
   private cityColors = CITY_COLORS.map((color) => pack(hexToRgb(color)));
   private colorKey = '';
-  /** Colour per composition id (0 = not computed yet); compositions never change once interned. */
+  /** Цвет для каждого идентификатора состава; ноль означает, что цвет ещё не вычислен. */
   private compCache = { culture: new Int32Array(256), religion: new Int32Array(256) };
   private readonly unclaimed = hexToRgb(PALETTE.unclaimedLand);
   private readonly biomeRgb = BIOMES.map((b) => hexToRgb(b.color));
@@ -176,7 +176,7 @@ export class MapRenderer {
   private readonly ramps = Object.fromEntries(
     Object.entries(RAMPS).map(([key, stops]) => [key, Int32Array.from({ length: 101 }, (_, v) => pack(rampColor(stops.map(hexToRgb), v / 100)))]),
   ) as Record<keyof typeof RAMPS, Int32Array>;
-  /** Water never changes: its colours are computed once and copied row by row. */
+  /** Вода не меняется: её цвета вычисляются один раз и копируются построчно. */
   private readonly base = new Uint32Array(MAP_PIXELS);
   private readonly nb = new Uint8Array(MAP_PIXELS);
 
@@ -274,7 +274,7 @@ export class MapRenderer {
     this.dirtyCount = TILES;
   }
 
-  /** Marks an area (plus a 1-pixel rim, whose borders may change) for repainting. */
+  /** Помечает область и однопиксельную кайму вокруг неё для обновления границ. */
   mark(rect: Rect): void {
     this.revision += 1;
     const c0 = Math.max(0, Math.floor((rect.x0 - 1) / TILE_W));
@@ -477,14 +477,14 @@ export class MapRenderer {
     return painted;
   }
 
-  /** Repaints everything at once (tests and tools). */
+  /** Обновляет весь тестовый растр за один вызов. */
   flush(): number[] {
     return this.flushSome(Infinity);
   }
 
   /**
-   * Repaints dirty tiles for about `budgetMs` milliseconds. Returns the strips that are now
-   * complete and changed since the last call; a strip is returned only once all its tiles are done.
+   * Обновляет грязные плитки примерно в течение `budgetMs` миллисекунд.
+   * Возвращает изменённые полосы только после завершения всех их плиток.
    */
   flushSome(budgetMs: number): number[] {
     if (this.dirtyCount > 0) {
