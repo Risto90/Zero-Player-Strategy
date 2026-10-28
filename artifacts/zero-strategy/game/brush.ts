@@ -1077,6 +1077,9 @@ export class CardPainter {
   /** Сферы городов меняют расход чернил и силу населения кисти, не меняя её базовую стоимость. */
   private brushScaling(pixel: number): { cost: number; strength: number } {
     const cardType = this.card.type;
+    if (cardType !== 'expand' && cardType !== 'colonization' && cardType !== 'nomadExpand') {
+      return { cost: 1, strength: 1 };
+    }
     if (cardType === 'expand' || cardType === 'colonization' || cardType === 'nomadExpand') {
       const x = pixel % MAP_WIDTH;
       const y = Math.floor(pixel / MAP_WIDTH);
@@ -1256,8 +1259,8 @@ export class CardPainter {
     const isPaintSurface = (p: number) => world.land[p] ||
       (isCurrent(card.type) && world.water.bodyOf[p] >= 0) ||
       (isWind(card.type) && this.seas.has(world.water.bodyOf[p]));
-    const canTake = (p: number) => {
-      if (!contains(p) || !isPaintSurface(p)) return false;
+    const canTake = (p: number, alreadyInArea = false) => {
+      if ((!alreadyInArea && !contains(p)) || !isPaintSurface(p)) return false;
       if (card.type === 'colonization') return this.canColonizePixel(p);
       if (card.type === 'create' && (this.influenceAt(p)?.foreignRankSum ?? 0) > 0) return false;
       if (card.type === 'split' && !this.splitBrush?.canPaint(p)) return false;
@@ -1344,7 +1347,7 @@ export class CardPainter {
       if (head > 0 && head % 256 === 0) yield;
       if (card.ink <= 0) break;
       const p = queue[head];
-      if (!canTake(p)) continue;
+      if (!canTake(p, true)) continue;
       if (card.type === 'split' && world.countries[card.targetCountryId as number].pixels <= 1) break;
       if (card.type === 'colonization') {
         const donor = this.colonizationDonors?.peek() ?? -1;
@@ -1396,7 +1399,7 @@ export class CardPainter {
       this.changed.push(p);
       if (card.type !== 'split' && world.water.coastsOf.length > 0) world.seasOfPixel(p, this.seas);
       forEachNeighbour(p, (n) => {
-        if (this.dabMask[n] === 0 && contains(n) && canTake(n)) enqueue(n);
+        if (this.dabMask[n] === 0 && contains(n) && canTake(n, true)) enqueue(n);
       });
     }
     for (const p of queue) this.dabMask[p] = 0;
