@@ -305,7 +305,7 @@ class ObserverPerformanceBenchmark {
       total.maximumMs = Math.max(total.maximumMs, sample.durationMs);
       totals.set(key, total);
       return totals;
-    }, new Map()).values()].sort((a, b) => b.totalMs - a.totalMs).slice(0, 20);
+    }, new Map()).values()].sort((a, b) => b.totalMs - a.totalMs);
     const eventTypes = Object.groupBy(events, ({ cardType }) => cardType);
     const summary = {
       turns: this.turns.length,

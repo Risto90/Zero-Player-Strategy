@@ -49,14 +49,23 @@ class ContourTerritoryStrategy {
 
   async runCooperatively(yieldControl: () => Promise<void>): Promise<void> {
     const steps = this.plan();
+    let stepStarted = this.onMeasure ? performance.now() : 0;
     let step = steps.next();
+    this.onMeasure?.('подготовка следующего контура кисти', performance.now() - stepStarted);
     while (!step.done) {
       const { area, pixel, startArea } = step.value;
       const spent = this.actions.contourCooperatively
         ? await this.actions.contourCooperatively(area, pixel, startArea, this.onMeasure)
         : this.actions.contour!(area, pixel, startArea);
+      const yieldStarted = this.onMeasure ? performance.now() : 0;
       await yieldControl();
+      this.onMeasure?.(
+        spent > 0 ? 'передача управления после заливки' : 'передача управления после пустой области',
+        performance.now() - yieldStarted,
+      );
+      stepStarted = this.onMeasure ? performance.now() : 0;
       step = steps.next(spent);
+      this.onMeasure?.('поиск следующего контура кисти', performance.now() - stepStarted);
     }
   }
 
