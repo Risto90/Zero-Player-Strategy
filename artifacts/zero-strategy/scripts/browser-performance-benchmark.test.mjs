@@ -117,6 +117,28 @@ class ObserverPerformanceBenchmark {
     if (process.env.PERF_SCREENSHOT_PATH) {
       await this.page.screenshot({ path: process.env.PERF_SCREENSHOT_PATH });
     }
+    if (process.env.PERF_MAP_DIAGNOSTICS === '1') {
+      const diagnostics = await this.page.evaluate(() => {
+        const root = document.querySelector('[data-testid="map-canvas"]');
+        const snapshot = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
+        return {
+          mode: snapshot?.mapMode,
+          rootTag: root?.tagName,
+          svgLayers: Array.from(root?.querySelectorAll('svg') ?? []).map((svg) => ({
+            viewBox: svg.getAttribute('viewBox'),
+            display: getComputedStyle(svg).display,
+            paths: svg.querySelectorAll('path').length,
+            samples: Array.from(svg.querySelectorAll('path')).slice(0, 4).map((path) => ({
+              fill: path.getAttribute('fill'),
+              stroke: path.getAttribute('stroke'),
+              contour: path.getAttribute('data-contour'),
+              data: path.getAttribute('d')?.slice(0, 100),
+            })),
+          })),
+        };
+      });
+      console.log('Слои карты в браузере:', JSON.stringify(diagnostics));
+    }
   }
 
   async waitForIdle(timeoutMs) {
