@@ -26,7 +26,7 @@
 - [Race map entities](race-map-entities.md) — call categories «расы»; show only populated races, with selectable map layers and profile links.
 - [Color metric tolerances](flag-color-metric-tolerances.md) — allow floating-point tolerance for CIELAB/WCAG results computed from rounded sRGB/D65 constants.
 - [Новизна флагов](flag-novelty-benchmarks.md) — охватывать допустимые настроенные варианты; ручные эталоны не заменяют измерения генерации по начальным значениям.
-- [Map contour rule](map-contour-rule.md) — treat equal-valued map regions as contours, reuse intersections and update only changed boundaries while retaining paint/start/stop constraints.
+- [Контуры карты](map-contour-rule.md) — динамические контуры меняются точечно; глубины моря неизменны, а карта перерисовывает только видимую область активного слоя.
 - [Fictional geography names](geography-naming.md) — discovered real-world features receive fictional generated names; never assign their real Earth names.
 - [Замеры скорости генератора](flag-generator-performance.md) — использовать фиксированную выборку без профилировочной нагрузки и сообщать медиану, среднее, p90 и влияние повторов.
 - [Пауза сеанса задачи](task-session-pause.md) — статус проектной задачи и индикатор паузы сеанса Replit Agent могут расходиться.
