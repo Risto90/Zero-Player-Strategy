@@ -67,6 +67,7 @@ class ObserverPerformanceBenchmark {
     this.browser = null;
     this.context = null;
     this.page = null;
+    this.mapDrag = null;
   }
 
   async open() {
@@ -94,8 +95,10 @@ class ObserverPerformanceBenchmark {
       };
 
       window.__performanceFrameGaps = [];
+      window.__performanceFrameTimes = [];
       let previousFrame = 0;
       const recordFrame = (time) => {
+        window.__performanceFrameTimes.push(time);
         if (previousFrame) window.__performanceFrameGaps.push(time - previousFrame);
         previousFrame = time;
         requestAnimationFrame(recordFrame);
@@ -121,6 +124,72 @@ class ObserverPerformanceBenchmark {
       const state = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
       return !!state && !state.busy && !state.drawing && state.progress === null;
     }, null, { timeout: timeoutMs, polling: 50 });
+  }
+
+  async measureMapDrag() {
+    const canvas = this.page.locator('[data-testid="map-canvas"]');
+    const bounds = await canvas.boundingBox();
+    assert.ok(bounds && bounds.width > 0 && bounds.height > 0, 'Холст карты должен быть виден для проверки перетаскивания.');
+
+    const start = {
+      x: bounds.x + bounds.width * 0.4,
+      y: bounds.y + bounds.height * 0.5,
+    };
+    const end = {
+      x: Math.min(bounds.x + bounds.width - 24, start.x + Math.min(260, bounds.width * 0.24)),
+      y: Math.min(bounds.y + bounds.height - 24, start.y + Math.min(150, bounds.height * 0.2)),
+    };
+    await this.page.evaluate(() => {
+      window.__mapDragLatencies = [];
+      window.__mapDragActive = true;
+      window.__mapDragStartedAt = performance.now();
+      const canvas = document.querySelector('[data-testid="map-canvas"]');
+      window.__mapDragListener = (event) => {
+        if (window.__mapDragActive) {
+          window.__mapDragLatencies.push(Math.max(0, performance.now() - event.timeStamp));
+        }
+      };
+      canvas.addEventListener('pointermove', window.__mapDragListener, true);
+    });
+    await this.page.mouse.move(start.x, start.y);
+    await this.page.mouse.down();
+    await this.page.mouse.move(end.x, end.y, { steps: 45 });
+    await this.page.mouse.up();
+    await this.page.evaluate(() => {
+      window.__mapDragEndedAt = performance.now();
+      window.__mapDragActive = false;
+    });
+    await this.page.waitForTimeout(120);
+
+    this.mapDrag = await this.page.evaluate(() => {
+      const startAt = window.__mapDragStartedAt;
+      const endAt = window.__mapDragEndedAt;
+      const frames = window.__performanceFrameTimes;
+      const duringDrag = frames.filter((time) => time >= startAt && time <= endAt);
+      const frameGaps = duringDrag.slice(1).map((time, index) => time - duringDrag[index]);
+      const latencies = window.__mapDragLatencies;
+      const median = (values) => {
+        if (!values.length) return 0;
+        const sorted = [...values].sort((a, b) => a - b);
+        const middle = Math.floor(sorted.length / 2);
+        return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+      };
+      document.querySelector('[data-testid="map-canvas"]')
+        ?.removeEventListener('pointermove', window.__mapDragListener, true);
+      return {
+        durationMs: endAt - startAt,
+        pointerMoves: latencies.length,
+        medianInputDelayMs: median(latencies),
+        maximumInputDelayMs: Math.max(0, ...latencies),
+        animationFrames: duringDrag.length,
+        medianFrameGapMs: median(frameGaps),
+        maximumFrameGapMs: Math.max(0, ...frameGaps),
+        framesOver50Ms: frameGaps.filter((gap) => gap > 50).length,
+      };
+    });
+    assert.ok(this.mapDrag.pointerMoves > 0, 'Перетаскивание должно доходить до обработчика карты.');
+    assert.ok(this.mapDrag.animationFrames > 0, 'Во время перетаскивания должны отрисовываться кадры.');
+    console.log(`Отзывчивость карты при перетаскивании: ${JSON.stringify(this.mapDrag)}.`);
   }
 
   async measureTurn(index) {
@@ -198,6 +267,7 @@ class ObserverPerformanceBenchmark {
       eventsExecutionOverOneSecond: events.filter(({ resolutionDurationMs }) => resolutionDurationMs > 1000).length,
       maximumFrameGapMs: Math.max(0, ...allFrameGaps),
       framesOver50Ms: allFrameGaps.filter((gap) => gap > 50).length,
+      mapDrag: this.mapDrag,
       slowEvents,
     };
     console.log(`Итог браузерного замера: ${JSON.stringify(summary, null, 2)}`);
@@ -216,6 +286,7 @@ class ObserverPerformanceBenchmark {
   async run() {
     try {
       await this.open();
+      await this.measureMapDrag();
       const profiler = process.env.PERF_CPU_PROFILE === '1'
         ? await this.context.newCDPSession(this.page) : null;
       if (profiler) {
