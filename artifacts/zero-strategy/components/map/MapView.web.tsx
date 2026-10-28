@@ -822,6 +822,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const mapLabelDataRef = useRef<{
     scope: string;
     worldVersion: number;
+    visibleBoundsKey: string;
     revision: number;
     labels: CountryMapLabel[];
   } | null>(null);
@@ -872,6 +873,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       x1: Math.min(MAP_WIDTH - 1, Math.ceil((width - view.ox) / view.scale) + 1),
       y1: Math.min(MAP_HEIGHT - 1, Math.ceil((height - view.oy) / view.scale) + 1),
     };
+    const visibleBoundsKey = `${visibleBounds.x0}:${visibleBounds.y0}:${visibleBounds.x1}:${visibleBounds.y1}`;
     const padding = 128;
     const renderBounds = {
       x0: Math.max(0, Math.floor((visibleBounds.x0 - padding) / padding) * padding),
@@ -970,14 +972,32 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         const labelsMayBeStale = snapshot.busy || snapshot.drawing;
         const refreshLabels = !cachedLabels ||
           cachedLabels.scope !== scope ||
-          (!labelsMayBeStale && cachedLabels.worldVersion !== game.world.version);
+          (!labelsMayBeStale && (
+            cachedLabels.worldVersion !== game.world.version ||
+            cachedLabels.visibleBoundsKey !== visibleBoundsKey
+          ));
         if (refreshLabels) {
           const labelStartedAt = performance.now();
-          const countryLabels = countryMapLabels(game.world, null, mapMode, snapshot.selectedCountryId, false);
-          const entityLabels = entityMapLabels(game.world, mapMode, snapshot.layer, undefined, false);
+          const countryLabels = countryMapLabels(
+            game.world,
+            null,
+            mapMode,
+            snapshot.selectedCountryId,
+            false,
+            visibleBounds,
+          );
+          const entityLabels = entityMapLabels(
+            game.world,
+            mapMode,
+            snapshot.layer,
+            undefined,
+            false,
+            visibleBounds,
+          );
           mapLabelDataRef.current = {
             scope,
             worldVersion: game.world.version,
+            visibleBoundsKey,
             revision: (cachedLabels?.revision ?? 0) + 1,
             labels: [...countryLabels, ...entityLabels],
           };
