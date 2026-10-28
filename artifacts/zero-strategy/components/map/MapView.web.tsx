@@ -702,6 +702,14 @@ function drawMapLabels(
     bounds: LabelScreenBounds;
   }[] = [];
   for (const label of labels) {
+    const bounds = label.countryBounds;
+    const screenLeft = view.ox + bounds.x0 * view.scale;
+    const screenRight = view.ox + (bounds.x1 + 1) * view.scale;
+    const screenTop = view.oy + bounds.y0 * view.scale;
+    const screenBottom = view.oy + (bounds.y1 + 1) * view.scale;
+    // Не измеряем шрифт Canvas для подписи, чей контур целиком вне экрана.
+    if (screenRight <= 8 || screenLeft >= width - 8 ||
+        screenBottom <= 8 || screenTop >= height - 8) continue;
     const layout = countryLabelViewportLayout(
       label,
       view.scale,
