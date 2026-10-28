@@ -54,3 +54,4 @@ Thumbs.db
 .cache/
 .local/
 artifacts/zero-strategy/static-build/
+/artifacts/zero-strategy/generated-artifacts/
