@@ -1,7 +1,7 @@
 ---
-name: Map redraw and turn timer
-description: User requirement on how the year timer relates to map drawing on the phone.
+name: Map rendering and simulation lifecycle
+description: Rendering may be deferred offscreen; simulation, timers, and contour updates may not.
 ---
-The year timer must start only after the map has been fully redrawn; only changed tiles are repainted after a turn, and the save waits for drawing too.
-**Why:** on the user's phone (Cubot KingKong X Pro, Expo Go) the map didn't finish updating between turns; the user asked to optimize redraw and start the timer only after the full draw.
-**How to apply:** any new world mutation must mark its area in the renderer (otherwise incremental redraw misses it); keep `drawing` gating in the timer.
+Игровая логика, таймер и изменение контуров работают независимо от видимости карты. Перерисовывается только видимая часть активного режима на странице Play. Если вне Play ожидается ход игрока, таймер автоматически приостанавливается с заметным предупреждением; режим наблюдателя продолжает работу.
+**Why:** пользователь потребовал, чтобы ход и контуры обновлялись в реальном времени для всех участников, а экономия затрагивала только невидимое отображение карты.
+**How to apply:** не связывать таймер, обработку ходов, уведомление об изменении контуров или сохранение с завершением отрисовки. Ограничивать только вывод карты маршрутом Play, активным режимом и видимой областью; при возвращении снимать лишь автоматическую паузу, не отменяя ручную.

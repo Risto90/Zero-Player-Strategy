@@ -2,7 +2,7 @@
 - [Браузерная реализация](delivery-target.md) — Zero Strategy только браузерная; на телефоне используется браузер, нативной версии нет.
 - [Entity list share bars](entity-list-share-bars.md) — preserve the existing horizontal, entity-colored proportion fill in shared list rows; cities omit it.
 - [Pixel engine checks](pixel-engine-checks.md) — esbuild-bundle a Node harness over src/game to check invariants and exact zone round trip.
-- [Map redraw and timer](map-redraw-timer.md) — timer starts only after full redraw; every world mutation must mark its renderer area.
+- [Map rendering and simulation lifecycle](map-redraw-timer.md) — only visible active-map drawing may pause; simulation, timers, and contour updates continue independently.
 - [Династии, родословная и должности](zero-strategy-dynasty-rules.md) — родословная задаёт династию; кандидатов определяют конкретные модификаторы, а замена случайных вариантов не создаёт наследников.
 - [Гербы династий](dynasty-heraldry.md) — порог 3 разных правителя и 15 членов; герб сохраняется, а переходы центрируют древо на персонаже или старшем живом члене.
 - [Розыгрыш карт](card-draw-eligibility.md) — только описанные карты в мировом и страновом пулах; индивидуальные шансы персонажей сохраняют множитель ×1,1.
