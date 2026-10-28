@@ -10,6 +10,7 @@ import { mulberry32 } from '../game/random.ts';
 
 const root = process.cwd();
 const screen = readFileSync(resolve(root, 'app/play.tsx'), 'utf8');
+const mapView = readFileSync(resolve(root, 'components/map/MapView.web.tsx'), 'utf8');
 const mapControls = readFileSync(resolve(root, 'components/game/MapControls.tsx'), 'utf8');
 const cardPanel = readFileSync(resolve(root, 'components/game/CardPanel.tsx'), 'utf8');
 const logPanel = readFileSync(resolve(root, 'components/game/LogPanel.tsx'), 'utf8');
@@ -17,6 +18,45 @@ const modeTabs = readFileSync(resolve(root, 'components/game/ModeTabs.tsx'), 'ut
 const renderer = readFileSync(resolve(root, 'game/render.ts'), 'utf8');
 const notifications = readFileSync(resolve(root, 'game/notifications.ts'), 'utf8');
 const gameSource = readFileSync(resolve(root, 'game/game.ts'), 'utf8');
+
+function makeGameForTick(mapPresentationActive) {
+  const game = Object.create(Game.prototype);
+  Object.assign(game, {
+    paused: false,
+    busy: false,
+    drawing: true,
+    mapPresentationActive,
+    secondsLeft: 5,
+    listeners: [],
+    mapListeners: [],
+    snapshot: null,
+  });
+  return game;
+}
+
+const hiddenMapGame = makeGameForTick(false);
+hiddenMapGame.tick();
+assert.equal(hiddenMapGame.secondsLeft, 4,
+  'скрытый холст не останавливает ходовой таймер при ожидании отрисовки');
+
+const visibleMapGame = makeGameForTick(true);
+visibleMapGame.tick();
+assert.equal(visibleMapGame.secondsLeft, 5,
+  'видимый холст сохраняет ожидание завершения отрисовки перед следующим ходом');
+
+let hiddenMapNotifications = 0;
+hiddenMapGame.mapListeners = [() => { hiddenMapNotifications += 1; }];
+hiddenMapGame.emit(true);
+assert.equal(hiddenMapNotifications, 1,
+  'обновление контуров уведомляет рендерер даже без видимого холста');
+assert.match(mapView, /game\.setMapPresentationActive\(false\)/,
+  'состояние холста сбрасывается при уходе со страницы карты');
+assert.match(screen, /game\.start\(\)/,
+  'открытие экрана игры запускает таймер существующей сессии');
+assert.match(screen, /void game\.saveNow\(\)/,
+  'уход со страницы игры сохраняет игру без остановки таймера');
+assert.doesNotMatch(screen, /leaveGame/,
+  'переход на другую страницу не завершает игровую сессию');
 
 function makePauseGate() {
   let entered;

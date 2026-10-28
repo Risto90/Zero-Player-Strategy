@@ -267,6 +267,7 @@ export class Game {
   private resolvingAutomatically = false;
   /** Истина после завершения хода и до отображения обновлённой карты. */
   private drawing = false;
+  private mapPresentationActive = false;
   private progress: { done: number; total: number } | null = null;
   private performanceTracking = false;
   private readonly performanceSamples: AutomaticEventSample[] = [];
@@ -500,6 +501,11 @@ export class Game {
     this.emit();
   }
 
+  /** Видимость холста влияет только на ожидание показа, не на расчёт мира. */
+  setMapPresentationActive(active: boolean): void {
+    this.mapPresentationActive = active;
+  }
+
   // ---------- таймер ----------
 
   start(): void {
@@ -544,7 +550,7 @@ export class Game {
   }
 
   private tick(): void {
-    if (this.paused || this.busy || this.drawing) return;
+    if (this.paused || this.busy || (this.drawing && this.mapPresentationActive)) return;
     this.secondsLeft = Math.max(0, this.secondsLeft - 1);
     if (this.secondsLeft <= 0) void this.nextTurn(true);
     else this.emit();

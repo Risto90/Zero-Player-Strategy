@@ -1142,27 +1142,33 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
 
   useFocusEffect(useCallback(() => {
     routeFocusedRef.current = true;
+    game.setMapPresentationActive(
+      typeof document === 'undefined' || document.visibilityState !== 'hidden',
+    );
     requestDraw();
     return () => {
       routeFocusedRef.current = false;
+      game.setMapPresentationActive(false);
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
       frameRef.current = 0;
     };
-  }, [requestDraw]));
+  }, [game, requestDraw]));
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const updateVisibility = () => {
       if (document.visibilityState === 'hidden') {
+        game.setMapPresentationActive(false);
         if (frameRef.current) cancelAnimationFrame(frameRef.current);
         frameRef.current = 0;
       } else if (routeFocusedRef.current) {
+        game.setMapPresentationActive(true);
         requestDraw();
       }
     };
     document.addEventListener('visibilitychange', updateVisibility);
     return () => document.removeEventListener('visibilitychange', updateVisibility);
-  }, [requestDraw]);
+  }, [game, requestDraw]);
 
   const mapMode = game.getSnapshot().mapMode;
   useEffect(() => {

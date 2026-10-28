@@ -103,6 +103,7 @@ export default function PlayScreen() {
 
   useEffect(() => {
     if (!game) return;
+    game.start();
     return () => {
       void game.saveNow();
     };
