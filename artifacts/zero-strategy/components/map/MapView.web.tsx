@@ -4,6 +4,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
+import { ContourArea } from '@/game/contours';
 import { cityLabelFontSize } from '@/game/cityVisibility';
 import { Terrain3DRenderer } from './Terrain3DRenderer';
 import {
@@ -136,6 +137,12 @@ const RIVER_COLORS: Record<number, string> = {
   3: '#22537d',
 };
 
+const riverCanvasPathCache = new WeakMap<MapViewProps['game']['world'], {
+  version: number;
+  territoryVersion: number;
+  paths: { segment: ReturnType<typeof discoveredRiverPaths>[number]; path: Path2D }[];
+}>();
+
 function drawRivers(
   ctx: CanvasRenderingContext2D,
   game: MapViewProps['game'],
@@ -144,26 +151,31 @@ function drawRivers(
 ) {
   const paths = discoveredRiverPaths(game.world);
   if (paths.length === 0 || view.scale < baseScale) return;
+  let cached = riverCanvasPathCache.get(game.world);
+  if (!cached || cached.version !== game.world.version ||
+      cached.territoryVersion !== game.world.territoryVersion) {
+    cached = {
+      version: game.world.version,
+      territoryVersion: game.world.territoryVersion,
+      paths: paths.map((segment) => ({ segment, path: new Path2D(segment.contourPath) })),
+    };
+    riverCanvasPathCache.set(game.world, cached);
+  }
+  const left = -view.ox / view.scale;
+  const top = -view.oy / view.scale;
+  const right = (ctx.canvas.clientWidth - view.ox) / view.scale;
+  const bottom = (ctx.canvas.clientHeight - view.oy) / view.scale;
   ctx.save();
-  for (const segment of paths) {
+  ctx.translate(view.ox, view.oy);
+  ctx.scale(view.scale, view.scale);
+  for (const { segment, path } of cached.paths) {
     if (view.scale < riverVisibilityScale(baseScale, segment.strength)) continue;
     const [minX, minY, maxX, maxY] = segment.bounds;
-    if (view.ox + maxX * view.scale < 0 || view.oy + maxY * view.scale < 0 ||
-      view.ox + minX * view.scale > ctx.canvas.clientWidth ||
-      view.oy + minY * view.scale > ctx.canvas.clientHeight) continue;
-    ctx.beginPath();
-    for (let index = 0; index < segment.contourPoints.length; index += 1) {
-      const point = segment.contourPoints[index];
-      const x = view.ox + point.x * view.scale;
-      const y = view.oy + point.y * view.scale;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.closePath();
+    if (maxX < left || maxY < top || minX > right || minY > bottom) continue;
     ctx.strokeStyle = RIVER_COLORS[segment.strength];
     ctx.globalAlpha = segment.strength === 1 ? 0.82 : 0.94;
     ctx.fillStyle = RIVER_COLORS[segment.strength];
-    ctx.fill();
+    ctx.fill(path);
   }
   ctx.restore();
 }
@@ -315,6 +327,30 @@ function riverTextPathIsReadable(points: readonly ScreenPoint[], fontSize: numbe
 }
 
 type LabelScreenBounds = { left: number; top: number; right: number; bottom: number };
+type LabelPlacement = {
+  text: string;
+  layout: ReturnType<typeof countryLabelViewportLayout>;
+  color: string;
+  bounds: LabelScreenBounds;
+};
+type ViewportLabelCache = {
+  version: number;
+  territoryVersion: number;
+  mapMode: string;
+  selectedCountryId: number | null;
+  selectedLayer: string;
+  scale: number;
+  width: number;
+  height: number;
+  ox: number;
+  oy: number;
+  visibleContour: ContourArea;
+  placements: Map<string, LabelPlacement>;
+  needsLayout: Set<string>;
+  attempted: Set<string>;
+};
+
+const viewportLabelCaches = new WeakMap<MapViewProps['game']['world'], ViewportLabelCache>();
 
 function labelBoundsOverlap(a: LabelScreenBounds, b: LabelScreenBounds): boolean {
   return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
@@ -472,7 +508,9 @@ function drawMapLabels(
   height: number,
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
   avoidToolOverlay = false,
-): LabelScreenBounds[] {
+  visibleContour?: ContourArea,
+  isPanning = false,
+): { occupiedLabels: LabelScreenBounds[]; pendingLayout: boolean } {
   const snapshot = game.getSnapshot();
   const ratio = view.scale / Math.max(baseScale, 0.0001);
   const text = (value: string, x: number, y: number, size: number, color: string, maxWidth?: number) => {
@@ -625,13 +663,60 @@ function drawMapLabels(
     ...countryMapLabels(game.world, null, snapshot.mapMode, snapshot.selectedCountryId, false),
     ...entityMapLabels(game.world, snapshot.mapMode, snapshot.layer, undefined, false),
   ];
-  const pendingLabels: {
-    label: (typeof labels)[number];
-    layout: ReturnType<typeof countryLabelViewportLayout>;
-    color: string;
-    bounds: LabelScreenBounds;
-  }[] = [];
+  const selectedLayer = snapshot.layer ? `${snapshot.layer.kind}:${snapshot.layer.id}` : '';
+  const previousCache = visibleContour ? viewportLabelCaches.get(game.world) : undefined;
+  const sameContext = !!visibleContour && !!previousCache &&
+    previousCache.mapMode === snapshot.mapMode &&
+    previousCache.selectedCountryId === snapshot.selectedCountryId &&
+    previousCache.selectedLayer === selectedLayer &&
+    previousCache.scale === view.scale &&
+    previousCache.width === width &&
+    previousCache.height === height;
+  const sameWorld = sameContext && previousCache?.version === game.world.version &&
+    previousCache.territoryVersion === game.world.territoryVersion;
+  const deltaX = sameContext && previousCache ? view.ox - previousCache.ox : 0;
+  const deltaY = sameContext && previousCache ? view.oy - previousCache.oy : 0;
+  const changedContour = sameWorld && previousCache && visibleContour
+    ? visibleContour.subtract(previousCache.visibleContour)
+      .union(previousCache.visibleContour.subtract(visibleContour))
+    : visibleContour;
+  const placements = sameContext && previousCache
+    ? new Map(previousCache.placements)
+    : new Map<string, LabelPlacement>();
+  const needsLayout = sameContext && previousCache
+    ? new Set(previousCache.needsLayout)
+    : new Set<string>();
+  const attempted = sameWorld && previousCache
+    ? new Set(previousCache.attempted)
+    : new Set<string>();
+  const labelsByKey = new Map(labels.map((label) => [label.key, label]));
+  for (const key of [...placements.keys(), ...needsLayout]) {
+    if (!labelsByKey.has(key)) {
+      placements.delete(key);
+      needsLayout.delete(key);
+      attempted.delete(key);
+    }
+  }
+
   for (const label of labels) {
+    const visibleArea = visibleContour ? label.area.intersect(visibleContour) : null;
+    if (visibleArea && !visibleArea.size) {
+      placements.delete(label.key);
+      needsLayout.delete(label.key);
+      attempted.delete(label.key);
+      continue;
+    }
+    const old = placements.get(label.key);
+    const touched = !sameWorld || !changedContour ||
+      label.area.intersect(changedContour).size > 0;
+    if (touched || old?.text !== label.text ||
+        (!old && !attempted.has(label.key))) {
+      needsLayout.add(label.key);
+      attempted.delete(label.key);
+    }
+  }
+
+  const layoutLabel = (label: (typeof labels)[number]): LabelPlacement | null => {
     const layout = countryLabelViewportLayout(
       label,
       view.scale,
@@ -643,8 +728,9 @@ function drawMapLabels(
       labelVisibilityThreshold(label.key),
       (line) => measuredCountryTextWidthFactor(ctx, line),
       [...occupiedLabels, ...cityIconBounds],
+      visibleContour,
     );
-    if (!layout.visible) continue;
+    if (!layout.visible) return null;
     const mapX = Math.max(0, Math.min(MAP_WIDTH - 1, Math.floor(layout.worldX)));
     const mapY = Math.max(0, Math.min(MAP_HEIGHT - 1, Math.floor(layout.worldY)));
     const pixel = mapY * MAP_WIDTH + mapX;
@@ -667,8 +753,8 @@ function drawMapLabels(
         Math.abs(Math.cos(layout.angle)) * textHeight) / 2;
     }
     const margin = layout.fontSize * 0.3;
-    pendingLabels.push({
-      label,
+    return {
+      text: label.text,
       layout,
       color,
       bounds: {
@@ -677,13 +763,81 @@ function drawMapLabels(
         right: layout.x + extentX + margin,
         bottom: layout.y + extentY + margin,
       },
+    };
+  };
+
+  const layoutsToRefresh = [...needsLayout]
+    .map((key) => labelsByKey.get(key))
+    .filter((label): label is (typeof labels)[number] => !!label)
+    .sort((a, b) =>
+      Number(b.selected) - Number(a.selected) ||
+      b.fontSize - a.fontSize ||
+      a.key.localeCompare(b.key));
+  const layoutLimit = visibleContour ? 1 : layoutsToRefresh.length;
+  if (!isPanning) {
+    for (const label of layoutsToRefresh.slice(0, layoutLimit)) {
+      const placement = layoutLabel(label);
+      if (placement) placements.set(label.key, placement);
+      else placements.delete(label.key);
+      attempted.add(label.key);
+      needsLayout.delete(label.key);
+    }
+  }
+
+  const pendingLabels: {
+    label: (typeof labels)[number];
+    layout: ReturnType<typeof countryLabelViewportLayout>;
+    color: string;
+    bounds: LabelScreenBounds;
+    cacheKey: string;
+    text: string;
+  }[] = [];
+  for (const label of labels) {
+    const visibleArea = visibleContour ? label.area.intersect(visibleContour) : null;
+    if (visibleArea && !visibleArea.size) continue;
+    const placement = placements.get(label.key);
+    if (!placement || placement.text !== label.text) continue;
+    const shifted = deltaX || deltaY
+      ? {
+        ...placement,
+        layout: {
+          ...placement.layout,
+          x: placement.layout.x + deltaX,
+          y: placement.layout.y + deltaY,
+          path: placement.layout.path?.map((point) => ({
+            x: point.x + deltaX,
+            y: point.y + deltaY,
+          })) ?? null,
+        },
+        bounds: {
+          left: placement.bounds.left + deltaX,
+          top: placement.bounds.top + deltaY,
+          right: placement.bounds.right + deltaX,
+          bottom: placement.bounds.bottom + deltaY,
+        },
+      }
+      : placement;
+    pendingLabels.push({
+      label,
+      layout: shifted.layout,
+      color: shifted.color,
+      bounds: shifted.bounds,
+      cacheKey: label.key,
+      text: label.text,
     });
   }
   pendingLabels.sort((a, b) =>
     Number(b.label.selected) - Number(a.label.selected) ||
     b.layout.fontSize - a.layout.fontSize ||
     a.label.key.localeCompare(b.label.key));
+  const nextPlacements = new Map<string, LabelPlacement>();
   for (const pending of pendingLabels) {
+    nextPlacements.set(pending.cacheKey, {
+      text: pending.text,
+      layout: pending.layout,
+      color: pending.color,
+      bounds: pending.bounds,
+    });
     if ([...occupiedLabels, ...cityIconBounds].some((bounds) =>
       labelBoundsOverlap(pending.bounds, bounds))) continue;
     occupiedLabels.push(pending.bounds);
@@ -698,6 +852,24 @@ function drawMapLabels(
       pending.layout.path,
       pending.layout.lines,
     );
+  }
+  if (visibleContour) {
+    viewportLabelCaches.set(game.world, {
+      version: game.world.version,
+      territoryVersion: game.world.territoryVersion,
+      mapMode: snapshot.mapMode,
+      selectedCountryId: snapshot.selectedCountryId,
+      selectedLayer,
+      scale: view.scale,
+      width,
+      height,
+      ox: view.ox,
+      oy: view.oy,
+      visibleContour,
+      placements: nextPlacements,
+      needsLayout,
+      attempted,
+    });
   }
 
   for (const { feature, active, isVolcano, x, y, size } of featureMarks) {
@@ -731,7 +903,7 @@ function drawMapLabels(
   }
 
   drawRiverNames(ctx, game, view, baseScale, width, height, projectMapPoint, occupiedLabels, cityIconBounds);
-  return occupiedLabels;
+  return { occupiedLabels, pendingLayout: !!visibleContour && needsLayout.size > 0 && !isPanning };
 }
 
 type ScreenPoint = { x: number; y: number };
@@ -759,14 +931,13 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const sizeRef = useRef({ width: 1, height: 1, dpr: 1 });
   const baseScaleRef = useRef(1);
   const frameRef = useRef(0);
+  const panActiveRef = useRef(false);
   const orbitPointerRef = useRef<number | null>(null);
   const orbitLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const cursorRef = useRef<{ x: number; y: number } | null>(null);
   const toolRef = useRef(tool);
   const canPaintRef = useRef(canPaint);
   const inspectRef = useRef(onInspect);
-  const compositorPanRef = useRef(false);
-  const compositorPanOriginRef = useRef<ViewTransform | null>(null);
   toolRef.current = tool;
   canPaintRef.current = canPaint;
   inspectRef.current = onInspect;
@@ -791,7 +962,11 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     const image = imageRef.current;
     if (!canvas || !offscreen || !image) return;
     const octx = offscreen.getContext('2d');
-    for (const s of game.renderer.flushSome(PAINT_BUDGET_MS)) octx?.putImageData(image, 0, 0, 0, s * STRIP_H, MAP_WIDTH, STRIP_H);
+    if (game.renderer.pending) {
+      for (const s of game.renderer.flushSome(PAINT_BUDGET_MS)) {
+        octx?.putImageData(image, 0, 0, 0, s * STRIP_H, MAP_WIDTH, STRIP_H);
+      }
+    }
     finishStage('pixelBuffer');
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -799,6 +974,14 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     const view = viewRef.current;
     const mapMode = game.getSnapshot().mapMode;
     const isElevation = mapMode === 'elevation';
+    // Подписи 2D-слоёв пересекаются с контуром видимой области до построения их экранной геометрии.
+    const visibleMapContour = isElevation ? undefined : ContourArea.rectangle({
+      x0: Math.floor(-view.ox / view.scale),
+      y0: Math.floor(-view.oy / view.scale),
+      x1: Math.ceil((width - view.ox) / view.scale),
+      y1: Math.ceil((height - view.oy) / view.scale),
+    });
+    offscreen.style.display = isElevation ? 'none' : 'block';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (isElevation) {
       ctx.clearRect(0, 0, width, height);
@@ -825,10 +1008,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       }
     } else {
       if (terrainCanvas) terrainCanvas.style.display = 'none';
-      ctx.fillStyle = colors.light.mapBackdrop;
-      ctx.fillRect(0, 0, width, height);
-      ctx.imageSmoothingEnabled = view.scale < 1;
-      ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
+      ctx.clearRect(0, 0, width, height);
       drawRivers(ctx, game, view, baseScaleRef.current);
     }
     finishStage('mapLayer');
@@ -842,7 +1022,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         game.world,
       ) ?? null
       : undefined;
-    const occupiedMapLabels = drawMapLabels(
+    const mapLabelResult = drawMapLabels(
       ctx,
       game,
       view,
@@ -851,6 +1031,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       height,
       projectMapPoint,
       avoidToolOverlay,
+      visibleMapContour,
+      panActiveRef.current,
     );
     finishStage('labels');
     const cityLabelIds = visibleCityLabelIds(
@@ -862,7 +1044,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       view.oy,
       width,
       height,
-      occupiedMapLabels,
+      mapLabelResult.occupiedLabels,
     );
     if (shouldShowCityMarks(mapMode)) for (const city of game.world.cities) {
       const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
@@ -940,12 +1122,11 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (drawSamples && drawSamples.length < 5000) {
       drawSamples.push({ ...stageTimes, totalMs: performance.now() - drawStartedAt });
     }
-    if (game.renderer.pending) frameRef.current = requestAnimationFrame(draw);
+    if (game.renderer.pending || mapLabelResult.pendingLayout) frameRef.current = requestAnimationFrame(draw);
     else game.mapDrawn();
   }, [game, iconFontsLoaded]);
 
   const requestDraw = useCallback(() => {
-    if (compositorPanRef.current) return;
     if (!frameRef.current) frameRef.current = requestAnimationFrame(draw);
   }, [draw]);
   redrawRef.current = requestDraw;
@@ -980,51 +1161,27 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     terrainRendererRef.current = null;
   }, []);
 
-  const beginCompositorPan = useCallback(() => {
-    if (game.getSnapshot().mapMode === 'elevation' || compositorPanRef.current) return;
-    compositorPanOriginRef.current = { ...viewRef.current };
-    compositorPanRef.current = true;
-    for (const surface of [canvasRef.current, terrainCanvasRef.current]) {
-      if (!surface) continue;
-      surface.style.transformOrigin = '0 0';
-      surface.style.willChange = 'transform';
-      if (frameRef.current) cancelAnimationFrame(frameRef.current);
-    }
-    frameRef.current = 0;
-  }, [game]);
-
-  const updateCompositorPan = useCallback((view: ViewTransform) => {
-    const origin = compositorPanOriginRef.current;
-    if (!compositorPanRef.current || !origin) return;
-    const ratio = view.scale / origin.scale;
-    const translateX = view.ox - ratio * origin.ox;
-    const translateY = view.oy - ratio * origin.oy;
-    const transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${ratio})`;
-    for (const surface of [canvasRef.current, terrainCanvasRef.current]) {
-      if (surface) surface.style.transform = transform;
-    }
+  const applyWorldCanvasView = useCallback((view: ViewTransform) => {
+    const canvas = offscreenRef.current;
+    if (!canvas) return;
+    canvas.style.transform = `translate3d(${view.ox}px, ${view.oy}px, 0) scale(${view.scale})`;
+    canvas.style.imageRendering = view.scale < 1 ? 'auto' : 'pixelated';
   }, []);
-
-  const endCompositorPan = useCallback(() => {
-    if (!compositorPanRef.current) return;
-    compositorPanRef.current = false;
-    compositorPanOriginRef.current = null;
-    for (const surface of [canvasRef.current, terrainCanvasRef.current]) {
-      if (!surface) continue;
-      surface.style.transform = '';
-      surface.style.transformOrigin = '';
-      surface.style.willChange = '';
-    }
+  const beginPan = useCallback(() => {
+    panActiveRef.current = true;
+  }, []);
+  const endPan = useCallback(() => {
+    panActiveRef.current = false;
     requestDraw();
   }, [requestDraw]);
 
   const applyView = useCallback(
     (view: ViewTransform) => {
       viewRef.current = view;
-      if (compositorPanRef.current) updateCompositorPan(view);
-      else requestDraw();
+      applyWorldCanvasView(view);
+      requestDraw();
     },
-    [requestDraw, updateCompositorPan],
+    [applyWorldCanvasView, requestDraw],
   );
 
   useImperativeHandle(ref, () => ({
@@ -1052,8 +1209,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         tool: () => toolRef.current,
         canPaint: () => canPaintRef.current,
         onInspect: (info) => inspectRef.current?.(info),
-        onPanStart: beginCompositorPan,
-        onPanEnd: endCompositorPan,
+        onPanStart: beginPan,
+        onPanEnd: endPan,
         mapPointAt: (x, y) => game.getSnapshot().mapMode === 'elevation'
           ? terrainRendererRef.current?.mapPointAt(x, y, viewRef.current, sizeRef.current, game.world) ??
             toMap(viewRef.current, x, y)
@@ -1063,15 +1220,19 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           requestDraw();
         },
       }),
-    [game, applyView, requestDraw, beginCompositorPan, endCompositorPan],
+    [game, applyView, requestDraw, beginPan, endPan],
   );
 
-  // Изображение вне экрана использует тот же буфер памяти, что и пиксели отрисовщика.
+  // Весь игровой растр карты уже хранится в холсте размера мира; сдвиг только меняет его
+  // CSS-проекцию. Перерисовка растра нужна лишь для помеченных отрисовщиком грязных полос.
   useEffect(() => {
-    const offscreen = document.createElement('canvas');
+    const offscreen = offscreenRef.current;
+    if (!offscreen) return;
     offscreen.width = MAP_WIDTH;
     offscreen.height = MAP_HEIGHT;
-    offscreenRef.current = offscreen;
+    offscreen.style.width = `${MAP_WIDTH}px`;
+    offscreen.style.height = `${MAP_HEIGHT}px`;
+    offscreen.style.transformOrigin = '0 0';
     imageRef.current = new ImageData(new Uint8ClampedArray(game.renderer.pixels.buffer), MAP_WIDTH, MAP_HEIGHT);
     game.redrawAll();
     requestDraw();
@@ -1124,12 +1285,28 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   }, [applyView, onMapActivity]);
 
   const local = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    const rect = wrapRef.current?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
+    const rect = event.currentTarget.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
 
   return (
     <div ref={wrapRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden', touchAction: 'none' }}>
+      <canvas
+        ref={offscreenRef}
+        aria-hidden
+        data-testid="map-raster-canvas"
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          display: 'block',
+          width: `${MAP_WIDTH}px`,
+          height: `${MAP_HEIGHT}px`,
+          transformOrigin: '0 0',
+          willChange: 'transform',
+          pointerEvents: 'none',
+        }}
+      />
       <canvas
         ref={terrainCanvasRef}
         aria-hidden

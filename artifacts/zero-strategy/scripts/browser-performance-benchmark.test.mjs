@@ -96,6 +96,17 @@ class ObserverPerformanceBenchmark {
 
       window.__performanceFrameGaps = [];
       window.__performanceFrameTimes = [];
+      window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__ = [];
+      window.__mapRasterWrites = 0;
+      const putImageData = CanvasRenderingContext2D.prototype.putImageData;
+      CanvasRenderingContext2D.prototype.putImageData = function(image, ...args) {
+        if (this.canvas?.dataset?.testid === 'map-raster-canvas') {
+          window.__mapRasterWrites += args.length >= 6
+            ? args[4] * args[5]
+            : image.width * image.height;
+        }
+        return putImageData.call(this, image, ...args);
+      };
       let previousFrame = 0;
       const recordFrame = (time) => {
         window.__performanceFrameTimes.push(time);
@@ -141,6 +152,10 @@ class ObserverPerformanceBenchmark {
     };
     await this.page.evaluate(() => {
       window.__mapDragLatencies = [];
+      window.__mapDrawStart = window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__.length;
+      window.__mapRasterWritesAtStart = window.__mapRasterWrites;
+      window.__mapRasterTransformAtStart =
+        document.querySelector('[data-testid="map-raster-canvas"]')?.style.transform;
       window.__mapDragActive = true;
       window.__mapDragStartedAt = performance.now();
       const canvas = document.querySelector('[data-testid="map-canvas"]');
@@ -168,6 +183,7 @@ class ObserverPerformanceBenchmark {
       const duringDrag = frames.filter((time) => time >= startAt && time <= endAt);
       const frameGaps = duringDrag.slice(1).map((time, index) => time - duringDrag[index]);
       const latencies = window.__mapDragLatencies;
+      const drawSamples = window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__.slice(window.__mapDrawStart);
       const median = (values) => {
         if (!values.length) return 0;
         const sorted = [...values].sort((a, b) => a - b);
@@ -185,10 +201,19 @@ class ObserverPerformanceBenchmark {
         medianFrameGapMs: median(frameGaps),
         maximumFrameGapMs: Math.max(0, ...frameGaps),
         framesOver50Ms: frameGaps.filter((gap) => gap > 50).length,
+        overlayDraws: drawSamples.length,
+        medianOverlayDrawMs: median(drawSamples.map(({ totalMs }) => totalMs)),
+        maximumOverlayDrawMs: Math.max(0, ...drawSamples.map(({ totalMs }) => totalMs)),
+        maximumLabelLayoutMs: Math.max(0, ...drawSamples.map(({ labels = 0 }) => labels)),
+        rasterPixelsWritten: window.__mapRasterWrites - window.__mapRasterWritesAtStart,
+        rasterTransformChanged: document.querySelector('[data-testid="map-raster-canvas"]')?.style.transform !==
+          window.__mapRasterTransformAtStart,
       };
     });
     assert.ok(this.mapDrag.pointerMoves > 0, 'Перетаскивание должно доходить до обработчика карты.');
     assert.ok(this.mapDrag.animationFrames > 0, 'Во время перетаскивания должны отрисовываться кадры.');
+    assert.equal(this.mapDrag.rasterPixelsWritten, 0, 'Панорамирование не должно заново записывать игровой растр.');
+    assert.ok(this.mapDrag.rasterTransformChanged, 'Перетаскивание должно менять преобразование полного холста карты.');
     console.log(`Отзывчивость карты при перетаскивании: ${JSON.stringify(this.mapDrag)}.`);
   }
 
@@ -199,6 +224,7 @@ class ObserverPerformanceBenchmark {
         year: bridge.getSnapshot().year,
         startedAt: performance.now(),
         firstFrameGap: window.__performanceFrameGaps.length,
+        firstMapDraw: window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__.length,
       };
     });
 
@@ -219,6 +245,7 @@ class ObserverPerformanceBenchmark {
         events: bridge.takeSamples(),
         stages: bridge.takeStages(),
         frameGaps,
+        mapDraws: window.__ZERO_STRATEGY_MAP_DRAW_TIMINGS__.slice(before.firstMapDraw),
       };
     }, { index, before });
 
@@ -235,6 +262,7 @@ class ObserverPerformanceBenchmark {
     const events = this.turns.flatMap(({ events: samples }) => samples.filter((sample) => sample.cardType !== null));
     const stages = this.turns.flatMap(({ stages: samples }) => samples);
     const allFrameGaps = this.turns.flatMap(({ frameGaps }) => frameGaps);
+    const mapDraws = this.turns.flatMap(({ mapDraws: samples }) => samples);
     const median = (values) => {
       if (!values.length) return 0;
       const ordered = [...values].sort((a, b) => a - b);
@@ -268,6 +296,14 @@ class ObserverPerformanceBenchmark {
       maximumFrameGapMs: Math.max(0, ...allFrameGaps),
       framesOver50Ms: allFrameGaps.filter((gap) => gap > 50).length,
       mapDrag: this.mapDrag,
+      mapDrawSummary: {
+        count: mapDraws.length,
+        medianMs: median(mapDraws.map(({ totalMs }) => totalMs)),
+        maximumMs: Math.max(0, ...mapDraws.map(({ totalMs }) => totalMs)),
+        maximumMapLayerMs: Math.max(0, ...mapDraws.map(({ mapLayer = 0 }) => mapLayer)),
+        maximumLabelLayoutMs: Math.max(0, ...mapDraws.map(({ labels = 0 }) => labels)),
+        maximumCityMarksMs: Math.max(0, ...mapDraws.map(({ cityMarks = 0 }) => cityMarks)),
+      },
       slowEvents,
     };
     console.log(`Итог браузерного замера: ${JSON.stringify(summary, null, 2)}`);

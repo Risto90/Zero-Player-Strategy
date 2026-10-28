@@ -15,7 +15,6 @@ export interface GestureHost {
   tool(): MapTool;
   canPaint(): boolean;
   onInspect(info: PixelInfo | null): void;
-  /** Перемещение обзора можно показывать композитным сдвигом холстов без полного перерисовывания. */
   onPanStart?(): void;
   onPanEnd?(): void;
   /** Точка на рельефе для 3D-режима; остальные слои используют плоское преобразование. */
@@ -69,7 +68,6 @@ export class MapGestures {
     this.points.set(id, { x, y });
     if (this.points.size === 2) {
       if (this.kind === 'paint') host.game.endStroke();
-      if (this.kind === 'pan') host.onPanEnd?.();
       const { dist, mid } = this.pinchState();
       this.kind = 'pinch';
       this.pinchDist = dist;
@@ -81,13 +79,14 @@ export class MapGestures {
     if (this.points.size > 2) return;
     const paint = host.tool() === 'brush' && host.canPaint() && !host.game.getSnapshot().busy;
     this.kind = paint ? 'paint' : 'pan';
+    if (!paint) host.onPanStart?.();
     this.start = { x, y };
     this.moved = false;
     if (paint) {
       host.setCursor({ x, y });
       const m = this.mapPoint(x, y);
       host.game.beginStroke(m.x, m.y);
-    } else host.onPanStart?.();
+    }
   }
 
   move(id: number, x: number, y: number): void {
@@ -121,7 +120,6 @@ export class MapGestures {
     const host = this.host;
     if (!this.points.has(id)) return;
     this.points.delete(id);
-    if (this.kind === 'pan') host.onPanEnd?.();
     if (this.kind === 'paint') {
       host.game.endStroke();
       host.setCursor(null);
@@ -131,12 +129,14 @@ export class MapGestures {
       if (host.tool() === 'city') host.game.selectCityAt(m.x, m.y);
       else if (host.tool() === 'hand') host.onInspect(host.game.inspect(m.x, m.y));
     }
-    if (this.points.size === 0) this.kind = 'none';
+    if (this.points.size === 0) {
+      if (this.kind === 'pan' || this.kind === 'pinch') host.onPanEnd?.();
+      this.kind = 'none';
+    }
     else if (this.kind === 'pinch') {
       // После жеста масштабирования оставшийся палец только перемещает карту.
       this.kind = 'pan';
       this.moved = true;
-      host.onPanStart?.();
     } else if (this.kind === 'paint') this.kind = 'none';
   }
 }
