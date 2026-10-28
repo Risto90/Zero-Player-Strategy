@@ -645,12 +645,16 @@ function drawMapLabels(
   }
   pendingLabels.sort((a, b) =>
     Number(b.label.selected) - Number(a.label.selected) ||
+    Number(b.label.allFragments) - Number(a.label.allFragments) ||
     b.layout.fontSize - a.layout.fontSize ||
     a.label.key.localeCompare(b.label.key));
+  const labeledWholeCountryIds = new Set<number>();
   for (const pending of pendingLabels) {
+    if (!pending.label.allFragments && labeledWholeCountryIds.has(pending.label.countryId)) continue;
     if ([...occupiedLabels, ...cityIconBounds].some((bounds) =>
       labelBoundsOverlap(pending.bounds, bounds))) continue;
     occupiedLabels.push(pending.bounds);
+    if (pending.label.allFragments) labeledWholeCountryIds.add(pending.label.countryId);
     trackedCountryLabel(
       pending.label.text,
       pending.layout.x,

@@ -24,6 +24,7 @@ export interface CountryMapLabel {
   countryBounds: ContourBounds;
   rings: readonly Int32Array[];
   allowBridge: boolean;
+  allFragments?: boolean;
 }
 
 type LabelCore = Omit<CountryMapLabel, 'selected'>;
@@ -182,6 +183,7 @@ function makeLabel(
   country: Pick<Country, 'id' | 'name'>,
   key: string,
   requiredAreas: readonly ContourArea[] = [],
+  allFragments = false,
 ): LabelCore | null {
   if (!area.size || !country.name) return null;
   const countryBounds = area.bounds;
@@ -213,6 +215,7 @@ function makeLabel(
     countryBounds,
     rings: area.rings(),
     allowBridge: requiredAreas.length > 1,
+    allFragments,
   };
 }
 
@@ -244,13 +247,26 @@ function settledCountryLabels(world: World): LabelCore[] {
     const area = countryArea(world, country);
     if (!area.size) continue;
     const components = area.components().sort((a, b) => b.size - a.size);
-    for (const group of nearbyComponentGroups(components, country.name)) {
+    const groups = nearbyComponentGroups(components, country.name);
+    if (groups.length > 1) {
+      const combined = components.slice(1).reduce((current, component) => current.union(component), components[0]);
+      const bridgeLabel = makeLabel(
+        combined,
+        country,
+        `country-${country.id}-all-fragments`,
+        components,
+        true,
+      );
+      if (bridgeLabel) labels.push(bridgeLabel);
+    }
+    for (const group of groups) {
       const groupArea = group.areas.slice(1).reduce((combined, component) => combined.union(component), group.areas[0]);
       const label = makeLabel(
         groupArea,
         country,
         `country-${country.id}-cluster-${group.index}`,
         group.areas,
+        groups.length === 1 && components.length > 1,
       );
       if (label) labels.push(label);
     }
@@ -275,11 +291,30 @@ function selectedNomadLabels(world: World, countryId: number): LabelCore[] {
     ContourArea.rectangle({ x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 }),
   );
   const components = area.components().sort((a, b) => b.size - a.size);
-  const labels = nearbyComponentGroups(components, country.name).flatMap((group) => {
+  const groups = nearbyComponentGroups(components, country.name);
+  const labels: LabelCore[] = [];
+  if (groups.length > 1) {
+    const combined = components.slice(1).reduce((current, component) => current.union(component), components[0]);
+    const bridgeLabel = makeLabel(
+      combined,
+      country,
+      `nomad-${countryId}-all-fragments`,
+      components,
+      true,
+    );
+    if (bridgeLabel) labels.push(bridgeLabel);
+  }
+  labels.push(...groups.flatMap((group) => {
     const groupArea = group.areas.slice(1).reduce((combined, component) => combined.union(component), group.areas[0]);
-    const label = makeLabel(groupArea, country, `nomad-${countryId}-cluster-${group.index}`, group.areas);
+    const label = makeLabel(
+      groupArea,
+      country,
+      `nomad-${countryId}-cluster-${group.index}`,
+      group.areas,
+      groups.length === 1 && components.length > 1,
+    );
     return label ? [label] : [];
-  });
+  }));
   cache.labels.set(countryId, labels);
   return labels;
 }
@@ -314,7 +349,10 @@ export function countryMapLabels(
     const label: CountryMapLabel = { ...core, selected: country.id === selectedCountryId };
     if (!resolveCollisions || !labels.some((placed) => overlaps(label, placed))) labels.push(label);
   }
-  const settled = [...settledCountryLabels(world)].sort((a, b) => b.fontSize - a.fontSize || a.countryId - b.countryId);
+  const settled = [...settledCountryLabels(world)].sort((a, b) =>
+    Number(b.allFragments) - Number(a.allFragments) ||
+    b.fontSize - a.fontSize ||
+    a.countryId - b.countryId);
   for (const core of settled) {
     if (scale !== null && !labelVisible(core.key, core.fontSize * scale)) continue;
     const label: CountryMapLabel = { ...core, selected: false };
