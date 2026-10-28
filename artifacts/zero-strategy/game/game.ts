@@ -673,7 +673,8 @@ export class Game {
         this.layer = null;
         this.renderer.setView('political', null);
       }
-      this.renderer.markAll();
+      const city = this.world.cityAt(pixel);
+      if (city) this.markCityArea(city);
       this.emit();
       this.scheduleSave();
       return true;
@@ -1199,7 +1200,11 @@ export class Game {
           sliceStart = Date.now();
         }
       }
-      if (this.world.discoverGeography()) this.renderer.markAll();
+      const changedGeographyPixels = new Set<number>();
+      this.world.discoverGeography((pixels) => {
+        for (const pixel of pixels) changedGeographyPixels.add(pixel);
+      });
+      this.renderer.markPixels(changedGeographyPixels);
       ensureDynastyEmblems(this.world);
       this.queue = this.playerSlots();
       this.startNextPlayerCard();
@@ -1604,7 +1609,7 @@ export class Game {
           (countryCities.length <= 2 || !city.capital);
         const result = isAllowedTarget && city ? applyCityWaning(w, city) : null;
         if (result && target && city) {
-          this.renderer.markAll();
+          this.renderer.markPixels(result.affectedPixels);
           this.addLog(result.removed
             ? `${target.name}: городок ${city.name ?? 'без названия'} удалён; половина жителей расселена.`
             : `${target.name}: ${city.name ?? 'город'} увял; расселено ${fmt(Math.round(result.transferredPopulation))} жителей.`,
@@ -1648,7 +1653,14 @@ export class Game {
         }
         const name = generatePlaceName(w, target.cultureId, usedNames);
         w.nameGeographyFeature(kind, id, name);
-        this.renderer.markAll();
+        const featurePixels = kind === 'river'
+          ? w.riverFeatures.find((feature) => feature.id === id)?.pixels
+          : kind === 'peak'
+            ? w.peaks.find((feature) => feature.id === id)?.pixel
+            : w.volcanoes.find((feature) => feature.id === id)?.pixel;
+        this.renderer.markPixels(
+          typeof featurePixels === 'number' ? [featurePixels] : featurePixels ?? [],
+        );
         const objectName = kind === 'river' ? 'река' : kind === 'peak' ? 'вершина' : 'вулкан';
         this.addLog(`${target.name}: на карту нанесено название «${name}» (${objectName}).`,
           [chronicleReference('country', target.id)]);
@@ -1786,10 +1798,17 @@ export class Game {
         if (target && card.newCountryId !== null) this.mergeCountries(target, w.countries[card.newCountryId]);
         break;
     }
-    let dissolved = false;
     for (const country of [...w.countries]) {
       if (country.type !== 'settled' || country.pixels <= 0 || w.cities.some((city) => city.countryId === country.id)) continue;
+      const countryArea = w.contours.layer('owner').select((value) => value === country.id + 1, {
+        x0: country.box[0], y0: country.box[1], x1: country.box[2], y1: country.box[3],
+      }, `country:${country.id}`);
       const newCountries = dissolveCountryIntoNomadicCountries(w, country, this.year);
+      this.renderer.markArea(countryArea);
+      this.renderer.markPixels(newCountries.flatMap((newCountry) => [
+        ...(newCountry.range ?? []),
+        ...(newCountry.cells ?? []).map((cell) => cell.pixel),
+      ]));
       this.log = transferCountryChronicle(this.log, country.id, newCountries.map(({ id }) => id), true);
       this.addLog(`${country.name}: без городов страна распущена; население перешло в ${newCountries.length} кочевых стран.`, [
         chronicleReference('country', country.id),
@@ -1800,9 +1819,7 @@ export class Game {
         chronicleReference('country', country.id),
         ...newCountries.map((newCountry) => chronicleReference('country', newCountry.id)),
       ]);
-      dissolved = true;
     }
-    if (dissolved) this.renderer.markAll();
     ensureUniqueDynastySurnames(w);
     w.version += 1;
   }
@@ -1812,8 +1829,27 @@ export class Game {
     const w = this.world;
     this.log = transferCountryChronicle(this.log, incoming.id, [main.id], true);
     const incomingTag = incoming.id + 1, mainTag = main.id + 1;
+    const mainBox = [...main.box] as Country['box'];
+    const incomingBox = [...incoming.box] as Country['box'];
+    const incomingArea = w.contours.layer('owner').select((value) => value === incomingTag, {
+      x0: incomingBox[0], y0: incomingBox[1], x1: incomingBox[2], y1: incomingBox[3],
+    }, `country:${incoming.id}`);
+    const mainArea = w.contours.layer('owner').select((value) => value === mainTag, {
+      x0: mainBox[0], y0: mainBox[1], x1: mainBox[2], y1: mainBox[3],
+    }, `country:${main.id}`);
     const mainCapital = w.cities.find((city) => city.countryId === main.id && city.capital);
-    for (let p = 0; p < w.owner.length; p += 1) if (w.owner[p] === incomingTag) w.owner[p] = mainTag;
+    incomingArea.forEachPixel((pixel) => { w.owner[pixel] = mainTag; });
+    w.contours.changedRows(incomingArea.spans.map((span) => span.y), ['owner']);
+    main.pixels = mainArea.size + incomingArea.size;
+    incoming.pixels = 0;
+    incoming.box = [MAP_WIDTH, MAP_HEIGHT, -1, -1];
+    main.box = [
+      Math.min(mainBox[0], incomingBox[0]),
+      Math.min(mainBox[1], incomingBox[1]),
+      Math.max(mainBox[2], incomingBox[2]),
+      Math.max(mainBox[3], incomingBox[3]),
+    ];
+    this.renderer.markArea(incomingArea);
     for (const city of w.cities) if (city.countryId === incoming.id) city.countryId = main.id;
     const mergedCities = w.cities.filter((city) => city.countryId === main.id);
     const retainedCapital = mainCapital ?? mergedCities[0];
@@ -1827,7 +1863,7 @@ export class Game {
     main.previousRulerIds = [...new Set([...main.previousRulerIds, ...incoming.previousRulerIds])];
     for (const p of w.people) if (p.countryId === incoming.id) p.countryId = main.id;
     refreshHeirs(w, this.year); ensureOffices(w, main, this.year);
-    w.recountCountries(); w.version += 1; this.renderer.markAll();
+    w.version += 1;
     this.addLog(cause === 'inheritance'
       ? `${incoming.name} поглощена ${main.name} после перехода власти к её правителю.`
       : `${incoming.name} мирно объединилась с ${main.name}.`, [
@@ -2262,6 +2298,12 @@ export class Game {
       for (const state of states.slice(1).reverse()) {
         if (w.countries[w.countries.length - 1]?.id === state.id) w.discardLast('countries', state.id);
       }
+      const restoredPixels = [
+        ...transferredPixels,
+        ...mergedHomes.flatMap((saved) => saved.pixels),
+      ];
+      w.contours.changedRows(restoredPixels.map((pixel) => Math.floor(pixel / MAP_WIDTH)), ['owner']);
+      this.renderer.markPixels(restoredPixels);
       if (consulatePartition) {
         source.coRulerIds = originalCoRulerIds;
         for (const [personId, countryId] of [...(originalOfficeHomes ?? []), ...(originalHeirHomes ?? [])]) {
@@ -2274,7 +2316,13 @@ export class Game {
     }
     for (const state of states.slice(1)) finalizeSplitCities(w, state.id);
     for (const state of states) ensureOffices(w, state, this.year);
-    w.recountCountries(); w.version += 1; this.renderer.markAll();
+    const splitPixels = [
+      ...transferredPixels,
+      ...mergedHomes.flatMap((saved) => saved.pixels),
+    ];
+    w.contours.changedRows(splitPixels.map((pixel) => Math.floor(pixel / MAP_WIDTH)), ['owner']);
+    this.renderer.markPixels(splitPixels);
+    w.recountCountries(); w.version += 1;
     this.addLog(`${source.name}: страна разделена на ${partitionCount} части между ${consulatePartition ? heirs.length : partitionCount} наследниками.`, [
       chronicleReference('country', source.id),
       ...states.map((state) => chronicleReference('country', state.id)),

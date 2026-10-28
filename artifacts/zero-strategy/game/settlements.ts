@@ -378,7 +378,18 @@ function pixelGroups(world: World, pixel: number, amount = world.density[pixel])
   return cityPopulationGroupsAtPixel(world, pixel, amount);
 }
 
-function addGroupsToPixel(world: World, pixel: number, additions: CityPopulationGroup[]): void {
+const POPULATION_CONTOUR_LAYERS = ['density', 'culture', 'religion', 'humanOrigins'] as const;
+
+function markPopulationContours(world: World, rows: Iterable<number>): void {
+  world.contours.changedRows(rows, POPULATION_CONTOUR_LAYERS);
+}
+
+function addGroupsToPixel(
+  world: World,
+  pixel: number,
+  additions: CityPopulationGroup[],
+  changedRows?: Set<number>,
+): void {
   const city = world.cityAt(pixel);
   if (city) {
     changeCityPopulation(world, city, additions);
@@ -406,6 +417,7 @@ function addGroupsToPixel(world: World, pixel: number, additions: CityPopulation
     world.humanOriginTable,
     groups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
   );
+  changedRows?.add(Math.floor(pixel / MAP_WIDTH));
 }
 
 function takeCityPopulation(world: World, city: City, amount: number): CityPopulationGroup[] {
@@ -425,7 +437,9 @@ function addGroupsAcrossPixels(
 ): void {
   if (!pixels.length) return;
   const perPixel = groups.map((group) => ({ ...group, population: group.population / pixels.length }));
-  for (const pixel of pixels) addGroupsToPixel(world, pixel, perPixel);
+  const changedRows = new Set<number>();
+  for (const pixel of pixels) addGroupsToPixel(world, pixel, perPixel, changedRows);
+  markPopulationContours(world, changedRows);
 }
 
 function apportionByWeightWithCaps(
@@ -558,12 +572,15 @@ export function applyDensityLoss(world: World, pixel: number, requested: number)
     remainingGroups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
   );
   world.version += 1;
+  markPopulationContours(world, [Math.floor(pixel / MAP_WIDTH)]);
   return loss;
 }
 
 /** Adds country residents to an existing rural point or city without changing group composition. */
 export function settlePopulationGroups(world: World, pixel: number, groups: CityPopulationGroup[]): void {
-  addGroupsToPixel(world, pixel, groups);
+  const changedRows = new Set<number>();
+  addGroupsToPixel(world, pixel, groups, changedRows);
+  markPopulationContours(world, changedRows);
 }
 
 export function removeCityAndChooseCapital(world: World, city: City): City | null {
@@ -784,6 +801,10 @@ export function movePopulationToCity(world: World, source: number, target: numbe
     world.density[target] += actual;
     updateMix(target, targetPairs, targetTotal + actual);
   }
+  markPopulationContours(world, [
+    Math.floor(source / MAP_WIDTH),
+    ...(world.cityAt(target) ? [] : [Math.floor(target / MAP_WIDTH)]),
+  ]);
   return actual;
 }
 

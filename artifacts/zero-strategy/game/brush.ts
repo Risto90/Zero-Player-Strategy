@@ -726,7 +726,6 @@ export class CardPainter {
 
   /** Несколько областей одного события обрабатываются за одну синхронизацию и инвалидацию слоёв. */
   paintContours(areas: readonly ContourArea[], seed?: number): number {
-    this.world.contours.synchronize();
     if (!areas.some((area) => area.size > 0) || this.card.ink <= 0) return 0;
     const before = this.card.ink;
     const touchedStart = this.strokeTouched.length;

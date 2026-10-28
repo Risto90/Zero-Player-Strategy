@@ -15,9 +15,15 @@ interface ContourColorGraph {
   neighbors: Map<string, Set<string>>;
 }
 
+interface CachedContourColorGraph {
+  revision: number;
+  graph: ContourColorGraph;
+}
+
 const colorCaches = new Map<string, CachedVectorColor>();
 const markupCaches = new WeakMap<object, Map<string, string>>();
-const colorGraphCaches = new WeakMap<object, Map<string, ContourColorGraph>>();
+const colorGraphCaches = new WeakMap<object, Map<string, CachedContourColorGraph>>();
+const seaDepthMarkupCaches = new WeakMap<object, Map<string, string>>();
 
 function rgb(color: string): RGB {
   return [
@@ -162,20 +168,14 @@ function spansForRow(
 
 function contourColorGraph(game: Game): ContourColorGraph {
   const mode = game.getSnapshot().mapMode;
-  const cacheKey = [
-    mode,
-    game.world.version,
-    game.world.territoryVersion,
-    game.world.geographyRevision,
-    game.renderer.visualRevision,
-  ].join(':');
+  const revision = game.world.contours.revision;
   let cache = colorGraphCaches.get(game.world);
   if (!cache) {
     cache = new Map();
     colorGraphCaches.set(game.world, cache);
   }
-  const saved = cache.get(cacheKey);
-  if (saved) return saved;
+  const saved = cache.get(mode);
+  if (saved?.revision === revision) return saved.graph;
 
   const graph: ContourColorGraph = {
     paints: new Map(),
@@ -215,7 +215,7 @@ function contourColorGraph(game: Game): ContourColorGraph {
     previous = current;
   }
   cache.clear();
-  cache.set(cacheKey, graph);
+  cache.set(mode, { revision, graph });
   return graph;
 }
 
@@ -288,6 +288,26 @@ export interface VectorMapViewport {
   y1: number;
 }
 
+function staticSeaDepthMarkup(game: Game, bounds: VectorMapViewport): string {
+  let cache = seaDepthMarkupCaches.get(game.world);
+  if (!cache) {
+    cache = new Map();
+    seaDepthMarkupCaches.set(game.world, cache);
+  }
+  const key = `${bounds.x0}:${bounds.y0}:${bounds.x1}:${bounds.y1}`;
+  const saved = cache.get(key);
+  if (saved !== undefined) return saved;
+  const markup = fillPaths(
+    game,
+    ['land', 'elevation'],
+    bounds,
+    (pixel) => !game.world.land[pixel],
+  ).join('');
+  if (cache.size >= 32) cache.delete(cache.keys().next().value!);
+  cache.set(key, markup);
+  return markup;
+}
+
 /** Создаёт SVG-заливки из пересечений контурных строк только в видимой области. */
 export function buildVectorMapSvg(game: Game, bounds: VectorMapViewport): string {
   const snapshot = game.getSnapshot();
@@ -306,12 +326,7 @@ export function buildVectorMapSvg(game: Game, bounds: VectorMapViewport): string
   const cachedMarkup = cache.get(cacheKey);
   if (cachedMarkup) return cachedMarkup;
   const visibleBounds = { x0, y0, x1, y1 };
-  const paths = fillPaths(
-    game,
-    ['land', 'elevation'],
-    visibleBounds,
-    (pixel) => !game.world.land[pixel],
-  );
+  const paths = [staticSeaDepthMarkup(game, visibleBounds)];
   if (mode !== 'elevation') {
     paths.push(...fillPaths(game, visibleLayers(game, mode), visibleBounds, (pixel) => !!game.world.land[pixel]));
   }

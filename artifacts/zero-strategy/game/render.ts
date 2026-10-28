@@ -1,6 +1,7 @@
 import type { Rect } from './brush';
 import type { CompositionTable } from './composition';
 import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE } from './config';
+import type { ContourSpan } from './contours';
 import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS } from './human';
 import { ensureCityPopulationGroups } from './settlements';
 import type { World } from './world';
@@ -277,19 +278,60 @@ export class MapRenderer {
 
   /** Помечает область и однопиксельную кайму вокруг неё для обновления границ. */
   mark(rect: Rect): void {
-    this.revision += 1;
     const c0 = Math.max(0, Math.floor((rect.x0 - 1) / TILE_W));
     const c1 = Math.min(TILE_COLS - 1, Math.floor((rect.x1 + 1) / TILE_W));
     const r0 = Math.max(0, Math.floor((rect.y0 - 1) / STRIP_H));
     const r1 = Math.min(STRIPS - 1, Math.floor((rect.y1 + 1) / STRIP_H));
+    const tiles = new Set<number>();
     for (let r = r0; r <= r1; r += 1) {
       for (let col = c0; col <= c1; col += 1) {
-        const t = r * TILE_COLS + col;
-        if (!this.dirtyTiles[t]) {
-          this.dirtyTiles[t] = 1;
-          this.dirtyCount += 1;
-        }
+        tiles.add(r * TILE_COLS + col);
       }
+    }
+    this.markTiles(tiles);
+  }
+
+  /** Помечает только плитки, пересечённые контурами изменённых областей. */
+  markArea(area: { spans: readonly ContourSpan[] }): void {
+    const tiles = new Set<number>();
+    for (const span of area.spans) {
+      if (span.y < 0 || span.y >= MAP_HEIGHT || span.end <= span.start) continue;
+      const c0 = Math.max(0, Math.floor((span.start - 1) / TILE_W));
+      const c1 = Math.min(TILE_COLS - 1, Math.floor(span.end / TILE_W));
+      const r0 = Math.max(0, Math.floor((span.y - 1) / STRIP_H));
+      const r1 = Math.min(STRIPS - 1, Math.floor((span.y + 1) / STRIP_H));
+      for (let row = r0; row <= r1; row += 1) {
+        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
+      }
+    }
+    this.markTiles(tiles);
+  }
+
+  /** Помечает плитки, пересечённые отдельными точками векторного объекта. */
+  markPixels(pixels: Iterable<number>): void {
+    const tiles = new Set<number>();
+    for (const pixel of pixels) {
+      if (pixel < 0 || pixel >= MAP_PIXELS) continue;
+      const x = pixel % MAP_WIDTH;
+      const y = Math.floor(pixel / MAP_WIDTH);
+      const c0 = Math.max(0, Math.floor((x - 1) / TILE_W));
+      const c1 = Math.min(TILE_COLS - 1, Math.floor((x + 1) / TILE_W));
+      const r0 = Math.max(0, Math.floor((y - 1) / STRIP_H));
+      const r1 = Math.min(STRIPS - 1, Math.floor((y + 1) / STRIP_H));
+      for (let row = r0; row <= r1; row += 1) {
+        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
+      }
+    }
+    this.markTiles(tiles);
+  }
+
+  private markTiles(tiles: Set<number>): void {
+    if (tiles.size === 0) return;
+    this.revision += 1;
+    for (const tile of tiles) {
+      if (this.dirtyTiles[tile]) continue;
+      this.dirtyTiles[tile] = 1;
+      this.dirtyCount += 1;
     }
   }
 

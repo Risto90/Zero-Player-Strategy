@@ -185,7 +185,6 @@ export class World {
   }>();
   readonly contours = new MapContours(
     (name) => name === 'water' ? this.water.bodyOf : this[name],
-    () => this.version,
   );
 
   /** Версия меняется только при открытии новых географических контуров. */
@@ -293,11 +292,8 @@ export class World {
     const previous = this.owner[p];
     if (previous === id) return;
     this.territoryVersion += 1;
-    this.contours.synchronize();
     if (previous > 0) this.countries[previous - 1].pixels -= 1;
     this.owner[p] = id;
-    const row = Math.floor(p / MAP_WIDTH);
-    this.contours.changed({ x0: 0, x1: MAP_WIDTH - 1, y0: row, y1: row }, ['owner']);
     if (id > 0) {
       const country = this.countries[id - 1];
       country.pixels += 1;
@@ -405,7 +401,7 @@ export class World {
   }
 
   /** Выявляет географические объекты только после расширения территории в этом ходу. */
-  discoverGeography(): boolean {
+  discoverGeography(onChanged?: (pixels: readonly number[]) => void): boolean {
     if (this.geographyScanVersion === this.territoryVersion) return false;
     this.geographyScanVersion = this.territoryVersion;
 
@@ -420,6 +416,7 @@ export class World {
     }
 
     let discovered = false;
+    const changedRiverRows = new Set<number>();
     const checkArea = (pixels: number[], feature: GeographyFeature | RiverFeature): void => {
       const known = new Set(feature.discoveredBy);
       for (const pixel of pixels) {
@@ -442,14 +439,19 @@ export class World {
       if (nextDiscoverers.length === feature.discoveredBy.length &&
         nextDiscoverers.every((id) => feature.discoveredBy.includes(id))) return;
       feature.discoveredBy = nextDiscoverers;
+      onChanged?.(pixels);
       if (feature.discoveredBy.length > 0) discovered = true;
       if ('paths' in feature) {
          const strength = riverStrengthForRank(feature.scaleRank);
         for (const riverPixel of feature.pixels) {
-          this.knownRivers[riverPixel] = Math.max(
+          const nextStrength = Math.max(
             this.knownRivers[riverPixel],
             this.rivers[riverPixel] || strength,
           );
+          if (nextStrength !== this.knownRivers[riverPixel]) {
+            this.knownRivers[riverPixel] = nextStrength;
+            changedRiverRows.add(Math.floor(riverPixel / MAP_WIDTH));
+          }
         }
       }
     };
@@ -457,6 +459,7 @@ export class World {
     for (const feature of this.riverFeatures) checkArea(feature.pixels, feature);
     for (const feature of this.peaks) checkArea([feature.pixel], feature);
     for (const feature of this.volcanoes) checkArea([feature.pixel], feature);
+    this.contours.changedRows(changedRiverRows, ['rivers']);
 
     if (discovered) {
       this.geographyVersion += 1;
@@ -501,19 +504,24 @@ export class World {
     this.cities.push(city);
     this.cityIdAt[pixel] = city.id;
     this.version += 1;
+    const row = Math.floor(pixel / MAP_WIDTH);
+    this.contours.changedRows([row], ['cityIdAt']);
     return city;
   }
 
   removeCity(cityId: number): void {
     const city = this.cities[cityId];
     if (!city) return;
+    const changedRows = new Set([Math.floor(city.pixel / MAP_WIDTH)]);
     this.cities.splice(cityId, 1);
     this.cityIdAt[city.pixel] = -1;
     this.cities.forEach((item, index) => {
       item.id = index;
       this.cityIdAt[item.pixel] = index;
+      if (index >= cityId) changedRows.add(Math.floor(item.pixel / MAP_WIDTH));
     });
     this.version += 1;
+    this.contours.changedRows(changedRows, ['cityIdAt']);
   }
 
   /** Перебирает все точки государства в пределах его ограничивающей рамки. */

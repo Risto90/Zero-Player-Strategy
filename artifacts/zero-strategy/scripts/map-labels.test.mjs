@@ -75,7 +75,7 @@ for (let y = 20; y < 60; y += 1) for (let x = 20; x < 140; x += 1) {
   world.religion[pixel] = religionMix;
   world.humanOrigins[pixel] = originMix;
 }
-world.contours = new MapContours((name) => world[name], () => world.version);
+world.contours = new MapContours((name) => world[name]);
 
 const zoomedOut = countryMapLabels(world, 0.3, 'political', 1);
 const zoomedIn = countryMapLabels(world, 2, 'political', 1);

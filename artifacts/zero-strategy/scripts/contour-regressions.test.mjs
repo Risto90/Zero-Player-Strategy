@@ -88,15 +88,16 @@ layer.invalidate(10, 10);
 assert.equal(layer.row(70), unchangedRow, 'Неизменённый контур строки остаётся в кэше');
 assert.equal(layer.select((v) => v === 40, bounds, '40').size, 1, 'Изменение не теряется в кэше');
 
-let version = 0;
 const layers = {
   land: new Uint8Array(MAP_PIXELS),
+  owner: new Uint16Array(MAP_PIXELS),
+  elevation: new Int16Array(MAP_PIXELS).fill(-1000),
   humidity: values,
   temperature: new Uint8Array(MAP_PIXELS).fill(50),
   drainage: new Uint8Array(MAP_PIXELS).fill(60),
 };
 rectangle(10, 10, 40, 40).forEachPixel((p) => { layers.land[p] = 1; });
-const map = new MapContours((name) => layers[name], () => version);
+const map = new MapContours((name) => layers[name]);
 const area = rectangle(10, 10, 40, 40);
 const parts = map.climateIntersections(area);
 assert.equal(parts.reduce((total, part) => total + part.area.size, 0), area.size, 'Пересечения климатов покрывают всю область');
@@ -107,9 +108,17 @@ for (const part of parts) part.area.forEachPixel((p) => {
 });
 const regions = map.climateRegions();
 assert.equal(map.climateRegions(), regions, 'Климатические контуры повторно используются');
-version += 1;
+const depthRow = map.layer('elevation').row(20);
+const ownerRow = map.layer('owner').row(20);
+const unrelatedRow = map.layer('humidity').row(30);
 layers.temperature[20 * MAP_WIDTH + 20] = 70;
-map.changed({ x0: 20, y0: 20, x1: 20, y1: 20 }, ['temperature']);
+layers.owner[20 * MAP_WIDTH + 20] = 1;
+const revision = map.revision;
+map.changed({ x0: 20, y0: 20, x1: 20, y1: 20 }, ['temperature', 'owner']);
+assert.equal(map.revision, revision + 1, 'Изменение игрового контура получает собственную ревизию');
+assert.equal(map.layer('elevation').row(20), depthRow, 'Игровое изменение не инвалидирует статическую глубину моря');
+assert.notEqual(map.layer('owner').row(20), ownerRow, 'Изменение владельца перестраивает только затронутую строку');
+assert.equal(map.layer('humidity').row(30), unrelatedRow, 'Незатронутые строки остаются в кэше');
 assert.notEqual(map.climateRegions(), regions, 'Изменение климата обновляет пересечения');
 assert.equal(map.climateRegions()[map.climateRegionAt(20 * MAP_WIDTH + 20)].temperature, 70);
 assert.ok(donut.border().size > 0);
@@ -126,7 +135,7 @@ rectangle(3, 4, 63, 65).forEachPixel((p) => {
   demographicLayers.density[p] = (p % 13) / 3;
 });
 const demographicWorld = { ...demographicLayers, cities };
-demographicWorld.contours = new MapContours((name) => demographicLayers[name], () => 0);
+demographicWorld.contours = new MapContours((name) => demographicLayers[name]);
 const keyOf = (p) => cities.some((city) => city.pixel === p) ? `город:${p}`
   : `${demographicLayers.culture[p]}/${demographicLayers.religion[p]}/${demographicLayers.humanOrigins[p]}`;
 const referencePopulation = new Map(), contourPopulation = new Map();
@@ -169,7 +178,7 @@ for (let y = 80; y <= 89; y += 1) {
 const expansionWorld = {
   ...expansionLayers,
   water: { bodyOf: waterBody },
-  contours: new MapContours((name) => expansionLayers[name], () => 0),
+  contours: new MapContours((name) => expansionLayers[name]),
 };
 const expansionIndex = new CountryExpansionContourIndex(expansionWorld, expansionCountry);
 const expectedFrontier = new Set();

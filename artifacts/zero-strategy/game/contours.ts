@@ -462,17 +462,19 @@ export interface ClimateContour {
  */
 export class MapContours {
   private readonly layers = new Map<ContourLayerName, ScalarContourLayer>();
-  private knownVersion = -1;
+  private currentRevision = 0;
   private climateRegionsCache: ClimateContour[] | null = null;
   private climateRegionIds: Int32Array | null = null;
 
   constructor(
     private readonly source: (name: ContourLayerName) => ArrayLike<number>,
-    private readonly version: () => number,
   ) {}
 
+  get revision(): number {
+    return this.currentRevision;
+  }
+
   layer(name: ContourLayerName): ScalarContourLayer {
-    this.synchronize();
     let layer = this.layers.get(name);
     if (!layer) {
       layer = new ScalarContourLayer(() => this.source(name));
@@ -481,24 +483,35 @@ export class MapContours {
     return layer;
   }
 
-  synchronize(): void {
-    if (this.knownVersion !== this.version()) {
-      for (const layer of this.layers.values()) layer.invalidate();
-      this.climateRegionsCache = null;
-      this.climateRegionIds = null;
-      this.knownVersion = this.version();
+  changed(bounds: ContourBounds, names?: readonly ContourLayerName[]): void {
+    const y0 = Math.max(0, bounds.y0);
+    const y1 = Math.min(MAP_HEIGHT - 1, bounds.y1);
+    if (y1 < y0) return;
+    for (const [name, layer] of this.layers) {
+      if (!names || names.includes(name)) layer.invalidate(y0, y1);
     }
+    this.finishChange(names);
   }
 
-  changed(bounds: ContourBounds, names?: readonly ContourLayerName[]): void {
+  changedRows(rows: Iterable<number>, names?: readonly ContourLayerName[]): void {
+    const affectedRows = [...new Set([...rows]
+      .filter((row) => Number.isInteger(row) && row >= 0 && row < MAP_HEIGHT))]
+      .sort((a, b) => a - b);
+    if (!affectedRows.length) return;
     for (const [name, layer] of this.layers) {
-      if (!names || names.includes(name)) layer.invalidate(Math.max(0, bounds.y0), Math.min(MAP_HEIGHT - 1, bounds.y1));
+      if (!names || names.includes(name)) {
+        for (const row of affectedRows) layer.invalidate(row, row);
+      }
     }
+    this.finishChange(names);
+  }
+
+  private finishChange(names?: readonly ContourLayerName[]): void {
     if (!names || names.some((name) => ['land', 'humidity', 'temperature', 'drainage'].includes(name))) {
       this.climateRegionsCache = null;
       this.climateRegionIds = null;
     }
-    this.knownVersion = this.version();
+    this.currentRevision += 1;
   }
 
   climateRegions(): readonly ClimateContour[] {
