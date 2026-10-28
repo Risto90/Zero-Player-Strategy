@@ -447,6 +447,10 @@ export class ScalarContourLayer {
 
 export type ContourLayerName = 'land' | 'owner' | 'humidity' | 'temperature' | 'drainage' |
   'density' | 'culture' | 'religion' | 'humanOrigins' | 'rivers' | 'water' | 'elevation' | 'cityIdAt';
+const CONTOUR_LAYER_NAMES: readonly ContourLayerName[] = [
+  'land', 'owner', 'humidity', 'temperature', 'drainage', 'density', 'culture',
+  'religion', 'humanOrigins', 'rivers', 'water', 'elevation', 'cityIdAt',
+];
 
 export interface ClimateContour {
   humidity: number;
@@ -462,6 +466,9 @@ export interface ClimateContour {
  */
 export class MapContours {
   private readonly layers = new Map<ContourLayerName, ScalarContourLayer>();
+  private readonly layerRevisions = new Map<ContourLayerName, number>(
+    CONTOUR_LAYER_NAMES.map((name) => [name, 0]),
+  );
   private currentRevision = 0;
   private climateRegionsCache: ClimateContour[] | null = null;
   private climateRegionIds: Int32Array | null = null;
@@ -472,6 +479,10 @@ export class MapContours {
 
   get revision(): number {
     return this.currentRevision;
+  }
+
+  revisionFor(names: readonly ContourLayerName[]): string {
+    return names.map((name) => `${name}:${this.layerRevisions.get(name) ?? 0}`).join('|');
   }
 
   layer(name: ContourLayerName): ScalarContourLayer {
@@ -512,6 +523,9 @@ export class MapContours {
       this.climateRegionIds = null;
     }
     this.currentRevision += 1;
+    for (const name of names ?? CONTOUR_LAYER_NAMES) {
+      this.layerRevisions.set(name, (this.layerRevisions.get(name) ?? 0) + 1);
+    }
   }
 
   climateRegions(): readonly ClimateContour[] {

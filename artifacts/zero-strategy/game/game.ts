@@ -1,4 +1,4 @@
-import { autoPaint } from './autoPaint';
+import { autoPaint, autoPaintCooperatively } from './autoPaint';
 import type { PaintActions } from './autoPaint';
 import { ContourArea, type ContourSpan } from './contours';
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
@@ -80,7 +80,7 @@ interface AutomaticTurnResult {
 interface AutomaticTurnJob {
   scope: 'world' | 'country';
   countryId?: number;
-  run: () => AutomaticTurnResult;
+  run: () => AutomaticTurnResult | Promise<AutomaticTurnResult>;
 }
 
 export interface LegendRow {
@@ -192,7 +192,12 @@ export type GameAction =
   | { type: 'strokeTo'; x: number; y: number }
   | { type: 'endStroke' }
   | { type: 'dab'; x: number; y: number; radius: number }
-  | { type: 'paintContour'; spans: readonly ContourSpan[]; seed?: number }
+  | {
+      type: 'paintContour';
+      spans: readonly ContourSpan[];
+      seed?: number;
+      startSpans?: readonly ContourSpan[];
+    }
   | { type: 'paintContours'; areas: readonly (readonly ContourSpan[])[] }
   | { type: 'line'; ax: number; ay: number; bx: number; by: number; radius: number }
   | { type: 'placeCity'; x: number; y: number }
@@ -574,6 +579,25 @@ export class Game {
     }
   }
 
+  private async measurePerformanceStageCooperatively<T>(
+    cardType: Card['type'],
+    stage: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    if (!this.performanceTracking) return run();
+    const startedAt = performance.now();
+    try {
+      return await run();
+    } finally {
+      this.performanceStageSamples.push({
+        year: this.year,
+        cardType,
+        stage,
+        durationMs: performance.now() - startedAt,
+      });
+    }
+  }
+
   private tick(): void {
     if (this.paused || (this.busy && this.secondsLeft === 0)) return;
     this.secondsLeft = Math.max(0, this.secondsLeft - 1);
@@ -608,7 +632,11 @@ export class Game {
       case 'strokeTo': return this.applyStrokeTo(action.x, action.y);
       case 'endStroke': return this.applyEndStroke();
       case 'dab': return this.applyDab(action.x, action.y, action.radius);
-      case 'paintContour': return this.painter?.paintContour(new ContourArea(action.spans), action.seed) ?? 0;
+      case 'paintContour': return this.painter?.paintContour(
+        new ContourArea(action.spans),
+        action.seed,
+        action.startSpans ? new ContourArea(action.startSpans) : undefined,
+      ) ?? 0;
       case 'paintContours': return this.painter?.paintContours(
         action.areas.map((spans) => new ContourArea(spans)),
       ) ?? 0;
@@ -834,12 +862,14 @@ export class Game {
   private markCityArea(city: City): void {
     const radius = cityInfluenceRadius(this.world, city);
     const x = city.pixel % MAP_WIDTH, y = Math.floor(city.pixel / MAP_WIDTH);
-    this.renderer.mark({
+    const bounds = {
       x0: Math.max(0, Math.floor(x - radius)),
       y0: Math.max(0, Math.floor(y - radius)),
       x1: Math.min(MAP_WIDTH - 1, Math.ceil(x + radius)),
       y1: Math.min(MAP_HEIGHT - 1, Math.ceil(y + radius)),
-    });
+    };
+    this.renderer.markForLayers(bounds, ['density', 'culture', 'religion', 'humanOrigins', 'cityIdAt']);
+    this.renderer.markOverlay(bounds);
   }
 
   toggleBrushMode(): void {
@@ -924,12 +954,19 @@ export class Game {
   private afterPaint(): void {
     const painter = this.painter;
     if (!painter) return;
+    const nomadOverlayVisible = painter.card.type === 'nomadExpand' &&
+      (this.renderer.mode === 'political' || this.renderer.mode === 'cities');
     if (painter.dirty) {
-      this.renderer.mark(painter.dirty);
+      this.renderer.markForLayers(painter.dirty, [...painter.dirtyLayers]);
+      if (nomadOverlayVisible) this.renderer.markOverlay(painter.dirty);
       painter.dirty = null;
     }
-    for (const rect of painter.extraDirty) this.renderer.mark(rect);
+    for (const rect of painter.extraDirty) {
+      this.renderer.markForLayers(rect, [...painter.dirtyLayers]);
+      if (nomadOverlayVisible) this.renderer.markOverlay(rect);
+    }
     painter.extraDirty.length = 0;
+    painter.dirtyLayers.clear();
     painter.clearExtraDirtyTiles();
     if (painter.message) this.setMessage(painter.message);
     this.emit(true);
@@ -1087,7 +1124,7 @@ export class Game {
       const previousResolutionState = this.resolvingAutomatically;
       this.resolvingAutomatically = true;
       try {
-        this.resolveAutomaticCard(activeCard, true, false);
+        await this.resolveAutomaticCardCooperatively(activeCard, true, false);
       } finally {
         this.resolvingAutomatically = previousResolutionState;
       }
@@ -1133,13 +1170,13 @@ export class Game {
       refreshHeirs(this.world, this.year);
       const jobs: AutomaticTurnJob[] = [];
       if (this.role === 'country' || this.role === 'observer') {
-        jobs.push({ scope: 'world', run: () => {
+        jobs.push({ scope: 'world', run: async () => {
           const drawStartedAt = this.performanceTracking ? performance.now() : 0;
           const card = drawWorldCard(this.world, this.year);
           const drawDurationMs = this.performanceTracking ? performance.now() - drawStartedAt : 0;
           if (!card) return { cardType: null, drawDurationMs, resolutionDurationMs: 0 };
           const resolutionStartedAt = this.performanceTracking ? performance.now() : 0;
-          this.resolveAutomatically(card, { scope: 'world' });
+          await this.resolveAutomaticallyCooperatively(card, { scope: 'world' });
           return {
             cardType: card.type,
             drawDurationMs,
@@ -1151,7 +1188,7 @@ export class Game {
         const ids = this.world.countries.filter(isActiveCountry).map((c) => c.id);
         for (const id of ids) {
           if (this.role === 'country' && id === this.focusCountryId) continue;
-          jobs.push({ scope: 'country', countryId: id, run: () => {
+          jobs.push({ scope: 'country', countryId: id, run: async () => {
             const country = this.world.countries[id];
             if (!country || !isActiveCountry(country)) {
               return { cardType: null, drawDurationMs: 0, resolutionDurationMs: 0 };
@@ -1161,7 +1198,7 @@ export class Game {
             const drawDurationMs = this.performanceTracking ? performance.now() - drawStartedAt : 0;
             if (!card) return { cardType: null, drawDurationMs, resolutionDurationMs: 0 };
             const resolutionStartedAt = this.performanceTracking ? performance.now() : 0;
-            this.resolveAutomatically(card, { scope: 'country', countryId: id });
+            await this.resolveAutomaticallyCooperatively(card, { scope: 'country', countryId: id });
             return {
               cardType: card.type,
               drawDurationMs,
@@ -1179,7 +1216,7 @@ export class Game {
         const mapRevisionBefore = this.renderer.visualRevision;
         if (this.performanceTracking) {
           const startedAt = performance.now();
-          const result = job.run();
+          const result = await job.run();
           this.performanceSamples.push({
             year: this.year,
             scope: job.scope,
@@ -1190,7 +1227,7 @@ export class Game {
             resolutionDurationMs: result.resolutionDurationMs,
           });
         } else {
-          job.run();
+          await job.run();
         }
         if (this.renderer.visualRevision !== mapRevisionBefore) this.emit(true);
         if (Date.now() - sliceStart >= SLICE_MS || i === jobs.length - 1) {
@@ -1204,7 +1241,8 @@ export class Game {
       this.world.discoverGeography((pixels) => {
         for (const pixel of pixels) changedGeographyPixels.add(pixel);
       });
-      this.renderer.markPixels(changedGeographyPixels);
+      this.renderer.markOverlayPixels(changedGeographyPixels);
+      if (this.renderer.mode === 'elevation') this.renderer.markTerrainPixels(changedGeographyPixels);
       ensureDynastyEmblems(this.world);
       this.queue = this.playerSlots();
       this.startNextPlayerCard();
@@ -1412,6 +1450,19 @@ export class Game {
     }
   }
 
+  private async resolveAutomaticallyCooperatively(
+    card: Card,
+    recipient: NotificationRecipient = this.defaultNotificationRecipient(),
+  ): Promise<void> {
+    const previousResolutionState = this.resolvingAutomatically;
+    this.resolvingAutomatically = true;
+    try {
+      await this.resolveAutomaticCardCooperatively(card, false, true, recipient);
+    } finally {
+      this.resolvingAutomatically = previousResolutionState;
+    }
+  }
+
   private resolveAutomaticCard(
     card: Card,
     reuseActiveCard = false,
@@ -1442,7 +1493,12 @@ export class Game {
       dab: (x, y, radius) => this.dispatchAction({ type: 'dab', x, y, radius }) as number,
       line: (ax, ay, bx, by, radius) => this.dispatchAction({ type: 'line', ax, ay, bx, by, radius }) as number,
       endStroke: () => this.dispatchAction({ type: 'endStroke' }),
-      contour: (area, seed) => this.dispatchAction({ type: 'paintContour', spans: area.spans, seed }) as number,
+      contour: (area, seed, startArea) => this.dispatchAction({
+        type: 'paintContour',
+        spans: area.spans,
+        seed,
+        startSpans: startArea?.spans,
+      }) as number,
       contours: (areas) => this.dispatchAction({
         type: 'paintContours',
         areas: areas.map((area) => area.spans),
@@ -1459,6 +1515,109 @@ export class Game {
       }
       : undefined;
     this.measurePerformanceStage(card.type, 'автоматическая кисть', () => autoPaint(painter, actions, onMeasure));
+    this.measurePerformanceStage(card.type, 'обновление после покраски', () => this.afterPaint());
+    this.measurePerformanceStage(card.type, 'выбор места города', () => {
+      const targetCountry = card.type === 'buildCity' && card.targetCountryId !== null
+        ? this.world.countries[card.targetCountryId] : null;
+      if (targetCountry?.type === 'nomadic') {
+        const pixel = this.chooseAutomaticCitySite(targetCountry);
+        if (pixel >= 0) this.dispatchAction({ type: 'placeCity', x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH) });
+      } else if (card.type === 'create' || card.type === 'buildCity') {
+        const countryId = card.type === 'create' ? card.newCountryId : card.targetCountryId;
+        const country = countryId === null ? null : this.world.countries[countryId];
+        const hasCity = country ? this.world.cities.some((city) => city.countryId === country.id) : false;
+        const shouldPlace = card.type === 'create' ? !hasCity : !card.cityPlaced;
+        if (country && country.type === 'settled' && country.pixels > 0 && shouldPlace) {
+          const best = this.chooseAutomaticCitySite(country);
+          if (best >= 0) {
+            this.dispatchAction({ type: 'placeCity', x: best % MAP_WIDTH, y: Math.floor(best / MAP_WIDTH) });
+          }
+        }
+      }
+    });
+    if (complete) {
+      this.measurePerformanceStage(card.type, 'завершение карточки', () =>
+        this.dispatchAction({ type: 'completeCard' }));
+    }
+  }
+
+  private async resolveAutomaticCardCooperatively(
+    card: Card,
+    reuseActiveCard = false,
+    complete = true,
+    recipient: NotificationRecipient = this.messageRecipient,
+  ): Promise<void> {
+    const activeRecipient = reuseActiveCard ? this.messageRecipient : recipient;
+    this.messageRecipient = activeRecipient;
+    if (!reuseActiveCard) this.card = card;
+    if (!reuseActiveCard && card.choices && card.choices.length > 1) {
+      this.dispatchAction({ type: 'selectChoice', index: this.automaticChoiceIndex(card) });
+    }
+    if (!reuseActiveCard) {
+      this.measurePerformanceStage(card.type, 'подготовка кисти', () =>
+        this.startCard(card, undefined, false, activeRecipient));
+    }
+    const painter = this.painter;
+    if (!painter) return;
+    if (!reuseActiveCard) {
+      this.dispatchAction({
+        type: 'setPainterMode',
+        mode: card.developmentOnly ? 'repeat' : 'respect',
+      });
+    }
+    const yieldControl = () => Game.pause();
+    let lastVisibleMapRefresh = -Infinity;
+    const refreshVisibleMap = () => {
+      const now = performance.now();
+      if (now - lastVisibleMapRefresh < 100) return;
+      lastVisibleMapRefresh = now;
+      this.afterPaint();
+    };
+    const cooperativeDab = async (x: number, y: number, radius: number): Promise<number> => {
+      if (card.ink <= 0) return this.dispatchAction({ type: 'dab', x, y, radius }) as number;
+      return painter.paintContourCooperatively(
+        ContourArea.circle(x, y, Math.max(1, radius)),
+        undefined,
+        undefined,
+        yieldControl,
+        refreshVisibleMap,
+      );
+    };
+    const actions: PaintActions = {
+      beginStroke: (x, y) => this.dispatchAction({ type: 'beginStroke', x, y }),
+      dab: (x, y, radius) => this.dispatchAction({ type: 'dab', x, y, radius }) as number,
+      line: (ax, ay, bx, by, radius) => this.dispatchAction({ type: 'line', ax, ay, bx, by, radius }) as number,
+      endStroke: () => this.dispatchAction({ type: 'endStroke' }),
+      contour: (area, seed, startArea) => this.dispatchAction({
+        type: 'paintContour',
+        spans: area.spans,
+        seed,
+        startSpans: startArea?.spans,
+      }) as number,
+      contours: (areas) => this.dispatchAction({
+        type: 'paintContours',
+        areas: areas.map((area) => area.spans),
+      }) as number,
+      dabCooperatively: cooperativeDab,
+      contourCooperatively: (area, seed, startArea) => painter.paintContourCooperatively(
+        area, seed, startArea, yieldControl, refreshVisibleMap,
+      ),
+      contoursCooperatively: (areas) => painter.paintContoursCooperatively(
+        areas, undefined, undefined, yieldControl, refreshVisibleMap,
+      ),
+    };
+    const onMeasure = this.performanceTracking
+      ? (stage: string, durationMs: number) => {
+        this.performanceStageSamples.push({
+          year: this.year,
+          cardType: card.type,
+          stage,
+          durationMs,
+        });
+      }
+      : undefined;
+    await this.measurePerformanceStageCooperatively(card.type, 'автоматическая кисть', () =>
+      autoPaintCooperatively(painter, actions, onMeasure, yieldControl));
     this.measurePerformanceStage(card.type, 'обновление после покраски', () => this.afterPaint());
     this.measurePerformanceStage(card.type, 'выбор места города', () => {
       const targetCountry = card.type === 'buildCity' && card.targetCountryId !== null
@@ -1609,7 +1768,9 @@ export class Game {
           (countryCities.length <= 2 || !city.capital);
         const result = isAllowedTarget && city ? applyCityWaning(w, city) : null;
         if (result && target && city) {
-          this.renderer.markPixels(result.affectedPixels);
+          this.renderer.markPixelsForLayers(result.affectedPixels,
+            ['density', 'culture', 'religion', 'humanOrigins', 'cityIdAt']);
+          this.renderer.markOverlayPixels(result.affectedPixels);
           this.addLog(result.removed
             ? `${target.name}: городок ${city.name ?? 'без названия'} удалён; половина жителей расселена.`
             : `${target.name}: ${city.name ?? 'город'} увял; расселено ${fmt(Math.round(result.transferredPopulation))} жителей.`,
@@ -1658,9 +1819,9 @@ export class Game {
           : kind === 'peak'
             ? w.peaks.find((feature) => feature.id === id)?.pixel
             : w.volcanoes.find((feature) => feature.id === id)?.pixel;
-        this.renderer.markPixels(
-          typeof featurePixels === 'number' ? [featurePixels] : featurePixels ?? [],
-        );
+        const changedPixels = typeof featurePixels === 'number' ? [featurePixels] : featurePixels ?? [];
+        this.renderer.markOverlayPixels(changedPixels);
+        if (this.renderer.mode === 'elevation') this.renderer.markTerrainPixels(changedPixels);
         const objectName = kind === 'river' ? 'река' : kind === 'peak' ? 'вершина' : 'вулкан';
         this.addLog(`${target.name}: на карту нанесено название «${name}» (${objectName}).`,
           [chronicleReference('country', target.id)]);
@@ -1804,8 +1965,8 @@ export class Game {
         x0: country.box[0], y0: country.box[1], x1: country.box[2], y1: country.box[3],
       }, `country:${country.id}`);
       const newCountries = dissolveCountryIntoNomadicCountries(w, country, this.year);
-      this.renderer.markArea(countryArea);
-      this.renderer.markPixels(newCountries.flatMap((newCountry) => [
+      this.renderer.markAreaForLayers(countryArea, ['owner']);
+      this.renderer.markOverlayPixels(newCountries.flatMap((newCountry) => [
         ...(newCountry.range ?? []),
         ...(newCountry.cells ?? []).map((cell) => cell.pixel),
       ]));
@@ -1849,7 +2010,7 @@ export class Game {
       Math.max(mainBox[2], incomingBox[2]),
       Math.max(mainBox[3], incomingBox[3]),
     ];
-    this.renderer.markArea(incomingArea);
+    this.renderer.markAreaForLayers(incomingArea, ['owner']);
     for (const city of w.cities) if (city.countryId === incoming.id) city.countryId = main.id;
     const mergedCities = w.cities.filter((city) => city.countryId === main.id);
     const retainedCapital = mainCapital ?? mergedCities[0];
@@ -2303,7 +2464,7 @@ export class Game {
         ...mergedHomes.flatMap((saved) => saved.pixels),
       ];
       w.contours.changedRows(restoredPixels.map((pixel) => Math.floor(pixel / MAP_WIDTH)), ['owner']);
-      this.renderer.markPixels(restoredPixels);
+      this.renderer.markPixelsForLayers(restoredPixels, ['owner']);
       if (consulatePartition) {
         source.coRulerIds = originalCoRulerIds;
         for (const [personId, countryId] of [...(originalOfficeHomes ?? []), ...(originalHeirHomes ?? [])]) {
@@ -2321,7 +2482,7 @@ export class Game {
       ...mergedHomes.flatMap((saved) => saved.pixels),
     ];
     w.contours.changedRows(splitPixels.map((pixel) => Math.floor(pixel / MAP_WIDTH)), ['owner']);
-    this.renderer.markPixels(splitPixels);
+    this.renderer.markPixelsForLayers(splitPixels, ['owner']);
     w.recountCountries(); w.version += 1;
     this.addLog(`${source.name}: страна разделена на ${partitionCount} части между ${consulatePartition ? heirs.length : partitionCount} наследниками.`, [
       chronicleReference('country', source.id),

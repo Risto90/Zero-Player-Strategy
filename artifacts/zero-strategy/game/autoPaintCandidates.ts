@@ -40,6 +40,26 @@ export class AutoPaintCandidateSelector {
     return sampled.sort((a, b) => a - b);
   }
 
+  async boundedCooperatively(yieldControl: () => Promise<void>): Promise<number[]> {
+    if (!this.isLayerCard()) return this.bounded();
+    const { world, card } = this.painter;
+    const pixels: number[] = [];
+    for (let pixel = 0; pixel < world.land.length; pixel += 1) {
+      if (this.painter.strategyInkCostAt(pixel) > 0) pixels.push(pixel);
+      if (pixel > 0 && pixel % 32768 === 0) await yieldControl();
+    }
+    if (card.hint >= 0 && !pixels.includes(card.hint)) pixels.push(card.hint);
+    pixels.sort((a, b) => a - b);
+    if (pixels.length <= MAX_SCORE_CENTERS) return pixels;
+    const stride = pixels.length / MAX_SCORE_CENTERS;
+    const sampled = Array.from(
+      { length: MAX_SCORE_CENTERS },
+      (_, index) => pixels[Math.floor(index * stride)],
+    );
+    if (card.hint >= 0 && !sampled.includes(card.hint)) sampled.push(card.hint);
+    return sampled.sort((a, b) => a - b);
+  }
+
   private static circleOffsets(radius: number): Int16Array {
     const offsets: number[] = [];
     const radiusSquared = radius * radius;

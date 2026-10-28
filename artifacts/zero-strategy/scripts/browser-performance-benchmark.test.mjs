@@ -62,6 +62,8 @@ class ObserverPerformanceBenchmark {
     this.timeoutMs = timeoutMs;
     this.turns = [];
     this.pageErrors = [];
+    this.browserErrors = [];
+    this.profiler = null;
     this.port = null;
     this.server = null;
     this.browser = null;
@@ -105,6 +107,9 @@ class ObserverPerformanceBenchmark {
     this.page = await this.context.newPage();
     this.page.setDefaultTimeout(120_000);
     this.page.on('pageerror', (error) => this.pageErrors.push(error.message));
+    this.page.on('console', (message) => {
+      if (message.type() === 'error') this.browserErrors.push(message.text());
+    });
     await this.page.goto(`http://127.0.0.1:${this.port}${publicPath('/')}`);
     await this.page.getByTestId('button-role-observer').click();
     await this.page.getByTestId('button-start').click();
@@ -198,10 +203,53 @@ class ObserverPerformanceBenchmark {
       void window.__ZERO_STRATEGY_PERFORMANCE_TEST__.advanceTurn();
     });
     const pan = await this.panDuringTurn(index);
-    await this.page.waitForFunction((previousYear) => {
-      const state = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
-      return !!state && state.year > previousYear && !state.busy && !state.drawing && state.progress === null;
-    }, before.year, { timeout: this.timeoutMs, polling: 50 });
+    try {
+      await this.page.waitForFunction((previousYear) => {
+        const state = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
+        return !!state && state.year > previousYear && !state.busy && !state.drawing && state.progress === null;
+      }, before.year, { timeout: this.timeoutMs, polling: 50 });
+    } catch (error) {
+      const diagnostic = await this.page.evaluate(() => {
+        const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
+        return {
+          state: bridge?.getSnapshot(),
+          events: bridge?.takeSamples(),
+          stages: bridge?.takeStages(),
+          mapLabelTimings: window.__ZERO_STRATEGY_MAP_LABEL_TIMINGS__ ?? [],
+        };
+      }).catch((evaluationError) => ({ evaluationError: evaluationError.message }));
+      let cpuProfile = null;
+      if (this.profiler) {
+        try {
+          const { profile } = await this.profiler.send('Profiler.stop');
+          const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
+          const samples = new Map();
+          profile.samples?.forEach((id, index) => {
+            samples.set(id, (samples.get(id) ?? 0) + (profile.timeDeltas?.[index] ?? 0));
+          });
+          cpuProfile = [...samples]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 20)
+            .map(([id, microseconds]) => ({
+              function: nodes.get(id)?.callFrame.functionName,
+              url: nodes.get(id)?.callFrame.url,
+              milliseconds: Math.round(microseconds / 1000),
+              line: nodes.get(id)?.callFrame.lineNumber,
+              column: nodes.get(id)?.callFrame.columnNumber,
+            }));
+        } catch (profileError) {
+          cpuProfile = { error: profileError.message };
+        }
+        this.profiler = null;
+      }
+      console.error('Состояние браузера при превышении времени хода:', JSON.stringify({
+        diagnostic,
+        pageErrors: this.pageErrors,
+        browserErrors: this.browserErrors,
+        cpuProfile,
+      }, null, 2));
+      throw error;
+    }
 
     const result = await this.page.evaluate(({ index, before, pan }) => {
       const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
@@ -295,6 +343,7 @@ class ObserverPerformanceBenchmark {
       await this.open();
       const profiler = process.env.PERF_CPU_PROFILE === '1'
         ? await this.context.newCDPSession(this.page) : null;
+      this.profiler = profiler;
       if (profiler) {
         await profiler.send('Profiler.enable');
         await profiler.send('Profiler.start');
@@ -302,6 +351,7 @@ class ObserverPerformanceBenchmark {
       for (let index = 1; index <= this.years; index += 1) await this.measureTurn(index);
       if (profiler) {
         const { profile } = await profiler.send('Profiler.stop');
+        this.profiler = null;
         const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
         const samples = new Map();
         profile.samples?.forEach((id, index) => {

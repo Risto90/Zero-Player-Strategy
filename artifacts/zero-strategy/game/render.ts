@@ -1,12 +1,30 @@
 import type { Rect } from './brush';
 import type { CompositionTable } from './composition';
 import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE } from './config';
-import type { ContourSpan } from './contours';
+import type { ContourLayerName, ContourSpan } from './contours';
 import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS } from './human';
 import { ensureCityPopulationGroups } from './settlements';
 import type { World } from './world';
 
 export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'elevation' | 'cities' | 'origins';
+
+export function contourLayersForMode(mode: MapMode): ContourLayerName[] {
+  const layers: ContourLayerName[] = ['land'];
+  if (mode === 'political' || mode === 'cities' || mode === 'origins') {
+    layers.push('owner', 'humidity', 'temperature', 'drainage');
+  }
+  if (mode === 'cities') layers.push('cityIdAt');
+  if (mode === 'biomes') layers.push('humidity', 'temperature', 'drainage');
+  if (mode === 'cultures') layers.push('owner', 'culture');
+  if (mode === 'religions') layers.push('owner', 'religion');
+  if (mode === 'humidity') layers.push('humidity');
+  if (mode === 'temperature') layers.push('temperature');
+  if (mode === 'drainage') layers.push('drainage');
+  if (mode === 'density') layers.push('density');
+  if (mode === 'origins') layers.push('humanOrigins', 'cityIdAt');
+  return [...new Set(layers)];
+}
+
 export interface EntityLayer {
   kind: 'culture' | 'religion' | 'origin';
   id: number;
@@ -146,6 +164,8 @@ export class MapRenderer {
   private selectedCountryId: number | null = null;
   private readonly dirtyTiles = new Uint8Array(TILES);
   private dirtyCount = 0;
+  private readonly overlayDirtyTiles = new Set<number>();
+  private readonly terrainDirtyTiles = new Set<number>();
   private revision = 0;
   /** Индекс плитки для продолжения долгого прохода сверху вниз. */
   private cursor = 0;
@@ -291,6 +311,35 @@ export class MapRenderer {
     this.markTiles(tiles);
   }
 
+  /** Обновляет векторный слой, только если изменённые данные видны в выбранном режиме. */
+  markForLayers(rect: Rect, names: readonly ContourLayerName[]): void {
+    const visible = new Set(contourLayersForMode(this.mode));
+    if (names.some((name) => visible.has(name))) this.mark(rect);
+  }
+
+  markAreaForLayers(area: { spans: readonly ContourSpan[] }, names: readonly ContourLayerName[]): void {
+    const visible = new Set(contourLayersForMode(this.mode));
+    if (names.some((name) => visible.has(name))) this.markArea(area);
+  }
+
+  markPixelsForLayers(pixels: Iterable<number>, names: readonly ContourLayerName[]): void {
+    const visible = new Set(contourLayersForMode(this.mode));
+    if (names.some((name) => visible.has(name))) this.markPixels(pixels);
+  }
+
+  /** Помечает изменившуюся область SVG-оверлея отдельно от заливок контуров. */
+  markOverlay(rect: Rect): void {
+    const c0 = Math.max(0, Math.floor((rect.x0 - 1) / TILE_W));
+    const c1 = Math.min(TILE_COLS - 1, Math.floor((rect.x1 + 1) / TILE_W));
+    const r0 = Math.max(0, Math.floor((rect.y0 - 1) / STRIP_H));
+    const r1 = Math.min(STRIPS - 1, Math.floor((rect.y1 + 1) / STRIP_H));
+    const tiles = new Set<number>();
+    for (let row = r0; row <= r1; row += 1) {
+      for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
+    }
+    this.setOverlayTiles(tiles);
+  }
+
   /** Помечает только плитки, пересечённые контурами изменённых областей. */
   markArea(area: { spans: readonly ContourSpan[] }): void {
     const tiles = new Set<number>();
@@ -305,6 +354,21 @@ export class MapRenderer {
       }
     }
     this.markTiles(tiles);
+  }
+
+  markOverlayArea(area: { spans: readonly ContourSpan[] }): void {
+    const tiles = new Set<number>();
+    for (const span of area.spans) {
+      if (span.y < 0 || span.y >= MAP_HEIGHT || span.end <= span.start) continue;
+      const c0 = Math.max(0, Math.floor((span.start - 1) / TILE_W));
+      const c1 = Math.min(TILE_COLS - 1, Math.floor(span.end / TILE_W));
+      const r0 = Math.max(0, Math.floor((span.y - 1) / STRIP_H));
+      const r1 = Math.min(STRIPS - 1, Math.floor((span.y + 1) / STRIP_H));
+      for (let row = r0; row <= r1; row += 1) {
+        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
+      }
+    }
+    this.setOverlayTiles(tiles);
   }
 
   /** Помечает плитки, пересечённые отдельными точками векторного объекта. */
@@ -323,6 +387,85 @@ export class MapRenderer {
       }
     }
     this.markTiles(tiles);
+  }
+
+  markOverlayPixels(pixels: Iterable<number>): void {
+    const tiles = new Set<number>();
+    for (const pixel of pixels) {
+      if (pixel < 0 || pixel >= MAP_PIXELS) continue;
+      const x = pixel % MAP_WIDTH;
+      const y = Math.floor(pixel / MAP_WIDTH);
+      const c0 = Math.max(0, Math.floor((x - 1) / TILE_W));
+      const c1 = Math.min(TILE_COLS - 1, Math.floor((x + 1) / TILE_W));
+      const r0 = Math.max(0, Math.floor((y - 1) / STRIP_H));
+      const r1 = Math.min(STRIPS - 1, Math.floor((y + 1) / STRIP_H));
+      for (let row = r0; row <= r1; row += 1) {
+        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
+      }
+    }
+    this.setOverlayTiles(tiles);
+  }
+
+  markTerrainPixels(pixels: Iterable<number>): void {
+    const tiles = new Set<number>();
+    for (const pixel of pixels) {
+      if (pixel < 0 || pixel >= MAP_PIXELS) continue;
+      const x = pixel % MAP_WIDTH;
+      const y = Math.floor(pixel / MAP_WIDTH);
+      const c0 = Math.max(0, Math.floor((x - 1) / TILE_W));
+      const c1 = Math.min(TILE_COLS - 1, Math.floor((x + 1) / TILE_W));
+      const r0 = Math.max(0, Math.floor((y - 1) / STRIP_H));
+      const r1 = Math.min(STRIPS - 1, Math.floor((y + 1) / STRIP_H));
+      for (let row = r0; row <= r1; row += 1) {
+        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
+      }
+    }
+    for (const tile of tiles) this.terrainDirtyTiles.add(tile);
+  }
+
+  hasPendingOverlayIn(bounds: Rect): boolean {
+    return this.hasPendingTilesIn(this.overlayDirtyTiles, bounds);
+  }
+
+  hasPendingTerrainIn(bounds: Rect): boolean {
+    return this.hasPendingTilesIn(this.terrainDirtyTiles, bounds);
+  }
+
+  private hasPendingTilesIn(tiles: ReadonlySet<number>, bounds: Rect): boolean {
+    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
+    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
+    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
+    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
+    for (let row = r0; row <= r1; row += 1) {
+      for (let col = c0; col <= c1; col += 1) {
+        if (tiles.has(row * TILE_COLS + col)) return true;
+      }
+    }
+    return false;
+  }
+
+  acknowledgeOverlay(bounds: Rect): void {
+    this.acknowledgeTiles(this.overlayDirtyTiles, bounds);
+  }
+
+  acknowledgeTerrain(bounds: Rect): void {
+    this.acknowledgeTiles(this.terrainDirtyTiles, bounds);
+  }
+
+  private acknowledgeTiles(tiles: Set<number>, bounds: Rect): void {
+    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
+    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
+    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
+    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
+    for (let row = r0; row <= r1; row += 1) {
+      for (let col = c0; col <= c1; col += 1) {
+        tiles.delete(row * TILE_COLS + col);
+      }
+    }
+  }
+
+  private setOverlayTiles(tiles: Set<number>): void {
+    for (const tile of tiles) this.overlayDirtyTiles.add(tile);
   }
 
   private markTiles(tiles: Set<number>): void {

@@ -1,5 +1,5 @@
 import { ContourArea, type ContourLayerName, type ContourSpan } from '@/game/contours';
-import type { VectorPaintInfo } from '@/game/render';
+import { contourLayersForMode, type VectorPaintInfo } from '@/game/render';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
 import type { Game } from '@/game/game';
 
@@ -15,15 +15,21 @@ interface ContourColorGraph {
   neighbors: Map<string, Set<string>>;
 }
 
-interface CachedContourColorGraph {
-  revision: number;
-  graph: ContourColorGraph;
+interface CachedContourMarkup {
+  spans: ContourSpan[];
+  markup: string;
+}
+
+export interface VectorMapSvgPart {
+  key: string;
+  markup: string;
 }
 
 const colorCaches = new Map<string, CachedVectorColor>();
-const markupCaches = new WeakMap<object, Map<string, string>>();
-const colorGraphCaches = new WeakMap<object, Map<string, CachedContourColorGraph>>();
+const colorGraphCaches = new WeakMap<object, Map<string, ContourColorGraph>>();
 const seaDepthMarkupCaches = new WeakMap<object, Map<string, string>>();
+const contourMarkupCaches = new WeakMap<object, Map<string, CachedContourMarkup>>();
+const nomadPathCaches = new WeakMap<object, Map<number, string>>();
 
 function rgb(color: string): RGB {
   return [
@@ -117,23 +123,6 @@ export function contourPath(area: ContourArea): string {
   return commands.join('');
 }
 
-function visibleLayers(game: Game, mode: ReturnType<Game['getSnapshot']>['mapMode']): ContourLayerName[] {
-  const layers: ContourLayerName[] = ['land'];
-  if (mode === 'political' || mode === 'cities' || mode === 'origins') {
-    layers.push('owner', 'humidity', 'temperature', 'drainage');
-  }
-  if (mode === 'cities') layers.push('cityIdAt');
-  if (mode === 'biomes') layers.push('humidity', 'temperature', 'drainage');
-  if (mode === 'cultures') layers.push('owner', 'culture');
-  if (mode === 'religions') layers.push('owner', 'religion');
-  if (mode === 'humidity') layers.push('humidity');
-  if (mode === 'temperature') layers.push('temperature');
-  if (mode === 'drainage') layers.push('drainage');
-  if (mode === 'density') layers.push('density');
-  if (mode === 'origins') layers.push('humanOrigins', 'cityIdAt');
-  return [...new Set(layers)];
-}
-
 function spansForRow(
   game: Game,
   layers: readonly ContourLayerName[],
@@ -168,14 +157,16 @@ function spansForRow(
 
 function contourColorGraph(game: Game): ContourColorGraph {
   const mode = game.getSnapshot().mapMode;
-  const revision = game.world.contours.revision;
   let cache = colorGraphCaches.get(game.world);
   if (!cache) {
     cache = new Map();
     colorGraphCaches.set(game.world, cache);
   }
   const saved = cache.get(mode);
-  if (saved?.revision === revision) return saved.graph;
+  // Полный граф нужен только для начального назначения цветов. Границы существующих
+  // контуров не меняют их цвет и не должны запускать повторный обход всей карты.
+  if (saved) return saved;
+  const layers = contourLayersForMode(mode);
 
   const graph: ContourColorGraph = {
     paints: new Map(),
@@ -190,7 +181,6 @@ function contourColorGraph(game: Game): ContourColorGraph {
     graph.neighbors.set(first, firstNeighbors);
     graph.neighbors.set(second, secondNeighbors);
   };
-  const layers = visibleLayers(game, mode);
   let previous: { start: number; end: number; key: string }[] = [];
   for (let y = 0; y < MAP_HEIGHT; y += 1) {
     const current = spansForRow(game, layers, y, 0, MAP_WIDTH).map((span) => {
@@ -214,9 +204,70 @@ function contourColorGraph(game: Game): ContourColorGraph {
     }
     previous = current;
   }
-  cache.clear();
-  cache.set(mode, { revision, graph });
+  cache.set(mode, graph);
   return graph;
+}
+
+function contourAreaForPaintKey(game: Game, key: string): ContourArea | null {
+  const bounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
+  const countryMatch = /^country:(\d+)$/.exec(key);
+  if (countryMatch) {
+    const countryTag = Number(countryMatch[1]) + 1;
+    return game.world.contours.layer('owner').select(
+      (value) => value === countryTag, bounds, `new-paint:${key}`,
+    );
+  }
+  const cultureMatch = /^culture:(\d+)$/.exec(key);
+  const religionMatch = /^religion:(\d+)$/.exec(key);
+  if (!cultureMatch && !religionMatch) return null;
+  const layer = cultureMatch ? 'culture' : 'religion';
+  const entityId = Number((cultureMatch ?? religionMatch)![1]);
+  const owned = game.world.contours.layer('owner').select(
+    (value) => value > 0, bounds, 'new-paint:occupied',
+  );
+  const matching = game.world.contours.layer(layer).select(
+    (value) => value === entityId, bounds, `new-paint:${key}`,
+  );
+  return matching.intersect(owned);
+}
+
+function neighborColorsForNewPaint(
+  game: Game,
+  key: string,
+  cache: CachedVectorColor,
+): string[] {
+  const area = contourAreaForPaintKey(game, key);
+  if (!area) return [...cache.colors.values()];
+  const mode = game.getSnapshot().mapMode;
+  const layers = contourLayersForMode(mode);
+  const neighborKeys = new Set<string>();
+  const neighborPaints = new Map<string, VectorPaintInfo>();
+  const addPixel = (pixel: number) => {
+    if (pixel < 0 || pixel >= MAP_WIDTH * MAP_HEIGHT) return;
+    const neighbor = game.renderer.vectorPaintAt(pixel);
+    if (neighbor.key !== key) {
+      neighborKeys.add(neighbor.key);
+      neighborPaints.set(neighbor.key, neighbor);
+    }
+  };
+  for (const span of area.spans) {
+    if (span.start > 0) addPixel(span.y * MAP_WIDTH + span.start - 1);
+    if (span.end < MAP_WIDTH) addPixel(span.y * MAP_WIDTH + span.end);
+    for (const row of [span.y - 1, span.y + 1]) {
+      if (row < 0 || row >= MAP_HEIGHT) continue;
+      for (const neighborSpan of spansForRow(game, layers, row, span.start, span.end)) {
+        addPixel(row * MAP_WIDTH + neighborSpan.start);
+      }
+    }
+  }
+  return [...neighborKeys]
+    .map((neighborKey) => {
+      const assigned = cache.colors.get(neighborKey);
+      if (assigned) return assigned;
+      const paint = neighborPaints.get(neighborKey);
+      return paint && !paint.randomized ? paint.color : undefined;
+    })
+    .filter((color): color is string => color !== undefined);
 }
 
 function assignVisibleContourColors(game: Game, cache: CachedVectorColor): void {
@@ -244,7 +295,7 @@ export function vectorColorFor(game: Game, paint: VectorPaintInfo): string {
   assignVisibleContourColors(game, cache);
   const assigned = cache.colors.get(paint.key);
   if (assigned) return assigned;
-  const color = chooseSeparatedColor([...cache.colors.values()], cache.fixed);
+  const color = chooseSeparatedColor(neighborColorsForNewPaint(game, paint.key, cache), cache.fixed);
   cache.colors.set(paint.key, color);
   persistVectorColors(game, cache);
   return color;
@@ -255,7 +306,7 @@ function fillPaths(
   layers: readonly ContourLayerName[],
   bounds: VectorMapViewport,
   accepts: (pixel: number) => boolean,
-): string[] {
+): VectorMapSvgPart[] {
   const areas = new Map<string, { color: string; spans: ContourSpan[] }>();
   for (let y = bounds.y0; y <= bounds.y1; y += 1) {
     for (const span of spansForRow(game, layers, y, bounds.x0, bounds.x1)) {
@@ -273,12 +324,61 @@ function fillPaths(
       areas.set(key, area);
     }
   }
-  const paths: string[] = [];
+  const paths: VectorMapSvgPart[] = [];
   for (const [key, area] of areas) {
-    const path = contourPath(new ContourArea(area.spans, true));
-    if (path) paths.push(`<path data-contour="${key}" d="${path}" fill="${area.color}" fill-rule="evenodd"/>`);
+    const cacheKey = `fill:${game.getSnapshot().mapMode}:${bounds.x0}:${bounds.y0}:${bounds.x1}:${bounds.y1}:${key}:${area.color}`;
+    const markup = cachedContourMarkup(game, cacheKey, area.spans, (path) =>
+      `<path data-contour="${key}" d="${path}" fill="${area.color}" fill-rule="evenodd"/>`);
+    if (markup) paths.push({ key: `fill:${key}`, markup });
   }
   return paths;
+}
+
+function cachedContourMarkup(
+  game: Game,
+  key: string,
+  spans: readonly ContourSpan[],
+  build: (path: string) => string,
+): string {
+  let cache = contourMarkupCaches.get(game.world);
+  if (!cache) {
+    cache = new Map();
+    contourMarkupCaches.set(game.world, cache);
+  }
+  const saved = cache.get(key);
+  if (saved && saved.spans.length === spans.length &&
+      saved.spans.every((span, index) => {
+        const current = spans[index];
+        return span.y === current.y && span.start === current.start && span.end === current.end;
+      })) {
+    cache.delete(key);
+    cache.set(key, saved);
+    return saved.markup;
+  }
+
+  const path = contourPath(new ContourArea(spans, true));
+  const markup = path ? build(path) : '';
+  if (cache.size >= 32) cache.delete(cache.keys().next().value!);
+  cache.set(key, {
+    spans: spans.map((span) => ({ y: span.y, start: span.start, end: span.end })),
+    markup,
+  });
+  return markup;
+}
+
+function cachedNomadPath(country: { id: number; range?: number[] }): string {
+  const range = country.range ?? [];
+  let cache = nomadPathCaches.get(range);
+  if (!cache) {
+    cache = new Map();
+    nomadPathCaches.set(range, cache);
+  }
+  const saved = cache.get(range.length);
+  if (saved !== undefined) return saved;
+  const path = contourPath(ContourArea.pixels(range));
+  if (cache.size >= 8) cache.delete(cache.keys().next().value!);
+  cache.set(range.length, path);
+  return path;
 }
 
 export interface VectorMapViewport {
@@ -302,33 +402,27 @@ function staticSeaDepthMarkup(game: Game, bounds: VectorMapViewport): string {
     ['land', 'elevation'],
     bounds,
     (pixel) => !game.world.land[pixel],
-  ).join('');
+  ).map((part) => part.markup).join('');
   if (cache.size >= 32) cache.delete(cache.keys().next().value!);
   cache.set(key, markup);
   return markup;
 }
 
-/** Создаёт SVG-заливки из пересечений контурных строк только в видимой области. */
-export function buildVectorMapSvg(game: Game, bounds: VectorMapViewport): string {
+/** Создаёт отдельные SVG-слои, чтобы менять только изменившиеся контуры. */
+export function buildVectorMapSvgParts(game: Game, bounds: VectorMapViewport): VectorMapSvgPart[] {
   const snapshot = game.getSnapshot();
   const mode = snapshot.mapMode;
   const x0 = Math.max(0, Math.min(MAP_WIDTH, Math.floor(bounds.x0)));
   const y0 = Math.max(0, Math.min(MAP_HEIGHT - 1, Math.floor(bounds.y0)));
   const x1 = Math.max(x0, Math.min(MAP_WIDTH, Math.ceil(bounds.x1)));
   const y1 = Math.max(y0, Math.min(MAP_HEIGHT - 1, Math.ceil(bounds.y1)));
-  const layerKey = game.renderer.layer ? `${game.renderer.layer.kind}:${game.renderer.layer.id}` : '';
-  const cacheKey = `${game.renderer.visualRevision}:${mode}:${layerKey}:${x0}:${y0}:${x1}:${y1}`;
-  let cache = markupCaches.get(game.world);
-  if (!cache) {
-    cache = new Map();
-    markupCaches.set(game.world, cache);
-  }
-  const cachedMarkup = cache.get(cacheKey);
-  if (cachedMarkup) return cachedMarkup;
   const visibleBounds = { x0, y0, x1, y1 };
-  const paths = [staticSeaDepthMarkup(game, visibleBounds)];
+  const paths: VectorMapSvgPart[] = [{
+    key: 'sea-depth',
+    markup: staticSeaDepthMarkup(game, visibleBounds),
+  }];
   if (mode !== 'elevation') {
-    paths.push(...fillPaths(game, visibleLayers(game, mode), visibleBounds, (pixel) => !!game.world.land[pixel]));
+    paths.push(...fillPaths(game, contourLayersForMode(mode), visibleBounds, (pixel) => !!game.world.land[pixel]));
   }
 
   if (mode !== 'elevation') {
@@ -349,23 +443,24 @@ export function buildVectorMapSvg(game: Game, bounds: VectorMapViewport): string
       }
     }
     for (const [ownerValue, spans] of ownerAreas) {
-      const path = contourPath(new ContourArea(spans));
       const selected = snapshot.selectedCountryId === ownerValue - 1;
-      if (path) {
-        const stroke = selected ? '#f0d28a' : '#654e3a';
-        const width = selected ? 2.2 : 0.7;
-        paths.push(`<path d="${path}" fill="none" stroke="${stroke}" stroke-opacity="${selected ? 1 : 0.7}" stroke-width="${width}"/>`);
-      }
+      const stroke = selected ? '#f0d28a' : '#654e3a';
+      const width = selected ? 2.2 : 0.7;
+      const key = `owner-boundary:${ownerValue}:${selected ? 'selected' : 'normal'}:${x0}:${y0}:${x1}:${y1}`;
+      const markup = cachedContourMarkup(game, key, spans, (path) =>
+        `<path d="${path}" fill="none" stroke="${stroke}" stroke-opacity="${selected ? 1 : 0.7}" stroke-width="${width}"/>`);
+      if (markup) paths.push({ key: `owner-boundary:${ownerValue - 1}`, markup });
     }
-    const coast = contourPath(new ContourArea(landSpans));
-    if (coast) paths.push(`<path d="${coast}" fill="none" stroke="#654e3a" stroke-opacity=".65" stroke-width="1"/>`);
+    const coastKey = `coast:${x0}:${y0}:${x1}:${y1}`;
+    const coastMarkup = cachedContourMarkup(game, coastKey, landSpans, (path) =>
+      `<path d="${path}" fill="none" stroke="#654e3a" stroke-opacity=".65" stroke-width="1"/>`);
+    if (coastMarkup) paths.push({ key: 'coast', markup: coastMarkup });
   }
 
   if (mode === 'political' || mode === 'cities') {
     for (const country of game.world.countries) {
       if (country.type !== 'nomadic' || !country.range?.length) continue;
-      const area = ContourArea.pixels(country.range);
-      const path = contourPath(area);
+      const path = cachedNomadPath(country);
       if (!path) continue;
       const color = vectorColorFor(game, {
         key: `country:${country.id}`,
@@ -376,14 +471,18 @@ export function buildVectorMapSvg(game: Game, bounds: VectorMapViewport): string
       const outline = selected
         ? ` stroke="#f0d28a" stroke-width="2.2"`
         : '';
-      paths.push(`<path data-nomad="${country.id}" d="${path}" fill="${color}" fill-opacity=".48" fill-rule="evenodd"${outline}/>`);
+      paths.push({
+        key: `nomad:${country.id}`,
+        markup: `<path data-nomad="${country.id}" d="${path}" fill="${color}" fill-opacity=".48" fill-rule="evenodd"${outline}/>`,
+      });
     }
   }
 
-  const markup = paths.join('');
-  if (cache.size >= 12) cache.delete(cache.keys().next().value!);
-  cache.set(cacheKey, markup);
-  return markup;
+  return paths;
+}
+
+export function buildVectorMapSvg(game: Game, bounds: VectorMapViewport): string {
+  return buildVectorMapSvgParts(game, bounds).map((part) => part.markup).join('');
 }
 
 export const VECTOR_MAP_HEIGHT = MAP_HEIGHT;

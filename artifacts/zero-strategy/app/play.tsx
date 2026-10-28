@@ -304,7 +304,9 @@ function GameScreen({ game }: { game: Game }) {
     const previousPause = Game.pause;
     const previousFastMode = Game.notificationE2eFastMode;
     Game.persist = false;
-    Game.pause = async () => {};
+    if (process.env.EXPO_PUBLIC_PERF_BENCHMARK !== 'true') {
+      Game.pause = async () => {};
+    }
     Game.notificationE2eFastMode = true;
     game.stop();
     const bridge = {

@@ -111,11 +111,15 @@ assert.equal(map.climateRegions(), regions, 'Климатические конт
 const depthRow = map.layer('elevation').row(20);
 const ownerRow = map.layer('owner').row(20);
 const unrelatedRow = map.layer('humidity').row(30);
+const ownerRevision = map.revisionFor(['owner']);
+const elevationRevision = map.revisionFor(['elevation']);
 layers.temperature[20 * MAP_WIDTH + 20] = 70;
 layers.owner[20 * MAP_WIDTH + 20] = 1;
 const revision = map.revision;
 map.changed({ x0: 20, y0: 20, x1: 20, y1: 20 }, ['temperature', 'owner']);
 assert.equal(map.revision, revision + 1, 'Изменение игрового контура получает собственную ревизию');
+assert.notEqual(map.revisionFor(['owner']), ownerRevision, 'Ревизия владельца меняется вместе с его контуром');
+assert.equal(map.revisionFor(['elevation']), elevationRevision, 'Изменение владельца не меняет ревизию глубин');
 assert.equal(map.layer('elevation').row(20), depthRow, 'Игровое изменение не инвалидирует статическую глубину моря');
 assert.notEqual(map.layer('owner').row(20), ownerRow, 'Изменение владельца перестраивает только затронутую строку');
 assert.equal(map.layer('humidity').row(30), unrelatedRow, 'Незатронутые строки остаются в кэше');

@@ -8,8 +8,10 @@ import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
 import { cityLabelFontSize } from '@/game/cityVisibility';
 import { Terrain3DRenderer } from './Terrain3DRenderer';
 import {
+  type CountryMapLabel,
   countryLabelViewportLayout,
   countryMapLabels,
+  cityHasPort,
   entityMapLabels,
   geographicVisibilityScale,
   labelVisibilityThreshold,
@@ -30,7 +32,7 @@ import { type MapViewHandle, type MapViewProps, type ViewTransform } from './typ
 import { centerOnMapPoint, clampView, initialView, minScale, toMap, zoomAround } from './viewMath';
 
 import { renderFlagSpec } from '@/game/flagRenderer';
-import { buildVectorMapSvg, vectorColorFor, type VectorMapViewport } from './vectorMap';
+import { buildVectorMapSvgParts, vectorColorFor, type VectorMapSvgPart, type VectorMapViewport } from './vectorMap';
 
 const crownGlyph = String.fromCodePoint(Number(MaterialCommunityIcons.getRawGlyphMap().crown));
 const crownFontFamily = MaterialCommunityIcons.getFontFamily();
@@ -38,6 +40,38 @@ const crownFontFamily = MaterialCommunityIcons.getFontFamily();
 function xmlEscape(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;').replaceAll("'", '&apos;');
+}
+
+type VectorMapPartNode = { node: SVGGElement; markup: string };
+
+function updateVectorMapSvgParts(
+  svg: SVGSVGElement,
+  parts: readonly VectorMapSvgPart[],
+  cache: Map<string, VectorMapPartNode>,
+): void {
+  const wanted = new Set(parts.map((part) => part.key));
+  for (const [key, entry] of cache) {
+    if (wanted.has(key)) continue;
+    entry.node.remove();
+    cache.delete(key);
+  }
+
+  for (const [index, part] of parts.entries()) {
+    let entry = cache.get(part.key);
+    if (!entry || entry.node.parentNode !== svg) {
+      const node = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      node.setAttribute('data-map-part', part.key);
+      node.setAttribute('pointer-events', 'none');
+      entry = { node, markup: '' };
+      cache.set(part.key, entry);
+    }
+    if (entry.markup !== part.markup) {
+      entry.node.innerHTML = part.markup;
+      entry.markup = part.markup;
+    }
+    const current = svg.children[index] ?? null;
+    if (current !== entry.node) svg.insertBefore(entry.node, current);
+  }
 }
 
 function svgText(
@@ -306,6 +340,26 @@ type LabelScreenBounds = { left: number; top: number; right: number; bottom: num
 
 type MapLabelLayout = { occupied: LabelScreenBounds[]; svg: string };
 const mapLabelLayoutCaches = new WeakMap<object, Map<string, MapLabelLayout>>();
+type MapPerformanceTiming = {
+  stage: string;
+  mode: string;
+  durationMs: number;
+  count?: number;
+  busy?: boolean;
+  worldVersion?: number;
+  countryCount?: number;
+  entityCount?: number;
+};
+
+function recordMapPerformanceTiming(timing: MapPerformanceTiming): void {
+  if (process.env.EXPO_PUBLIC_PERF_BENCHMARK !== 'true' || typeof window === 'undefined') return;
+  const diagnosticWindow = window as Window & {
+    __ZERO_STRATEGY_MAP_LABEL_TIMINGS__?: MapPerformanceTiming[];
+  };
+  const timings = diagnosticWindow.__ZERO_STRATEGY_MAP_LABEL_TIMINGS__ ??= [];
+  timings.push(timing);
+  if (timings.length > 100) timings.shift();
+}
 
 function labelBoundsOverlap(a: LabelScreenBounds, b: LabelScreenBounds): boolean {
   return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
@@ -461,21 +515,18 @@ function drawMapLabels(
   baseScale: number,
   width: number,
   height: number,
+  labels: readonly CountryMapLabel[],
+  labelsRevision: number,
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
   avoidToolOverlay = false,
 ): MapLabelLayout {
   const snapshot = game.getSnapshot();
-  const labels = [
-    ...countryMapLabels(game.world, null, snapshot.mapMode, snapshot.selectedCountryId, false),
-    ...entityMapLabels(game.world, snapshot.mapMode, snapshot.layer, undefined, false),
-  ];
   const cacheKey = [
     snapshot.mapMode,
     snapshot.layer?.kind ?? '',
     snapshot.layer?.id ?? '',
     snapshot.selectedCountryId ?? '',
-    game.renderer.visualRevision,
-    game.world.territoryVersion,
+    labelsRevision,
     game.world.geographyRevision,
     view.scale.toPrecision(9),
     view.ox.toPrecision(9),
@@ -761,12 +812,19 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const [iconFontsLoaded] = useFonts(MaterialCommunityIcons.font);
   const wrapRef = useRef<HTMLDivElement>(null);
   const vectorSvgRef = useRef<SVGSVGElement>(null);
+  const vectorPartNodesRef = useRef(new Map<string, VectorMapPartNode>());
   const overlaySvgRef = useRef<SVGSVGElement>(null);
   const interactionRef = useRef<HTMLDivElement>(null);
   const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
   const terrainRendererRef = useRef<Terrain3DRenderer | null>(null);
   const terrainErrorRef = useRef<string | null>(null);
   const vectorCoverageRef = useRef<{ sceneKey: string; bounds: VectorMapViewport } | null>(null);
+  const mapLabelDataRef = useRef<{
+    scope: string;
+    worldVersion: number;
+    revision: number;
+    labels: CountryMapLabel[];
+  } | null>(null);
   const cityImagesRef = useRef<(HTMLImageElement | null)[]>([]);
   const redrawRef = useRef<() => void>(() => {});
   const viewRef = useRef<ViewTransform>({ scale: 1, ox: 0, oy: 0 });
@@ -805,7 +863,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (!vectorSvg || !overlaySvg) return;
     const { width, height, dpr } = sizeRef.current;
     const view = viewRef.current;
-    const mapMode = game.getSnapshot().mapMode;
+    const snapshot = game.getSnapshot();
+    const mapMode = snapshot.mapMode;
     const isElevation = mapMode === 'elevation';
     const visibleBounds = {
       x0: Math.max(0, Math.floor(-view.ox / view.scale) - 1),
@@ -828,7 +887,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       && cachedCoverage.bounds.y0 <= visibleBounds.y0
       && cachedCoverage.bounds.x1 >= visibleBounds.x1
       && cachedCoverage.bounds.y1 >= visibleBounds.y1;
-    const mapDirty = game.renderer.hasPendingIn(renderBounds);
+    const mapDirty = game.renderer.hasPendingIn(visibleBounds);
     const needsVectorUpdate = !covered || mapDirty;
     const previousDraw = lastDrawStateRef.current;
     const viewChanged = !previousDraw
@@ -837,20 +896,36 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       || previousDraw.view.oy !== view.oy;
     const sizeChanged = !previousDraw || previousDraw.width !== width || previousDraw.height !== height;
     const overlayChanged = !previousDraw || previousDraw.overlayRevision !== overlayRevisionRef.current;
-    const drawOverlay = !cameraGestureActiveRef.current;
-    if (!needsVectorUpdate && !viewChanged && !sizeChanged && !overlayChanged) {
+    const overlayDirty = game.renderer.hasPendingOverlayIn(visibleBounds);
+    const terrainDirty = isElevation && game.renderer.hasPendingTerrainIn(visibleBounds);
+    const drawOverlay = !cameraGestureActiveRef.current &&
+      (needsVectorUpdate || viewChanged || sizeChanged || overlayChanged || overlayDirty || terrainDirty);
+    if (!needsVectorUpdate && !viewChanged && !sizeChanged && !overlayChanged && !overlayDirty && !terrainDirty) {
       game.mapDrawn();
       return;
     }
     if (needsVectorUpdate && visibleBounds.x1 >= visibleBounds.x0 && visibleBounds.y1 >= visibleBounds.y0) {
-      vectorSvg.innerHTML = buildVectorMapSvg(game, renderBounds);
+      const vectorBuildStarted = performance.now();
+      const vectorParts = buildVectorMapSvgParts(game, renderBounds);
+      updateVectorMapSvgParts(vectorSvg, vectorParts, vectorPartNodesRef.current);
+      recordMapPerformanceTiming({
+        stage: 'vector-map-build',
+        mode: mapMode,
+        count: vectorParts.length,
+        durationMs: performance.now() - vectorBuildStarted,
+        busy: snapshot.busy,
+        worldVersion: game.world.version,
+        countryCount: game.world.countries.length,
+      });
       vectorCoverageRef.current = { sceneKey, bounds: renderBounds };
       game.renderer.acknowledge(renderBounds);
     }
-    vectorSvg.setAttribute(
-      'viewBox',
-      `${-view.ox / view.scale} ${-view.oy / view.scale} ${width / view.scale} ${height / view.scale}`,
-    );
+    if (!cameraGestureActiveRef.current) {
+      vectorSvg.setAttribute(
+        'viewBox',
+        `${-view.ox / view.scale} ${-view.oy / view.scale} ${width / view.scale} ${height / view.scale}`,
+      );
+    }
     overlaySvg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     const overlayElements: string[] = [];
     if (isElevation) {
@@ -864,8 +939,10 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
             console.error('Не удалось создать 3D-рельеф:', error);
           }
         }
-        if (terrainRendererRef.current) {
+        if (terrainRendererRef.current && !cameraGestureActiveRef.current &&
+          (needsVectorUpdate || viewChanged || sizeChanged || overlayChanged || overlayDirty || terrainDirty)) {
           terrainRendererRef.current.render(game.world, view, { width, height, dpr }, baseScaleRef.current);
+          game.renderer.acknowledgeTerrain(visibleBounds);
         }
       }
       if (terrainErrorRef.current) {
@@ -873,7 +950,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       }
     } else {
       if (terrainCanvas) terrainCanvas.style.display = 'none';
-      overlayElements.push(drawRiversSvg(game, view, width, height, baseScaleRef.current));
+      if (drawOverlay) overlayElements.push(drawRiversSvg(game, view, width, height, baseScaleRef.current));
     }
     if (drawOverlay) {
       overlayElements.push(drawCityInfluenceSvg(game, view, width, height, baseScaleRef.current));
@@ -886,19 +963,56 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           game.world,
         ) ?? null
         : undefined;
-      const labelResult = measureContext
-        ? drawMapLabels(
+      let labelResult: MapLabelLayout = { occupied: [], svg: '' };
+      if (measureContext) {
+        const scope = `${mapMode}:${snapshot.layer?.kind ?? ''}:${snapshot.layer?.id ?? ''}:${snapshot.selectedCountryId ?? ''}`;
+        const cachedLabels = mapLabelDataRef.current;
+        const labelsMayBeStale = snapshot.busy || snapshot.drawing;
+        const refreshLabels = !cachedLabels ||
+          cachedLabels.scope !== scope ||
+          (!labelsMayBeStale && cachedLabels.worldVersion !== game.world.version);
+        if (refreshLabels) {
+          const labelStartedAt = performance.now();
+          const countryLabels = countryMapLabels(game.world, null, mapMode, snapshot.selectedCountryId, false);
+          const entityLabels = entityMapLabels(game.world, mapMode, snapshot.layer, undefined, false);
+          mapLabelDataRef.current = {
+            scope,
+            worldVersion: game.world.version,
+            revision: (cachedLabels?.revision ?? 0) + 1,
+            labels: [...countryLabels, ...entityLabels],
+          };
+          recordMapPerformanceTiming({
+            stage: 'label-data',
+            mode: mapMode,
+            busy: snapshot.busy,
+            worldVersion: game.world.version,
+            countryCount: countryLabels.length,
+            entityCount: entityLabels.length,
+            durationMs: performance.now() - labelStartedAt,
+          });
+        }
+        const labelLayoutStartedAt = performance.now();
+        labelResult = drawMapLabels(
           measureContext,
           game,
           view,
           baseScaleRef.current,
           width,
           height,
+          mapLabelDataRef.current?.labels ?? [],
+          mapLabelDataRef.current?.revision ?? 0,
           projectMapPoint,
           avoidToolOverlay,
-        )
-        : { occupied: [], svg: '' };
+        );
+        recordMapPerformanceTiming({
+          stage: 'label-layout',
+          mode: mapMode,
+          count: mapLabelDataRef.current?.labels.length ?? 0,
+          durationMs: performance.now() - labelLayoutStartedAt,
+        });
+      }
       overlayElements.push(labelResult.svg);
+      const cityLabelStartedAt = performance.now();
       const cityLabelIds = visibleCityLabelIds(
         game.world,
         mapMode,
@@ -910,17 +1024,27 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         height,
         labelResult.occupied,
       );
+      recordMapPerformanceTiming({
+        stage: 'city-label-selection',
+        mode: mapMode,
+        count: cityLabelIds.size,
+        durationMs: performance.now() - cityLabelStartedAt,
+      });
+      const cityMarksStartedAt = performance.now();
+      let renderedCityMarks = 0;
       if (shouldShowCityMarks(mapMode)) for (const city of game.world.cities) {
-        const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
+        const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
+        const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
+        if (x + 20 < 0 || y + 20 < 0 || x - 20 > width || y - 20 > height) continue;
+        const hasPort = cityHasPort(game.world, city);
         const zoomRank = cityVisibilityRank(city, hasPort);
         if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
         const icon = cityImagesRef.current[cityIconIndex(city, hasPort)];
         if (!icon?.complete || icon.naturalWidth === 0) continue;
         const size = hasPort ? 30 + city.rank : 24 + city.rank;
-        const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
-        const y = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
         if (x + size < 0 || y + size < 0 || x - size > width || y - size > height) continue;
         overlayElements.push(`<image href="${xmlEscape(icon.src)}" x="${x - size / 2}" y="${y - size / 2}" width="${size}" height="${size}" preserveAspectRatio="xMidYMid meet"/>`);
+        renderedCityMarks += 1;
         if (city.name && cityLabelIds.has(city.id) && measureContext) {
           const labelFontSize = cityLabelFontSize(view.scale, baseScaleRef.current);
           measureContext.font = `600 ${labelFontSize}px "IBM Plex Sans", sans-serif`;
@@ -963,6 +1087,12 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           ));
         }
       }
+      recordMapPerformanceTiming({
+        stage: 'city-mark-render',
+        mode: mapMode,
+        count: renderedCityMarks,
+        durationMs: performance.now() - cityMarksStartedAt,
+      });
       const cursor = cursorRef.current;
       if (cursor) {
         const radius = game.brushRadius * view.scale;
@@ -972,6 +1102,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         overlayElements.push(svgText(`3D-рельеф недоступен: ${terrainErrorRef.current}`, width / 2, height / 2, 15, '#f0e7d2', '#241e18', 2));
       }
       overlaySvg.innerHTML = overlayElements.join('');
+      game.renderer.acknowledgeOverlay(visibleBounds);
     }
     game.mapDrawn();
     lastDrawStateRef.current = {
@@ -1002,7 +1133,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         window.clearTimeout(wheelEndTimerRef.current);
         wheelEndTimerRef.current = null;
       }
+      if (vectorSvgRef.current) vectorSvgRef.current.style.transform = 'none';
       if (overlaySvgRef.current) overlaySvgRef.current.style.transform = 'none';
+      if (terrainCanvasRef.current) terrainCanvasRef.current.style.transform = 'none';
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
       frameRef.current = 0;
     };
@@ -1059,10 +1192,12 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       if (cameraGestureActiveRef.current) {
         const base = cameraGestureBaseRef.current ?? view;
         const ratio = view.scale / base.scale;
-        const overlay = overlaySvgRef.current;
-        if (overlay) {
-          overlay.style.transformOrigin = '0 0';
-          overlay.style.transform = `translate3d(${view.ox - ratio * base.ox}px, ${view.oy - ratio * base.oy}px, 0) scale(${ratio})`;
+        const transform = `translate3d(${view.ox - ratio * base.ox}px, ${view.oy - ratio * base.oy}px, 0) scale(${ratio})`;
+        for (const element of [vectorSvgRef.current, overlaySvgRef.current, terrainCanvasRef.current]) {
+          if (element) {
+            element.style.transformOrigin = '0 0';
+            element.style.transform = transform;
+          }
         }
         requestDraw(false);
       } else requestDraw();
@@ -1074,8 +1209,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (cameraGestureActiveRef.current) return;
     cameraGestureActiveRef.current = true;
     cameraGestureBaseRef.current = { ...viewRef.current };
-    const overlay = overlaySvgRef.current;
-    if (overlay) overlay.style.transform = 'none';
+    for (const element of [vectorSvgRef.current, overlaySvgRef.current, terrainCanvasRef.current]) {
+      if (element) element.style.transform = 'none';
+    }
   }, []);
 
   const finishCameraGesture = useCallback(() => {
@@ -1086,8 +1222,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       window.clearTimeout(wheelEndTimerRef.current);
       wheelEndTimerRef.current = null;
     }
-    const overlay = overlaySvgRef.current;
-    if (overlay) overlay.style.transform = 'none';
+    for (const element of [vectorSvgRef.current, overlaySvgRef.current, terrainCanvasRef.current]) {
+      if (element) element.style.transform = 'none';
+    }
     requestDraw();
   }, [requestDraw]);
 
