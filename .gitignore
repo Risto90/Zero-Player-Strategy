@@ -1,6 +1,6 @@
-# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+# Правила исключения файлов: https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
 
-# compiled output
+# Результаты сборки
 dist
 tmp
 out-tsc
@@ -14,10 +14,10 @@ out-tsc
 .output
 .vercel
 
-# dependencies
+# Зависимости
 node_modules
 
-# IDEs and editors
+# Среды разработки и редакторы
 /.idea
 .project
 .classpath
@@ -33,7 +33,7 @@ node_modules
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# misc
+# Прочие временные файлы
 /.sass-cache
 /connect.lock
 /coverage
@@ -43,15 +43,34 @@ yarn-error.log
 testem.log
 /typings
 
-# System Files
+# Системные файлы
 .DS_Store
 Thumbs.db
 
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
 
-# Replit
+# Локальные файлы Replit
 .cache/
 .local/
 artifacts/zero-strategy/static-build/
 /artifacts/zero-strategy/generated-artifacts/
+
+# Локальные инструкции и память агентов не публикуются в GitHub.
+/.agents/
+/.claude/
+/.cursor/
+**/AGENTS.md
+**/CLAUDE.md
+**/GEMINI.md
+**/MEMORY.md
+**/SKILL.md
+**/profile.md
+**/replit.md
+
+# Задачи существуют только как GitHub Issues, а не как файлы репозитория.
+/.github/replit-tasks/
+/.github/task-export/
+/.github/workflows/publish-task.yml
+/scripts/github-tasks/
+/docs/github-tasks.md
