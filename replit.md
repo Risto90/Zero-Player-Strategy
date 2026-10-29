@@ -1,48 +1,61 @@
 # Zero Strategy
 
-Offline zero-player grand-strategy sandbox: each year event cards are played by painting with a brush on a pixel world map; the rest of the world is painted by the AI.
+Офлайн-стратегия с режимом наблюдателя: каждый год разыгрываются карты событий,
+действия выполняются общей кистью на карте мира. ИИ выбирает действия, но
+исполняет их через те же игровые механизмы, что и человек.
 
-## Run & Operate
+## Запуск и проверки
 
-- `pnpm --filter @workspace/zero-strategy run dev` — Expo app (SDK 58), opened in Expo Go on the phone; web preview at `/`
-- `pnpm --filter @workspace/zero-strategy run typecheck`
-- `pnpm --filter @workspace/zero-strategy test` — engine regressions, including player/AI action parity and the shared-action architecture guard
-- `pnpm --filter @workspace/zero-strategy run test:published-launch` — separate check of the checked-in Expo launch bundle
-- `node artifacts/zero-strategy/scripts/build-earth.mjs` — regenerate the real-Earth land mask (`game/data/earthLand.ts`) from Natural Earth 1:50m (`world-atlas`)
+- `pnpm --filter @workspace/zero-strategy run dev` — браузерное приложение на Expo; предпросмотр `/`.
+- `pnpm --filter @workspace/zero-strategy run typecheck` — проверка типов.
+- `pnpm --filter @workspace/zero-strategy test` — регрессионные проверки движка, включая одинаковое исполнение действий игрока и ИИ.
+- `pnpm --filter @workspace/zero-strategy run test:published-launch` — отдельная проверка сохранённой сборки запуска.
+- `node artifacts/zero-strategy/scripts/build-earth.mjs` — пересоздание маски суши Земли из Natural Earth 1:50m (`world-atlas`).
+- `node --test scripts/github-tasks/*.test.mjs` — проверки синхронизации задач с GitHub.
 
-## Where things live
+## Структура
 
-- `artifacts/zero-strategy/game/` — engine: geography and climate, zones (closed curves), composition tables, cards, brush, AI painter, renderer, persistence, binary save file, storage, game controller
-- `artifacts/zero-strategy/components/map/` — map view: `MapView.tsx` (Skia, phone) and `MapView.web.tsx` (2D canvas, web preview), shared gestures and view math
-- `artifacts/zero-strategy/app/` (`index.tsx` start screen, `play.tsx` game screen) and `components/game/` — UI
+- `artifacts/zero-strategy/game/` — география, климат, контуры, население, карты, кисть, ИИ, отображение, сохранения и управление игрой.
+- `artifacts/zero-strategy/components/map/` — отображение карты, жесты и преобразования координат.
+- `artifacts/zero-strategy/app/` — страницы, включая стартовый экран `index.tsx` и игру `play.tsx`.
+- `artifacts/zero-strategy/components/game/` — элементы игрового интерфейса.
 
-## Architecture decisions
+## Обязательные архитектурные правила
 
-- Player input and AI strategy may choose different options or paint locations, but every mechanical action must use the same `Game.dispatchAction` command boundary, shared validation, `CardPainter`, and card-completion path. Never add or change a game mechanic for only the player or only the AI; connect it to the shared executor and add parity coverage before merging.
-- Delivered as an Expo app for stock Expo Go 58 (no PWA, no custom native code; native APK builds aren't possible here). Expo Go loads the JS from the dev server.
-- Map is drawn with @shopify/react-native-skia as 16 full-width strips of 8 tiles; after a turn only tiles the AI painted are repainted, and the year timer waits until the map is fully drawn. Touches use the RN responder system (not gesture-handler).
-- Long work never blocks the UI: AI cards run in ~12 ms slices with a progress bar, saves trace zones in slices from a frozen copy of the world, map repaints are spread over frames.
-- Save = one binary file in the document folder (expo-file-system; IndexedDB on web): JSON header + raw Int32 zone rings. Written at turn end, after strokes and when the app goes to background.
-- Map: 2048×832 equirectangular pixels, latitude 84°N to −62.25°. Real map = Natural Earth coastlines rasterized at build time, with a fixed climate seed, so it's identical on every launch.
-- Saved form of every layer is zones bounded by closed rectilinear rings on pixel edges (OSM-like): political (one zone set per country), density/humidity/temperature/drainage (one zone set per value — values in steps of 5), and one layer per culture and per religion (zones per share). Rasterizing zones back is exact.
-- Working form: per-pixel rasters; culture and religion are per-pixel ids into an interned composition table. Culture shares sum to 100; religion shares ≤ 100 (rest = no faith).
-- Ink is counted in pixels; cards are drawn only when applicable and ink never exceeds what can be spent.
-- Sea links: coasts on the same connected body of water (map wraps east–west for water) count as linked at any distance.
-- New faiths get rarer as their number grows (otherwise hundreds of tiny sects appear).
+- Ввод игрока и стратегия ИИ могут выбирать разные варианты и места рисования, но любое механическое действие проходит через общий `Game.dispatchAction`, проверку допустимости, `CardPainter` и завершение карты. Нельзя вводить разные игровые правила для человека и ИИ.
+- Текущая реализация только браузерная. Старые указания про отдельную карту на Skia, Expo Go и невозможность будущей сборки APK неактуальны. Будущие адаптеры возможностей не должны создавать второй набор игровой логики.
+- Обновления логических контуров, обработка ходов и таймер не зависят от видимости холста. Скрывать можно только физическую отрисовку неактивного холста, а не сеанс игры.
+- Контурный алгоритм карты нельзя заменять поклеточным алгоритмом под видом оптимизации. Новую архитектуру внедрять по согласованным задачам, не объявляя ещё не реализованные этапы готовыми.
+- Длительная работа не должна блокировать интерфейс. Оптимизация не меняет игровые правила или внешний результат.
 
-## Product
+## Данные и игровые ограничения
 
-- Start: real Earth or a new random world; roles: all, one country, world events only, observer.
-- Cards: founding (always brings a new culture and ruler), expansion/development (uses occupied land to raise density when no free land remains), split (keeps population, culture, faith and gives the new state a ruler), drought, rain, new faith (converts 40% per stroke), culture branch (moves 50% of the source culture), government reform, succession and republic elections.
-- Countries have a governing form (tribal union, monarchy, republic or empire), government modifiers, a ruler, and an expected heir where succession is hereditary. Tap an owned map cell with the hand tool to inspect area, population, government, modifiers, ruler and heir ages.
-- Map modes: countries, biomes, cultures, religions, humidity, temperature, drainage, population; single culture/religion share layers from the legend; tap-to-inspect shows per-point shares.
+- Сохранение — бинарный файл с заголовком JSON и кольцами контуров Int32; в браузере используется IndexedDB. Сохранение выполняется после ходов и мазков, а также при уходе приложения в фон.
+- Исходная карта — 2048×832 в равнопромежуточной проекции, от 84° северной до −62,25° южной широты. Побережье реальной Земли подготовлено из Natural Earth; начальный климат воспроизводим.
+- Сохраняемые слои состоят из замкнутых прямоугольных колец по границам точек: политический слой по странам, параметры по значениям с шагом 5, культуры и религии по долям. Преобразование сохранения должно быть точным.
+- В существующем движке встречаются растровые рабочие представления и таблицы совместных составов. Их наличие не разрешает заменять согласованный контурный алгоритм новым растровым.
+- Доли культур составляют 100%; сумма долей религий не превышает 100%, остаток — неверующие.
+- Чернила измеряют площадь; карта попадает в розыгрыш только если применима. Нельзя тратить больше доступных чернил.
+- Побережья одного связного водоёма связаны морем независимо от расстояния; водная связность учитывает замыкание карты по долготе.
+- Новые религии становятся реже по мере роста их числа.
 
-## User preferences
+## Игра
 
-- The user writes in Russian.
-- Wants the game on their Android phone via Expo Go (SDK 58). No PWA, no old grid version.
+- Начало: Земля или случайный мир; роли — все события, одна страна, мировые события, наблюдатель.
+- Карты включают основание страны, расширение и развитие, разделение, засуху, дожди, появление религии, культурное ответвление, реформу, наследование и выборы. Полный актуальный пул определяется кодом и диздоком, а не этим кратким перечнем.
+- У стран есть форма правления, модификаторы, правители и, где предусмотрено правилами, ожидаемый наследник. Выбор точки открывает сведения о территории и населении.
+- Режимы карты включают страны, биомы, культуры, религии, влажность, температуру, дренаж, население и прочие реализованные слои. Выбор точки показывает локальный состав.
 
-## Gotchas
+## Автоматическая синхронизация задач
 
-- Do not use EAS CLI.
-- Full design brief: `attached_assets/ZSG_1792705944389.txt`.
+- Все новые задачи создаёт агент в режиме Plan из описания пользователя.
+- После создания или изменения задачи обязательно сохранить её полный экспорт в `.local/tasks/github-outbox/НОМЕР.json` по правилам `AGENTS.md` и `docs/github-tasks.md`.
+- Сохранение экспорта входит в подготовку описания задачи; не предлагать пользователю отдельную задачу для синхронизации.
+- Отдельный процесс «Синхронизация задач GitHub» отправляет только описания задач в `main`, не захватывая код приложения. В Plan агент не запускает Git и не меняет окружение.
+- В завершающий коммит после реализации и проверок включать отдельную строку `Replit-Task-Completed: НОМЕР`; при `markTaskComplete` передавать её в `commit_message`. GitHub Issue закрывается после попадания этого коммита в `main`.
+
+## Дополнительно
+
+- Тексты проекта и комментарии писать по-русски.
+- Не использовать EAS CLI.
+- Полное исходное описание игры: `attached_assets/ZSG_1792705944389.txt`.

@@ -1,57 +1,45 @@
-name: Публикация задачи из Git
+name: Синхронизация задач Replit
 
 on:
   push:
-    paths:
-      - '.github/task-export/**'
-      - '.github/workflows/publish-task.yml'
+    branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
 
 permissions:
   contents: read
   issues: write
 
 concurrency:
-  group: publish-task-${{ github.repository }}
+  group: replit-task-issues
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Создать задачу без дубликатов
+  synchronize:
+    name: Создать обновить и закрыть задачи
     runs-on: ubuntu-latest
     steps:
-      - name: Получить файлы коммита
+      - name: Получить текущую основную ветку и историю
         uses: actions/checkout@v4
-      - name: Опубликовать задачу
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Синхронизировать GitHub Issues
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('node:fs');
-            const task = JSON.parse(fs.readFileSync('.github/task-export/task.json', 'utf8'));
-            if (!Number.isInteger(task.sourceTask) || !task.title || !task.bodyFile) {
-              throw new Error('Некорректное описание экспортируемой задачи');
-            }
-            const marker = `<!-- replit-task:${task.sourceTask} -->`;
-            const body = `${marker}\n\n${fs.readFileSync(task.bodyFile, 'utf8')}`;
-            if (Buffer.byteLength(body, 'utf8') > 60000) {
-              throw new Error('Описание задачи превышает безопасный размер');
-            }
-            const issues = await github.paginate(github.rest.issues.listForRepo, {
-              ...context.repo,
-              state: 'all',
-              per_page: 100,
-              creator: 'github-actions[bot]',
+            const { execFileSync } = require('node:child_process');
+            const { completedTasks } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/github-tasks/model.mjs`);
+            const directory = '.github/replit-tasks';
+            const tasks = fs.existsSync(directory)
+              ? fs.readdirSync(directory).filter(name => /^\d+\.json$/.test(name))
+                .map(name => JSON.parse(fs.readFileSync(`${directory}/${name}`, 'utf8')))
+              : [];
+            const messages = execFileSync('git', ['log', 'HEAD', '--format=%B%x00'], {
+              encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+            }).split('\0');
+            await require(`${process.env.GITHUB_WORKSPACE}/scripts/github-tasks/reconcile.cjs`)({
+              github, context, core, tasks, completed: completedTasks(messages),
             });
-            const existing = issues.find(issue => !issue.pull_request && issue.body?.includes(marker));
-            if (existing) {
-              core.notice(`Задача уже опубликована: ${existing.html_url}`);
-              await core.summary.addLink('Существующая задача', existing.html_url).write();
-              return;
-            }
-            const { data: issue } = await github.rest.issues.create({
-              ...context.repo,
-              title: task.title,
-              body,
-            });
-            core.notice(`Задача опубликована: ${issue.html_url}`);
-            await core.summary.addLink('Опубликованная задача', issue.html_url).write();
