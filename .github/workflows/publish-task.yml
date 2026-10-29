@@ -1,0 +1,57 @@
+name: Публикация задачи из Git
+
+on:
+  push:
+    paths:
+      - '.github/task-export/**'
+      - '.github/workflows/publish-task.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: publish-task-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Создать задачу без дубликатов
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить файлы коммита
+        uses: actions/checkout@v4
+      - name: Опубликовать задачу
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const task = JSON.parse(fs.readFileSync('.github/task-export/task.json', 'utf8'));
+            if (!Number.isInteger(task.sourceTask) || !task.title || !task.bodyFile) {
+              throw new Error('Некорректное описание экспортируемой задачи');
+            }
+            const marker = `<!-- replit-task:${task.sourceTask} -->`;
+            const body = `${marker}\n\n${fs.readFileSync(task.bodyFile, 'utf8')}`;
+            if (Buffer.byteLength(body, 'utf8') > 60000) {
+              throw new Error('Описание задачи превышает безопасный размер');
+            }
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo,
+              state: 'all',
+              per_page: 100,
+              creator: 'github-actions[bot]',
+            });
+            const existing = issues.find(issue => !issue.pull_request && issue.body?.includes(marker));
+            if (existing) {
+              core.notice(`Задача уже опубликована: ${existing.html_url}`);
+              await core.summary.addLink('Существующая задача', existing.html_url).write();
+              return;
+            }
+            const { data: issue } = await github.rest.issues.create({
+              ...context.repo,
+              title: task.title,
+              body,
+            });
+            core.notice(`Задача опубликована: ${issue.html_url}`);
+            await core.summary.addLink('Опубликованная задача', issue.html_url).write();
