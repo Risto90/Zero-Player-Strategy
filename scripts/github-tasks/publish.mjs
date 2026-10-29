@@ -7,9 +7,13 @@ import { createHash } from 'node:crypto';
 import { validateTask } from './model.mjs';
 
 function git(root, args, { input, env = {} } = {}) {
-  const result = spawnSync('git', ['-C', root, ...args], {
+  // Фоновый процесс не наследует настройки Git из интерактивного инструмента агента.
+  const proxy = fs.existsSync('/repl')
+    ? ['-c', 'url.https://github.replit.internal/.insteadOf=https://github.com/']
+    : [];
+  const result = spawnSync('git', ['-C', root, ...proxy, ...args], {
     input, encoding: 'utf8', timeout: 120000,
-    env: { ...process.env, DANGEROUSLY_ALLOW_GIT: '1', ...env },
+    env: { ...process.env, DANGEROUSLY_ALLOW_GIT: '1', GIT_TERMINAL_PROMPT: '0', ...env },
     maxBuffer: 4 * 1024 * 1024,
   });
   if (result.error || result.status !== 0) {
