@@ -23,6 +23,8 @@ test('Отправка в main изолирована от кода, индек�
     fs.writeFileSync(path.join(root, 'app.txt'), 'Исходный код');
     git('add', 'app.txt');
     git('commit', '-m', 'Исходное состояние');
+    git('config', '--unset', 'user.name');
+    git('config', '--unset', 'user.email');
     git('remote', 'add', 'origin', remote);
     git('push', 'origin', 'main');
     git('checkout', '-b', 'working');

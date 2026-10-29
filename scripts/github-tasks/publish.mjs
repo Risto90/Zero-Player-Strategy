@@ -75,7 +75,12 @@ export function publish(root = process.cwd()) {
         return { changed: false, count: tasks.length };
       }
       const commit = git(root, ['commit-tree', tree, '-p', parent, '-m',
-        'Синхронизировать описания задач Replit с GitHub']);
+        'Синхронизировать описания задач Replit с GitHub'], { env: {
+        GIT_AUTHOR_NAME: 'Синхронизация задач Replit',
+        GIT_AUTHOR_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com',
+        GIT_COMMITTER_NAME: 'Синхронизация задач Replit',
+        GIT_COMMITTER_EMAIL: '41898282+github-actions[bot]@users.noreply.github.com',
+      } });
       try {
         git(root, ['push', 'origin', `${commit}:refs/heads/main`]);
         console.log(`Задачи опубликованы в main: ${commit}`);
