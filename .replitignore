@@ -1,6 +1,11 @@
-# The format of this file is identical to `.dockerignore`.
-# It is used to reduce the size of deployed images to make the process of publishing faster.
+# Формат соответствует .dockerignore.
+# Исключения уменьшают размер публикуемой сборки.
 
-# No need to store the pnpm store twice.
+# Не хранить кэш pnpm повторно.
 .local
 artifacts/zero-strategy/generated-artifacts/
+.agents
+AGENTS.md
+replit.md
+docs/github-tasks.md
+scripts/github-tasks
