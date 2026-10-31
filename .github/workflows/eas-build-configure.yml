@@ -2,35 +2,33 @@ name: Configure EAS Build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - 'artifacts/zero-strategy/**'
-      - '.github/workflows/eas-build-configure.yml'
 
 jobs:
-  configure:
+  configure-eas:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: artifacts/zero-strategy
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Install dependencies
-        run: |
-          npm install
+        run: pnpm install
 
-      - name: Configure EAS Build
-        run: |
-          npx eas build:configure
+      - name: Install EAS CLI
+        run: pnpm add -D eas-cli
+
+      - name: Configure EAS
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: pnpm exec eas build:configure --non-interactive
