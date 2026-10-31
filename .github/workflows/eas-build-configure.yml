@@ -31,10 +31,6 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Verify project directory
-        run: |
-          test -f package.json || { echo "Missing package.json in artifacts/zero-strategy"; exit 1; }
-
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
@@ -52,5 +48,13 @@ jobs:
       - name: Configure EAS build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          pnpm exec eas build:configure --platform all
+        run: pnpm exec eas build:configure --platform all
+
+      - name: Upload generated EAS config
+        uses: actions/upload-artifact@v4
+        with:
+          name: eas-config
+          path: |
+            artifacts/zero-strategy/eas.json
+            artifacts/zero-strategy/ios
+            artifacts/zero-strategy/android
