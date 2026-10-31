@@ -33,13 +33,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Initialize EAS project if needed
+      - name: Initialize EAS project
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          if [ ! -f eas.json ]; then
-            pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
-          fi
+          pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
+
+      - name: Verify eas.json exists
+        run: |
+          ls -la
+          test -f eas.json || { echo "eas.json missing after init"; exit 1; }
 
       - name: Configure EAS build
         env:
