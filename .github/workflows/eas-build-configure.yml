@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Ensure EAS project is configured
+      - name: Initialize EAS project
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -45,4 +45,5 @@ jobs:
       - name: Configure EAS build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: pnpm dlx eas-cli@latest build:configure --platform all
+        run: |
+          pnpm dlx eas-cli@latest build:configure --platform all
