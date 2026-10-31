@@ -2,17 +2,10 @@ name: Configure EAS Build
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'artifacts/zero-strategy/**'
-      - '.github/workflows/eas-build-configure.yml'
 
 jobs:
   configure-eas:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: artifacts/zero-strategy
 
     steps:
       - name: Checkout repository
@@ -28,13 +21,31 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'pnpm'
-          cache-dependency-path: pnpm-lock.yaml
 
-      - name: Install dependencies
+      - name: Prepare standalone app outside workspace
+        run: |
+          set -e
+          rm -rf /tmp/eas-build
+          mkdir -p /tmp/eas-build
+
+          # Copy app directory out of the workspace
+          cp -R artifacts/zero-strategy /tmp/eas-build/app
+
+          # Copy sibling dependency used by app scripts (if present)
+          if [ -d api-server ]; then
+            cp -R api-server /tmp/eas-build/api-server
+          fi
+
+          # Ensure the app dir is isolated
+          ls -la /tmp/eas-build
+          ls -la /tmp/eas-build/app
+
+      - name: Install dependencies in standalone app
+        working-directory: /tmp/eas-build/app
         run: pnpm install --no-frozen-lockfile
 
-      - name: Initialize EAS project if needed
+      - name: Initialize EAS project
+        working-directory: /tmp/eas-build/app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -43,13 +54,17 @@ jobs:
           fi
 
       - name: Configure EAS build
+        working-directory: /tmp/eas-build/app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: pnpm dlx eas-cli@latest build:configure --platform all
+        run: |
+          pnpm dlx eas-cli@latest build:configure --platform all
 
       - name: Upload generated EAS config
         uses: actions/upload-artifact@v4
         with:
           name: eas-config
           path: |
-            artifacts/zero-strategy/eas.json
+            /tmp/eas-build/app/eas.json
+            /tmp/eas-build/app/ios
+            /tmp/eas-build/app/android
