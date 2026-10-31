@@ -24,12 +24,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'yarn'
-          cache-dependency-path: artifacts/zero-strategy/yarn.lock
 
       - name: Install dependencies
         run: |
-          yarn install --frozen-lockfile
+          npm install
 
       - name: Configure EAS Build
         run: |
