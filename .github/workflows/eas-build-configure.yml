@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Initialize EAS project
+      - name: Initialize EAS project if needed
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -45,5 +45,11 @@ jobs:
       - name: Configure EAS build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          pnpm dlx eas-cli@latest build:configure --platform all
+        run: pnpm dlx eas-cli@latest build:configure --platform all
+
+      - name: Upload generated EAS config
+        uses: actions/upload-artifact@v4
+        with:
+          name: eas-config
+          path: |
+            artifacts/zero-strategy/eas.json
