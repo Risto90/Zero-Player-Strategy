@@ -20,7 +20,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: artifacts/zero-strategy/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
@@ -31,4 +33,4 @@ jobs:
       - name: Configure EAS
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: pnpm exec eas build:configure --non-interactive
+        run: pnpm exec eas build:configure
