@@ -33,29 +33,30 @@ jobs:
             cp -R api-server /tmp/eas-build/api-server
           fi
 
-          echo "Standalone app directory:"
+          echo "---- app dir ----"
           ls -la /tmp/eas-build
           ls -la /tmp/eas-build/app
 
-      - name: Install dependencies in standalone app
+      - name: Install dependencies
         working-directory: /tmp/eas-build/app
         run: |
           pnpm install --no-frozen-lockfile
 
-      - name: Initialize EAS project
+      - name: Init EAS project
         working-directory: /tmp/eas-build/app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
+          test -f package.json || { echo "No package.json"; exit 1; }
           if [ ! -f eas.json ]; then
             pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
           fi
 
-      - name: Verify eas.json exists
+      - name: Verify EAS project
         working-directory: /tmp/eas-build/app
         run: |
           ls -la
-          test -f eas.json || { echo "eas.json missing after init"; exit 1; }
+          test -f eas.json || { echo "eas.json still missing after init"; exit 1; }
 
       - name: Configure EAS build
         working-directory: /tmp/eas-build/app
@@ -64,7 +65,7 @@ jobs:
         run: |
           pnpm dlx eas-cli@latest build:configure --platform all
 
-      - name: Upload generated EAS config
+      - name: Upload generated config
         uses: actions/upload-artifact@v4
         with:
           name: eas-config
