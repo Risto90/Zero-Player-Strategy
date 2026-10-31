@@ -33,8 +33,6 @@ jobs:
 
       - name: Verify project directory
         run: |
-          pwd
-          ls -la
           test -f package.json || { echo "Missing package.json in artifacts/zero-strategy"; exit 1; }
 
       - name: Install dependencies
@@ -54,4 +52,5 @@ jobs:
       - name: Configure EAS build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: pnpm exec eas build:configure
+        run: |
+          pnpm exec eas build:configure --platform all
