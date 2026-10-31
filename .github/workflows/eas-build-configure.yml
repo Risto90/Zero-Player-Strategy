@@ -47,7 +47,6 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          ls -la
           if [ ! -f eas.json ]; then
             pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
           fi
