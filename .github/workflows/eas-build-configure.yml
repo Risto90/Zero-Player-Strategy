@@ -1,0 +1,38 @@
+name: Configure EAS Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'artifacts/zero-strategy/**'
+      - '.github/workflows/eas-build-configure.yml'
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/zero-strategy
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'yarn'
+          cache-dependency-path: artifacts/zero-strategy/yarn.lock
+
+      - name: Install dependencies
+        run: |
+          yarn install --frozen-lockfile
+
+      - name: Configure EAS Build
+        run: |
+          npx eas build:configure
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
