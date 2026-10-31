@@ -27,31 +27,36 @@ jobs:
           set -e
           rm -rf /tmp/eas-build
           mkdir -p /tmp/eas-build
-
-          # Copy app directory out of the workspace
           cp -R artifacts/zero-strategy /tmp/eas-build/app
 
-          # Copy sibling dependency used by app scripts (if present)
           if [ -d api-server ]; then
             cp -R api-server /tmp/eas-build/api-server
           fi
 
-          # Ensure the app dir is isolated
+          echo "Standalone app directory:"
           ls -la /tmp/eas-build
           ls -la /tmp/eas-build/app
 
       - name: Install dependencies in standalone app
         working-directory: /tmp/eas-build/app
-        run: pnpm install --no-frozen-lockfile
+        run: |
+          pnpm install --no-frozen-lockfile
 
       - name: Initialize EAS project
         working-directory: /tmp/eas-build/app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
+          ls -la
           if [ ! -f eas.json ]; then
             pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
           fi
+
+      - name: Verify eas.json exists
+        working-directory: /tmp/eas-build/app
+        run: |
+          ls -la
+          test -f eas.json || { echo "eas.json missing after init"; exit 1; }
 
       - name: Configure EAS build
         working-directory: /tmp/eas-build/app
