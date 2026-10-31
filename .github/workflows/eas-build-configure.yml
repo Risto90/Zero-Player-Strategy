@@ -39,13 +39,24 @@ jobs:
         run: |
           pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
 
-      - name: Verify eas.json exists
+      - name: Verify generated files
         run: |
           ls -la
-          test -f eas.json || { echo "eas.json missing after init"; exit 1; }
+          test -f eas.json || { echo "eas.json missing"; exit 1; }
 
       - name: Configure EAS build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           pnpm dlx eas-cli@latest build:configure --platform all
+
+      - name: Upload generated config
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eas-config
+          path: |
+            eas.json
+            ios
+            android
+          if-no-files-found: ignore
