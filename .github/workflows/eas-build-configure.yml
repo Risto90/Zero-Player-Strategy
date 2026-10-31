@@ -2,6 +2,12 @@ name: Configure EAS Build
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/eas-build-configure.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'artifacts/zero-strategy/**'
 
 jobs:
   configure-eas:
@@ -21,55 +27,31 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
 
-      - name: Prepare standalone app outside workspace
-        run: |
-          set -e
-          rm -rf /tmp/eas-build
-          mkdir -p /tmp/eas-build
-          cp -R artifacts/zero-strategy /tmp/eas-build/app
+      - name: Install dependencies at repo root
+        run: pnpm install --no-frozen-lockfile
 
-          if [ -d api-server ]; then
-            cp -R api-server /tmp/eas-build/api-server
-          fi
-
-          echo "---- app dir ----"
-          ls -la /tmp/eas-build
-          ls -la /tmp/eas-build/app
-
-      - name: Install dependencies
-        working-directory: /tmp/eas-build/app
-        run: |
-          pnpm install --no-frozen-lockfile
-
-      - name: Init EAS project
-        working-directory: /tmp/eas-build/app
+      - name: Initialize EAS project if needed
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          test -f package.json || { echo "No package.json"; exit 1; }
           if [ ! -f eas.json ]; then
             pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
           fi
 
-      - name: Verify EAS project
-        working-directory: /tmp/eas-build/app
-        run: |
-          ls -la
-          test -f eas.json || { echo "eas.json still missing after init"; exit 1; }
-
       - name: Configure EAS build
-        working-directory: /tmp/eas-build/app
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           pnpm dlx eas-cli@latest build:configure --platform all
 
-      - name: Upload generated config
+      - name: Upload generated EAS config
         uses: actions/upload-artifact@v4
         with:
           name: eas-config
           path: |
-            /tmp/eas-build/app/eas.json
-            /tmp/eas-build/app/ios
-            /tmp/eas-build/app/android
+            eas.json
+            ios
+            android
