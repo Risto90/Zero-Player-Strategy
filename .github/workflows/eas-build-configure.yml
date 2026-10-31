@@ -2,6 +2,10 @@ name: Configure EAS Build
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'artifacts/zero-strategy/**'
+      - '.github/workflows/eas-build-configure.yml'
 
 jobs:
   configure-eas:
@@ -27,13 +31,27 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: pnpm-lock.yaml
 
+      - name: Verify project directory
+        run: |
+          pwd
+          ls -la
+          test -f package.json || { echo "Missing package.json in artifacts/zero-strategy"; exit 1; }
+
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
       - name: Install EAS CLI
         run: pnpm add -D eas-cli
 
-      - name: Configure EAS
+      - name: Initialize EAS project if needed
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ ! -f eas.json ]; then
+            pnpm exec eas init --account phoenix-castle --non-interactive
+          fi
+
+      - name: Configure EAS build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: pnpm exec eas build:configure
