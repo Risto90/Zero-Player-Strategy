@@ -10,6 +10,9 @@ on:
 jobs:
   configure-eas:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/zero-strategy
 
     steps:
       - name: Checkout repository
@@ -31,18 +34,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Install EAS CLI
-        run: pnpm add -D eas-cli
-
-      - name: Initialize EAS project if needed
+      - name: Ensure EAS project is configured
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           if [ ! -f eas.json ]; then
-            pnpm exec eas init --account phoenix-castle --non-interactive
+            pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
           fi
 
       - name: Configure EAS build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: pnpm exec eas build:configure --platform all
+        run: pnpm dlx eas-cli@latest build:configure --platform all
