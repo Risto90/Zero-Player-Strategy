@@ -8,6 +8,7 @@
       "distribution": "internal",
       "node": "22.23.3",
       "android": {
+        "image": "sdk-58",
         "buildType": "apk"
       },
       "env": {
@@ -19,6 +20,7 @@
       "autoIncrement": true,
       "node": "22.23.3",
       "android": {
+        "image": "sdk-58",
         "buildType": "apk"
       },
       "env": {
