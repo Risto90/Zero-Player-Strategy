@@ -116,7 +116,7 @@ assert.match(methodBody(game, 'private canCompleteCardNormally(): boolean'),
 assert.match(methodBody(game, 'private completeCard(): void'), /dispatchAction\(\{\s*type: 'completeCard'/);
 assert.equal((game.match(/this\.finish\(/g) ?? []).length, 1,
   'all cards must pass through the single shared completion function');
-assert.match(instructions, /Never add or change a game mechanic for only the player or only the AI/);
-assert.match(instructions, /parity coverage before merging/);
+assert.match(instructions, /Нельзя вводить разные игровые правила для человека и ИИ/);
+assert.match(instructions, /регрессионные проверки движка, включая одинаковое исполнение действий игрока и ИИ/);
 
 console.log(`Action architecture guard passed for ${cardTypes.length} card types and ${actionTypes.length} action commands.`);

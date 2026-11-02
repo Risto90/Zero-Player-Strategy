@@ -1,5 +1,6 @@
 import { autoPaint } from './autoPaint';
 import type { PaintActions } from './autoPaint';
+import { SerialCommandQueue, type QueuedCommandOptions } from './commandRuntime';
 import { ContourArea, type ContourSpan } from './contours';
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
   type BrushMode, type BrushOption, type Card, type CardChoice, type CardPainterState, type CharacterEvent } from './brush';
@@ -269,6 +270,7 @@ export class Game {
   private drawing = false;
   private progress: { done: number; total: number } | null = null;
   private performanceTracking = false;
+  private readonly actionQueue = new SerialCommandQueue<GameAction, boolean | number | void>(2048);
   private readonly performanceSamples: AutomaticEventSample[] = [];
   private readonly performanceStageSamples: AutomaticEventStageSample[] = [];
   private saving: Promise<void> | null = null;
@@ -583,6 +585,15 @@ export class Game {
       case 'placeCity': return this.applyCityPlacement(action.x, action.y);
       case 'completeCard': return this.applyCardCompletion();
     }
+  }
+
+  /** Та же команда может быть отправлена немедленно или в ограниченную FIFO-очередь. */
+  enqueueAction(action: GameAction, options: QueuedCommandOptions = {}): Promise<boolean | number | void> {
+    return this.actionQueue.enqueue(action, (queuedAction) => this.dispatchAction(queuedAction), options);
+  }
+
+  actionQueueMetrics(): ReturnType<SerialCommandQueue<GameAction, boolean | number | void>['metrics']> {
+    return this.actionQueue.metrics();
   }
 
   get brushRadius(): number {
@@ -2510,6 +2521,7 @@ export class Game {
   /** Останавливает игру без сохранения; уже начатое сохранение отменяется. */
   discard(): void {
     this.disposed = true;
+    this.actionQueue.dispose();
     if (Game.saveOwner === this) Game.saveOwner = null;
     this.stop();
     if (this.saveTimer) clearTimeout(this.saveTimer);
