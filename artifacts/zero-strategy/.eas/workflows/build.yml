@@ -1,4 +1,4 @@
-name: Сборка приложений
+name: Build
 
 on:
   push:
@@ -7,14 +7,12 @@ on:
 
 jobs:
   build_android:
-    name: Сборка Android APK
+    name: Build Android App
     type: build
     params:
       platform: android
-      profile: production
   build_ios:
-    name: Сборка приложения iOS
+    name: Build iOS App
     type: build
     params:
       platform: ios
-      profile: production
