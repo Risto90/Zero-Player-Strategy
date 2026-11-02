@@ -2,7 +2,6 @@
   "expo": {
     "name": "Zero Strategy",
     "slug": "zsg",
-    "owner": "phoenix-castle",
     "version": "0.2611.1",
     "sdkVersion": "58.0.0",
     "platforms": ["android", "ios"],
@@ -13,11 +12,6 @@
     },
     "ios": {
       "bundleIdentifier": "ru.beska.zsg"
-    },
-    "extra": {
-      "eas": {
-        "projectId": "de36eb3a-da79-482d-906e-38a056f7d669"
-      }
     },
     "plugins": [
       [
