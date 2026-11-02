@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "Zero Strategy",
+    "slug": "zsg",
+    "owner": "phoenix-castle",
+    "version": "0.2611.1",
+    "sdkVersion": "58.0.0",
+    "platforms": ["android", "ios"],
+    "icon": "./artifacts/zero-strategy/assets/images/icon.png",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "ru.beska.zsg"
+    },
+    "ios": {
+      "bundleIdentifier": "ru.beska.zsg"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "de36eb3a-da79-482d-906e-38a056f7d669"
+      }
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "root": "./artifacts/zero-strategy/app"
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./artifacts/zero-strategy/assets/images/icon.png",
+          "imageWidth": 160,
+          "resizeMode": "contain",
+          "backgroundColor": "#efe7d7"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
