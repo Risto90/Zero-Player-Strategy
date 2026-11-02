@@ -2,6 +2,14 @@
   "name": "workspace",
   "packageManager": "pnpm@9.15.9",
   "main": "expo-router/entry",
+  "expo": {
+    "autolinking": {
+      "searchPaths": [
+        "./node_modules",
+        "./artifacts/zero-strategy/node_modules"
+      ]
+    }
+  },
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
