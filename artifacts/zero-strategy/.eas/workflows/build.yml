@@ -1,0 +1,21 @@
+name: Сборка приложений
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+jobs:
+  build_android:
+    name: Сборка Android APK
+    type: build
+    params:
+      platform: android
+      profile: production
+  build_ios:
+    name: Сборка приложения iOS
+    type: build
+    params:
+      platform: ios
+      profile: production
