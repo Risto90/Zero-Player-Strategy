@@ -6,6 +6,7 @@
   "build": {
     "preview": {
       "distribution": "internal",
+      "node": "22.23.3",
       "android": {
         "buildType": "apk"
       },
@@ -16,6 +17,7 @@
     },
     "production": {
       "autoIncrement": true,
+      "node": "22.23.3",
       "android": {
         "buildType": "apk"
       },
