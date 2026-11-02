@@ -14,9 +14,23 @@ export interface ContourSpan {
   end: number;
 }
 
+export interface ContourChange {
+  revision: number;
+  bounds: ContourBounds;
+  layers: readonly ContourLayerName[] | null;
+}
+
 interface ValueSpan extends ContourSpan {
   value: number;
 }
+
+interface CachedSelection {
+  area: ContourArea;
+  bounds: ContourBounds;
+}
+
+/** Непрерывная кисть использует точное IEEE-754 сравнение без искусственного допуска. */
+export const CONTINUOUS_CONTOUR_EPSILON = 0;
 
 /**
  * Площадь карты хранится интервалами контурных строк, а не списком ячеек.
@@ -27,7 +41,13 @@ export class ContourArea {
   readonly size: number;
 
   constructor(spans: readonly ContourSpan[] = [], alreadyOrdered = false) {
-    const ordered = spans.filter((span) => span.end > span.start);
+    const ordered = spans.flatMap((span) => {
+      if (!Number.isInteger(span.y) || span.y < 0 || span.y >= MAP_HEIGHT ||
+        !Number.isInteger(span.start) || !Number.isInteger(span.end)) return [];
+      const start = Math.max(0, span.start);
+      const end = Math.min(MAP_WIDTH, span.end);
+      return end > start ? [{ y: span.y, start, end }] : [];
+    });
     if (!alreadyOrdered) ordered.sort((a, b) => a.y - b.y || a.start - b.start);
     const merged: ContourSpan[] = [];
     for (const span of ordered) {
@@ -77,7 +97,7 @@ export class ContourArea {
         cursor = stop;
       }
     }
-    return new ContourArea(spans, true);
+    return new ContourArea(spans);
   }
 
   static fromMask(
@@ -104,7 +124,43 @@ export class ContourArea {
         }
       }
     }
-    return new ContourArea(spans, true);
+    return new ContourArea(spans);
+  }
+
+  /**
+   * Импортирует сохранённые ортогональные кольца в интервальный контур.
+   * Сканируются только вертикальные рёбра и строки, которые они пересекают;
+   * внутренняя область не разворачивается в список пикселей.
+   */
+  static fromRings(rings: readonly Ring[]): ContourArea {
+    const crossings = new Map<number, number[]>();
+    for (const ring of rings) {
+      if (ring.length < 6 || ring.length % 2 !== 0) continue;
+      const count = ring.length / 2;
+      for (let index = 0; index < count; index += 1) {
+        const next = (index + 1) % count;
+        const x0 = ring[index * 2], y0 = ring[index * 2 + 1];
+        const x1 = ring[next * 2], y1 = ring[next * 2 + 1];
+        if (x0 !== x1 || y0 === y1) continue;
+        const fromY = Math.max(0, Math.min(y0, y1));
+        const toY = Math.min(MAP_HEIGHT, Math.max(y0, y1));
+        for (let y = fromY; y < toY; y += 1) {
+          const row = crossings.get(y) ?? [];
+          row.push(x0);
+          crossings.set(y, row);
+        }
+      }
+    }
+    const spans: ContourSpan[] = [];
+    for (const [y, row] of crossings) {
+      row.sort((a, b) => a - b);
+      for (let index = 1; index < row.length; index += 2) {
+        const start = Math.max(0, row[index - 1]);
+        const end = Math.min(MAP_WIDTH, row[index]);
+        if (end > start) spans.push({ y, start, end });
+      }
+    }
+    return new ContourArea(spans);
   }
 
   static integerCircle(
@@ -133,7 +189,10 @@ export class ContourArea {
     return new ContourArea(spans, true);
   }
 
-  /** Координаты кисти непрерывные; проверяется центр каждой точки, как у ручного мазка. */
+  /**
+   * Координаты кисти непрерывные; область — замкнутый круг, проверяется центр
+   * каждой ячейки, а граничное равенство включено без допуска epsilon.
+   */
   static circle(cx: number, cy: number, radius: number): ContourArea {
     const spans: ContourSpan[] = [];
     for (let y = Math.max(0, Math.floor(cy - radius)); y <= Math.min(MAP_HEIGHT - 1, Math.ceil(cy + radius)); y += 1) {
@@ -162,6 +221,7 @@ export class ContourArea {
   }
 
   contains(pixel: number): boolean {
+    if (!Number.isInteger(pixel) || pixel < 0 || pixel >= MAP_WIDTH * MAP_HEIGHT) return false;
     const y = Math.floor(pixel / MAP_WIDTH), x = pixel % MAP_WIDTH;
     let low = 0, high = this.spans.length - 1;
     while (low <= high) {
@@ -188,6 +248,15 @@ export class ContourArea {
     return new ContourArea(result);
   }
 
+  /** XOR дискретных областей с той же полуоткрытой семантикой интервалов. */
+  symmetricDifference(other: ContourArea): ContourArea {
+    return this.subtract(other).union(other.subtract(this));
+  }
+
+  xor(other: ContourArea): ContourArea {
+    return this.symmetricDifference(other);
+  }
+
   union(other: ContourArea): ContourArea {
     return new ContourArea([...this.spans, ...other.spans]);
   }
@@ -209,6 +278,46 @@ export class ContourArea {
       if (start < span.end) result.push({ y: span.y, start, end: span.end });
     }
     return new ContourArea(result);
+  }
+
+  /** Отсекает область заданным прямоугольником карты. */
+  clip(bounds: ContourBounds): ContourArea {
+    return this.intersect(ContourArea.rectangle(bounds));
+  }
+
+  /** Разбивает область на часть внутри и часть вне другой области. */
+  split(other: ContourArea): { inside: ContourArea; outside: ContourArea } {
+    return { inside: this.intersect(other), outside: this.subtract(other) };
+  }
+
+  /** Возвращает площадь в дискретных ячейках карты. */
+  area(): number {
+    return this.size;
+  }
+
+  /** Проверяет пересечение без построения промежуточного результата. */
+  intersects(other: ContourArea): boolean {
+    let a = 0, b = 0;
+    while (a < this.spans.length && b < other.spans.length) {
+      const left = this.spans[a], right = other.spans[b];
+      if (left.y < right.y || (left.y === right.y && left.end <= right.start)) a += 1;
+      else if (right.y < left.y || right.end <= left.start) b += 1;
+      else return true;
+    }
+    return false;
+  }
+
+  /** Смежность по стороне; простое перекрытие не считается смежностью. */
+  isAdjacentTo(other: ContourArea): boolean {
+    return this.border().intersects(other) || other.border().intersects(this);
+  }
+
+  /** Записывает заливку прямо в массив слоя; интервалы не разворачиваются заранее. */
+  fill<T extends Uint8Array | Uint16Array | Uint32Array | Int32Array | Float32Array>(
+    target: T,
+    value: number,
+  ): void {
+    for (const span of this.spans) target.fill(value, span.y * MAP_WIDTH + span.start, span.y * MAP_WIDTH + span.end);
   }
 
   forEachPixel(visit: (pixel: number) => void): void {
@@ -305,14 +414,16 @@ export class ContourArea {
 /** Постоянный индекс контуров скалярного слоя с локальным обновлением строк. */
 export class ScalarContourLayer {
   private readonly rows = new Map<number, readonly ValueSpan[]>();
-  private readonly selections = new Map<string, ContourArea>();
+  private readonly selections = new Map<string, CachedSelection>();
 
   constructor(private readonly source: () => ArrayLike<number>) {}
 
-  invalidate(y0 = 0, y1 = MAP_HEIGHT - 1): void {
-    let changed = false;
-    for (let y = y0; y <= y1; y += 1) changed = this.rows.delete(y) || changed;
-    if (changed) this.selections.clear();
+  invalidate(y0 = 0, y1 = MAP_HEIGHT - 1, x0 = 0, x1 = MAP_WIDTH - 1): void {
+    for (let y = y0; y <= y1; y += 1) this.rows.delete(y);
+    for (const [key, cached] of this.selections) {
+      if (cached.bounds.y0 <= y1 && cached.bounds.y1 >= y0 &&
+        cached.bounds.x0 <= x1 && cached.bounds.x1 >= x0) this.selections.delete(key);
+    }
   }
 
   row(y: number): readonly ValueSpan[] {
@@ -338,7 +449,7 @@ export class ScalarContourLayer {
     const key = cacheKey === undefined ? null : `${cacheKey}:${bounds.x0}:${bounds.y0}:${bounds.x1}:${bounds.y1}`;
     if (key !== null) {
       const cached = this.selections.get(key);
-      if (cached) return cached;
+      if (cached) return cached.area;
     }
     const spans: ContourSpan[] = [];
     for (let y = Math.max(0, bounds.y0); y <= Math.min(MAP_HEIGHT - 1, bounds.y1); y += 1) {
@@ -351,7 +462,7 @@ export class ScalarContourLayer {
     const area = new ContourArea(spans);
     if (key !== null) {
       if (this.selections.size >= 64) this.selections.delete(this.selections.keys().next().value!);
-      this.selections.set(key, area);
+      this.selections.set(key, { area, bounds: { ...bounds } });
     }
     return area;
   }
@@ -374,7 +485,9 @@ export interface ClimateContour {
  */
 export class MapContours {
   private readonly layers = new Map<ContourLayerName, ScalarContourLayer>();
+  private readonly changeListeners = new Set<(change: ContourChange) => void>();
   private knownVersion = -1;
+  private changeRevision = 0;
   private climateRegionsCache: ClimateContour[] | null = null;
   private climateRegionIds: Int32Array | null = null;
 
@@ -403,14 +516,34 @@ export class MapContours {
   }
 
   changed(bounds: ContourBounds, names?: readonly ContourLayerName[]): void {
+    const changedBounds = {
+      x0: Math.max(0, Math.min(MAP_WIDTH - 1, bounds.x0)),
+      y0: Math.max(0, Math.min(MAP_HEIGHT - 1, bounds.y0)),
+      x1: Math.max(-1, Math.min(MAP_WIDTH - 1, bounds.x1)),
+      y1: Math.max(-1, Math.min(MAP_HEIGHT - 1, bounds.y1)),
+    };
     for (const [name, layer] of this.layers) {
-      if (!names || names.includes(name)) layer.invalidate(Math.max(0, bounds.y0), Math.min(MAP_HEIGHT - 1, bounds.y1));
+      if (!names || names.includes(name)) {
+        layer.invalidate(changedBounds.y0, changedBounds.y1, changedBounds.x0, changedBounds.x1);
+      }
     }
     if (!names || names.some((name) => ['land', 'humidity', 'temperature', 'drainage'].includes(name))) {
       this.climateRegionsCache = null;
       this.climateRegionIds = null;
     }
     this.knownVersion = this.version();
+    const event: ContourChange = {
+      revision: ++this.changeRevision,
+      bounds: changedBounds,
+      layers: names ? [...new Set(names)] : null,
+    };
+    for (const listener of this.changeListeners) listener(event);
+  }
+
+  /** Подписывается на локальные изменения геометрии без ведения полного журнала карты. */
+  subscribeChanges(listener: (change: ContourChange) => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
   }
 
   climateRegions(): readonly ClimateContour[] {

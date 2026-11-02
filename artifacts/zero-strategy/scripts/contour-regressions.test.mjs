@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { ContourArea, ScalarContourLayer, MapContours } from '../game/contours.ts';
 import { MAP_WIDTH, MAP_HEIGHT, MAP_PIXELS } from '../game/config.ts';
-import { rasterizeScalar } from '../game/zones.ts';
+import { fillRings, rasterizeScalar } from '../game/zones.ts';
 import { ContourPopulationReader } from '../game/contourPopulation.ts';
 import { CountryExpansionContourIndex } from '../game/countryExpansionContours.ts';
 import { forEachNeighbour } from '../game/geography.ts';
@@ -35,15 +35,99 @@ for (let iteration = 0; iteration < 100; iteration += 1) {
   assert.deepEqual(pixels(a.intersect(b)), [...aa].filter((p) => bb.has(p)), 'Точное пересечение');
   assert.deepEqual(pixels(a.subtract(b)), [...aa].filter((p) => !bb.has(p)), 'Точная разность');
   assert.deepEqual(pixels(a.union(b)), [...new Set([...aa, ...bb])].sort((x, y) => x - y), 'Точное объединение');
+  assert.deepEqual(pixels(a.xor(b)),
+    [...new Set([...aa, ...bb])].filter((pixel) => aa.has(pixel) !== bb.has(pixel)).sort((x, y) => x - y),
+    'Точный симметричный разбор по независимому множеству');
+}
+
+let sequential = new ContourArea();
+const sequentialReference = new Set();
+for (let step = 0; step < 40; step += 1) {
+  const dab = rectangle(200 + Math.floor(random() * 20), 200 + Math.floor(random() * 20),
+    200 + Math.floor(random() * 20), 200 + Math.floor(random() * 20));
+  const dabPixels = new Set(pixels(dab));
+  if (step % 3 === 0) {
+    sequential = sequential.xor(dab);
+    for (const pixel of dabPixels) {
+      if (sequentialReference.has(pixel)) sequentialReference.delete(pixel);
+      else sequentialReference.add(pixel);
+    }
+  } else if (step % 3 === 1) {
+    sequential = sequential.union(dab);
+    for (const pixel of dabPixels) sequentialReference.add(pixel);
+  } else {
+    sequential = sequential.subtract(dab);
+    for (const pixel of dabPixels) sequentialReference.delete(pixel);
+  }
+  assert.deepEqual(pixels(sequential), [...sequentialReference].sort((a, b) => a - b),
+    'Последовательные локальные булевы изменения совпадают с простым эталоном');
 }
 
 const donut = rectangle(10, 10, 40, 40).subtract(rectangle(15, 15, 35, 35));
 const islands = donut.union(rectangle(70, 10, 75, 15));
 assert.equal(islands.components().length, 2, 'Дыра не соединяет разные острова');
 assert.equal(rectangle(1, 1, 1, 1).union(rectangle(2, 2, 2, 2)).components().length, 2, 'Диагональ не создаёт связность');
+const touching = rectangle(100, 100, 102, 102);
+const sideNeighbor = rectangle(103, 101, 104, 101);
+assert.ok(touching.isAdjacentTo(sideNeighbor), 'Смежность включает общую сторону');
+assert.ok(!touching.isAdjacentTo(rectangle(103, 103, 104, 104)), 'Диагональное касание не смежно');
+assert.equal(touching.intersects(rectangle(102, 102, 103, 103)), true, 'Пересечение определяется без создания результата');
+assert.equal(touching.area(), touching.size, 'Дискретная площадь равна числу ячеек');
+assert.ok(!rectangle(0, 0, 0, 0).isAdjacentTo(rectangle(MAP_WIDTH - 1, 0, MAP_WIDTH - 1, 0)),
+  'Карта не склеивает противоположные края через несуществующий шов');
+const clipped = islands.clip({ x0: 12, y0: 12, x1: 20, y1: 20 });
+assert.deepEqual(pixels(clipped), pixels(islands.intersect(rectangle(12, 12, 20, 20))), 'Отсечение прямоугольником точно');
+const split = islands.split(rectangle(20, 20, 25, 25));
+assert.equal(split.inside.size + split.outside.size, islands.size, 'Разбиение сохраняет точную площадь');
+assert.equal(split.inside.intersects(split.outside), false, 'Части разбиения не перекрываются');
+const xor = rectangle(110, 110, 120, 120).xor(rectangle(115, 115, 125, 125));
+assert.equal(xor.size, 2 * (121 - 36), 'XOR исключает область пересечения');
+const ringRoundTrip = ContourArea.fromRings(islands.rings());
+assert.deepEqual(ringRoundTrip.spans, islands.spans, 'Ортогональные кольца импортируются в точные интервалы');
+const selfTouchingRing = new Int32Array([130, 130, 140, 130, 140, 140, 135, 140,
+  135, 135, 138, 135, 138, 138, 130, 138]);
+const selfTouchingExpected = new Uint8Array(MAP_PIXELS);
+fillRings([selfTouchingRing], (pixel) => { selfTouchingExpected[pixel] = 1; });
+const selfTouchingActual = new Uint8Array(MAP_PIXELS);
+ContourArea.fromRings([selfTouchingRing]).fill(selfTouchingActual, 1);
+assert.deepEqual([...selfTouchingActual], [...selfTouchingExpected],
+  'Импорт самокасающегося ортогонального кольца совпадает с правилом чётности');
 const raster = new Uint8Array(MAP_PIXELS);
 rasterizeScalar([{ value: 1, rings: islands.rings() }], raster);
 assert.deepEqual([...raster.keys()].filter((p) => raster[p] === 1), pixels(islands), 'Кольца точно восстанавливают площадь с дырой');
+const filled = new Uint8Array(MAP_PIXELS);
+islands.fill(filled, 7);
+assert.deepEqual([...filled.keys()].filter((p) => filled[p] === 7), pixels(islands), 'Заполнение выполняется по интервальным строкам');
+
+const changeLayers = { owner: new Uint8Array(MAP_PIXELS), land: new Uint8Array(MAP_PIXELS) };
+let changeVersion = 0;
+const changeMap = new MapContours((name) => changeLayers[name], () => changeVersion);
+const ownerLayer = changeMap.layer('owner');
+const cachedLocal = ownerLayer.select((value) => value === 1,
+  { x0: 0, y0: 5, x1: 10, y1: 5 }, 'local');
+const cachedRemote = ownerLayer.select((value) => value === 1,
+  { x0: 0, y0: 50, x1: 10, y1: 50 }, 'remote');
+const cachedOtherSideOfRow = ownerLayer.select((value) => value === 1,
+  { x0: 100, y0: 5, x1: 110, y1: 5 }, 'other-side-of-row');
+const events = [];
+const unsubscribe = changeMap.subscribeChanges((event) => events.push(event));
+changeLayers.owner[5 * MAP_WIDTH + 4] = 1;
+changeVersion += 1;
+changeMap.changed({ x0: 4, y0: 5, x1: 4, y1: 5 }, ['owner']);
+assert.equal(events.length, 1, 'Локальное изменение публикуется ровно один раз');
+assert.deepEqual(events[0], {
+  revision: 1, bounds: { x0: 4, y0: 5, x1: 4, y1: 5 }, layers: ['owner'],
+}, 'Поток изменений содержит границы и список слоёв');
+assert.notEqual(ownerLayer.select((value) => value === 1,
+  { x0: 0, y0: 5, x1: 10, y1: 5 }, 'local'), cachedLocal, 'Пересечение кэша затронутой строки сбрасывается');
+assert.equal(ownerLayer.select((value) => value === 1,
+  { x0: 0, y0: 50, x1: 10, y1: 50 }, 'remote'), cachedRemote, 'Удалённый кэш сохраняется');
+assert.equal(ownerLayer.select((value) => value === 1,
+  { x0: 100, y0: 5, x1: 110, y1: 5 }, 'other-side-of-row'), cachedOtherSideOfRow,
+  'Изменение строки не сбрасывает выборки за пределами изменённого участка');
+unsubscribe();
+changeMap.changed({ x0: 4, y0: 5, x1: 4, y1: 5 }, ['owner']);
+assert.equal(events.length, 1, 'Отписка прекращает выдачу изменений');
 
 const values = new Uint8Array(MAP_PIXELS).fill(20);
 const layer = new ScalarContourLayer(() => values);
