@@ -14,6 +14,7 @@
     "kernel:android-build": "node scripts/build-android-kernel.mjs",
     "kernel:test": "pnpm run kernel:build && node scripts/kernel-smoke.test.mjs",
     "kernel:browser-test": "pnpm run kernel:build && node scripts/kernel-browser.test.mjs",
+    "test:geometry": "../api-server/node_modules/.bin/esbuild scripts/geometry.test.mjs --bundle --platform=node --format=esm --outfile=/tmp/zero-strategy-geometry.test.mjs && node /tmp/zero-strategy-geometry.test.mjs",
     "pretest:flags": "pnpm run test:flag-module-qualification",
     "test:flag-module-qualification": "../api-server/node_modules/.bin/esbuild scripts/flag-module-qualification.test.mjs --bundle --platform=node --format=esm --outfile=/tmp/zero-strategy-flag-module-qualification.test.mjs && node /tmp/zero-strategy-flag-module-qualification.test.mjs",
     "test:flag-golden": "../api-server/node_modules/.bin/esbuild scripts/flag-generation-golden.test.mjs --bundle --platform=node --format=esm --outfile=/tmp/zero-strategy-flag-generation-golden.test.mjs && node /tmp/zero-strategy-flag-generation-golden.test.mjs",
