@@ -1,0 +1,28 @@
+{
+  "cli": {
+    "version": ">= 16.17.3",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "APP_BUILD_TARGET": "native"
+      },
+      "pnpm": "9.15.9"
+    },
+    "production": {
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "APP_BUILD_TARGET": "native"
+      },
+      "pnpm": "9.15.9"
+    }
+  }
+}

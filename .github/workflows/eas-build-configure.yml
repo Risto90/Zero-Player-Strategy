@@ -7,14 +7,10 @@ on:
       - '.github/workflows/eas-build-configure.yml'
       - 'package.json'
       - 'pnpm-lock.yaml'
-      - 'artifacts/zero-strategy/app.config.js'
-      - 'artifacts/zero-strategy/eas.json'
 
 jobs:
   configure-eas:
     runs-on: ubuntu-latest
-    env:
-      APP_BUILD_TARGET: native
 
     steps:
       - name: Checkout repository
@@ -34,16 +30,15 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Initialize EAS project
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        working-directory: artifacts/zero-strategy
-        run: pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
+        run: |
+          pnpm dlx eas-cli@latest init --account phoenix-castle --non-interactive
 
       - name: Verify generated files
-        working-directory: artifacts/zero-strategy
         run: |
           ls -la
           test -f eas.json || { echo "eas.json missing"; exit 1; }
@@ -51,8 +46,8 @@ jobs:
       - name: Configure EAS build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        working-directory: artifacts/zero-strategy
-        run: pnpm dlx eas-cli@latest build:configure --platform all
+        run: |
+          pnpm dlx eas-cli@latest build:configure --platform all
 
       - name: Upload generated config
         if: always()
@@ -60,7 +55,7 @@ jobs:
         with:
           name: eas-config
           path: |
-            artifacts/zero-strategy/eas.json
-            artifacts/zero-strategy/ios
-            artifacts/zero-strategy/android
+            eas.json
+            ios
+            android
           if-no-files-found: ignore
