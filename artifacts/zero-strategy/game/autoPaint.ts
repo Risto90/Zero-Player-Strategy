@@ -14,16 +14,8 @@ export interface PaintActions {
   dab(x: number, y: number, radius: number): number;
   line(ax: number, ay: number, bx: number, by: number, radius: number): number;
   endStroke(): void;
-  contour?(area: ContourArea, seed?: number, startArea?: ContourArea): number;
+  contour?(area: ContourArea, seed?: number): number;
   contours?(areas: readonly ContourArea[]): number;
-  dabCooperatively?(x: number, y: number, radius: number): Promise<number>;
-  contourCooperatively?(
-    area: ContourArea,
-    seed?: number,
-    startArea?: ContourArea,
-    onMeasure?: (stage: string, durationMs: number) => void,
-  ): Promise<number>;
-  contoursCooperatively?(areas: readonly ContourArea[]): Promise<number>;
 }
 
 /**
@@ -39,43 +31,6 @@ class ContourTerritoryStrategy {
   ) {}
 
   run(): void {
-    const steps = this.plan();
-    let step = steps.next();
-    while (!step.done) {
-      const { area, pixel, startArea } = step.value;
-      step = steps.next(this.actions.contour!(area, pixel, startArea));
-    }
-  }
-
-  async runCooperatively(yieldControl: () => Promise<void>): Promise<void> {
-    const steps = this.plan();
-    let stepStarted = this.onMeasure ? performance.now() : 0;
-    let step = steps.next();
-    this.onMeasure?.('подготовка следующего контура кисти', performance.now() - stepStarted);
-    while (!step.done) {
-      const { area, pixel, startArea } = step.value;
-      const changedBefore = this.painter.changed.length;
-      const spent = this.actions.contourCooperatively
-        ? await this.actions.contourCooperatively(area, pixel, startArea, this.onMeasure)
-        : this.actions.contour!(area, pixel, startArea);
-      const didChange = this.painter.changed.length > changedBefore;
-      const yieldStarted = this.onMeasure ? performance.now() : 0;
-      await yieldControl();
-      this.onMeasure?.(
-        didChange ? 'передача управления после изменения' : 'передача управления после области без изменений',
-        performance.now() - yieldStarted,
-      );
-      stepStarted = this.onMeasure ? performance.now() : 0;
-      step = steps.next(spent);
-      this.onMeasure?.('поиск следующего контура кисти', performance.now() - stepStarted);
-    }
-  }
-
-  private *plan(): Generator<
-    { area: ContourArea; pixel: number; startArea: ContourArea },
-    void,
-    number
-  > {
     const { world, card } = this.painter;
     const started = this.onMeasure ? performance.now() : 0;
     const bounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
@@ -92,16 +47,10 @@ class ContourTerritoryStrategy {
     const country = card.type === 'create'
       ? world.countries[card.newCountryId ?? -1] : world.countries[card.targetCountryId ?? -1];
     const isColonization = card.type === 'colonization';
-    const candidates = new Map<number, {
-      pixel: number;
-      fit: number;
-      efficiency: number;
-      startArea: ContourArea;
-      extraStartPixels: Set<number>;
-    }>();
+    const candidates = new Map<number, { pixel: number; fit: number; efficiency: number }>();
     const consideredSeas = new Set(this.painter.strategySeaBodies());
     let choosingFirst = country?.pixels === 0;
-    const consider = (pixel: number, knownId?: number, initialStartArea?: ContourArea) => {
+    const consider = (pixel: number, knownId?: number) => {
       if ((!isColonization && world.owner[pixel] !== 0) || !world.land[pixel] || !paint.contains(pixel)) return;
       const id = knownId ?? regionIds.get(
         `${world.humidity[pixel]}:${world.temperature[pixel]}:${world.drainage[pixel]}`,
@@ -111,7 +60,6 @@ class ContourTerritoryStrategy {
       const previousIsAvailable = previous && (isColonization
         ? this.painter.strategyImpactAt(previous.pixel) > 0
         : world.owner[previous.pixel] === 0);
-      if (previousIsAvailable) previous.extraStartPixels.add(pixel);
       if (previousIsAvailable && !isColonization) return;
       const region = regions[id];
       const impact = this.painter.strategyImpactAt(pixel);
@@ -124,8 +72,6 @@ class ContourTerritoryStrategy {
         pixel,
         fit: this.painter.strategyClimateFit(region.temperature, region.humidity),
         efficiency,
-        startArea: previous?.startArea ?? initialStartArea ?? ContourArea.pixels([pixel]),
-        extraStartPixels: previous?.extraStartPixels ?? new Set<number>(),
       });
     };
     const candidateStarted = this.onMeasure ? performance.now() : 0;
@@ -133,12 +79,8 @@ class ContourTerritoryStrategy {
       // Выбирается представитель пересечения контуров, а не перебираются все точки карты.
       // Расход и эффект по-прежнему применяет общий CardPainter при заливке области.
       regions.forEach((region, id) => {
-        const initial = region.area.intersect(start);
-        const first = initial.spans[0];
-        if (first) {
-          const pixel = first.y * MAP_WIDTH + first.start;
-          consider(pixel, id, choosingFirst ? ContourArea.pixels([pixel]) : initial);
-        }
+        const first = region.area.intersect(start).spans[0];
+        if (first) consider(first.y * MAP_WIDTH + first.start, id);
       });
     } else start.forEachPixel((pixel) => consider(pixel));
     this.onMeasure?.('представители климатических контуров', performance.now() - candidateStarted);
@@ -154,16 +96,11 @@ class ContourTerritoryStrategy {
         }
       }
       if (bestId < 0) break;
-      const candidate = candidates.get(bestId)!;
       candidates.delete(bestId);
       const area = regions[bestId].area;
-      const extraStart = candidate.extraStartPixels.size
-        ? ContourArea.pixels([...candidate.extraStartPixels])
-        : null;
-      const startArea = extraStart ? candidate.startArea.union(extraStart) : candidate.startArea;
       const changedStart = this.painter.changed.length;
       const paintStarted = this.onMeasure ? performance.now() : 0;
-      const spent = yield { area, pixel: bestPixel, startArea };
+      const spent = this.actions.contour!(area, bestPixel);
       if (this.onMeasure) paintingMs += performance.now() - paintStarted;
       if (!(spent > 0)) continue;
       const frontierStarted = this.onMeasure ? performance.now() : 0;
@@ -255,227 +192,6 @@ class AutoPaintStrategy {
     if (territorial) this.paintTerritory(radius);
     else this.paintOtherCards(radius, isWind);
     this.actions.endStroke();
-  }
-
-  async runCooperatively(yieldControl: () => Promise<void>): Promise<void> {
-    const card = this.painter.card;
-    if (card.hint < 0 && card.type !== 'create') return;
-    if (card.type === 'colonization') {
-      if (!this.actions.contour) {
-        throw new Error('Для колонизации ИИ требуется общий инструмент контурной кисти.');
-      }
-      await new ContourTerritoryStrategy(this.painter, this.actions, this.onMeasure)
-        .runCooperatively(yieldControl);
-      return;
-    }
-    if ((card.type === 'create' || card.type === 'expand') &&
-      this.painter.mode === 'respect' && !card.developmentOnly && this.actions.contour) {
-      await new ContourTerritoryStrategy(this.painter, this.actions, this.onMeasure)
-        .runCooperatively(yieldControl);
-      return;
-    }
-    const territorial = card.type === 'create' || card.type === 'expand' ||
-      card.type === 'split' || card.type === 'nomadExpand';
-    const radius = territorial ? 10 : 16;
-    const isWind = card.type === 'warmWind' || card.type === 'coldWind';
-    if (territorial) await this.paintTerritoryCooperatively(radius, yieldControl);
-    else await this.paintOtherCardsCooperatively(radius, isWind, yieldControl);
-    this.actions.endStroke();
-  }
-
-  private async paintTerritoryCooperatively(
-    radius: number,
-    yieldControl: () => Promise<void>,
-  ): Promise<void> {
-    const { painter, actions, onMeasure } = this;
-    const { card, world } = painter;
-    let scoringDurationMs = 0;
-    let paintingDurationMs = 0;
-    const dab = async (x: number, y: number) => {
-      if (actions.dabCooperatively) await actions.dabCooperatively(x, y, radius);
-      else actions.dab(x, y, radius);
-      await yieldControl();
-    };
-    if (card.type === 'split' && card.newCountryId !== null &&
-      world.countries[card.newCountryId]?.pixels === 0 && painter.strategyImpactAt(card.hint) > 0) {
-      const startedAt = onMeasure ? performance.now() : 0;
-      await dab((card.hint % MAP_WIDTH) + 0.5, Math.floor(card.hint / MAP_WIDTH) + 0.5);
-      if (onMeasure) paintingDurationMs += performance.now() - startedAt;
-    }
-    for (let step = 0; step < MAX_TERRITORY_DABS && card.ink > 0; step += 1) {
-      const scoringStartedAt = onMeasure ? performance.now() : 0;
-      const scored = await this.rankCandidatesCooperatively(radius, yieldControl);
-      if (onMeasure) scoringDurationMs += performance.now() - scoringStartedAt;
-      if (!scored.length) break;
-      let spent = 0;
-      for (const candidate of scored.slice(0, 8)) {
-        const paintingStartedAt = onMeasure ? performance.now() : 0;
-        spent = actions.dabCooperatively
-          ? await actions.dabCooperatively(
-            (candidate.pixel % MAP_WIDTH) + 0.5,
-            Math.floor(candidate.pixel / MAP_WIDTH) + 0.5,
-            radius,
-          )
-          : actions.dab(
-            (candidate.pixel % MAP_WIDTH) + 0.5,
-            Math.floor(candidate.pixel / MAP_WIDTH) + 0.5,
-            radius,
-          );
-        if (onMeasure) paintingDurationMs += performance.now() - paintingStartedAt;
-        await yieldControl();
-        if (spent > 0) break;
-      }
-      if (spent <= 0) break;
-    }
-    onMeasure?.('подбор центров кисти', scoringDurationMs);
-    onMeasure?.('обработка мазков кисти', paintingDurationMs);
-  }
-
-  private async paintOtherCardsCooperatively(
-    radius: number,
-    isWind: boolean,
-    yieldControl: () => Promise<void>,
-  ): Promise<void> {
-    const { painter, actions, onMeasure } = this;
-    const { card } = painter;
-    const scoringStarted = onMeasure ? performance.now() : 0;
-    const candidates = await this.rankCandidatesCooperatively(radius, yieldControl);
-    onMeasure?.('оценка центров карты слоя', performance.now() - scoringStarted);
-    const selected: number[] = [];
-    const spacing = radius * 1.6;
-    const spacingSquared = spacing * spacing;
-    for (const candidate of candidates) {
-      if (selected.length >= MAX_SCORE_CENTERS) break;
-      const x = candidate.pixel % MAP_WIDTH, y = Math.floor(candidate.pixel / MAP_WIDTH);
-      if (selected.some((pixel) =>
-        (pixel % MAP_WIDTH - x) ** 2 + (Math.floor(pixel / MAP_WIDTH) - y) ** 2 < spacingSquared,
-      )) continue;
-      selected.push(candidate.pixel);
-    }
-    await yieldControl();
-
-    const windStart = isWind && card.hint >= 0 ? card.hint : -1;
-    if (windStart >= 0) {
-      actions.beginStroke((windStart % MAP_WIDTH) + 0.5, Math.floor(windStart / MAP_WIDTH) + 0.5);
-    }
-    const centers = selected.filter((pixel) => !isWind || pixel !== windStart);
-    let batchedLayerPaint = false;
-    if (this.candidates.isLayerCard() && actions.contoursCooperatively) {
-      const areas: ContourArea[] = [];
-      if (centers.length && card.ink > 0) {
-        const first = centers[0];
-        let centerArea = ContourArea.circle(
-          (first % MAP_WIDTH) + 0.5,
-          Math.floor(first / MAP_WIDTH) + 0.5,
-          radius,
-        );
-        for (const pixel of centers.slice(1)) {
-          centerArea = centerArea.union(ContourArea.circle(
-            (pixel % MAP_WIDTH) + 0.5,
-            Math.floor(pixel / MAP_WIDTH) + 0.5,
-            radius,
-          ));
-        }
-        areas.push(centerArea);
-      }
-      if (card.ink > 0) {
-        areas.push(painter.strategyLayerTargetArea({
-          x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1,
-        }));
-      }
-      await actions.contoursCooperatively(areas);
-      batchedLayerPaint = true;
-    } else if (actions.contourCooperatively && centers.length && card.ink > 0) {
-      const first = centers[0];
-      let area = ContourArea.circle(
-        (first % MAP_WIDTH) + 0.5,
-        Math.floor(first / MAP_WIDTH) + 0.5,
-        radius,
-      );
-      for (const pixel of centers.slice(1)) {
-        area = area.union(ContourArea.circle(
-          (pixel % MAP_WIDTH) + 0.5,
-          Math.floor(pixel / MAP_WIDTH) + 0.5,
-          radius,
-        ));
-      }
-      await actions.contourCooperatively(area);
-    } else {
-      for (const pixel of centers) {
-        if (card.ink <= 0) break;
-        if (actions.dabCooperatively) {
-          await actions.dabCooperatively((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5, radius);
-        } else actions.dab((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5, radius);
-        await yieldControl();
-      }
-    }
-    if (!batchedLayerPaint && this.candidates.isLayerCard() && card.ink > 0) {
-      await this.paintRemainingLayerTargetsCooperatively(isWind, windStart, yieldControl);
-    }
-    if (isWind && windStart >= 0) {
-      const x = (windStart % MAP_WIDTH) + 0.5;
-      const y = Math.floor(windStart / MAP_WIDTH) + 0.5;
-      if (actions.dabCooperatively) await actions.dabCooperatively(x, y, radius);
-      else actions.line(x, y, x, y, radius);
-    }
-  }
-
-  private async paintRemainingLayerTargetsCooperatively(
-    isWind: boolean,
-    windStart: number,
-    yieldControl: () => Promise<void>,
-  ): Promise<void> {
-    const { painter, actions } = this;
-    const { card, world } = painter;
-    if (actions.contourCooperatively) {
-      const bounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
-      const area = painter.strategyLayerTargetArea(bounds);
-      if (isWind && windStart < 0) {
-        const start = painter.strategyStrokeContours(bounds).start.spans[0];
-        if (start) {
-          const pixel = start.y * MAP_WIDTH + start.start;
-          actions.beginStroke((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5);
-        }
-      }
-      await actions.contourCooperatively(area);
-      return;
-    }
-    const legalTargets: number[] = [];
-    for (let pixel = 0; pixel < world.land.length; pixel += 1) {
-      if (painter.strategyInkCostAt(pixel) > 0) legalTargets.push(pixel);
-      if (pixel > 0 && pixel % 8192 === 0) await yieldControl();
-    }
-    if (isWind && windStart < 0 && legalTargets.length) {
-      const start = legalTargets.find((pixel) => world.owner[pixel] === (card.targetCountryId ?? -2) + 1);
-      if (start !== undefined) {
-        actions.beginStroke((start % MAP_WIDTH) + 0.5, Math.floor(start / MAP_WIDTH) + 0.5);
-      }
-    }
-    let fallbackDabs = 0;
-    for (const pixel of legalTargets) {
-      if (card.ink <= 0 || fallbackDabs >= MAX_LAYER_FALLBACK_DABS) break;
-      if (painter.strategyInkCostAt(pixel) <= 0) continue;
-      if (actions.dabCooperatively) {
-        await actions.dabCooperatively((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5, 5);
-      } else actions.dab((pixel % MAP_WIDTH) + 0.5, Math.floor(pixel / MAP_WIDTH) + 0.5, 5);
-      fallbackDabs += 1;
-      await yieldControl();
-    }
-  }
-
-  private async rankCandidatesCooperatively(
-    radius: number,
-    yieldControl: () => Promise<void>,
-  ): Promise<{ pixel: number; score: number }[]> {
-    const pixels = await this.candidates.boundedCooperatively(yieldControl);
-    const scored: { pixel: number; score: number }[] = [];
-    for (let index = 0; index < pixels.length; index += 1) {
-      const pixel = pixels[index];
-      const score = this.scorer.score(pixel, radius);
-      if (score > 0) scored.push({ pixel, score });
-      if (index > 0 && index % 8 === 0) await yieldControl();
-    }
-    return scored.sort((a, b) => b.score - a.score || a.pixel - b.pixel);
   }
 
   private paintTerritory(radius: number): void {
@@ -666,13 +382,4 @@ export function autoPaint(
   onMeasure?: (stage: string, durationMs: number) => void,
 ): void {
   new AutoPaintStrategy(painter, actions, onMeasure).run();
-}
-
-export async function autoPaintCooperatively(
-  painter: CardPainter,
-  actions: PaintActions,
-  onMeasure: ((stage: string, durationMs: number) => void) | undefined,
-  yieldControl: () => Promise<void>,
-): Promise<void> {
-  await new AutoPaintStrategy(painter, actions, onMeasure).runCooperatively(yieldControl);
 }

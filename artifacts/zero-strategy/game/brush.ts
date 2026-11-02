@@ -113,19 +113,6 @@ export interface CardPainterState {
 const isCurrent = (type: CardType) => type === 'warmCurrent' || type === 'coldCurrent';
 const isWind = (type: CardType) => type === 'warmWind' || type === 'coldWind';
 const isTemperatureCard = (type: CardType) => isCurrent(type) || isWind(type);
-
-function contourLayersForCard(type: CardType): ContourLayerName[] {
-  if (['create', 'expand', 'colonization'].includes(type)) {
-    return ['owner', 'density', 'culture', 'religion', 'humanOrigins'];
-  }
-  if (type === 'split') return ['owner'];
-  if (type === 'nomadExpand') return ['density', 'culture', 'religion', 'humanOrigins'];
-  if (['rain', 'drought'].includes(type)) return ['humidity'];
-  if (['swamping', 'desertification'].includes(type)) return ['drainage'];
-  if (isTemperatureCard(type)) return ['temperature'];
-  if (type === 'faith') return ['religion'];
-  return ['culture'];
-}
 const BRUSH_SCALING_CACHE_BLOCK = 64;
 
 export interface SplitTerritoryValidation {
@@ -275,7 +262,6 @@ export class CardPainter {
   readonly changed: number[] = [];
   private readonly cardMask = new Uint8Array(MAP_PIXELS);
   private readonly strokeMask = new Uint8Array(MAP_PIXELS);
-  private cardMaskContour: ContourArea | null = null;
   private readonly dabMask = new Uint8Array(MAP_PIXELS);
   /** Общее население, перемещённое картой колонизации. */
   colonistsMoved = 0;
@@ -304,7 +290,6 @@ export class CardPainter {
   private readonly nomadRange = new Set<number>();
   private readonly nomadCells = new Map<number, NomadCell>();
   readonly extraDirty: Rect[] = [];
-  readonly dirtyLayers = new Set<ContourLayerName>();
   private readonly dirtyTileKeys = new Set<number>();
   dirty: Rect | null = null;
   message = '';
@@ -660,109 +645,6 @@ export class CardPainter {
     return land;
   }
 
-  /** Точная область точек, для которых эта карта ещё может потратить чернила. */
-  strategyLayerCandidateArea(bounds: ContourBounds): ContourArea {
-    const world = this.world;
-    const card = this.card;
-    const type = card.type;
-    if (card.ink <= 0) return new ContourArea();
-
-    const land = world.contours.layer('land').select((value) => value === 1, bounds, 'land');
-    const owners = world.contours.layer('owner');
-    const waterLayer = world.contours.layer('water');
-    const targetTag = card.targetCountryId === null ? null : card.targetCountryId + 1;
-    let area: ContourArea;
-
-    if (isCurrent(type)) {
-      const water = waterLayer.select((value) => value >= 0, bounds, 'all-water');
-      area = land.union(water);
-    } else if (isWind(type)) {
-      const seaKey = [...this.seas].sort((a, b) => a - b).join(',');
-      const water = waterLayer.select(
-        (value) => this.seas.has(value),
-        bounds,
-        `wind-seas:${seaKey}`,
-      );
-      if (card.ink + 1e-9 < 0.5) return new ContourArea();
-      if (targetTag === null) {
-        area = water;
-      } else {
-        const ownLand = land.intersect(owners.select(
-          (value) => value === targetTag,
-          bounds,
-          `wind-owner:${targetTag}`,
-        ));
-        area = card.ink + 1e-9 < 1 ? water : ownLand.union(water);
-      }
-    } else if (type === 'faith' || type === 'culture') {
-      const ownerArea = targetTag === null
-        ? owners.select((value) => value > 0, bounds, 'inhabited')
-        : owners.select((value) => value === targetTag, bounds, `owner:${targetTag}`);
-      area = land.intersect(ownerArea);
-    } else {
-      area = targetTag === null
-        ? land
-        : land.intersect(owners.select((value) => value === targetTag, bounds, `owner:${targetTag}`));
-    }
-
-    let changingLayer: 'humidity' | 'temperature' | 'drainage' | 'culture' | 'religion' | null = null;
-    let canChangeValue: ((value: number) => boolean) | null = null;
-    let valueKey = '';
-    if (type === 'rain' || type === 'drought') {
-      changingLayer = 'humidity';
-      canChangeValue = type === 'rain' ? (value) => value < 100 : (value) => value > 0;
-      valueKey = `ai:${type}`;
-    } else if (type === 'desertification' || type === 'swamping') {
-      changingLayer = 'drainage';
-      canChangeValue = type === 'desertification' ? (value) => value < 100 : (value) => value > 0;
-      valueKey = `ai:${type}`;
-    } else if (isCurrent(type) || isWind(type)) {
-      changingLayer = 'temperature';
-      canChangeValue = type === 'warmCurrent' || type === 'warmWind'
-        ? (value) => value < 100
-        : (value) => value > 0;
-      valueKey = `ai:${type}`;
-    } else if (type === 'faith') {
-      changingLayer = 'religion';
-      canChangeValue = (value) => world.religionTable.convert(
-        value,
-        card.newReligionId as number,
-        FAITH_CONVERSION,
-        null,
-      ) !== value;
-      valueKey = `ai:faith:${card.newReligionId}`;
-    } else if (type === 'culture') {
-      changingLayer = 'culture';
-      canChangeValue = (value) => world.cultureTable.convert(
-        value,
-        card.newCultureId as number,
-        CULTURE_CONVERSION,
-        card.sourceCultureId,
-      ) !== value;
-      valueKey = `ai:culture:${card.newCultureId}:${card.sourceCultureId ?? 'all'}`;
-    }
-
-    if (changingLayer && canChangeValue) {
-      area = area.intersect(
-        world.contours.layer(changingLayer).select(canChangeValue, bounds, valueKey),
-      );
-    }
-
-    if (this.mode === 'respect') {
-      this.cardMaskContour ??= ContourArea.fromBinaryMask(this.cardMask, {
-        x0: 0,
-        y0: 0,
-        x1: MAP_WIDTH - 1,
-        y1: MAP_HEIGHT - 1,
-      });
-      area = area.subtract(this.cardMaskContour);
-    }
-    if (this.strokeTouched.length) {
-      area = area.subtract(ContourArea.pixels(this.strokeTouched));
-    }
-    return area;
-  }
-
   /**
    * Контуры начала, прохода и окончания задаются раздельно для проверки ручного мазка.
    * ИИ использует эти же области и ту же кисть; не заменять правила пиксельным обходом или отдельной логикой.
@@ -838,117 +720,34 @@ export class CardPainter {
    * Общий инструмент заполнения контура: те же эффекты, связность и расход чернил, что у мазка.
    * Контур должен оставаться геометрическим объектом до общего шага нанесения кисти.
    */
-  paintContour(area: ContourArea, seed?: number, startArea?: ContourArea): number {
-    return this.paintContours([area], seed, startArea);
-  }
-
-  async paintContourCooperatively(
-    area: ContourArea,
-    seed: number | undefined,
-    startArea: ContourArea | undefined,
-    yieldControl: () => Promise<void>,
-    onChunk: () => void,
-    onMeasure?: (stage: string, durationMs: number) => void,
-  ): Promise<number> {
-    return this.paintContoursCooperatively([area], seed, startArea, yieldControl, onChunk, onMeasure);
-  }
-
-  async paintContoursCooperatively(
-    areas: readonly ContourArea[],
-    seed: number | undefined,
-    startArea: ContourArea | undefined,
-    yieldControl: () => Promise<void>,
-    onChunk: () => void,
-    onMeasure?: (stage: string, durationMs: number) => void,
-  ): Promise<number> {
-    const steps = this.paintContoursSteps(areas, seed, startArea);
-    let publishedTouched = this.strokeTouched.length;
-    let stepStarted = onMeasure ? performance.now() : 0;
-    let step = steps.next();
-    onMeasure?.('обработка блока контура', performance.now() - stepStarted);
-    while (!step.done) {
-      const currentTouched = this.strokeTouched.length;
-      const publishStarted = onMeasure ? performance.now() : 0;
-      this.publishCooperativeChanges(publishedTouched, currentTouched);
-      onMeasure?.('публикация контуров кисти', performance.now() - publishStarted);
-      publishedTouched = currentTouched;
-      const refreshStarted = onMeasure ? performance.now() : 0;
-      onChunk();
-      onMeasure?.('уведомление карты о кисти', performance.now() - refreshStarted);
-      const yieldStarted = onMeasure ? performance.now() : 0;
-      await yieldControl();
-      onMeasure?.('передача управления между блоками кисти', performance.now() - yieldStarted);
-      stepStarted = onMeasure ? performance.now() : 0;
-      step = steps.next();
-      onMeasure?.('обработка блока контура', performance.now() - stepStarted);
-    }
-    const finalTouched = this.strokeTouched.length;
-    if (finalTouched > publishedTouched) {
-      // Последний шаг может добавить пиксели после предыдущей передачи управления; публикуем их до следующего участника.
-      const publishStarted = onMeasure ? performance.now() : 0;
-      this.publishCooperativeChanges(publishedTouched, finalTouched);
-      onMeasure?.('публикация контуров кисти', performance.now() - publishStarted);
-      const refreshStarted = onMeasure ? performance.now() : 0;
-      onChunk();
-      onMeasure?.('уведомление карты о кисти', performance.now() - refreshStarted);
-    }
-    return step.value;
-  }
-
-  private publishCooperativeChanges(from: number, to: number): void {
-    if (to <= from) return;
-    const rows = new Set<number>();
-    for (let index = from; index < to; index += 1) {
-      const pixel = this.strokeTouched[index];
-      const y = Math.floor(pixel / MAP_WIDTH);
-      rows.add(y);
-      this.markDirtyTilePixel(pixel);
-    }
-    const layers = contourLayersForCard(this.card.type);
-    for (const layer of layers) this.dirtyLayers.add(layer);
-    if (this.card.type !== 'nomadExpand') this.world.contours.changedRows(rows, layers);
+  paintContour(area: ContourArea, seed?: number): number {
+    return this.paintContours([area], seed);
   }
 
   /** Несколько областей одного события обрабатываются за одну синхронизацию и инвалидацию слоёв. */
-  paintContours(areas: readonly ContourArea[], seed?: number, startArea?: ContourArea): number {
-    const steps = this.paintContoursSteps(areas, seed, startArea);
-    let step = steps.next();
-    while (!step.done) step = steps.next();
-    return step.value;
-  }
-
-  private *paintContoursSteps(
-    areas: readonly ContourArea[],
-    seed?: number,
-    startArea?: ContourArea,
-  ): Generator<void, number, void> {
+  paintContours(areas: readonly ContourArea[], seed?: number): number {
+    this.world.contours.synchronize();
     if (!areas.some((area) => area.size > 0) || this.card.ink <= 0) return 0;
     const before = this.card.ink;
     const touchedStart = this.strokeTouched.length;
     if (['create', 'expand', 'colonization', 'split', 'nomadExpand'].includes(this.card.type)) {
-      const isPaintSurface = (pixel: number) => this.world.land[pixel] ||
-        (isCurrent(this.card.type) && this.world.water.bodyOf[pixel] >= 0) ||
-        (isWind(this.card.type) && this.seas.has(this.world.water.bodyOf[pixel]));
-      if (this.card.type === 'nomadExpand') {
-        const pixels: number[] = [];
-        for (const area of areas) area.forEachPixel((pixel) => {
-          if (isPaintSurface(pixel)) pixels.push(pixel);
+      const pixels: number[] = [];
+      for (const area of areas) {
+        area.forEachPixel((pixel) => {
+          if (this.world.land[pixel] || (isCurrent(this.card.type) && this.world.water.bodyOf[pixel] >= 0) ||
+            (isWind(this.card.type) && this.seas.has(this.world.water.bodyOf[pixel]))) pixels.push(pixel);
         });
-        if (!pixels.length) return 0;
-        this.paintTerritory(new ContourArea([]), new ContourArea([]), undefined, pixels);
-      } else {
-        // Территория остаётся набором контуров. Проверяются только стартовая граница и
-        // соседние с уже нанесённой кистью участки, а не каждый пиксель всей области.
-        const area = areas.length === 1
-          ? areas[0]
-          : areas.slice(1).reduce((combined, next) => combined.union(next), areas[0]);
-        if (!area.size) return 0;
-        yield* this.paintTerritorySteps(area, startArea?.intersect(area) ?? area, seed);
       }
+      if (seed !== undefined) {
+        const index = pixels.indexOf(seed);
+        if (index > 0) { pixels.splice(index, 1); pixels.unshift(seed); }
+      }
+      if (!pixels.length) return 0;
+      this.paintTerritory(pixels);
     } else {
       // Слой обрабатывается потоково: когда чернила заканчиваются, перебор
       // останавливается без создания массива всех пикселей большого контура.
-      yield* this.paintLayerSteps(this.layerPixels(areas));
+      this.paintLayer(this.layerPixels(areas));
     }
     const spent = before - this.card.ink;
     if (spent > 0) {
@@ -969,23 +768,12 @@ export class CardPainter {
         };
       }, { x0: MAP_WIDTH, y0: MAP_HEIGHT, x1: -1, y1: -1 });
       const dirty = x1 >= x0 ? { x0, y0, x1, y1 } : fallbackBounds;
-      if (this.strokeTouched.length === touchedStart) {
-        this.markDirty(dirty.x0 - 1, dirty.y0 - 1, dirty.x1 + 1, dirty.y1 + 1);
-      } else {
-        for (let index = touchedStart; index < this.strokeTouched.length; index += 1) {
-          this.markDirtyTilePixel(this.strokeTouched[index]);
-        }
-      }
-      const names = contourLayersForCard(this.card.type);
-      for (const name of names) this.dirtyLayers.add(name);
-      if (this.card.type !== 'nomadExpand') {
-        const changedRows = new Set<number>();
-        for (let index = touchedStart; index < this.strokeTouched.length; index += 1) {
-          changedRows.add(Math.floor(this.strokeTouched[index] / MAP_WIDTH));
-        }
-        if (changedRows.size) this.world.contours.changedRows(changedRows, names);
-        else this.world.contours.changed(dirty, names);
-      }
+      this.markDirty(dirty.x0 - 1, dirty.y0 - 1, dirty.x1 + 1, dirty.y1 + 1);
+      const names: ContourLayerName[] = ['owner', 'density', 'culture', 'religion', 'humanOrigins'];
+      if (['rain', 'drought'].includes(this.card.type)) names.push('humidity');
+      if (['swamping', 'desertification'].includes(this.card.type)) names.push('drainage');
+      if (isTemperatureCard(this.card.type)) names.push('temperature');
+      this.world.contours.changed(dirty, names);
     }
     return spent;
   }
@@ -1034,18 +822,12 @@ export class CardPainter {
 
   /** Отменяет мазок ветра, если палец отпущен над водой вместо территории государства. */
   cancelStroke(): void {
-    const restoredRows = new Set<number>();
     for (const change of this.strokeClimateChanges) {
       this.world.temperature[change.p] = change.value;
       this.card.ink += change.cost;
       this.cardMask[change.p] = change.wasInCard ? 1 : 0;
       const x = change.p % MAP_WIDTH, y = Math.floor(change.p / MAP_WIDTH);
-      restoredRows.add(y);
       this.markDirty(x - 1, y - 1, x + 1, y + 1);
-    }
-    if (restoredRows.size) {
-      this.world.contours.changedRows(restoredRows, ['temperature']);
-      this.dirtyLayers.add('temperature');
     }
     this.changed.length = this.strokeChangedStart;
     for (const p of this.strokeTouched) this.strokeMask[p] = 0;
@@ -1101,9 +883,6 @@ export class CardPainter {
   /** Сферы городов меняют расход чернил и силу населения кисти, не меняя её базовую стоимость. */
   private brushScaling(pixel: number): { cost: number; strength: number } {
     const cardType = this.card.type;
-    if (cardType !== 'expand' && cardType !== 'colonization' && cardType !== 'nomadExpand') {
-      return { cost: 1, strength: 1 };
-    }
     if (cardType === 'expand' || cardType === 'colonization' || cardType === 'nomadExpand') {
       const x = pixel % MAP_WIDTH;
       const y = Math.floor(pixel / MAP_WIDTH);
@@ -1231,60 +1010,19 @@ export class CardPainter {
     return this.paintContour(ContourArea.circle(cx, cy, Math.max(1, radius)));
   }
 
-  private paintTerritory(
-    area: ContourArea,
-    startArea: ContourArea,
-    seed?: number,
-    nomadPixels?: number[],
-  ): void {
-    const steps = this.paintTerritorySteps(area, startArea, seed, nomadPixels);
-    let step = steps.next();
-    while (!step.done) step = steps.next();
-  }
-
-  private *paintTerritorySteps(
-    area: ContourArea,
-    startArea: ContourArea,
-    seed?: number,
-    nomadPixels?: number[],
-  ): Generator<void, void, void> {
+  private paintTerritory(pixels: number[]): void {
     const world = this.world;
     const card = this.card;
     if (card.type === 'nomadExpand') {
-      this.paintNomad(nomadPixels ?? []);
+      this.paintNomad(pixels);
       return;
     }
-    // Индекс хранит границы строк контура, не разворачивая его в пиксельную маску.
-    const rowOffsets = new Int32Array(MAP_HEIGHT + 1);
-    let spanIndex = 0;
-    for (let row = 0; row < MAP_HEIGHT; row += 1) {
-      rowOffsets[row] = spanIndex;
-      while (spanIndex < area.spans.length && area.spans[spanIndex].y === row) spanIndex += 1;
-    }
-    rowOffsets[MAP_HEIGHT] = spanIndex;
-    const contains = (pixel: number): boolean => {
-      if (pixel < 0 || pixel >= MAP_WIDTH * MAP_HEIGHT) return false;
-      const y = Math.floor(pixel / MAP_WIDTH), x = pixel % MAP_WIDTH;
-      let low = rowOffsets[y], high = rowOffsets[y + 1] - 1;
-      while (low <= high) {
-        const middle = (low + high) >>> 1;
-        const span = area.spans[middle];
-        if (span.end <= x) low = middle + 1;
-        else if (span.start > x) high = middle - 1;
-        else return true;
-      }
-      return false;
-    };
     const workingId = this.workingCountryId();
     if (workingId === null) return;
     const working = world.countries[workingId];
     const tag = workingId + 1;
     const sourceTag = card.type === 'split' ? (card.targetCountryId as number) + 1 : 0;
-    const isPaintSurface = (p: number) => world.land[p] ||
-      (isCurrent(card.type) && world.water.bodyOf[p] >= 0) ||
-      (isWind(card.type) && this.seas.has(world.water.bodyOf[p]));
-    const canTake = (p: number, alreadyInArea = false) => {
-      if ((!alreadyInArea && !contains(p)) || !isPaintSurface(p)) return false;
+    const canTake = (p: number) => {
       if (card.type === 'colonization') return this.canColonizePixel(p);
       if (card.type === 'create' && (this.influenceAt(p)?.foreignRankSum ?? 0) > 0) return false;
       if (card.type === 'split' && !this.splitBrush?.canPaint(p)) return false;
@@ -1299,12 +1037,8 @@ export class CardPainter {
 
     // Дополнительное население на уже принадлежащей государству земле — кисть плотности.
     if (card.type !== 'split' && card.type !== 'colonization' && this.mode === 'repeat') {
-      let scanned = 0;
-      for (const p of area) {
-        if (scanned > 0 && scanned % 256 === 0) yield;
-        scanned += 1;
+      for (const p of pixels) {
         if (card.ink <= 0) break;
-        if (!isPaintSurface(p)) continue;
         if (world.owner[p] !== tag || this.strokeMask[p]) continue;
         const { cost, strength } = this.brushScaling(p);
         applyDensityGrowth(world, p, strength, this.cityInfluence?.citiesAt(p));
@@ -1313,11 +1047,11 @@ export class CardPainter {
       }
     }
 
-    // Рост начинается только на контуре доступного соприкосновения, затем идёт по
-    // соседним spans внутри выбранной области; весь контур не разворачивается в массив пикселей.
+    // Рост возможен только от существующей территории: по суше или от побережья моря, которого уже касается государство.
+    for (const p of pixels) this.dabMask[p] = 1;
     const queue: number[] = [];
     const enqueue = (p: number) => {
-      if (this.dabMask[p] === 0) {
+      if (this.dabMask[p] === 1) {
         this.dabMask[p] = 2;
         queue.push(p);
       }
@@ -1329,8 +1063,8 @@ export class CardPainter {
       : originSource ? expectedOriginsForPopulation(originSource.humanOrigin, originSource.population) : null;
     let constantOriginId: number | null = null;
     let cultureIndex: number | null = null;
-    const seedStart = (p: number): boolean => {
-      if (!canTake(p)) return false;
+    for (const p of pixels) {
+      if (!canTake(p)) continue;
       let linked = first;
       if (card.type === 'colonization') {
         linked = this.colonizationAnchors?.[p] === 1;
@@ -1347,16 +1081,7 @@ export class CardPainter {
       }
       if (linked) {
         enqueue(p);
-        return first;
-      }
-      return false;
-    };
-    let firstSeeded = false;
-    if (seed !== undefined && startArea.contains(seed)) firstSeeded = seedStart(seed);
-    if (!firstSeeded) {
-      for (const p of startArea) {
-        if (p === seed) continue;
-        if (seedStart(p)) break;
+        if (first) break;
       }
     }
     if (queue.length === 0 && !first) {
@@ -1368,10 +1093,9 @@ export class CardPainter {
           : 'Продолжайте от своей территории — по суше или через то же море.';
     }
     for (let head = 0; head < queue.length; head += 1) {
-      if (head > 0 && head % 256 === 0) yield;
       if (card.ink <= 0) break;
       const p = queue[head];
-      if (!canTake(p, true)) continue;
+      if (!canTake(p)) continue;
       if (card.type === 'split' && world.countries[card.targetCountryId as number].pixels <= 1) break;
       if (card.type === 'colonization') {
         const donor = this.colonizationDonors?.peek() ?? -1;
@@ -1423,10 +1147,10 @@ export class CardPainter {
       this.changed.push(p);
       if (card.type !== 'split' && world.water.coastsOf.length > 0) world.seasOfPixel(p, this.seas);
       forEachNeighbour(p, (n) => {
-        if (this.dabMask[n] === 0 && contains(n) && canTake(n, true)) enqueue(n);
+        if (this.dabMask[n] && canTake(n)) enqueue(n);
       });
     }
-    for (const p of queue) this.dabMask[p] = 0;
+    for (const p of pixels) this.dabMask[p] = 0;
     if (card.type === 'split' && world.countries[card.targetCountryId as number].pixels <= 1) {
       this.message = 'Исходная страна должна сохранить хотя бы часть земель.';
     }
@@ -1563,18 +1287,11 @@ export class CardPainter {
   }
 
   private markDirtyPixel(p: number): void {
-    const layers: ContourLayerName[] = ['density', 'culture', 'religion', 'humanOrigins'];
-    const y = Math.floor(p / MAP_WIDTH);
-    if (this.card.type !== 'nomadExpand') this.world.contours.changedRows([y], layers);
-    for (const layer of layers) this.dirtyLayers.add(layer);
-    this.markDirtyTilePixel(p);
-  }
-
-  private markDirtyTilePixel(pixel: number): void {
-    // Координаты выбирают только затронутые плитки SVG-кэша; геометрию задают контуры.
     const tileCols = 8, tileRows = 16;
     const tileWidth = MAP_WIDTH / tileCols, tileHeight = MAP_HEIGHT / tileRows;
-    const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
+    const x = p % MAP_WIDTH, y = Math.floor(p / MAP_WIDTH);
+    this.world.contours.changed({ x0: x, y0: y, x1: x, y1: y },
+      ['density', 'culture', 'religion', 'humanOrigins']);
     const col = Math.floor(x / tileWidth), row = Math.floor(y / tileHeight);
     const key = row * tileCols + col;
     if (this.dirtyTileKeys.has(key)) return;
@@ -1586,20 +1303,11 @@ export class CardPainter {
   }
 
   private paintLayer(pixels: Iterable<number>): void {
-    const steps = this.paintLayerSteps(pixels);
-    let step = steps.next();
-    while (!step.done) step = steps.next();
-  }
-
-  private *paintLayerSteps(pixels: Iterable<number>): Generator<void, void, void> {
     const world = this.world;
     const card = this.card;
     const targetTag = card.targetCountryId !== null ? card.targetCountryId + 1 : -1;
     let outside = 0;
-    let scanned = 0;
     for (const p of pixels) {
-      if (scanned > 0 && scanned % 32768 === 0) yield;
-      scanned += 1;
       if (card.ink <= 0) break;
       if (this.strokeMask[p] || (this.mode === 'respect' && this.cardMask[p])) continue;
       const onLand = world.land[p] === 1;

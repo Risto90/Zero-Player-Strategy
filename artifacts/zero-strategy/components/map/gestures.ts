@@ -19,15 +19,13 @@ export interface GestureHost {
   mapPointAt?(x: number, y: number): Point;
   /** Курсор кисти в экранных координатах; null скрывает его. */
   setCursor(point: Point | null): void;
-  onCameraGestureStart?(): void;
-  onCameraGestureEnd?(): void;
 }
 
 type Kind = 'none' | 'paint' | 'pan' | 'pinch';
 
 /**
- * Одно касание рисует кистью или перемещает карту; инструмент города ставит город по нажатию.
- * Короткое нажатие инструментом руки осматривает выбранную точку.
+ * One pointer paints (brush) or pans; the city tool places a city on tap.
+ * A short tap with the hand tool inspects the point.
  */
 export class MapGestures {
   private readonly points = new Map<number, Point>();
@@ -36,21 +34,8 @@ export class MapGestures {
   private moved = false;
   private pinchDist = 0;
   private pinchMid: Point = { x: 0, y: 0 };
-  private cameraGestureActive = false;
 
   constructor(private readonly host: GestureHost) {}
-
-  private startCameraGesture(): void {
-    if (this.cameraGestureActive) return;
-    this.cameraGestureActive = true;
-    this.host.onCameraGestureStart?.();
-  }
-
-  private endCameraGesture(): void {
-    if (!this.cameraGestureActive) return;
-    this.cameraGestureActive = false;
-    this.host.onCameraGestureEnd?.();
-  }
 
   private mapPoint(x: number, y: number): Point {
     return this.host.mapPointAt?.(x, y) ?? toMap(this.host.getView(), x, y);
@@ -81,7 +66,6 @@ export class MapGestures {
     this.points.set(id, { x, y });
     if (this.points.size === 2) {
       if (this.kind === 'paint') host.game.endStroke();
-      this.startCameraGesture();
       const { dist, mid } = this.pinchState();
       this.kind = 'pinch';
       this.pinchDist = dist;
@@ -93,7 +77,6 @@ export class MapGestures {
     if (this.points.size > 2) return;
     const paint = host.tool() === 'brush' && host.canPaint() && !host.game.getSnapshot().busy;
     this.kind = paint ? 'paint' : 'pan';
-    if (!paint) this.startCameraGesture();
     this.start = { x, y };
     this.moved = false;
     if (paint) {
@@ -143,10 +126,7 @@ export class MapGestures {
       if (host.tool() === 'city') host.game.selectCityAt(m.x, m.y);
       else if (host.tool() === 'hand') host.onInspect(host.game.inspect(m.x, m.y));
     }
-    if (this.points.size === 0) {
-      this.kind = 'none';
-      this.endCameraGesture();
-    }
+    if (this.points.size === 0) this.kind = 'none';
     else if (this.kind === 'pinch') {
       // После жеста масштабирования оставшийся палец только перемещает карту.
       this.kind = 'pan';

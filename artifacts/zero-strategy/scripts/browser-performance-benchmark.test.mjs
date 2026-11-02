@@ -62,8 +62,6 @@ class ObserverPerformanceBenchmark {
     this.timeoutMs = timeoutMs;
     this.turns = [];
     this.pageErrors = [];
-    this.browserErrors = [];
-    this.profiler = null;
     this.port = null;
     this.server = null;
     this.browser = null;
@@ -107,9 +105,6 @@ class ObserverPerformanceBenchmark {
     this.page = await this.context.newPage();
     this.page.setDefaultTimeout(120_000);
     this.page.on('pageerror', (error) => this.pageErrors.push(error.message));
-    this.page.on('console', (message) => {
-      if (message.type() === 'error') this.browserErrors.push(message.text());
-    });
     await this.page.goto(`http://127.0.0.1:${this.port}${publicPath('/')}`);
     await this.page.getByTestId('button-role-observer').click();
     await this.page.getByTestId('button-start').click();
@@ -119,32 +114,6 @@ class ObserverPerformanceBenchmark {
       Boolean(document.querySelector('[data-testid="map-canvas"]')),
     );
     await this.waitForIdle(180_000);
-    if (process.env.PERF_SCREENSHOT_PATH) {
-      await this.page.screenshot({ path: process.env.PERF_SCREENSHOT_PATH });
-    }
-    if (process.env.PERF_MAP_DIAGNOSTICS === '1') {
-      const diagnostics = await this.page.evaluate(() => {
-        const root = document.querySelector('[data-testid="map-canvas"]');
-        const snapshot = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
-        return {
-          mode: snapshot?.mapMode,
-          rootTag: root?.tagName,
-          svgLayers: Array.from(document.querySelectorAll('svg')).map((svg) => ({
-            insideMapCanvas: !!root?.contains(svg),
-            viewBox: svg.getAttribute('viewBox'),
-            display: getComputedStyle(svg).display,
-            paths: svg.querySelectorAll('path').length,
-            samples: Array.from(svg.querySelectorAll('path')).slice(0, 4).map((path) => ({
-              fill: path.getAttribute('fill'),
-              stroke: path.getAttribute('stroke'),
-              contour: path.getAttribute('data-contour'),
-              data: path.getAttribute('d')?.slice(0, 100),
-            })),
-          })),
-        };
-      });
-      console.log('Слои карты в браузере:', JSON.stringify(diagnostics));
-    }
   }
 
   async waitForIdle(timeoutMs) {
@@ -154,46 +123,9 @@ class ObserverPerformanceBenchmark {
     }, null, { timeout: timeoutMs, polling: 50 });
   }
 
-  async panDuringTurn(index) {
-    const map = this.page.getByTestId('map-canvas');
-    const bounds = await map.boundingBox();
-    assert.ok(bounds && bounds.width > 180 && bounds.height > 100, 'Для проверки перетаскивания нужна видимая карта.');
-    const before = await this.page.evaluate(() => {
-      const mapElement = document.querySelector('[data-testid="map-canvas"]');
-      return {
-        startedAt: performance.now(),
-        viewBox: mapElement?.parentElement?.querySelector('svg')?.getAttribute('viewBox') ?? null,
-        firstFrameGap: window.__performanceFrameGaps.length,
-      };
-    });
-    const x = bounds.x + bounds.width * 0.7;
-    const y = bounds.y + bounds.height * 0.6;
-    const direction = index % 2 ? -1 : 1;
-    await this.page.mouse.move(x, y);
-    await this.page.mouse.down();
-    await this.page.mouse.move(x + direction * 80, y + direction * 40, { steps: 8 });
-    await this.page.mouse.up();
-    await this.page.evaluate(() => new Promise((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(resolve)),
-    ));
-    const result = await this.page.evaluate((before) => {
-      const mapElement = document.querySelector('[data-testid="map-canvas"]');
-      const viewBox = mapElement?.parentElement?.querySelector('svg')?.getAttribute('viewBox') ?? null;
-      return {
-        durationMs: performance.now() - before.startedAt,
-        viewChanged: viewBox !== before.viewBox,
-        frameGaps: window.__performanceFrameGaps.slice(before.firstFrameGap),
-      };
-    }, before);
-    assert.ok(result.viewChanged, `Перетаскивание в ходе ${index} должно сдвинуть карту.`);
-    return result;
-  }
-
   async measureTurn(index) {
     const before = await this.page.evaluate(() => {
       const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
-      const mapTimings = window.__ZERO_STRATEGY_MAP_LABEL_TIMINGS__;
-      if (mapTimings) mapTimings.length = 0;
       return {
         year: bridge.getSnapshot().year,
         startedAt: performance.now(),
@@ -201,59 +133,13 @@ class ObserverPerformanceBenchmark {
       };
     });
 
-    await this.page.evaluate(() => {
-      void window.__ZERO_STRATEGY_PERFORMANCE_TEST__.advanceTurn();
-    });
-    const pan = await this.panDuringTurn(index);
-    try {
-      await this.page.waitForFunction((previousYear) => {
-        const state = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
-        return !!state && state.year > previousYear && !state.busy && !state.drawing && state.progress === null;
-      }, before.year, { timeout: this.timeoutMs, polling: 50 });
-    } catch (error) {
-      const diagnostic = await this.page.evaluate(() => {
-        const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
-        return {
-          state: bridge?.getSnapshot(),
-          events: bridge?.takeSamples(),
-          stages: bridge?.takeStages(),
-          mapLabelTimings: window.__ZERO_STRATEGY_MAP_LABEL_TIMINGS__ ?? [],
-        };
-      }).catch((evaluationError) => ({ evaluationError: evaluationError.message }));
-      let cpuProfile = null;
-      if (this.profiler) {
-        try {
-          const { profile } = await this.profiler.send('Profiler.stop');
-          const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
-          const samples = new Map();
-          profile.samples?.forEach((id, index) => {
-            samples.set(id, (samples.get(id) ?? 0) + (profile.timeDeltas?.[index] ?? 0));
-          });
-          cpuProfile = [...samples]
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 20)
-            .map(([id, microseconds]) => ({
-              function: nodes.get(id)?.callFrame.functionName,
-              url: nodes.get(id)?.callFrame.url,
-              milliseconds: Math.round(microseconds / 1000),
-              line: nodes.get(id)?.callFrame.lineNumber,
-              column: nodes.get(id)?.callFrame.columnNumber,
-            }));
-        } catch (profileError) {
-          cpuProfile = { error: profileError.message };
-        }
-        this.profiler = null;
-      }
-      console.error('Состояние браузера при превышении времени хода:', JSON.stringify({
-        diagnostic,
-        pageErrors: this.pageErrors,
-        browserErrors: this.browserErrors,
-        cpuProfile,
-      }, null, 2));
-      throw error;
-    }
+    await this.page.evaluate(() => window.__ZERO_STRATEGY_PERFORMANCE_TEST__.advanceTurn());
+    await this.page.waitForFunction((previousYear) => {
+      const state = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
+      return !!state && state.year > previousYear && !state.busy && !state.drawing && state.progress === null;
+    }, before.year, { timeout: this.timeoutMs, polling: 50 });
 
-    const result = await this.page.evaluate(({ index, before, pan }) => {
+    const result = await this.page.evaluate(({ index, before }) => {
       const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
       const state = bridge.getSnapshot();
       const frameGaps = window.__performanceFrameGaps.splice(before.firstFrameGap);
@@ -263,19 +149,15 @@ class ObserverPerformanceBenchmark {
         durationMs: performance.now() - before.startedAt,
         events: bridge.takeSamples(),
         stages: bridge.takeStages(),
-        mapTimings: window.__ZERO_STRATEGY_MAP_LABEL_TIMINGS__?.splice(0) ?? [],
         frameGaps,
-        pan,
       };
-    }, { index, before, pan });
+    }, { index, before });
 
     this.turns.push(result);
     const resolved = result.events.filter((event) => event.cardType !== null);
     const slowest = [...resolved].sort((a, b) => b.durationMs - a.durationMs)[0];
     const slowestStage = [...result.stages].sort((a, b) => b.durationMs - a.durationMs)[0];
-    const maximumPanFrameGap = Math.max(0, ...pan.frameGaps);
-    const maximumTurnFrameGap = Math.max(0, ...result.frameGaps);
-    console.log(`Ход ${index}/${this.years}, год ${result.year}: ${result.durationMs.toFixed(1)} мс, событий ${resolved.length}${slowest ? `, медленнейшее ${slowest.cardType}: выбор ${slowest.drawDurationMs.toFixed(1)} мс, выполнение ${slowest.resolutionDurationMs.toFixed(1)} мс` : ''}${slowestStage ? `; этап ${slowestStage.stage} (${slowestStage.cardType}): ${slowestStage.durationMs.toFixed(1)} мс` : ''}; перетаскивание ${pan.durationMs.toFixed(1)} мс, максимальный разрыв кадров хода ${maximumTurnFrameGap.toFixed(1)} мс, во время перетаскивания ${maximumPanFrameGap.toFixed(1)} мс.`);
+    console.log(`Ход ${index}/${this.years}, год ${result.year}: ${result.durationMs.toFixed(1)} мс, событий ${resolved.length}${slowest ? `, медленнейшее ${slowest.cardType}: выбор ${slowest.drawDurationMs.toFixed(1)} мс, выполнение ${slowest.resolutionDurationMs.toFixed(1)} мс` : ''}${slowestStage ? `; этап ${slowestStage.stage} (${slowestStage.cardType}): ${slowestStage.durationMs.toFixed(1)} мс` : ''}.`);
     return result;
   }
 
@@ -283,10 +165,7 @@ class ObserverPerformanceBenchmark {
     const durations = this.turns.map(({ durationMs }) => durationMs);
     const events = this.turns.flatMap(({ events: samples }) => samples.filter((sample) => sample.cardType !== null));
     const stages = this.turns.flatMap(({ stages: samples }) => samples);
-    const mapTimings = this.turns.flatMap(({ mapTimings: samples = [] }) => samples);
     const allFrameGaps = this.turns.flatMap(({ frameGaps }) => frameGaps);
-    const panSamples = this.turns.map(({ pan }) => pan);
-    const panFrameGaps = panSamples.flatMap(({ frameGaps }) => frameGaps);
     const median = (values) => {
       if (!values.length) return 0;
       const ordered = [...values].sort((a, b) => a - b);
@@ -295,40 +174,6 @@ class ObserverPerformanceBenchmark {
     };
     const slowEvents = [...events].sort((a, b) => b.resolutionDurationMs - a.resolutionDurationMs).slice(0, 10);
     const slowStages = [...stages].sort((a, b) => b.durationMs - a.durationMs).slice(0, 10);
-    const stageTotals = [...stages.reduce((totals, sample) => {
-      const key = `${sample.cardType}:${sample.stage}`;
-      const total = totals.get(key) ?? {
-        cardType: sample.cardType,
-        stage: sample.stage,
-        count: 0,
-        totalMs: 0,
-        maximumMs: 0,
-      };
-      total.count += 1;
-      total.totalMs += sample.durationMs;
-      total.maximumMs = Math.max(total.maximumMs, sample.durationMs);
-      totals.set(key, total);
-      return totals;
-    }, new Map()).values()].sort((a, b) => b.totalMs - a.totalMs);
-    const mapTimingTotals = [...mapTimings.reduce((totals, sample) => {
-      const key = `${sample.mode}:${sample.stage}`;
-      const total = totals.get(key) ?? {
-        mode: sample.mode,
-        stage: sample.stage,
-        calls: 0,
-        totalMs: 0,
-        maximumMs: 0,
-        itemCount: 0,
-        busyCalls: 0,
-      };
-      total.calls += 1;
-      total.totalMs += sample.durationMs;
-      total.maximumMs = Math.max(total.maximumMs, sample.durationMs);
-      total.itemCount += sample.count ?? 0;
-      total.busyCalls += sample.busy ? 1 : 0;
-      totals.set(key, total);
-      return totals;
-    }, new Map()).values()].sort((a, b) => b.totalMs - a.totalMs);
     const eventTypes = Object.groupBy(events, ({ cardType }) => cardType);
     const summary = {
       turns: this.turns.length,
@@ -338,9 +183,6 @@ class ObserverPerformanceBenchmark {
       medianTurnMs: median(durations),
       medianCardCycleMs: median(events.map(({ durationMs }) => durationMs)),
       medianEventExecutionMs: median(events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
-      meanEventExecutionMs: events.length
-        ? events.reduce((sum, { resolutionDurationMs }) => sum + resolutionDurationMs, 0) / events.length
-        : 0,
       maximumEventExecutionMs: Math.max(0, ...events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
       medianCardDrawMs: median(events.map(({ drawDurationMs }) => drawDurationMs)),
       maximumEventMs: Math.max(0, ...events.map(({ durationMs }) => durationMs)),
@@ -353,21 +195,14 @@ class ObserverPerformanceBenchmark {
       maximumCardDrawMs: Math.max(0, ...events.map(({ drawDurationMs }) => drawDurationMs)),
       maximumCardResolutionMs: Math.max(0, ...events.map(({ resolutionDurationMs }) => resolutionDurationMs)),
       slowStages,
-      stageTotals,
-      mapTimingTotals,
       eventsExecutionOverOneSecond: events.filter(({ resolutionDurationMs }) => resolutionDurationMs > 1000).length,
       maximumFrameGapMs: Math.max(0, ...allFrameGaps),
       framesOver50Ms: allFrameGaps.filter((gap) => gap > 50).length,
-      medianPanMs: median(panSamples.map(({ durationMs }) => durationMs)),
-      maximumPanMs: Math.max(0, ...panSamples.map(({ durationMs }) => durationMs)),
-      maximumPanFrameGapMs: Math.max(0, ...panFrameGaps),
-      panFramesOver50Ms: panFrameGaps.filter((gap) => gap > 50).length,
-      panViewChanges: panSamples.filter(({ viewChanged }) => viewChanged).length,
       slowEvents,
     };
     console.log(`Итог браузерного замера: ${JSON.stringify(summary, null, 2)}`);
     assert.ok(summary.maximumTurnMs <= 60_000, 'Один ход не должен длиться больше 60 секунд.');
-    assert.ok(summary.meanEventExecutionMs <= 1_000, 'Среднее время исполнения события не должно превышать одну секунду.');
+    assert.ok(summary.maximumEventExecutionMs <= 1_000, 'Исполнение одного события не должно длиться больше секунды.');
     assert.ok(summary.medianEventExecutionMs <= 200, 'Медианное время исполнения события не должно превышать 200 мс.');
     assert.deepEqual(this.pageErrors, [], 'В браузере не должно быть необработанных ошибок.');
   }
@@ -383,7 +218,6 @@ class ObserverPerformanceBenchmark {
       await this.open();
       const profiler = process.env.PERF_CPU_PROFILE === '1'
         ? await this.context.newCDPSession(this.page) : null;
-      this.profiler = profiler;
       if (profiler) {
         await profiler.send('Profiler.enable');
         await profiler.send('Profiler.start');
@@ -391,26 +225,17 @@ class ObserverPerformanceBenchmark {
       for (let index = 1; index <= this.years; index += 1) await this.measureTurn(index);
       if (profiler) {
         const { profile } = await profiler.send('Profiler.stop');
-        this.profiler = null;
         const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
         const samples = new Map();
         profile.samples?.forEach((id, index) => {
           samples.set(id, (samples.get(id) ?? 0) + (profile.timeDeltas?.[index] ?? 0));
         });
-        console.log('Профиль процессора:', [...samples].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([id, microseconds]) => {
-          const frame = nodes.get(id).callFrame;
-          const parentFrame = profile.nodes.find((node) => node.children?.includes(id))?.callFrame;
-          const location = (item) => item
-            ? `${item.url}:${item.lineNumber + 1}:${item.columnNumber + 1}`
-            : null;
-          return {
-            функция: frame.functionName,
-            миллисекунд: Math.round(microseconds / 1000),
-            источник: location(frame),
-            родитель: parentFrame?.functionName ?? null,
-            источникРодителя: location(parentFrame),
-          };
-        }));
+        console.log('Профиль процессора:', [...samples].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([id, microseconds]) => ({
+          function: nodes.get(id).callFrame.functionName,
+          milliseconds: Math.round(microseconds / 1000),
+          line: nodes.get(id).callFrame.lineNumber,
+          parent: profile.nodes.find((node) => node.children?.includes(id))?.callFrame.functionName,
+        })));
       }
       this.summarize();
     } finally {

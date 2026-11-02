@@ -17,7 +17,8 @@ export interface RiverPathSegment {
 }
 
 const discoveredPathCache = new WeakMap<World, {
-  geographyRevision: number;
+  version: number;
+  territoryVersion: number;
   segments: RiverPathSegment[];
 }>();
 
@@ -317,7 +318,7 @@ function splitAtMapSeam(
 
 export function discoveredRiverPaths(world: World): RiverPathSegment[] {
   const cached = discoveredPathCache.get(world);
-  if (cached?.geographyRevision === world.geographyRevision) {
+  if (cached?.version === world.version && cached.territoryVersion === world.territoryVersion) {
     return cached.segments;
   }
   const lines: {
@@ -362,7 +363,8 @@ export function discoveredRiverPaths(world: World): RiverPathSegment[] {
     splitAtMapSeam(line.river, wrapped, line.strength, segments);
   }
   discoveredPathCache.set(world, {
-    geographyRevision: world.geographyRevision,
+    version: world.version,
+    territoryVersion: world.territoryVersion,
     segments,
   });
   return segments;

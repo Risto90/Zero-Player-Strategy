@@ -19,7 +19,6 @@ assert.ok(earthGeography.volcanoes.every((volcano) =>
 const world = {
   version: 1,
   territoryVersion: 1,
-  geographyRevision: 1,
   riverFeatures: [
     {
       id: 0,
@@ -103,11 +102,10 @@ assert.ok(equalRankTributary.points.at(-1).y > 100 && equalRankTributary.points.
 assert.equal(discoveredRiverPaths(world), visible, 'unchanged geography reuses its prepared paths');
 
 world.territoryVersion += 1;
-assert.equal(discoveredRiverPaths(world), visible,
-  'изменение территории без открытия нового географического объекта сохраняет подготовленные русла');
+assert.notEqual(discoveredRiverPaths(world), visible, 'new territory refreshes the discovered river paths');
 world.riverFeatures[1].discoveredBy.push(0);
-world.geographyRevision += 1;
+world.version += 1;
 assert.ok(discoveredRiverPaths(world).some((segment) => segment.riverId === 1),
-  'newly discovered rivers enter the map geometry after a geography update');
+  'newly discovered rivers enter the map geometry after a world update');
 
 console.log('River discovery, zoom hierarchy, and map-edge geometry checks passed.');

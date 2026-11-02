@@ -5,7 +5,6 @@ import { CompositionTable } from '../game/composition.ts';
 import { cityLabelFontSize } from '../game/cityVisibility.ts';
 import { fitLabelToVisibleContour } from '../game/labelGeometry.ts';
 import {
-  cityHasPort,
   countryLabelViewportLayout,
   countryMapLabels,
   entityMapLabels,
@@ -56,15 +55,9 @@ const world = {
     { id: 10, name: 'Главный город', pixel: 80 * MAP_WIDTH + 80, rank: 6, capital: true },
     { id: 11, name: 'Соседний город', pixel: 80 * MAP_WIDTH + 80, rank: 6, capital: false },
     { id: 12, name: 'Малый город', pixel: 80 * MAP_WIDTH + 100, rank: 1, capital: false },
-    { id: 13, name: 'Дальний город', pixel: 200 * MAP_WIDTH + 1000, rank: 6, capital: false },
   ],
   knownRivers: new Uint8Array(MAP_PIXELS),
-  geographyRevision: 0,
-  coastalChecks: 0,
-  isCoastal() {
-    this.coastalChecks += 1;
-    return false;
-  },
+  isCoastal: () => false,
   cultures: [{ id: 0, name: 'Народ' }],
   religions: [{ id: 0, name: 'Вера' }],
   countries: [
@@ -82,7 +75,7 @@ for (let y = 20; y < 60; y += 1) for (let x = 20; x < 140; x += 1) {
   world.religion[pixel] = religionMix;
   world.humanOrigins[pixel] = originMix;
 }
-world.contours = new MapContours((name) => world[name]);
+world.contours = new MapContours((name) => world[name], () => world.version);
 
 const zoomedOut = countryMapLabels(world, 0.3, 'political', 1);
 const zoomedIn = countryMapLabels(world, 2, 'political', 1);
@@ -106,14 +99,9 @@ const cityNameIds = visibleCityLabelIds(world, 'political', 1, 1, 0, 0, 320, 180
 assert.ok(cityNameIds.has(10), 'для видимой столицы показывается подпись');
 assert.equal(cityNameIds.has(11), false, 'перекрывающиеся подписи городов не рисуются друг поверх друга');
 assert.equal(cityNameIds.has(12), false, 'подпись города скрыта, пока не виден его значок');
-assert.equal(cityNameIds.has(13), false, 'города далеко за пределами экрана не рассматриваются для подписи');
 assert.equal(visibleCityLabelIds(world, 'political', 1, 1, 0, 0, 320, 180, [
   { left: 40, top: 45, right: 120, bottom: 70 },
 ]).has(10), false, 'подпись города скрывается при конфликте с уже размещённой подписью карты');
-assert.equal(world.coastalChecks, 3, 'береговая проверка кешируется и выполняется только для городов у экрана');
-world.knownRivers[world.cities[0].pixel] = 1;
-world.geographyRevision += 1;
-assert.equal(cityHasPort(world, world.cities[0]), true, 'после обнаружения реки город распознаётся как порт');
 assert.equal(visibleCityLabelIds(world, 'elevation', 10, 1, 0, 0, 320, 180).size, 0,
   'значки и подписи городов отсутствуют на карте высот');
 assert.equal(shouldShowGeographyMarks('political'), true, 'горы видны на карте государств');
@@ -130,26 +118,6 @@ assert.equal(dividedLabels.length, 2,
   'разнесённые части страны получают отдельные подписи, когда их нельзя объединить в одну');
 assert.deepEqual(dividedLabels.map((label) => label.countryBounds.x0).sort((a, b) => a - b), [500, 570],
   'подписи относятся к обоим отдельным фрагментам, а не только к общей рамке территории');
-const clippedCountryLabels = countryMapLabels(world, 8, 'political', null, false, {
-  x0: 490, y0: 15, x1: 540, y1: 65,
-}).filter((label) => label.countryId === 2);
-assert.equal(clippedCountryLabels.length, 1,
-  'для подписи страны анализируется только пересекающийся с окном просмотра фрагмент');
-assert.deepEqual(
-  [clippedCountryLabels[0].countryBounds.x0, clippedCountryLabels[0].countryBounds.x1],
-  [500, 529],
-  'контур подписи обрезается границами видимой области карты');
-const clippedCultureLabels = entityMapLabels(
-  world,
-  'cultures',
-  { kind: 'culture', id: 0 },
-  2,
-  false,
-  { x0: 20, y0: 20, x1: 60, y1: 59 },
-);
-assert.ok(clippedCultureLabels.length > 0, 'подпись сущности сохраняется в видимой части карты');
-assert.ok(clippedCultureLabels.every((label) => label.countryBounds.x0 >= 20 && label.countryBounds.x1 <= 60),
-  'контуры подписей слоя ограничены видимым окном');
 for (let y = 150; y < 190; y += 1) {
   for (let x = 620; x < 640; x += 1) owner[y * MAP_WIDTH + x] = 4;
   for (let x = 644; x < 664; x += 1) owner[y * MAP_WIDTH + x] = 4;

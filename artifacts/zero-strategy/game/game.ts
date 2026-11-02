@@ -1,4 +1,4 @@
-import { autoPaint, autoPaintCooperatively } from './autoPaint';
+import { autoPaint } from './autoPaint';
 import type { PaintActions } from './autoPaint';
 import { ContourArea, type ContourSpan } from './contours';
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
@@ -80,7 +80,7 @@ interface AutomaticTurnResult {
 interface AutomaticTurnJob {
   scope: 'world' | 'country';
   countryId?: number;
-  run: () => AutomaticTurnResult | Promise<AutomaticTurnResult>;
+  run: () => AutomaticTurnResult;
 }
 
 export interface LegendRow {
@@ -164,10 +164,8 @@ export interface GameSnapshot {
   secondsLeft: number;
   paused: boolean;
   busy: boolean;
-  /** Флаг отрисовки не влияет на таймер и обработку ходов. */
+  /** Изменения за год ещё отрисовываются; таймер ждёт завершения отрисовки. */
   drawing: boolean;
-  /** Ход игрока ожидает возвращения на страницу карты. */
-  offscreenTurnAlert: boolean;
   /** Ход ИИ во время продвижения мира, например: обработано 3 из 12 государств. */
   progress: { done: number; total: number } | null;
   /** Читаемый человеком прежний формат для основного игрового экрана. */
@@ -192,12 +190,7 @@ export type GameAction =
   | { type: 'strokeTo'; x: number; y: number }
   | { type: 'endStroke' }
   | { type: 'dab'; x: number; y: number; radius: number }
-  | {
-      type: 'paintContour';
-      spans: readonly ContourSpan[];
-      seed?: number;
-      startSpans?: readonly ContourSpan[];
-    }
+  | { type: 'paintContour'; spans: readonly ContourSpan[]; seed?: number }
   | { type: 'paintContours'; areas: readonly (readonly ContourSpan[])[] }
   | { type: 'line'; ax: number; ay: number; bx: number; by: number; radius: number }
   | { type: 'placeCity'; x: number; y: number }
@@ -210,7 +203,6 @@ interface SavedGame {
   year: number;
   turn: number;
   paused?: boolean;
-  pausedForOffscreenTurn?: boolean;
   focusCountryId: number | null;
   card: Card | null;
   painterState?: CardPainterState | null;
@@ -244,22 +236,7 @@ function onSaveFile<T>(op: () => Promise<T>): Promise<T> {
 }
 
 /** Даёт интерфейсу обновиться между отрезками работы. */
-let yieldChannel: MessageChannel | null = null;
-const yieldQueue: Array<() => void> = [];
-
-export const nextFrame = (): Promise<void> => new Promise((resolve) => {
-  if (typeof window === 'undefined' || typeof MessageChannel === 'undefined') {
-    setTimeout(resolve, 0);
-    return;
-  }
-  if (!yieldChannel) {
-    yieldChannel = new MessageChannel();
-    yieldChannel.port1.onmessage = () => yieldQueue.shift()?.();
-  }
-  yieldQueue.push(resolve);
-  // Канал сообщений уступает основной поток без задержки таймера.
-  yieldChannel.port2.postMessage(undefined);
-});
+export const nextFrame = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 export class Game {
   readonly renderer: MapRenderer;
@@ -285,9 +262,6 @@ export class Game {
   private layer: EntityLayer | null = null;
   private secondsLeft = TURN_SECONDS;
   private paused = false;
-  private pausedForOffscreenTurn = false;
-  private offscreenTurnAlert = false;
-  private playScreenActive = false;
   private pauseChangedDuringBusy = false;
   private busy = false;
   private resolvingAutomatically = false;
@@ -331,7 +305,7 @@ export class Game {
     if (!deferMapPreparation) this.redrawAll();
   }
 
-  /** Помечает контуры карты изменёнными; отображение обновляет только видимый фрагмент активного режима. */
+  /** Перерисовывает всю карту (например, при открытии её экрана); таймер ждёт её отображения. */
   redrawAll(): void {
     this.renderer.markAll();
     this.drawing = true;
@@ -453,9 +427,6 @@ export class Game {
       ? 'elevation'
       : savedMapMode === 'colonization' || savedMapMode === 'nomads' ? 'political' : savedMapMode;
     game.paused = saved.paused ?? false;
-    game.pausedForOffscreenTurn = saved.pausedForOffscreenTurn ?? false;
-    game.offscreenTurnAlert = game.pausedForOffscreenTurn;
-    if (!game.paused && game.isCurrentPlayerCard()) game.pauseForOffscreenPlayerTurn();
     game.renderer.setView(game.mapMode, null);
     return game;
   }
@@ -479,7 +450,7 @@ export class Game {
     return () => this.listeners.delete(listener);
   };
 
-  /** Подписка на изменения контуров, которые могут затронуть видимый фрагмент карты. */
+  /** Вызывается, когда пиксели карты нужно перерисовать (см. `renderer.flush()`). */
   onMapChange(listener: () => void): () => void {
     this.mapListeners.add(listener);
     return () => this.mapListeners.delete(listener);
@@ -522,33 +493,11 @@ export class Game {
     return { scope: 'all' };
   }
 
-  /** Экран карты завершает обновление видимого представления; игровой ход от этого не зависит. */
+  /** Экран карты вызывает этот метод, когда все изменённые участки показаны. */
   mapDrawn(): void {
     if (!this.drawing) return;
     this.drawing = false;
     this.emit();
-  }
-
-  /**
-   * Страница карты управляет только паузой личного хода и видимостью холста.
-   * Автоматические участники продолжают обрабатывать свои действия вне страницы.
-   */
-  setPlayScreenActive(active: boolean): void {
-    if (this.playScreenActive === active) return;
-    this.playScreenActive = active;
-    if (active) {
-      if (this.pausedForOffscreenTurn) {
-        this.paused = false;
-        this.pausedForOffscreenTurn = false;
-      }
-      this.offscreenTurnAlert = false;
-      this.emit();
-      this.scheduleSave();
-      return;
-    }
-    if (!this.busy && !this.paused && this.isCurrentPlayerCard()) {
-      this.pauseForOffscreenPlayerTurn();
-    }
   }
 
   // ---------- таймер ----------
@@ -594,37 +543,16 @@ export class Game {
     }
   }
 
-  private async measurePerformanceStageCooperatively<T>(
-    cardType: Card['type'],
-    stage: string,
-    run: () => Promise<T>,
-  ): Promise<T> {
-    if (!this.performanceTracking) return run();
-    const startedAt = performance.now();
-    try {
-      return await run();
-    } finally {
-      this.performanceStageSamples.push({
-        year: this.year,
-        cardType,
-        stage,
-        durationMs: performance.now() - startedAt,
-      });
-    }
-  }
-
   private tick(): void {
-    if (this.paused || (this.busy && this.secondsLeft === 0)) return;
+    if (this.paused || this.busy || this.drawing) return;
     this.secondsLeft = Math.max(0, this.secondsLeft - 1);
-    if (this.secondsLeft === 0 && !this.busy) void this.nextTurn(true);
-    this.emit();
+    if (this.secondsLeft <= 0) void this.nextTurn(true);
+    else this.emit();
   }
 
   togglePause(): void {
     if (this.busy) this.pauseChangedDuringBusy = true;
     this.paused = !this.paused;
-    this.pausedForOffscreenTurn = false;
-    this.offscreenTurnAlert = false;
     this.emit();
     this.scheduleSave();
   }
@@ -647,11 +575,7 @@ export class Game {
       case 'strokeTo': return this.applyStrokeTo(action.x, action.y);
       case 'endStroke': return this.applyEndStroke();
       case 'dab': return this.applyDab(action.x, action.y, action.radius);
-      case 'paintContour': return this.painter?.paintContour(
-        new ContourArea(action.spans),
-        action.seed,
-        action.startSpans ? new ContourArea(action.startSpans) : undefined,
-      ) ?? 0;
+      case 'paintContour': return this.painter?.paintContour(new ContourArea(action.spans), action.seed) ?? 0;
       case 'paintContours': return this.painter?.paintContours(
         action.areas.map((spans) => new ContourArea(spans)),
       ) ?? 0;
@@ -716,8 +640,7 @@ export class Game {
         this.layer = null;
         this.renderer.setView('political', null);
       }
-      const city = this.world.cityAt(pixel);
-      if (city) this.markCityArea(city);
+      this.renderer.markAll();
       this.emit();
       this.scheduleSave();
       return true;
@@ -877,14 +800,12 @@ export class Game {
   private markCityArea(city: City): void {
     const radius = cityInfluenceRadius(this.world, city);
     const x = city.pixel % MAP_WIDTH, y = Math.floor(city.pixel / MAP_WIDTH);
-    const bounds = {
+    this.renderer.mark({
       x0: Math.max(0, Math.floor(x - radius)),
       y0: Math.max(0, Math.floor(y - radius)),
       x1: Math.min(MAP_WIDTH - 1, Math.ceil(x + radius)),
       y1: Math.min(MAP_HEIGHT - 1, Math.ceil(y + radius)),
-    };
-    this.renderer.markForLayers(bounds, ['density', 'culture', 'religion', 'humanOrigins', 'cityIdAt']);
-    this.renderer.markOverlay(bounds);
+    });
   }
 
   toggleBrushMode(): void {
@@ -969,19 +890,12 @@ export class Game {
   private afterPaint(): void {
     const painter = this.painter;
     if (!painter) return;
-    const nomadOverlayVisible = painter.card.type === 'nomadExpand' &&
-      (this.renderer.mode === 'political' || this.renderer.mode === 'cities');
     if (painter.dirty) {
-      this.renderer.markForLayers(painter.dirty, [...painter.dirtyLayers]);
-      if (nomadOverlayVisible) this.renderer.markOverlay(painter.dirty);
+      this.renderer.mark(painter.dirty);
       painter.dirty = null;
     }
-    for (const rect of painter.extraDirty) {
-      this.renderer.markForLayers(rect, [...painter.dirtyLayers]);
-      if (nomadOverlayVisible) this.renderer.markOverlay(rect);
-    }
+    for (const rect of painter.extraDirty) this.renderer.mark(rect);
     painter.extraDirty.length = 0;
-    painter.dirtyLayers.clear();
     painter.clearExtraDirtyTiles();
     if (painter.message) this.setMessage(painter.message);
     this.emit(true);
@@ -1139,7 +1053,7 @@ export class Game {
       const previousResolutionState = this.resolvingAutomatically;
       this.resolvingAutomatically = true;
       try {
-        await this.resolveAutomaticCardCooperatively(activeCard, true, false);
+        this.resolveAutomaticCard(activeCard, true, false);
       } finally {
         this.resolvingAutomatically = previousResolutionState;
       }
@@ -1163,7 +1077,7 @@ export class Game {
       } finally {
         this.busy = false;
         this.pauseChangedDuringBusy = false;
-        this.drawing = false;
+        this.drawing = this.renderer.pending;
         this.emit(true);
         this.scheduleSave();
       }
@@ -1185,13 +1099,13 @@ export class Game {
       refreshHeirs(this.world, this.year);
       const jobs: AutomaticTurnJob[] = [];
       if (this.role === 'country' || this.role === 'observer') {
-        jobs.push({ scope: 'world', run: async () => {
+        jobs.push({ scope: 'world', run: () => {
           const drawStartedAt = this.performanceTracking ? performance.now() : 0;
           const card = drawWorldCard(this.world, this.year);
           const drawDurationMs = this.performanceTracking ? performance.now() - drawStartedAt : 0;
           if (!card) return { cardType: null, drawDurationMs, resolutionDurationMs: 0 };
           const resolutionStartedAt = this.performanceTracking ? performance.now() : 0;
-          await this.resolveAutomaticallyCooperatively(card, { scope: 'world' });
+          this.resolveAutomatically(card, { scope: 'world' });
           return {
             cardType: card.type,
             drawDurationMs,
@@ -1203,7 +1117,7 @@ export class Game {
         const ids = this.world.countries.filter(isActiveCountry).map((c) => c.id);
         for (const id of ids) {
           if (this.role === 'country' && id === this.focusCountryId) continue;
-          jobs.push({ scope: 'country', countryId: id, run: async () => {
+          jobs.push({ scope: 'country', countryId: id, run: () => {
             const country = this.world.countries[id];
             if (!country || !isActiveCountry(country)) {
               return { cardType: null, drawDurationMs: 0, resolutionDurationMs: 0 };
@@ -1213,7 +1127,7 @@ export class Game {
             const drawDurationMs = this.performanceTracking ? performance.now() - drawStartedAt : 0;
             if (!card) return { cardType: null, drawDurationMs, resolutionDurationMs: 0 };
             const resolutionStartedAt = this.performanceTracking ? performance.now() : 0;
-            await this.resolveAutomaticallyCooperatively(card, { scope: 'country', countryId: id });
+            this.resolveAutomatically(card, { scope: 'country', countryId: id });
             return {
               cardType: card.type,
               drawDurationMs,
@@ -1228,10 +1142,9 @@ export class Game {
       for (let i = 0; i < jobs.length; i += 1) {
         if (this.disposed) return;
         const job = jobs[i];
-        const mapRevisionBefore = this.renderer.visualRevision;
         if (this.performanceTracking) {
           const startedAt = performance.now();
-          const result = await job.run();
+          const result = job.run();
           this.performanceSamples.push({
             year: this.year,
             scope: job.scope,
@@ -1242,9 +1155,8 @@ export class Game {
             resolutionDurationMs: result.resolutionDurationMs,
           });
         } else {
-          await job.run();
+          job.run();
         }
-        if (this.renderer.visualRevision !== mapRevisionBefore) this.emit(true);
         if (Date.now() - sliceStart >= SLICE_MS || i === jobs.length - 1) {
           this.progress = { done: i + 1, total: jobs.length };
           this.emit();
@@ -1252,12 +1164,7 @@ export class Game {
           sliceStart = Date.now();
         }
       }
-      const changedGeographyPixels = new Set<number>();
-      this.world.discoverGeography((pixels) => {
-        for (const pixel of pixels) changedGeographyPixels.add(pixel);
-      });
-      this.renderer.markOverlayPixels(changedGeographyPixels);
-      if (this.renderer.mode === 'elevation') this.renderer.markTerrainPixels(changedGeographyPixels);
+      if (this.world.discoverGeography()) this.renderer.markAll();
       ensureDynastyEmblems(this.world);
       this.queue = this.playerSlots();
       this.startNextPlayerCard();
@@ -1265,7 +1172,7 @@ export class Game {
       this.busy = false;
       this.pauseChangedDuringBusy = false;
       this.progress = null;
-      this.drawing = false;
+      this.drawing = this.renderer.pending;
       this.emit(true);
       this.scheduleSave();
     }
@@ -1352,9 +1259,6 @@ export class Game {
     this.painter = new CardPainter(this.world, card, this.brushMode, painterState);
     this.secondsLeft = TURN_SECONDS;
     if (!this.busy || !this.pauseChangedDuringBusy) this.paused = false;
-    if (this.isPlayerRecipient(recipient) && !this.playScreenActive) {
-      this.pauseForOffscreenPlayerTurn();
-    }
     this.setMessage(card.detail, recipient);
     const mode: MapMode =
       card.type === 'drought' || card.type === 'rain' ? 'humidity'
@@ -1374,30 +1278,6 @@ export class Game {
 
   private isPlayerControlled(countryId: number): boolean {
     return this.role === 'all' || (this.role === 'country' && this.focusCountryId === countryId);
-  }
-
-  private isPlayerRecipient(recipient: NotificationRecipient): boolean {
-    if (recipient.scope === 'world') return this.role === 'all' || this.role === 'world';
-    if (recipient.scope === 'country') return this.isPlayerControlled(recipient.countryId);
-    return false;
-  }
-
-  private isCurrentPlayerCard(): boolean {
-    const card = this.card;
-    if (!card) return false;
-    if (card.chronicleScope === 'world') return this.role === 'all' || this.role === 'world';
-    if (card.chronicleScope !== 'country') return false;
-    const countryId = card.chronicleCountryId ?? card.targetCountryId;
-    return countryId !== null && countryId !== undefined && this.isPlayerControlled(countryId);
-  }
-
-  private pauseForOffscreenPlayerTurn(): void {
-    if (this.role === 'observer' || this.paused) return;
-    this.paused = true;
-    this.pausedForOffscreenTurn = true;
-    this.offscreenTurnAlert = true;
-    this.emit();
-    this.scheduleSave();
   }
 
   private startInheritanceSplitCard(
@@ -1465,19 +1345,6 @@ export class Game {
     }
   }
 
-  private async resolveAutomaticallyCooperatively(
-    card: Card,
-    recipient: NotificationRecipient = this.defaultNotificationRecipient(),
-  ): Promise<void> {
-    const previousResolutionState = this.resolvingAutomatically;
-    this.resolvingAutomatically = true;
-    try {
-      await this.resolveAutomaticCardCooperatively(card, false, true, recipient);
-    } finally {
-      this.resolvingAutomatically = previousResolutionState;
-    }
-  }
-
   private resolveAutomaticCard(
     card: Card,
     reuseActiveCard = false,
@@ -1508,12 +1375,7 @@ export class Game {
       dab: (x, y, radius) => this.dispatchAction({ type: 'dab', x, y, radius }) as number,
       line: (ax, ay, bx, by, radius) => this.dispatchAction({ type: 'line', ax, ay, bx, by, radius }) as number,
       endStroke: () => this.dispatchAction({ type: 'endStroke' }),
-      contour: (area, seed, startArea) => this.dispatchAction({
-        type: 'paintContour',
-        spans: area.spans,
-        seed,
-        startSpans: startArea?.spans,
-      }) as number,
+      contour: (area, seed) => this.dispatchAction({ type: 'paintContour', spans: area.spans, seed }) as number,
       contours: (areas) => this.dispatchAction({
         type: 'paintContours',
         areas: areas.map((area) => area.spans),
@@ -1530,109 +1392,6 @@ export class Game {
       }
       : undefined;
     this.measurePerformanceStage(card.type, 'автоматическая кисть', () => autoPaint(painter, actions, onMeasure));
-    this.measurePerformanceStage(card.type, 'обновление после покраски', () => this.afterPaint());
-    this.measurePerformanceStage(card.type, 'выбор места города', () => {
-      const targetCountry = card.type === 'buildCity' && card.targetCountryId !== null
-        ? this.world.countries[card.targetCountryId] : null;
-      if (targetCountry?.type === 'nomadic') {
-        const pixel = this.chooseAutomaticCitySite(targetCountry);
-        if (pixel >= 0) this.dispatchAction({ type: 'placeCity', x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH) });
-      } else if (card.type === 'create' || card.type === 'buildCity') {
-        const countryId = card.type === 'create' ? card.newCountryId : card.targetCountryId;
-        const country = countryId === null ? null : this.world.countries[countryId];
-        const hasCity = country ? this.world.cities.some((city) => city.countryId === country.id) : false;
-        const shouldPlace = card.type === 'create' ? !hasCity : !card.cityPlaced;
-        if (country && country.type === 'settled' && country.pixels > 0 && shouldPlace) {
-          const best = this.chooseAutomaticCitySite(country);
-          if (best >= 0) {
-            this.dispatchAction({ type: 'placeCity', x: best % MAP_WIDTH, y: Math.floor(best / MAP_WIDTH) });
-          }
-        }
-      }
-    });
-    if (complete) {
-      this.measurePerformanceStage(card.type, 'завершение карточки', () =>
-        this.dispatchAction({ type: 'completeCard' }));
-    }
-  }
-
-  private async resolveAutomaticCardCooperatively(
-    card: Card,
-    reuseActiveCard = false,
-    complete = true,
-    recipient: NotificationRecipient = this.messageRecipient,
-  ): Promise<void> {
-    const activeRecipient = reuseActiveCard ? this.messageRecipient : recipient;
-    this.messageRecipient = activeRecipient;
-    if (!reuseActiveCard) this.card = card;
-    if (!reuseActiveCard && card.choices && card.choices.length > 1) {
-      this.dispatchAction({ type: 'selectChoice', index: this.automaticChoiceIndex(card) });
-    }
-    if (!reuseActiveCard) {
-      this.measurePerformanceStage(card.type, 'подготовка кисти', () =>
-        this.startCard(card, undefined, false, activeRecipient));
-    }
-    const painter = this.painter;
-    if (!painter) return;
-    if (!reuseActiveCard) {
-      this.dispatchAction({
-        type: 'setPainterMode',
-        mode: card.developmentOnly ? 'repeat' : 'respect',
-      });
-    }
-    const yieldControl = () => Game.pause();
-    let lastVisibleMapRefresh = -Infinity;
-    const refreshVisibleMap = () => {
-      const now = performance.now();
-      if (now - lastVisibleMapRefresh < 100) return;
-      lastVisibleMapRefresh = now;
-      this.afterPaint();
-    };
-    const cooperativeDab = async (x: number, y: number, radius: number): Promise<number> => {
-      if (card.ink <= 0) return this.dispatchAction({ type: 'dab', x, y, radius }) as number;
-      return painter.paintContourCooperatively(
-        ContourArea.circle(x, y, Math.max(1, radius)),
-        undefined,
-        undefined,
-        yieldControl,
-        refreshVisibleMap,
-      );
-    };
-    const onMeasure = this.performanceTracking
-      ? (stage: string, durationMs: number) => {
-        this.performanceStageSamples.push({
-          year: this.year,
-          cardType: card.type,
-          stage,
-          durationMs,
-        });
-      }
-      : undefined;
-    const actions: PaintActions = {
-      beginStroke: (x, y) => this.dispatchAction({ type: 'beginStroke', x, y }),
-      dab: (x, y, radius) => this.dispatchAction({ type: 'dab', x, y, radius }) as number,
-      line: (ax, ay, bx, by, radius) => this.dispatchAction({ type: 'line', ax, ay, bx, by, radius }) as number,
-      endStroke: () => this.dispatchAction({ type: 'endStroke' }),
-      contour: (area, seed, startArea) => this.dispatchAction({
-        type: 'paintContour',
-        spans: area.spans,
-        seed,
-        startSpans: startArea?.spans,
-      }) as number,
-      contours: (areas) => this.dispatchAction({
-        type: 'paintContours',
-        areas: areas.map((area) => area.spans),
-      }) as number,
-      dabCooperatively: cooperativeDab,
-      contourCooperatively: (area, seed, startArea, measure) => painter.paintContourCooperatively(
-        area, seed, startArea, yieldControl, refreshVisibleMap, measure,
-      ),
-      contoursCooperatively: (areas) => painter.paintContoursCooperatively(
-        areas, undefined, undefined, yieldControl, refreshVisibleMap,
-      ),
-    };
-    await this.measurePerformanceStageCooperatively(card.type, 'автоматическая кисть', () =>
-      autoPaintCooperatively(painter, actions, onMeasure, yieldControl));
     this.measurePerformanceStage(card.type, 'обновление после покраски', () => this.afterPaint());
     this.measurePerformanceStage(card.type, 'выбор места города', () => {
       const targetCountry = card.type === 'buildCity' && card.targetCountryId !== null
@@ -1783,9 +1542,7 @@ export class Game {
           (countryCities.length <= 2 || !city.capital);
         const result = isAllowedTarget && city ? applyCityWaning(w, city) : null;
         if (result && target && city) {
-          this.renderer.markPixelsForLayers(result.affectedPixels,
-            ['density', 'culture', 'religion', 'humanOrigins', 'cityIdAt']);
-          this.renderer.markOverlayPixels(result.affectedPixels);
+          this.renderer.markAll();
           this.addLog(result.removed
             ? `${target.name}: городок ${city.name ?? 'без названия'} удалён; половина жителей расселена.`
             : `${target.name}: ${city.name ?? 'город'} увял; расселено ${fmt(Math.round(result.transferredPopulation))} жителей.`,
@@ -1829,14 +1586,7 @@ export class Game {
         }
         const name = generatePlaceName(w, target.cultureId, usedNames);
         w.nameGeographyFeature(kind, id, name);
-        const featurePixels = kind === 'river'
-          ? w.riverFeatures.find((feature) => feature.id === id)?.pixels
-          : kind === 'peak'
-            ? w.peaks.find((feature) => feature.id === id)?.pixel
-            : w.volcanoes.find((feature) => feature.id === id)?.pixel;
-        const changedPixels = typeof featurePixels === 'number' ? [featurePixels] : featurePixels ?? [];
-        this.renderer.markOverlayPixels(changedPixels);
-        if (this.renderer.mode === 'elevation') this.renderer.markTerrainPixels(changedPixels);
+        this.renderer.markAll();
         const objectName = kind === 'river' ? 'река' : kind === 'peak' ? 'вершина' : 'вулкан';
         this.addLog(`${target.name}: на карту нанесено название «${name}» (${objectName}).`,
           [chronicleReference('country', target.id)]);
@@ -1974,17 +1724,10 @@ export class Game {
         if (target && card.newCountryId !== null) this.mergeCountries(target, w.countries[card.newCountryId]);
         break;
     }
+    let dissolved = false;
     for (const country of [...w.countries]) {
       if (country.type !== 'settled' || country.pixels <= 0 || w.cities.some((city) => city.countryId === country.id)) continue;
-      const countryArea = w.contours.layer('owner').select((value) => value === country.id + 1, {
-        x0: country.box[0], y0: country.box[1], x1: country.box[2], y1: country.box[3],
-      }, `country:${country.id}`);
       const newCountries = dissolveCountryIntoNomadicCountries(w, country, this.year);
-      this.renderer.markAreaForLayers(countryArea, ['owner']);
-      this.renderer.markOverlayPixels(newCountries.flatMap((newCountry) => [
-        ...(newCountry.range ?? []),
-        ...(newCountry.cells ?? []).map((cell) => cell.pixel),
-      ]));
       this.log = transferCountryChronicle(this.log, country.id, newCountries.map(({ id }) => id), true);
       this.addLog(`${country.name}: без городов страна распущена; население перешло в ${newCountries.length} кочевых стран.`, [
         chronicleReference('country', country.id),
@@ -1995,7 +1738,9 @@ export class Game {
         chronicleReference('country', country.id),
         ...newCountries.map((newCountry) => chronicleReference('country', newCountry.id)),
       ]);
+      dissolved = true;
     }
+    if (dissolved) this.renderer.markAll();
     ensureUniqueDynastySurnames(w);
     w.version += 1;
   }
@@ -2005,27 +1750,8 @@ export class Game {
     const w = this.world;
     this.log = transferCountryChronicle(this.log, incoming.id, [main.id], true);
     const incomingTag = incoming.id + 1, mainTag = main.id + 1;
-    const mainBox = [...main.box] as Country['box'];
-    const incomingBox = [...incoming.box] as Country['box'];
-    const incomingArea = w.contours.layer('owner').select((value) => value === incomingTag, {
-      x0: incomingBox[0], y0: incomingBox[1], x1: incomingBox[2], y1: incomingBox[3],
-    }, `country:${incoming.id}`);
-    const mainArea = w.contours.layer('owner').select((value) => value === mainTag, {
-      x0: mainBox[0], y0: mainBox[1], x1: mainBox[2], y1: mainBox[3],
-    }, `country:${main.id}`);
     const mainCapital = w.cities.find((city) => city.countryId === main.id && city.capital);
-    incomingArea.forEachPixel((pixel) => { w.owner[pixel] = mainTag; });
-    w.contours.changedRows(incomingArea.spans.map((span) => span.y), ['owner']);
-    main.pixels = mainArea.size + incomingArea.size;
-    incoming.pixels = 0;
-    incoming.box = [MAP_WIDTH, MAP_HEIGHT, -1, -1];
-    main.box = [
-      Math.min(mainBox[0], incomingBox[0]),
-      Math.min(mainBox[1], incomingBox[1]),
-      Math.max(mainBox[2], incomingBox[2]),
-      Math.max(mainBox[3], incomingBox[3]),
-    ];
-    this.renderer.markAreaForLayers(incomingArea, ['owner']);
+    for (let p = 0; p < w.owner.length; p += 1) if (w.owner[p] === incomingTag) w.owner[p] = mainTag;
     for (const city of w.cities) if (city.countryId === incoming.id) city.countryId = main.id;
     const mergedCities = w.cities.filter((city) => city.countryId === main.id);
     const retainedCapital = mainCapital ?? mergedCities[0];
@@ -2039,7 +1765,7 @@ export class Game {
     main.previousRulerIds = [...new Set([...main.previousRulerIds, ...incoming.previousRulerIds])];
     for (const p of w.people) if (p.countryId === incoming.id) p.countryId = main.id;
     refreshHeirs(w, this.year); ensureOffices(w, main, this.year);
-    w.version += 1;
+    w.recountCountries(); w.version += 1; this.renderer.markAll();
     this.addLog(cause === 'inheritance'
       ? `${incoming.name} поглощена ${main.name} после перехода власти к её правителю.`
       : `${incoming.name} мирно объединилась с ${main.name}.`, [
@@ -2474,12 +2200,6 @@ export class Game {
       for (const state of states.slice(1).reverse()) {
         if (w.countries[w.countries.length - 1]?.id === state.id) w.discardLast('countries', state.id);
       }
-      const restoredPixels = [
-        ...transferredPixels,
-        ...mergedHomes.flatMap((saved) => saved.pixels),
-      ];
-      w.contours.changedRows(restoredPixels.map((pixel) => Math.floor(pixel / MAP_WIDTH)), ['owner']);
-      this.renderer.markPixelsForLayers(restoredPixels, ['owner']);
       if (consulatePartition) {
         source.coRulerIds = originalCoRulerIds;
         for (const [personId, countryId] of [...(originalOfficeHomes ?? []), ...(originalHeirHomes ?? [])]) {
@@ -2492,13 +2212,7 @@ export class Game {
     }
     for (const state of states.slice(1)) finalizeSplitCities(w, state.id);
     for (const state of states) ensureOffices(w, state, this.year);
-    const splitPixels = [
-      ...transferredPixels,
-      ...mergedHomes.flatMap((saved) => saved.pixels),
-    ];
-    w.contours.changedRows(splitPixels.map((pixel) => Math.floor(pixel / MAP_WIDTH)), ['owner']);
-    this.renderer.markPixelsForLayers(splitPixels, ['owner']);
-    w.recountCountries(); w.version += 1;
+    w.recountCountries(); w.version += 1; this.renderer.markAll();
     this.addLog(`${source.name}: страна разделена на ${partitionCount} части между ${consulatePartition ? heirs.length : partitionCount} наследниками.`, [
       chronicleReference('country', source.id),
       ...states.map((state) => chronicleReference('country', state.id)),
@@ -2564,7 +2278,6 @@ export class Game {
       paused: this.paused,
       busy: this.busy,
       drawing: this.drawing,
-      offscreenTurnAlert: this.offscreenTurnAlert,
       progress: this.progress,
       log: this.log.slice(0, LOG_LIMIT).map((entry) => entry.year ? `${entry.year}: ${entry.text}` : entry.text),
       chronicle: this.log,
@@ -2710,7 +2423,9 @@ export class Game {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      void this.save();
+      // Сначала дождаться отрисовки карты: она и сохранение используют один поток JavaScript.
+      if (this.drawing) this.scheduleSave();
+      else void this.save();
     }, 1500);
   }
 
@@ -2752,7 +2467,6 @@ export class Game {
       year: this.year,
       turn: this.turn,
       paused: this.paused,
-      pausedForOffscreenTurn: this.pausedForOffscreenTurn,
       focusCountryId: this.focusCountryId,
       card: this.card ? { ...this.card } : null,
       painterState: this.painter?.snapshotState() ?? null,

@@ -27,41 +27,23 @@ export interface CountryMapLabel {
 }
 
 type LabelCore = Omit<CountryMapLabel, 'selected'>;
-const labelCache = new WeakMap<World, { version: number; labels: Map<string, LabelCore[]> }>();
+const labelCache = new WeakMap<World, { version: number; territoryVersion: number; labels: LabelCore[] }>();
 const nomadLabelCache = new WeakMap<World, {
   version: number;
-  labels: Map<string, LabelCore[]>;
+  territoryVersion: number;
+  labels: Map<number, LabelCore[]>;
 }>();
 const entityAreaCache = new WeakMap<World, {
   version: number;
+  territoryVersion: number;
   keys: Map<string, Map<number, ContourArea>>;
 }>();
 const entityLabelsCache = new WeakMap<World, {
   version: number;
+  territoryVersion: number;
   labels: Map<string, LabelCore[]>;
 }>();
-const cityPortCache = new WeakMap<World, {
-  geographyRevision: number;
-  values: Map<number, boolean>;
-}>();
 const labelVisibility = new Map<string, boolean>();
-
-function boundsKey(bounds?: ContourBounds): string {
-  return bounds
-    ? `${bounds.x0}:${bounds.y0}:${bounds.x1}:${bounds.y1}`
-    : 'all';
-}
-
-function intersectBounds(first: ContourBounds, second?: ContourBounds): ContourBounds | null {
-  if (!second) return first;
-  const bounds = {
-    x0: Math.max(first.x0, second.x0),
-    y0: Math.max(first.y0, second.y0),
-    x1: Math.min(first.x1, second.x1),
-    y1: Math.min(first.y1, second.y1),
-  };
-  return bounds.x0 <= bounds.x1 && bounds.y0 <= bounds.y1 ? bounds : null;
-}
 
 function textWidthFactor(text: string): number {
   const count = [...text].length;
@@ -244,34 +226,22 @@ function labelVisible(key: string, fontSize: number): boolean {
   return visible;
 }
 
-function countryArea(world: World, country: Country, visibleBounds?: ContourBounds): ContourArea {
-  const [countryX0, countryY0, countryX1, countryY1] = country.box;
-  const bounds = intersectBounds(
-    { x0: countryX0, y0: countryY0, x1: countryX1, y1: countryY1 },
-    visibleBounds,
-  );
-  if (!bounds) return new ContourArea([]);
+function countryArea(world: World, country: Country): ContourArea {
+  const [x0, y0, x1, y1] = country.box;
   return world.contours.layer('owner').select(
     (owner) => owner === country.id + 1,
-    bounds,
-    `map-label-owner-${country.id}-${world.version}-${boundsKey(bounds)}`,
+    { x0, y0, x1, y1 },
+    `map-label-owner-${country.id}-${world.territoryVersion}`,
   );
 }
 
-function settledCountryLabels(world: World, visibleBounds?: ContourBounds): LabelCore[] {
+function settledCountryLabels(world: World): LabelCore[] {
   const cached = labelCache.get(world);
-  let current = cached;
-  if (!current || current.version !== world.version) {
-    current = { version: world.version, labels: new Map() };
-    labelCache.set(world, current);
-  }
-  const cacheKey = boundsKey(visibleBounds);
-  const cachedLabels = current.labels.get(cacheKey);
-  if (cachedLabels) return cachedLabels;
+  if (cached?.version === world.version && cached.territoryVersion === world.territoryVersion) return cached.labels;
   const labels: LabelCore[] = [];
   for (const country of world.countries) {
     if (country.type !== 'settled' || country.pixels <= 0 || !country.name) continue;
-    const area = countryArea(world, country, visibleBounds);
+    const area = countryArea(world, country);
     if (!area.size) continue;
     const components = area.components().sort((a, b) => b.size - a.size);
     for (const group of nearbyComponentGroups(components, country.name)) {
@@ -285,37 +255,24 @@ function settledCountryLabels(world: World, visibleBounds?: ContourBounds): Labe
       if (label) labels.push(label);
     }
   }
-  current.labels.set(cacheKey, labels);
-  if (current.labels.size > 16) current.labels.delete(current.labels.keys().next().value!);
+  labelCache.set(world, { version: world.version, territoryVersion: world.territoryVersion, labels });
   return labels;
 }
 
-function selectedNomadLabels(
-  world: World,
-  countryId: number,
-  visibleBounds?: ContourBounds,
-): LabelCore[] {
+function selectedNomadLabels(world: World, countryId: number): LabelCore[] {
   let cache = nomadLabelCache.get(world);
-  if (!cache || cache.version !== world.version) {
-    cache = { version: world.version, labels: new Map() };
+  if (!cache || cache.version !== world.version || cache.territoryVersion !== world.territoryVersion) {
+    cache = { version: world.version, territoryVersion: world.territoryVersion, labels: new Map() };
     nomadLabelCache.set(world, cache);
   }
-  const cacheKey = `${boundsKey(visibleBounds)}:${countryId}`;
-  if (cache.labels.has(cacheKey)) return cache.labels.get(cacheKey) ?? [];
+  if (cache.labels.has(countryId)) return cache.labels.get(countryId) ?? [];
   const country = world.countries[countryId];
   if (!country || country.type !== 'nomadic' || !country.range?.length || !country.name) {
-    cache.labels.set(cacheKey, []);
+    cache.labels.set(countryId, []);
     return [];
   }
-  const pixels = visibleBounds
-    ? country.range.filter((pixel) => {
-      const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
-      return x >= visibleBounds.x0 && x <= visibleBounds.x1 &&
-        y >= visibleBounds.y0 && y <= visibleBounds.y1;
-    })
-    : country.range;
-  const area = ContourArea.pixels(pixels).intersect(
-    ContourArea.rectangle(visibleBounds ?? { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 }),
+  const area = ContourArea.pixels(country.range).intersect(
+    ContourArea.rectangle({ x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 }),
   );
   const components = area.components().sort((a, b) => b.size - a.size);
   const labels = nearbyComponentGroups(components, country.name).flatMap((group) => {
@@ -328,8 +285,7 @@ function selectedNomadLabels(
     );
     return label ? [label] : [];
   });
-  cache.labels.set(cacheKey, labels);
-  if (cache.labels.size > 128) cache.labels.delete(cache.labels.keys().next().value!);
+  cache.labels.set(countryId, labels);
   return labels;
 }
 
@@ -348,13 +304,12 @@ export function countryMapLabels(
   mode: MapMode,
   selectedCountryId: number | null,
   resolveCollisions = true,
-  visibleBounds?: ContourBounds,
 ): CountryMapLabel[] {
   if (!shouldShowStateLabels(mode)) return [];
   const labels: CountryMapLabel[] = [];
   const nomads = world.countries
     .filter((country) => country.type === 'nomadic')
-    .flatMap((country) => selectedNomadLabels(world, country.id, visibleBounds).map((core) => ({ country, core })))
+    .flatMap((country) => selectedNomadLabels(world, country.id).map((core) => ({ country, core })))
     .sort((a, b) =>
       Number(b.country.id === selectedCountryId) - Number(a.country.id === selectedCountryId) ||
       b.core.fontSize - a.core.fontSize ||
@@ -364,7 +319,7 @@ export function countryMapLabels(
     const label: CountryMapLabel = { ...core, selected: country.id === selectedCountryId };
     if (!resolveCollisions || !labels.some((placed) => overlaps(label, placed))) labels.push(label);
   }
-  const settled = [...settledCountryLabels(world, visibleBounds)].sort((a, b) =>
+  const settled = [...settledCountryLabels(world)].sort((a, b) =>
     b.fontSize - a.fontSize || a.countryId - b.countryId);
   for (const core of settled) {
     if (scale !== null && !labelVisible(core.key, core.fontSize * scale)) continue;
@@ -386,7 +341,6 @@ export function entityMapLabels(
   selectedLayer: EntityLayer | null,
   scale?: number,
   resolveCollisions = true,
-  visibleBounds?: ContourBounds,
 ): CountryMapLabel[] {
   const definition = mode === 'cultures'
     ? { kind: 'culture' as const, contour: 'culture' as const, table: world.cultureTable, entities: world.cultures }
@@ -403,15 +357,17 @@ export function entityMapLabels(
   if (!definition) return [];
   const selectedId = selectedLayer?.kind === definition.kind ? selectedLayer.id : null;
   const cache = entityAreaCache.get(world);
-  const cacheKey = `${mode}:${selectedId ?? 'dominant'}:${boundsKey(visibleBounds)}`;
+  const cacheKey = `${mode}:${selectedId ?? 'dominant'}`;
   let areaGroups: Map<number, ContourArea>;
-  if (cache?.version === world.version && cache.keys.has(cacheKey)) {
+  if (cache?.version === world.version && cache.territoryVersion === world.territoryVersion &&
+      cache.keys.has(cacheKey)) {
     areaGroups = cache.keys.get(cacheKey)!;
   } else {
     let current = cache;
-    if (!current || current.version !== world.version) {
+    if (!current || current.version !== world.version || current.territoryVersion !== world.territoryVersion) {
       current = {
         version: world.version,
+        territoryVersion: world.territoryVersion,
         keys: new Map(),
       };
       entityAreaCache.set(world, current);
@@ -419,15 +375,8 @@ export function entityMapLabels(
     areaGroups = new Map<number, ContourArea>();
     const spansById = new Map<number, ContourSpan[]>();
     const layer = world.contours.layer(definition.contour);
-    const y0 = visibleBounds?.y0 ?? 0;
-    const y1 = visibleBounds?.y1 ?? MAP_HEIGHT - 1;
-    const x0 = visibleBounds?.x0 ?? 0;
-    const x1 = (visibleBounds?.x1 ?? MAP_WIDTH - 1) + 1;
-    for (let y = y0; y <= y1; y += 1) {
+    for (let y = 0; y < MAP_HEIGHT; y += 1) {
       for (const span of layer.row(y)) {
-        const start = Math.max(x0, span.start);
-        const end = Math.min(x1, span.end);
-        if (end <= start) continue;
         const composition = definition.table.entries[span.value];
         if (!composition?.ids.length) continue;
         let targetId = selectedId;
@@ -447,7 +396,7 @@ export function entityMapLabels(
           if (bestShare <= 0 || targetId < 0) continue;
         }
         const spans = spansById.get(targetId) ?? [];
-        spans.push({ y, start, end });
+        spans.push({ y, start: span.start, end: span.end });
         spansById.set(targetId, spans);
       }
     }
@@ -457,10 +406,6 @@ export function entityMapLabels(
         if (country.type !== 'nomadic') continue;
         for (const cell of country.cells ?? []) {
           if (!(cell.population > 0) || cell.pixel < 0 || cell.pixel >= MAP_WIDTH * MAP_HEIGHT || !world.land[cell.pixel]) continue;
-          const y = Math.floor(cell.pixel / MAP_WIDTH);
-          const start = cell.pixel - y * MAP_WIDTH;
-          if (visibleBounds && (start < visibleBounds.x0 || start > visibleBounds.x1 ||
-            y < visibleBounds.y0 || y > visibleBounds.y1)) continue;
           const composition = definition.table.entries[cell.humanOriginMix];
           if (!composition?.ids.length) continue;
           let targetId = selectedId;
@@ -479,6 +424,8 @@ export function entityMapLabels(
             }
             if (bestShare <= 0 || targetId < 0) continue;
           }
+          const y = Math.floor(cell.pixel / MAP_WIDTH);
+          const start = cell.pixel - y * MAP_WIDTH;
           const spans = spansById.get(targetId) ?? [];
           spans.push({ y, start, end: start + 1 });
           spansById.set(targetId, spans);
@@ -491,8 +438,8 @@ export function entityMapLabels(
   }
 
   let labelCache = entityLabelsCache.get(world);
-  if (!labelCache || labelCache.version !== world.version) {
-    labelCache = { version: world.version, labels: new Map() };
+  if (!labelCache || labelCache.version !== world.version || labelCache.territoryVersion !== world.territoryVersion) {
+    labelCache = { version: world.version, territoryVersion: world.territoryVersion, labels: new Map() };
     entityLabelsCache.set(world, labelCache);
   }
   let cores = labelCache.labels.get(cacheKey);
@@ -529,21 +476,6 @@ export function entityMapLabels(
 
 export function shouldShowCityMarks(mode: MapMode): boolean {
   return mode === 'political' || mode === 'cities';
-}
-
-export function cityHasPort(world: World, city: World['cities'][number]): boolean {
-  let cache = cityPortCache.get(world);
-  if (!cache || cache.geographyRevision !== world.geographyRevision) {
-    cache = {
-      geographyRevision: world.geographyRevision,
-      values: new Map(),
-    };
-    cityPortCache.set(world, cache);
-  }
-  if (cache.values.has(city.id)) return cache.values.get(city.id)!;
-  const hasPort = world.isCoastal(city.pixel) || world.knownRivers[city.pixel] > 0;
-  cache.values.set(city.id, hasPort);
-  return hasPort;
 }
 
 /** Подбирает подписи только для видимых значков города, не допуская наложения названий. */
@@ -594,26 +526,17 @@ export function visibleCityLabelIds(
   };
   for (const rect of occupiedLabels) occupy(rect);
 
-  const candidates: { city: World['cities'][number]; hasPort: boolean; zoomRank: number }[] = [];
-  const viewportMargin = 40;
-  for (const city of world.cities) {
-    const screenX = ox + (city.pixel % MAP_WIDTH) * scale;
-    const screenY = oy + Math.floor(city.pixel / MAP_WIDTH) * scale;
-    if (
-      screenX < -viewportMargin || screenX > viewportWidth + viewportMargin ||
-      screenY < -viewportMargin || screenY > viewportHeight + viewportMargin
-    ) continue;
-    const hasPort = cityHasPort(world, city);
-    const zoomRank = cityVisibilityRank(city, hasPort);
-    if (city.name && isCityVisibleAtZoom(scale, baseScale, zoomRank)) {
-      candidates.push({ city, hasPort, zoomRank });
-    }
-  }
-  candidates.sort((a, b) =>
-    Number(b.city.capital) - Number(a.city.capital) ||
-    b.city.rank - a.city.rank ||
-    a.zoomRank - b.zoomRank ||
-    a.city.id - b.city.id);
+  const candidates = world.cities
+    .map((city) => {
+      const hasPort = world.isCoastal(city.pixel) || world.knownRivers[city.pixel] > 0;
+      return { city, hasPort, zoomRank: cityVisibilityRank(city, hasPort) };
+    })
+    .filter(({ city, zoomRank }) => city.name && isCityVisibleAtZoom(scale, baseScale, zoomRank))
+    .sort((a, b) =>
+      Number(b.city.capital) - Number(a.city.capital) ||
+      b.city.rank - a.city.rank ||
+      a.zoomRank - b.zoomRank ||
+      a.city.id - b.city.id);
 
   for (const { city, hasPort } of candidates) {
     let fontSize = cityLabelFontSize(scale, baseScale);

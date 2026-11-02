@@ -1,30 +1,18 @@
 import { Game, type PlayerRole } from './game';
 import type { MapKind } from './geography';
 
-/** Единственная текущая игра приложения, общая для всех экранов. */
+/** The one game running in the app, shared between screens. */
 let current: Game | null = null;
-const sessionListeners = new Set<() => void>();
 
 export function currentGame(): Game | null {
   return current;
 }
 
-export function subscribeGameSession(listener: () => void): () => void {
-  sessionListeners.add(listener);
-  return () => sessionListeners.delete(listener);
-}
-
-function setCurrentGame(game: Game | null): void {
-  current = game;
-  for (const listener of sessionListeners) listener();
-}
-
 export function startNewGame(mapKind: MapKind, role: PlayerRole): Game {
   current?.discard();
-  const game = Game.create(mapKind, role);
-  setCurrentGame(game);
-  game.start();
-  return game;
+  current = Game.create(mapKind, role);
+  current.start();
+  return current;
 }
 
 export async function startNewGameCooperative(
@@ -34,12 +22,12 @@ export async function startNewGameCooperative(
 ): Promise<Game> {
   const next = await Game.createCooperative(mapKind, role, undefined, onProgress);
   current?.discard();
-  setCurrentGame(next);
-  next.start();
-  return next;
+  current = next;
+  current.start();
+  return current;
 }
 
-/** Загружает сохранённую игру с устройства или возвращает null, если сохранения нет. */
+/** Loads the saved game from this device. Returns null if there is none. */
 export async function continueSavedGame(): Promise<Game | null> {
   if (current) {
     current.start();
@@ -47,8 +35,8 @@ export async function continueSavedGame(): Promise<Game | null> {
   }
   const loaded = await Game.load();
   if (loaded) {
-    setCurrentGame(loaded);
-    loaded.start();
+    current = loaded;
+    current.start();
   }
   return current;
 }
@@ -57,7 +45,7 @@ export async function hasSavedGame(): Promise<boolean> {
   return current !== null || (await Game.hasSave());
 }
 
-/** Останавливает таймер и сохраняет игру, оставляя её в памяти для быстрого продолжения. */
+/** Pauses the running game and saves it. It stays in memory, so "continue" is instant. */
 export async function leaveGame(): Promise<void> {
   if (!current) return;
   current.stop();
@@ -66,6 +54,6 @@ export async function leaveGame(): Promise<void> {
 
 export async function deleteSavedGame(): Promise<void> {
   current?.discard();
-  setCurrentGame(null);
+  current = null;
   await Game.deleteSave();
 }

@@ -67,9 +67,9 @@ assert.doesNotMatch(emblemPreview, /showSaveFilePicker|createObjectURL|downloadF
 assert.match(webMap, /renderFlagSpec\(city\.emblemSpec\)/u, 'в браузерных подписях карты отображаются сохранённые флаги городов');
 assert.match(webMap, /MaterialCommunityIcons\.getRawGlyphMap\(\)\.crown/u,
   'браузерная карта использует тот же значок короны, что и карточки персонажей');
-assert.match(webMap, /if \(city\.capital && iconFontsLoaded\) \{[\s\S]*goldCrownSvg\([\s\S]*labelY - labelFontSize \* 0\.88 - crownSize \/ 2/u,
+assert.match(webMap, /if \(city\.capital && iconFontsLoaded\) \{[\s\S]*drawGoldCrown\([\s\S]*labelY - flagHeight \/ 2 - crownSize \/ 2/u,
   'у столицы с гербом золотая корона остаётся над гербом');
-assert.match(webMap, /else if \(city\.capital && iconFontsLoaded\) \{\s*overlayElements\.push\(goldCrownSvg\(labelLeft \+ markWidth \/ 2, labelY - labelFontSize \/ 2, crownSize\)\)/u,
+assert.match(webMap, /else if \(city\.capital && iconFontsLoaded\) \{\s*drawGoldCrown\(ctx, labelLeft \+ markWidth \/ 2, labelY, crownSize\)/u,
   'корона столицы без собственного герба занимает место перед названием');
 assert.doesNotMatch(webMap, /labelY - labelFontSize \/ 2 - crownHeight/u,
   'корона не располагается над названием города');
@@ -118,7 +118,7 @@ assert.equal(
 );
 assert.match(webMap, /cityInfluenceRadius\(game\.world, city\)/u, 'браузерная карта показывает рассчитанные сферы городов');
 assert.match(webMap, /if \(selected\) \{[\s\S]*circleHatchLines/u, 'на браузерной карте штрихуется только выбранный город');
-assert.match(webMap, /<clipPath id="\$\{clipId\}"><circle cx="\$\{centerX\}" cy="\$\{centerY\}" r="\$\{radius\}"\/><\/clipPath>/u,
+assert.match(webMap, /ctx\.arc\(centerX, centerY, radius, 0, Math\.PI \* 2\)[\s\S]*ctx\.clip\(\)/u,
   'штриховка на браузерной карте обрезается по рассчитанному кругу');
 assert.match(webMap, /centerX \+ radius < 0/u, 'контуры сфер за пределами окна браузера не рисуются');
 const hatch = circleHatchLines(30, 40, 50, 8);

@@ -1,39 +1,14 @@
 import type { Rect } from './brush';
 import type { CompositionTable } from './composition';
 import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE } from './config';
-import type { ContourLayerName, ContourSpan } from './contours';
 import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS } from './human';
 import { ensureCityPopulationGroups } from './settlements';
 import type { World } from './world';
 
 export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'elevation' | 'cities' | 'origins';
-
-export function contourLayersForMode(mode: MapMode): ContourLayerName[] {
-  const layers: ContourLayerName[] = ['land'];
-  if (mode === 'political' || mode === 'cities' || mode === 'origins') {
-    layers.push('owner', 'humidity', 'temperature', 'drainage');
-  }
-  if (mode === 'cities') layers.push('cityIdAt');
-  if (mode === 'biomes') layers.push('humidity', 'temperature', 'drainage');
-  if (mode === 'cultures') layers.push('owner', 'culture');
-  if (mode === 'religions') layers.push('owner', 'religion');
-  if (mode === 'humidity') layers.push('humidity');
-  if (mode === 'temperature') layers.push('temperature');
-  if (mode === 'drainage') layers.push('drainage');
-  if (mode === 'density') layers.push('density');
-  if (mode === 'origins') layers.push('humanOrigins', 'cityIdAt');
-  return [...new Set(layers)];
-}
-
 export interface EntityLayer {
   kind: 'culture' | 'religion' | 'origin';
   id: number;
-}
-
-export interface VectorPaintInfo {
-  key: string;
-  color: string;
-  randomized: boolean;
 }
 
 type RGB = [number, number, number];
@@ -110,7 +85,7 @@ export function elevationPackedColor(elevation: number): number {
   return pack(mix(hexToRgb(lowHex), hexToRgb(highHex), amount));
 }
 
-/** Цветовые шкалы тематических слоёв со значениями от 0 до 100. */
+/** Colour ramps for value layers (0–100). */
 export const RAMPS: Record<'humidity' | 'temperature' | 'drainage' | 'density' | 'elevation', string[]> = {
   humidity: ['#c9a66b', '#d9cf98', '#9fbf8c', '#5f9c8f', '#2f6f86'],
   temperature: ['#eef1f4', '#8fb3cf', '#a9c48b', '#e0c065', '#c96a43'],
@@ -128,14 +103,14 @@ function rampColor(stops: RGB[], t: number): RGB {
 }
 
 
-/** Растровый тестовый буфер обновляется плитками; полоса — полный ряд плиток, передаваемый видеокарте. */
+/** The map is repainted in tiles; a strip is one full-width row of tiles (the unit uploaded to the GPU). */
 export const STRIPS = 16;
 export const STRIP_H = MAP_HEIGHT / STRIPS;
 const TILE_COLS = 8;
 const TILE_W = MAP_WIDTH / TILE_COLS;
 const TILES = TILE_COLS * STRIPS;
 
-/** Биом для каждой комбинации влажности, температуры и дренажа; 255 означает, что значение ещё не вычислялось. */
+/** Biome for every (humidity, temperature, drainage) triple, filled on first use (255 = not yet known). */
 const biomeTable = new Uint8Array(101 * 101 * 101).fill(255);
 function biomeOf(h: number, t: number, d: number): number {
   const i = (h * 101 + t) * 101 + d;
@@ -149,28 +124,24 @@ function biomeOf(h: number, t: number, d: number): number {
 
 const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, humidity: 5, temperature: 6, drainage: 7, density: 4, elevation: 8, cities: 9, origins: 11 };
 
-// Биты соседей `nb`: какие из четырёх соседних точек относятся к суше и соприкасается ли точка с водой.
+// Neighbour bits of `nb`: which of the 4 neighbours are land, plus whether the pixel touches water.
 const LEFT = 1;
 const RIGHT = 2;
 const UP = 4;
 const DOWN = 8;
 const COAST = 16;
 
-/** Рисует тестовый растр в 32-битный буфер RGBA, обновляя за раз несколько плиток. */
+/** Paints the map into a 32-bit RGBA pixel buffer, a few tiles at a time. */
 export class MapRenderer {
   readonly pixels = new Uint32Array(MAP_PIXELS);
   mode: MapMode = 'political';
   layer: EntityLayer | null = null;
   private selectedCountryId: number | null = null;
   private readonly dirtyTiles = new Uint8Array(TILES);
-  private readonly tileRevisions = new Uint32Array(TILES);
   private dirtyCount = 0;
-  private readonly overlayDirtyTiles = new Set<number>();
-  private readonly terrainDirtyTiles = new Set<number>();
-  private revision = 0;
-  /** Индекс плитки для продолжения долгого прохода сверху вниз. */
+  /** Tile index to continue from, so a long repaint walks the map top to bottom. */
   private cursor = 0;
-  /** Полосы обновлённых плиток, которые ещё не переданы видимой области. */
+  /** Strips with freshly painted tiles that are not on screen yet. */
   private readonly unsent = new Uint8Array(STRIPS);
   private countryColors: number[] = [];
   private cultureColors: number[] = [];
@@ -179,17 +150,15 @@ export class MapRenderer {
   private readonly nomadRaster = new Uint32Array(MAP_PIXELS);
   private readonly selectedNomadRaster = new Uint8Array(MAP_PIXELS);
   private readonly nomadDensity = new Float32Array(MAP_PIXELS);
-  private readonly nomadTouched = new Set<number>();
   private nomadRasterVersion = -1;
   private originRasterVersion = -1;
   private readonly originRaster = new Uint8Array(MAP_PIXELS);
-  private readonly originComputedVersion = new Uint32Array(MAP_PIXELS);
+  private readonly originComputed = new Uint8Array(MAP_PIXELS);
   private readonly nomadOriginScores = new Map<number, Float64Array>();
   private readonly originColors = HUMAN_ORIGINS.map((origin) => pack(hexToRgb(HUMAN_ORIGIN_COLORS[origin.id])));
   private cityColors = CITY_COLORS.map((color) => pack(hexToRgb(color)));
   private colorKey = '';
-  private colorSyncVersion = -1;
-  /** Цвет для каждого идентификатора состава; ноль означает, что цвет ещё не вычислен. */
+  /** Colour per composition id (0 = not computed yet); compositions never change once interned. */
   private compCache = { culture: new Int32Array(256), religion: new Int32Array(256) };
   private readonly unclaimed = hexToRgb(PALETTE.unclaimedLand);
   private readonly biomeRgb = BIOMES.map((b) => hexToRgb(b.color));
@@ -199,7 +168,7 @@ export class MapRenderer {
   private readonly ramps = Object.fromEntries(
     Object.entries(RAMPS).map(([key, stops]) => [key, Int32Array.from({ length: 101 }, (_, v) => pack(rampColor(stops.map(hexToRgb), v / 100)))]),
   ) as Record<keyof typeof RAMPS, Int32Array>;
-  /** Вода не меняется: её цвета вычисляются один раз и копируются построчно. */
+  /** Water never changes: its colours are computed once and copied row by row. */
   private readonly base = new Uint32Array(MAP_PIXELS);
   private readonly nb = new Uint8Array(MAP_PIXELS);
 
@@ -292,192 +261,24 @@ export class MapRenderer {
   }
 
   markAll(): void {
-    this.revision += 1;
     this.dirtyTiles.fill(1);
-    this.tileRevisions.fill(this.revision);
     this.dirtyCount = TILES;
   }
 
-  /** Помечает область и однопиксельную кайму вокруг неё для обновления границ. */
+  /** Marks an area (plus a 1-pixel rim, whose borders may change) for repainting. */
   mark(rect: Rect): void {
     const c0 = Math.max(0, Math.floor((rect.x0 - 1) / TILE_W));
     const c1 = Math.min(TILE_COLS - 1, Math.floor((rect.x1 + 1) / TILE_W));
     const r0 = Math.max(0, Math.floor((rect.y0 - 1) / STRIP_H));
     const r1 = Math.min(STRIPS - 1, Math.floor((rect.y1 + 1) / STRIP_H));
-    const tiles = new Set<number>();
     for (let r = r0; r <= r1; r += 1) {
       for (let col = c0; col <= c1; col += 1) {
-        tiles.add(r * TILE_COLS + col);
+        const t = r * TILE_COLS + col;
+        if (!this.dirtyTiles[t]) {
+          this.dirtyTiles[t] = 1;
+          this.dirtyCount += 1;
+        }
       }
-    }
-    this.markTiles(tiles);
-  }
-
-  /** Обновляет векторный слой, только если изменённые данные видны в выбранном режиме. */
-  markForLayers(rect: Rect, names: readonly ContourLayerName[]): void {
-    const visible = new Set(contourLayersForMode(this.mode));
-    if (names.some((name) => visible.has(name))) this.mark(rect);
-  }
-
-  markAreaForLayers(area: { spans: readonly ContourSpan[] }, names: readonly ContourLayerName[]): void {
-    const visible = new Set(contourLayersForMode(this.mode));
-    if (names.some((name) => visible.has(name))) this.markArea(area);
-  }
-
-  markPixelsForLayers(pixels: Iterable<number>, names: readonly ContourLayerName[]): void {
-    const visible = new Set(contourLayersForMode(this.mode));
-    if (names.some((name) => visible.has(name))) this.markPixels(pixels);
-  }
-
-  /** Помечает изменившуюся область SVG-оверлея отдельно от заливок контуров. */
-  markOverlay(rect: Rect): void {
-    const c0 = Math.max(0, Math.floor((rect.x0 - 1) / TILE_W));
-    const c1 = Math.min(TILE_COLS - 1, Math.floor((rect.x1 + 1) / TILE_W));
-    const r0 = Math.max(0, Math.floor((rect.y0 - 1) / STRIP_H));
-    const r1 = Math.min(STRIPS - 1, Math.floor((rect.y1 + 1) / STRIP_H));
-    const tiles = new Set<number>();
-    for (let row = r0; row <= r1; row += 1) {
-      for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
-    }
-    this.setOverlayTiles(tiles);
-  }
-
-  /** Помечает только плитки, пересечённые контурами изменённых областей. */
-  markArea(area: { spans: readonly ContourSpan[] }): void {
-    const tiles = new Set<number>();
-    for (const span of area.spans) {
-      if (span.y < 0 || span.y >= MAP_HEIGHT || span.end <= span.start) continue;
-      const c0 = Math.max(0, Math.floor((span.start - 1) / TILE_W));
-      const c1 = Math.min(TILE_COLS - 1, Math.floor(span.end / TILE_W));
-      const r0 = Math.max(0, Math.floor((span.y - 1) / STRIP_H));
-      const r1 = Math.min(STRIPS - 1, Math.floor((span.y + 1) / STRIP_H));
-      for (let row = r0; row <= r1; row += 1) {
-        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
-      }
-    }
-    this.markTiles(tiles);
-  }
-
-  markOverlayArea(area: { spans: readonly ContourSpan[] }): void {
-    const tiles = new Set<number>();
-    for (const span of area.spans) {
-      if (span.y < 0 || span.y >= MAP_HEIGHT || span.end <= span.start) continue;
-      const c0 = Math.max(0, Math.floor((span.start - 1) / TILE_W));
-      const c1 = Math.min(TILE_COLS - 1, Math.floor(span.end / TILE_W));
-      const r0 = Math.max(0, Math.floor((span.y - 1) / STRIP_H));
-      const r1 = Math.min(STRIPS - 1, Math.floor((span.y + 1) / STRIP_H));
-      for (let row = r0; row <= r1; row += 1) {
-        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
-      }
-    }
-    this.setOverlayTiles(tiles);
-  }
-
-  /** Помечает плитки, пересечённые отдельными точками векторного объекта. */
-  markPixels(pixels: Iterable<number>): void {
-    const tiles = new Set<number>();
-    for (const pixel of pixels) {
-      if (pixel < 0 || pixel >= MAP_PIXELS) continue;
-      const x = pixel % MAP_WIDTH;
-      const y = Math.floor(pixel / MAP_WIDTH);
-      const c0 = Math.max(0, Math.floor((x - 1) / TILE_W));
-      const c1 = Math.min(TILE_COLS - 1, Math.floor((x + 1) / TILE_W));
-      const r0 = Math.max(0, Math.floor((y - 1) / STRIP_H));
-      const r1 = Math.min(STRIPS - 1, Math.floor((y + 1) / STRIP_H));
-      for (let row = r0; row <= r1; row += 1) {
-        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
-      }
-    }
-    this.markTiles(tiles);
-  }
-
-  markOverlayPixels(pixels: Iterable<number>): void {
-    const tiles = new Set<number>();
-    for (const pixel of pixels) {
-      if (pixel < 0 || pixel >= MAP_PIXELS) continue;
-      const x = pixel % MAP_WIDTH;
-      const y = Math.floor(pixel / MAP_WIDTH);
-      const c0 = Math.max(0, Math.floor((x - 1) / TILE_W));
-      const c1 = Math.min(TILE_COLS - 1, Math.floor((x + 1) / TILE_W));
-      const r0 = Math.max(0, Math.floor((y - 1) / STRIP_H));
-      const r1 = Math.min(STRIPS - 1, Math.floor((y + 1) / STRIP_H));
-      for (let row = r0; row <= r1; row += 1) {
-        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
-      }
-    }
-    this.setOverlayTiles(tiles);
-  }
-
-  markTerrainPixels(pixels: Iterable<number>): void {
-    const tiles = new Set<number>();
-    for (const pixel of pixels) {
-      if (pixel < 0 || pixel >= MAP_PIXELS) continue;
-      const x = pixel % MAP_WIDTH;
-      const y = Math.floor(pixel / MAP_WIDTH);
-      const c0 = Math.max(0, Math.floor((x - 1) / TILE_W));
-      const c1 = Math.min(TILE_COLS - 1, Math.floor((x + 1) / TILE_W));
-      const r0 = Math.max(0, Math.floor((y - 1) / STRIP_H));
-      const r1 = Math.min(STRIPS - 1, Math.floor((y + 1) / STRIP_H));
-      for (let row = r0; row <= r1; row += 1) {
-        for (let col = c0; col <= c1; col += 1) tiles.add(row * TILE_COLS + col);
-      }
-    }
-    for (const tile of tiles) this.terrainDirtyTiles.add(tile);
-  }
-
-  hasPendingOverlayIn(bounds: Rect): boolean {
-    return this.hasPendingTilesIn(this.overlayDirtyTiles, bounds);
-  }
-
-  hasPendingTerrainIn(bounds: Rect): boolean {
-    return this.hasPendingTilesIn(this.terrainDirtyTiles, bounds);
-  }
-
-  private hasPendingTilesIn(tiles: ReadonlySet<number>, bounds: Rect): boolean {
-    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
-    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
-    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
-    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
-    for (let row = r0; row <= r1; row += 1) {
-      for (let col = c0; col <= c1; col += 1) {
-        if (tiles.has(row * TILE_COLS + col)) return true;
-      }
-    }
-    return false;
-  }
-
-  acknowledgeOverlay(bounds: Rect): void {
-    this.acknowledgeTiles(this.overlayDirtyTiles, bounds);
-  }
-
-  acknowledgeTerrain(bounds: Rect): void {
-    this.acknowledgeTiles(this.terrainDirtyTiles, bounds);
-  }
-
-  private acknowledgeTiles(tiles: Set<number>, bounds: Rect): void {
-    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
-    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
-    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
-    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
-    for (let row = r0; row <= r1; row += 1) {
-      for (let col = c0; col <= c1; col += 1) {
-        tiles.delete(row * TILE_COLS + col);
-      }
-    }
-  }
-
-  private setOverlayTiles(tiles: Set<number>): void {
-    for (const tile of tiles) this.overlayDirtyTiles.add(tile);
-  }
-
-  private markTiles(tiles: Set<number>): void {
-    if (tiles.size === 0) return;
-    this.revision += 1;
-    for (const tile of tiles) {
-      this.tileRevisions[tile] = this.revision;
-      if (this.dirtyTiles[tile]) continue;
-      this.dirtyTiles[tile] = 1;
-      this.dirtyCount += 1;
     }
   }
 
@@ -485,229 +286,14 @@ export class MapRenderer {
     return this.dirtyCount > 0;
   }
 
-  get visualRevision(): number {
-    return this.revision;
-  }
-
-  /** Возвращает цвет одного неизменного интервала контуров, не обходя его точки. */
-  vectorPaintAt(pixel: number): VectorPaintInfo {
-    this.syncEntityColors();
-    if (this.mode === 'density' || this.mode === 'origins') this.syncNomadData();
-    if (this.mode === 'origins' && this.originRasterVersion !== this.world.version) this.prepareOriginRaster();
-    const w = this.world;
-    const rgb = (packed: number): string => {
-      const r = (packed & 255).toString(16).padStart(2, '0');
-      const g = ((packed >> 8) & 255).toString(16).padStart(2, '0');
-      const b = ((packed >> 16) & 255).toString(16).padStart(2, '0');
-      return `#${r}${g}${b}`;
-    };
-    const land = !!w.land[pixel];
-    if (!land) {
-      const depth = Math.max(0, Math.min(11000, -w.elevation[pixel]));
-      return { key: `sea-depth:${depth}`, color: rgb(SEA_DEPTH_COLORS[depth]), randomized: false };
-    }
-
-    const owner = w.owner[pixel];
-    let key = 'unclaimed';
-    let color = this.unclaimedPacked;
-    let randomized = false;
-    const biome = biomeOf(w.humidity[pixel], w.temperature[pixel], w.drainage[pixel]);
-    const countryKey = () => `country:${owner - 1}`;
-    switch (this.mode) {
-      case 'political':
-        if (owner > 0) {
-          key = countryKey();
-          color = this.countryColors[owner - 1] ?? this.unclaimedPacked;
-          randomized = true;
-        } else {
-          key = `unclaimed-biome:${biome}`;
-          color = this.unclaimedByBiome[biome];
-        }
-        break;
-      case 'cities': {
-        const cityId = w.cityIdAt[pixel];
-        const city = cityId >= 0 ? w.cities[cityId] : null;
-        if (city) {
-          key = `city-rank:${city.rank}`;
-          color = this.cityColors[city.rank - 1] ?? this.unclaimedPacked;
-        } else if (owner > 0) {
-          key = countryKey();
-          color = this.countryColors[owner - 1] ?? this.unclaimedPacked;
-          randomized = true;
-        } else {
-          key = `unclaimed-biome:${biome}`;
-          color = this.unclaimedByBiome[biome];
-        }
-        break;
-      }
-      case 'biomes':
-        key = `biome:${biome}`;
-        color = this.biomePacked[biome];
-        break;
-      case 'cultures':
-        if (owner > 0) {
-          key = `culture:${w.culture[pixel]}`;
-          color = this.compColor('culture', w.culture[pixel]);
-          randomized = true;
-        } else {
-          key = 'unclaimed';
-          color = this.unclaimedPacked;
-        }
-        break;
-      case 'religions':
-        if (owner > 0) {
-          key = `religion:${w.religion[pixel]}`;
-          color = this.compColor('religion', w.religion[pixel]);
-          randomized = true;
-        } else {
-          key = 'unclaimed';
-          color = this.unclaimedPacked;
-        }
-        break;
-      case 'humidity':
-      case 'temperature':
-      case 'drainage': {
-        const value = this.mode === 'humidity'
-          ? w.humidity[pixel]
-          : this.mode === 'temperature' ? w.temperature[pixel] : w.drainage[pixel];
-        key = `${this.mode}:${value}`;
-        color = this.ramps[this.mode][value];
-        break;
-      }
-      case 'density': {
-        const value = Math.min(100, Math.round(Math.log1p(w.density[pixel] + this.nomadDensity[pixel]) * 12));
-        key = `density:${value}`;
-        color = this.ramps.density[value];
-        break;
-      }
-      case 'origins': {
-        if (this.layer?.kind === 'origin') {
-          const share = this.originShareAt(pixel, this.layer.id);
-          const originColor = this.originColors[this.layer.id] ?? this.unclaimedPacked;
-          const originRGB = [originColor & 255, (originColor >> 8) & 255, (originColor >> 16) & 255] as RGB;
-          color = pack(mix([238, 233, 218], originRGB, share));
-          key = `origin:${this.layer.id}:${Math.round(share * 100)}`;
-        } else {
-          const origin = this.originAt(pixel);
-          if (origin) {
-            key = `origin:${origin - 1}`;
-            color = this.originColors[origin - 1];
-            randomized = true;
-          } else {
-            key = `unclaimed-biome:${biome}`;
-            color = this.unclaimedByBiome[biome];
-          }
-        }
-        break;
-      }
-      case 'elevation':
-        key = 'elevation-land';
-        color = this.unclaimedPacked;
-        break;
-    }
-    return { key, color: rgb(color), randomized };
-  }
-
-  hasPendingIn(bounds: Rect): boolean {
-    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
-    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
-    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
-    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
-    for (let row = r0; row <= r1; row += 1) {
-      for (let col = c0; col <= c1; col += 1) {
-        if (this.dirtyTiles[row * TILE_COLS + col]) return true;
-      }
-    }
-    return false;
-  }
-
-  /** Возвращает версии векторных плиток, пересекающих область SVG; x1 не включается. */
-  vectorTilesIn(bounds: Rect): Array<{
-    id: number;
-    bounds: Rect;
-    revision: number;
-  }> {
-    const x0 = Math.max(0, Math.floor(bounds.x0));
-    const y0 = Math.max(0, Math.floor(bounds.y0));
-    const x1 = Math.min(MAP_WIDTH, Math.ceil(bounds.x1));
-    const y1 = Math.min(MAP_HEIGHT - 1, Math.floor(bounds.y1));
-    if (x1 <= x0 || y1 < y0) return [];
-    const c0 = Math.min(TILE_COLS - 1, Math.floor(x0 / TILE_W));
-    const c1 = Math.min(TILE_COLS - 1, Math.floor((x1 - 1) / TILE_W));
-    const r0 = Math.min(STRIPS - 1, Math.floor(y0 / STRIP_H));
-    const r1 = Math.min(STRIPS - 1, Math.floor(y1 / STRIP_H));
-    const result: Array<{ id: number; bounds: Rect; revision: number }> = [];
-    for (let row = r0; row <= r1; row += 1) {
-      for (let col = c0; col <= c1; col += 1) {
-        const id = row * TILE_COLS + col;
-        result.push({
-          id,
-          bounds: {
-            x0: col * TILE_W,
-            y0: row * STRIP_H,
-            x1: Math.min(MAP_WIDTH, (col + 1) * TILE_W),
-            y1: Math.min(MAP_HEIGHT - 1, (row + 1) * STRIP_H - 1),
-          },
-          revision: this.tileRevisions[id],
-        });
-      }
-    }
-    return result;
-  }
-
-  /** Снимает метки изменений, уже переданных в векторный слой видимого окна. */
-  acknowledge(bounds: Rect): void {
-    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
-    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
-    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
-    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
-    for (let row = r0; row <= r1; row += 1) {
-      for (let col = c0; col <= c1; col += 1) {
-        const tile = row * TILE_COLS + col;
-        if (!this.dirtyTiles[tile]) continue;
-        this.dirtyTiles[tile] = 0;
-        this.dirtyCount -= 1;
-      }
-    }
-  }
-
-  /** Обновляет только грязные фрагменты, пересекающие видимую область. */
-  flushVisible(budgetMs: number, bounds: Rect): Rect[] {
-    if (!this.hasPendingIn(bounds)) return [];
-    this.syncColors();
-    const c0 = Math.max(0, Math.floor(bounds.x0 / TILE_W));
-    const c1 = Math.min(TILE_COLS - 1, Math.floor(bounds.x1 / TILE_W));
-    const r0 = Math.max(0, Math.floor(bounds.y0 / STRIP_H));
-    const r1 = Math.min(STRIPS - 1, Math.floor(bounds.y1 / STRIP_H));
-    const started = Date.now();
-    const painted: Rect[] = [];
-    for (let row = r0; row <= r1; row += 1) {
-      for (let col = c0; col <= c1; col += 1) {
-        const tile = row * TILE_COLS + col;
-        if (!this.dirtyTiles[tile]) continue;
-        this.dirtyTiles[tile] = 0;
-        this.dirtyCount -= 1;
-        this.paintTile(col * TILE_W, row * STRIP_H);
-        painted.push({
-          x0: col * TILE_W,
-          y0: row * STRIP_H,
-          x1: (col + 1) * TILE_W - 1,
-          y1: (row + 1) * STRIP_H - 1,
-        });
-        if (Date.now() - started >= budgetMs) return painted;
-      }
-    }
-    return painted;
-  }
-
-  /** Обновляет весь тестовый растр за один вызов. */
+  /** Repaints everything at once (tests and tools). */
   flush(): number[] {
     return this.flushSome(Infinity);
   }
 
   /**
-   * Обновляет грязные плитки примерно в течение `budgetMs` миллисекунд.
-   * Возвращает изменённые полосы только после завершения всех их плиток.
+   * Repaints dirty tiles for about `budgetMs` milliseconds. Returns the strips that are now
+   * complete and changed since the last call; a strip is returned only once all its tiles are done.
    */
   flushSome(budgetMs: number): number[] {
     if (this.dirtyCount > 0) {
@@ -742,16 +328,8 @@ export class MapRenderer {
   }
 
   private syncColors(): void {
-    this.syncEntityColors();
-    this.syncNomadData();
-    if (this.originRasterVersion !== this.world.version) this.prepareOriginRaster();
-  }
-
-  private syncEntityColors(): void {
     const w = this.world;
-    if (this.colorSyncVersion === w.version) return;
-    this.colorSyncVersion = w.version;
-    // Повторно созданные сущности могут получить другие цвета при прежнем идентификаторе.
+    // Entities may be discarded and recreated with new colours at the same id.
     const key = `${w.countries.map((c) => c.color).join()}|${w.cultures.map((c) => c.color).join()}|${w.religions.map((c) => c.color).join()}`;
     if (key !== this.colorKey) {
       this.colorKey = key;
@@ -762,22 +340,14 @@ export class MapRenderer {
       this.compCache.religion.fill(0);
       this.nomadRasterVersion = -1;
     }
-  }
-
-  private syncNomadData(): void {
-    const w = this.world;
     if (this.nomadRasterVersion !== w.version) {
-      for (const pixel of this.nomadTouched) {
-        this.nomadRaster[pixel] = 0;
-        this.nomadDensity[pixel] = 0;
-      }
-      this.nomadTouched.clear();
+      this.nomadRaster.fill(0);
+      this.nomadDensity.fill(0);
       for (const nomad of w.countries) {
         if (nomad.type !== 'nomadic') continue;
         const color = this.countryColors[nomad.id] ?? pack(hexToRgb(nomad.color));
         for (const p of nomad.range ?? []) {
           if (p < 0 || p >= MAP_PIXELS || !w.land[p]) continue;
-          this.nomadTouched.add(p);
           const old = this.nomadRaster[p];
           this.nomadRaster[p] = old
             ? pack(mix([old & 255, (old >> 8) & 255, (old >> 16) & 255], [color & 255, (color >> 8) & 255, (color >> 16) & 255], 0.5))
@@ -785,7 +355,6 @@ export class MapRenderer {
         }
         for (const cell of nomad.cells ?? []) {
           if (cell.pixel < 0 || cell.pixel >= MAP_PIXELS || !w.land[cell.pixel]) continue;
-          this.nomadTouched.add(cell.pixel);
           this.nomadDensity[cell.pixel] += cell.population;
           const old = this.nomadRaster[cell.pixel];
           this.nomadRaster[cell.pixel] = old
@@ -795,10 +364,13 @@ export class MapRenderer {
       }
       this.nomadRasterVersion = w.version;
     }
+    if (this.originRasterVersion !== w.version) this.prepareOriginRaster();
   }
 
   private prepareOriginRaster(): void {
     const w = this.world;
+    this.originRaster.fill(0);
+    this.originComputed.fill(0);
     this.nomadOriginScores.clear();
     for (const country of w.countries) {
       if (country.type !== 'nomadic') continue;
@@ -821,9 +393,8 @@ export class MapRenderer {
   }
 
   private originAt(pixel: number): number {
+    if (this.originComputed[pixel]) return this.originRaster[pixel];
     const w = this.world;
-    const versionStamp = w.version + 1;
-    if (this.originComputedVersion[pixel] === versionStamp) return this.originRaster[pixel];
     const city = w.cityAt(pixel);
     const nomadScores = this.nomadOriginScores.get(pixel);
     let scores: Float64Array | null = null;
@@ -859,7 +430,7 @@ export class MapRenderer {
       }
       if (scores[leading] > 0) this.originRaster[pixel] = leading + 1;
     }
-    this.originComputedVersion[pixel] = versionStamp;
+    this.originComputed[pixel] = 1;
     return this.originRaster[pixel];
   }
 

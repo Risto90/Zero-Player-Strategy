@@ -102,67 +102,16 @@ function visibleBoundaryPoints(rings: readonly LabelGeometryPoint[][], bounds: L
   return points;
 }
 
-type RingBounds = { left: number; top: number; right: number; bottom: number };
-type ContainmentIndex = {
-  rings: readonly RingBounds[];
-  bounds: RingBounds;
-  scanlines: Map<number, number[]>;
-};
-const containmentIndexCache = new WeakMap<readonly LabelGeometryPoint[][], ContainmentIndex>();
-
-function containmentIndex(rings: readonly LabelGeometryPoint[][]): ContainmentIndex {
-  const cached = containmentIndexCache.get(rings);
-  if (cached) return cached;
-  const ringBounds = rings.map((ring): RingBounds => {
-    let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-    for (const point of ring) {
-      left = Math.min(left, point.x);
-      top = Math.min(top, point.y);
-      right = Math.max(right, point.x);
-      bottom = Math.max(bottom, point.y);
-    }
-    return { left, top, right, bottom };
-  });
-  const bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
-  for (const ring of ringBounds) {
-    bounds.left = Math.min(bounds.left, ring.left);
-    bounds.top = Math.min(bounds.top, ring.top);
-    bounds.right = Math.max(bounds.right, ring.right);
-    bounds.bottom = Math.max(bounds.bottom, ring.bottom);
-  }
-  const index = { rings: ringBounds, bounds, scanlines: new Map<number, number[]>() };
-  containmentIndexCache.set(rings, index);
-  return index;
-}
-
 function containsPoint(rings: readonly LabelGeometryPoint[][], x: number, y: number): boolean {
-  const prepared = containmentIndex(rings);
-  if (x < prepared.bounds.left || x > prepared.bounds.right ||
-      y < prepared.bounds.top || y > prepared.bounds.bottom) return false;
-  let intersections = prepared.scanlines.get(y);
-  if (!intersections) {
-    intersections = [];
-    for (let ringIndex = 0; ringIndex < rings.length; ringIndex += 1) {
-      const ring = rings[ringIndex];
-      const bounds = prepared.rings[ringIndex];
-      if (y < bounds.top || y > bounds.bottom) continue;
-      for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
-        const a = ring[index], b = ring[previous];
-        if ((a.y > y) !== (b.y > y)) {
-          intersections.push(((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x);
-        }
-      }
+  let inside = false;
+  for (const ring of rings) {
+    for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
+      const a = ring[index], b = ring[previous];
+      if ((a.y > y) !== (b.y > y) &&
+          x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
     }
-    intersections.sort((a, b) => a - b);
-    prepared.scanlines.set(y, intersections);
   }
-  let low = 0, high = intersections.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    if (intersections[middle] <= x) low = middle + 1;
-    else high = middle;
-  }
-  return ((intersections.length - low) & 1) === 1;
+  return inside;
 }
 
 function principalAxis(points: readonly LabelGeometryPoint[]): Axis {

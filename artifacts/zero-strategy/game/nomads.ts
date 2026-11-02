@@ -235,8 +235,6 @@ export function dissolveCountryIntoNomadicCountries(
     world.religion[pixel] = 0;
     world.humanOrigins[pixel] = 0;
   }
-  world.contours.changedRows(pixels.map((pixel) => Math.floor(pixel / MAP_WIDTH)),
-    ['owner', 'density', 'culture', 'religion', 'humanOrigins']);
   country.pixels = 0;
   closeRulerTerms(country, year);
   country.box = [MAP_WIDTH, 0, Math.floor(world.land.length / MAP_WIDTH), 0];
@@ -375,8 +373,6 @@ export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: nu
   }
   const city = addCityAndConcentrate(world, nomad.id, cityPixel, true);
   if (!city) throw new Error('Validated nomad city site became unavailable during settlement.');
-  world.contours.changedRows([...territory, cityPixel].map((pixel) => Math.floor(pixel / MAP_WIDTH)),
-    ['owner', 'density', 'culture', 'religion', 'humanOrigins']);
   world.recountCountries();
   world.version += 1;
   return nomad;

@@ -112,7 +112,6 @@ export class CityInfluenceIndex {
   private readonly anchors = new Map<number, number[]>();
   private readonly maxX = Math.ceil(MAP_WIDTH / BUCKET);
   private readonly maxY = Math.ceil(MAP_HEIGHT / BUCKET);
-  private hasOwnCities = false;
 
   constructor(
     private readonly world: World,
@@ -130,7 +129,6 @@ export class CityInfluenceIndex {
       const list = this.centers.get(key) ?? [];
       list.push(indexed);
       this.centers.set(key, list);
-      if (city.countryId === countryId) this.hasOwnCities = true;
       if (city.countryId !== countryId || !this.includeAnchors) continue;
       const r = Math.ceil(indexed.radius);
       const x0 = Math.max(0, x - r), x1 = Math.min(MAP_WIDTH - 1, x + r);
@@ -205,8 +203,7 @@ export class CityInfluenceIndex {
         }
       }
     }
-    // Без собственных городов ближайший всё равно останется неопределённым: обходить всю сетку незачем.
-    if (this.hasOwnCities && this.countryId >= 0 && (nearestOwnCityId === null || nearestOwnDistance > 0)) {
+    if (this.countryId >= 0 && (nearestOwnCityId === null || nearestOwnDistance > 0)) {
       for (let ring = 3; ring < Math.max(this.maxX, this.maxY); ring += 1) {
         for (let dx = -ring; dx <= ring; dx += 1) {
           for (const dy of [-ring, ring]) this.checkCities(bx + dx, by + dy, x, y, (city, distance) => {
@@ -235,7 +232,7 @@ export class CityInfluenceIndex {
         if (nearestOwnCityId !== null && nearestOwnDistance <= Math.max(0, (ring - 1) * BUCKET - MAX_CITY_RADIUS)) break;
       }
     }
-    const nearestAnchor = this.countryId >= 0 && needAnchor && this.anchors.size > 0
+    const nearestAnchor = this.countryId >= 0 && needAnchor
       ? this.nearestAnchor(x, y, bx, by)
       : { distance: Infinity, pixel: null };
     return {
@@ -381,18 +378,7 @@ function pixelGroups(world: World, pixel: number, amount = world.density[pixel])
   return cityPopulationGroupsAtPixel(world, pixel, amount);
 }
 
-const POPULATION_CONTOUR_LAYERS = ['density', 'culture', 'religion', 'humanOrigins'] as const;
-
-function markPopulationContours(world: World, rows: Iterable<number>): void {
-  world.contours.changedRows(rows, POPULATION_CONTOUR_LAYERS);
-}
-
-function addGroupsToPixel(
-  world: World,
-  pixel: number,
-  additions: CityPopulationGroup[],
-  changedRows?: Set<number>,
-): void {
+function addGroupsToPixel(world: World, pixel: number, additions: CityPopulationGroup[]): void {
   const city = world.cityAt(pixel);
   if (city) {
     changeCityPopulation(world, city, additions);
@@ -420,7 +406,6 @@ function addGroupsToPixel(
     world.humanOriginTable,
     groups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
   );
-  changedRows?.add(Math.floor(pixel / MAP_WIDTH));
 }
 
 function takeCityPopulation(world: World, city: City, amount: number): CityPopulationGroup[] {
@@ -440,9 +425,7 @@ function addGroupsAcrossPixels(
 ): void {
   if (!pixels.length) return;
   const perPixel = groups.map((group) => ({ ...group, population: group.population / pixels.length }));
-  const changedRows = new Set<number>();
-  for (const pixel of pixels) addGroupsToPixel(world, pixel, perPixel, changedRows);
-  markPopulationContours(world, changedRows);
+  for (const pixel of pixels) addGroupsToPixel(world, pixel, perPixel);
 }
 
 function apportionByWeightWithCaps(
@@ -575,15 +558,12 @@ export function applyDensityLoss(world: World, pixel: number, requested: number)
     remainingGroups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
   );
   world.version += 1;
-  markPopulationContours(world, [Math.floor(pixel / MAP_WIDTH)]);
   return loss;
 }
 
 /** Adds country residents to an existing rural point or city without changing group composition. */
 export function settlePopulationGroups(world: World, pixel: number, groups: CityPopulationGroup[]): void {
-  const changedRows = new Set<number>();
-  addGroupsToPixel(world, pixel, groups, changedRows);
-  markPopulationContours(world, changedRows);
+  addGroupsToPixel(world, pixel, groups);
 }
 
 export function removeCityAndChooseCapital(world: World, city: City): City | null {
@@ -804,10 +784,6 @@ export function movePopulationToCity(world: World, source: number, target: numbe
     world.density[target] += actual;
     updateMix(target, targetPairs, targetTotal + actual);
   }
-  markPopulationContours(world, [
-    Math.floor(source / MAP_WIDTH),
-    ...(world.cityAt(target) ? [] : [Math.floor(target / MAP_WIDTH)]),
-  ]);
   return actual;
 }
 

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { autoPaint } from '../game/autoPaint.ts';
-import { AutoPaintCandidateSelector } from '../game/autoPaintCandidates.ts';
 import { CardPainter } from '../game/brush.ts';
 import { humanClimateSuitabilityAt, humanOriginMixToTable } from '../game/human.ts';
 import { Game } from '../game/game.ts';
@@ -145,35 +144,6 @@ const first = fixture();
 const [europeanPixels, pygmyPixels, mixedPixels] = first.regions;
 const warm = climateCard('warmCurrent', null, pygmyPixels[0]);
 const warmPainter = new CardPainter(first.world, warm, 'respect');
-const warmCandidateArea = warmPainter.strategyLayerCandidateArea({
-  x0: 0,
-  y0: 0,
-  x1: MAP_WIDTH - 1,
-  y1: MAP_HEIGHT - 1,
-});
-const legacyWarmCandidates = [];
-for (let pixel = 0; pixel < first.world.land.length; pixel += 1) {
-  if (warmPainter.strategyInkCostAt(pixel) > 0) legacyWarmCandidates.push(pixel);
-}
-const legacyWarmEligibleCount = legacyWarmCandidates.length;
-if (warm.hint >= 0 && !legacyWarmCandidates.includes(warm.hint)) {
-  legacyWarmCandidates.push(warm.hint);
-}
-legacyWarmCandidates.sort((a, b) => a - b);
-const warmCandidateCount = warmCandidateArea.spans.reduce(
-  (count, span) => count + span.end - span.start,
-  0,
-);
-assert.equal(warmCandidateCount, legacyWarmEligibleCount,
-  'current-map candidates match the exact set accepted by the shared brush');
-const legacyWarmCenters = legacyWarmCandidates.length <= 24
-  ? legacyWarmCandidates
-  : Array.from({ length: 24 }, (_, index) =>
-      legacyWarmCandidates[Math.floor(index * legacyWarmCandidates.length / 24)]);
-if (warm.hint >= 0 && !legacyWarmCenters.includes(warm.hint)) legacyWarmCenters.push(warm.hint);
-legacyWarmCenters.sort((a, b) => a - b);
-assert.deepEqual(new AutoPaintCandidateSelector(warmPainter).bounded(), legacyWarmCenters,
-  'contour sampling preserves the previous AI candidate centers');
 assert.ok(warmPainter.strategyImpactAt(europeanPixels[0]) > 0,
   'warming improves the European profile in a cold habitat');
 assert.ok(warmPainter.strategyImpactAt(pygmyPixels[0]) < 0,

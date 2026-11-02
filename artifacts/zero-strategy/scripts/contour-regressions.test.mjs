@@ -45,32 +45,6 @@ const raster = new Uint8Array(MAP_PIXELS);
 rasterizeScalar([{ value: 1, rings: islands.rings() }], raster);
 assert.deepEqual([...raster.keys()].filter((p) => raster[p] === 1), pixels(islands), 'Кольца точно восстанавливают площадь с дырой');
 
-const fullMapRing = ContourArea.rectangle({ x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 }).rings();
-assert.equal(fullMapRing.length, 1, 'Весь прямоугольник карты остаётся одним кольцом');
-assert.equal(fullMapRing[0].length, 8, 'Кольцо большого прямоугольника хранит только четыре угла');
-assert.deepEqual([...fullMapRing[0]], [0, 0, MAP_WIDTH, 0, MAP_WIDTH, MAP_HEIGHT, 0, MAP_HEIGHT],
-  'Большая граница строится из длинных векторов без прохода по её пикселям');
-
-let ringSeed = 71;
-for (let iteration = 0; iteration < 12; iteration += 1) {
-  const maskForRings = new Uint8Array(MAP_PIXELS);
-  for (let y = 0; y < 32; y += 1) {
-    for (let x = 0; x < 32; x += 1) {
-      ringSeed = (Math.imul(ringSeed, 1664525) + 1013904223) >>> 0;
-      if ((ringSeed >>> 28) < 6) maskForRings[y * MAP_WIDTH + x] = 1;
-    }
-  }
-  const randomArea = ContourArea.fromBinaryMask(maskForRings, { x0: 0, y0: 0, x1: 31, y1: 31 });
-  const restored = new Uint8Array(MAP_PIXELS);
-  rasterizeScalar([{ value: 1, rings: randomArea.rings() }], restored);
-  for (let y = 0; y < 32; y += 1) {
-    for (let x = 0; x < 32; x += 1) {
-      const pixel = y * MAP_WIDTH + x;
-      assert.equal(restored[pixel], maskForRings[pixel], `Кольцо точно восстанавливает случайную ячейку ${x}:${y}`);
-    }
-  }
-}
-
 const values = new Uint8Array(MAP_PIXELS).fill(20);
 const layer = new ScalarContourLayer(() => values);
 const bounds = { x0: 0, y0: 0, x1: 80, y1: 80 };
@@ -88,16 +62,15 @@ layer.invalidate(10, 10);
 assert.equal(layer.row(70), unchangedRow, 'Неизменённый контур строки остаётся в кэше');
 assert.equal(layer.select((v) => v === 40, bounds, '40').size, 1, 'Изменение не теряется в кэше');
 
+let version = 0;
 const layers = {
   land: new Uint8Array(MAP_PIXELS),
-  owner: new Uint16Array(MAP_PIXELS),
-  elevation: new Int16Array(MAP_PIXELS).fill(-1000),
   humidity: values,
   temperature: new Uint8Array(MAP_PIXELS).fill(50),
   drainage: new Uint8Array(MAP_PIXELS).fill(60),
 };
 rectangle(10, 10, 40, 40).forEachPixel((p) => { layers.land[p] = 1; });
-const map = new MapContours((name) => layers[name]);
+const map = new MapContours((name) => layers[name], () => version);
 const area = rectangle(10, 10, 40, 40);
 const parts = map.climateIntersections(area);
 assert.equal(parts.reduce((total, part) => total + part.area.size, 0), area.size, 'Пересечения климатов покрывают всю область');
@@ -108,21 +81,9 @@ for (const part of parts) part.area.forEachPixel((p) => {
 });
 const regions = map.climateRegions();
 assert.equal(map.climateRegions(), regions, 'Климатические контуры повторно используются');
-const depthRow = map.layer('elevation').row(20);
-const ownerRow = map.layer('owner').row(20);
-const unrelatedRow = map.layer('humidity').row(30);
-const ownerRevision = map.revisionFor(['owner']);
-const elevationRevision = map.revisionFor(['elevation']);
+version += 1;
 layers.temperature[20 * MAP_WIDTH + 20] = 70;
-layers.owner[20 * MAP_WIDTH + 20] = 1;
-const revision = map.revision;
-map.changed({ x0: 20, y0: 20, x1: 20, y1: 20 }, ['temperature', 'owner']);
-assert.equal(map.revision, revision + 1, 'Изменение игрового контура получает собственную ревизию');
-assert.notEqual(map.revisionFor(['owner']), ownerRevision, 'Ревизия владельца меняется вместе с его контуром');
-assert.equal(map.revisionFor(['elevation']), elevationRevision, 'Изменение владельца не меняет ревизию глубин');
-assert.equal(map.layer('elevation').row(20), depthRow, 'Игровое изменение не инвалидирует статическую глубину моря');
-assert.notEqual(map.layer('owner').row(20), ownerRow, 'Изменение владельца перестраивает только затронутую строку');
-assert.equal(map.layer('humidity').row(30), unrelatedRow, 'Незатронутые строки остаются в кэше');
+map.changed({ x0: 20, y0: 20, x1: 20, y1: 20 }, ['temperature']);
 assert.notEqual(map.climateRegions(), regions, 'Изменение климата обновляет пересечения');
 assert.equal(map.climateRegions()[map.climateRegionAt(20 * MAP_WIDTH + 20)].temperature, 70);
 assert.ok(donut.border().size > 0);
@@ -139,7 +100,7 @@ rectangle(3, 4, 63, 65).forEachPixel((p) => {
   demographicLayers.density[p] = (p % 13) / 3;
 });
 const demographicWorld = { ...demographicLayers, cities };
-demographicWorld.contours = new MapContours((name) => demographicLayers[name]);
+demographicWorld.contours = new MapContours((name) => demographicLayers[name], () => 0);
 const keyOf = (p) => cities.some((city) => city.pixel === p) ? `город:${p}`
   : `${demographicLayers.culture[p]}/${demographicLayers.religion[p]}/${demographicLayers.humanOrigins[p]}`;
 const referencePopulation = new Map(), contourPopulation = new Map();
@@ -182,7 +143,7 @@ for (let y = 80; y <= 89; y += 1) {
 const expansionWorld = {
   ...expansionLayers,
   water: { bodyOf: waterBody },
-  contours: new MapContours((name) => expansionLayers[name]),
+  contours: new MapContours((name) => expansionLayers[name], () => 0),
 };
 const expansionIndex = new CountryExpansionContourIndex(expansionWorld, expansionCountry);
 const expectedFrontier = new Set();

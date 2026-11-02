@@ -1,5 +1,5 @@
 import { MAP_HEIGHT, MAP_WIDTH } from './config';
-import type { Ring } from './zones';
+import { linkRings, type Ring } from './zones';
 
 export interface ContourBounds {
   x0: number;
@@ -16,79 +16,6 @@ export interface ContourSpan {
 
 interface ValueSpan extends ContourSpan {
   value: number;
-}
-
-interface ContourEdge {
-  start: number;
-  end: number;
-  direction: number;
-}
-
-function uncoveredIntervals(
-  spans: readonly ContourSpan[],
-  cover: readonly ContourSpan[],
-): Array<{ start: number; end: number }> {
-  const result: Array<{ start: number; end: number }> = [];
-  let coverIndex = 0;
-  for (const span of spans) {
-    while (coverIndex < cover.length && cover[coverIndex].end <= span.start) coverIndex += 1;
-    let cursor = span.start;
-    for (let index = coverIndex; index < cover.length; index += 1) {
-      const cut = cover[index];
-      if (cut.start >= span.end) break;
-      if (cut.start > cursor) result.push({ start: cursor, end: Math.min(cut.start, span.end) });
-      cursor = Math.max(cursor, cut.end);
-      if (cursor >= span.end) break;
-    }
-    if (cursor < span.end) result.push({ start: cursor, end: span.end });
-  }
-  return result;
-}
-
-function linkContourEdges(edges: readonly ContourEdge[]): Ring[] {
-  const outgoing = new Map<number, number[]>();
-  edges.forEach((edge, index) => {
-    const list = outgoing.get(edge.start);
-    if (list) list.push(index);
-    else outgoing.set(edge.start, [index]);
-  });
-  const used = new Uint8Array(edges.length);
-  const rings: Ring[] = [];
-  for (let first = 0; first < edges.length; first += 1) {
-    if (used[first]) continue;
-    const startVertex = edges[first].start;
-    const vertices: number[] = [];
-    const directions: number[] = [];
-    let current = first;
-    let previousDirection = -1;
-    for (let guard = 0; guard <= edges.length; guard += 1) {
-      const edge = edges[current];
-      used[current] = 1;
-      if (edge.direction !== previousDirection) {
-        vertices.push(edge.start);
-        directions.push(edge.direction);
-      }
-      previousDirection = edge.direction;
-      if (edge.end === startVertex) break;
-      const options = outgoing.get(edge.end);
-      if (!options) break;
-      let next = -1;
-      for (const preferred of [(edge.direction + 1) & 3, edge.direction, (edge.direction + 3) & 3]) {
-        next = options.find((option) => !used[option] && edges[option].direction === preferred) ?? -1;
-        if (next >= 0) break;
-      }
-      if (next < 0) break;
-      current = next;
-    }
-    if (vertices.length > 1 && directions[0] === previousDirection) vertices.shift();
-    const ring = new Int32Array(vertices.length * 2);
-    vertices.forEach((vertex, index) => {
-      ring[index * 2] = vertex % (MAP_WIDTH + 1);
-      ring[index * 2 + 1] = Math.floor(vertex / (MAP_WIDTH + 1));
-    });
-    rings.push(ring);
-  }
-  return rings;
 }
 
 /**
@@ -354,39 +281,24 @@ export class ContourArea {
       row.push(span);
       rows.set(span.y, row);
     }
-    const edges: ContourEdge[] = [];
+    const codes: number[] = [];
     const vertexWidth = MAP_WIDTH + 1;
     for (const [y, spans] of rows) {
-      const above = rows.get(y - 1) ?? [];
-      const below = rows.get(y + 1) ?? [];
-      for (const interval of uncoveredIntervals(spans, above)) {
-        edges.push({
-          start: y * vertexWidth + interval.start,
-          end: y * vertexWidth + interval.end,
-          direction: 0,
-        });
+      const row = new ContourArea(spans);
+      const above = new ContourArea((rows.get(y - 1) ?? []).map((span) => ({ ...span, y })));
+      const below = new ContourArea((rows.get(y + 1) ?? []).map((span) => ({ ...span, y })));
+      for (const span of row.subtract(above).spans) {
+        for (let x = span.start; x < span.end; x += 1) codes.push((y * vertexWidth + x) * 4);
       }
-      for (const interval of uncoveredIntervals(spans, below)) {
-        edges.push({
-          start: (y + 1) * vertexWidth + interval.end,
-          end: (y + 1) * vertexWidth + interval.start,
-          direction: 2,
-        });
+      for (const span of row.subtract(below).spans) {
+        for (let x = span.start; x < span.end; x += 1) codes.push(((y + 1) * vertexWidth + x + 1) * 4 + 2);
       }
       for (const span of spans) {
-        edges.push({
-          start: y * vertexWidth + span.end,
-          end: (y + 1) * vertexWidth + span.end,
-          direction: 1,
-        });
-        edges.push({
-          start: (y + 1) * vertexWidth + span.start,
-          end: y * vertexWidth + span.start,
-          direction: 3,
-        });
+        codes.push((y * vertexWidth + span.end) * 4 + 1);
+        codes.push(((y + 1) * vertexWidth + span.start) * 4 + 3);
       }
     }
-    return linkContourEdges(edges);
+    return linkRings(codes);
   }
 }
 
@@ -446,11 +358,7 @@ export class ScalarContourLayer {
 }
 
 export type ContourLayerName = 'land' | 'owner' | 'humidity' | 'temperature' | 'drainage' |
-  'density' | 'culture' | 'religion' | 'humanOrigins' | 'rivers' | 'water' | 'elevation' | 'cityIdAt';
-const CONTOUR_LAYER_NAMES: readonly ContourLayerName[] = [
-  'land', 'owner', 'humidity', 'temperature', 'drainage', 'density', 'culture',
-  'religion', 'humanOrigins', 'rivers', 'water', 'elevation', 'cityIdAt',
-];
+  'density' | 'culture' | 'religion' | 'humanOrigins' | 'rivers' | 'water';
 
 export interface ClimateContour {
   humidity: number;
@@ -466,26 +374,17 @@ export interface ClimateContour {
  */
 export class MapContours {
   private readonly layers = new Map<ContourLayerName, ScalarContourLayer>();
-  private readonly layerRevisions = new Map<ContourLayerName, number>(
-    CONTOUR_LAYER_NAMES.map((name) => [name, 0]),
-  );
-  private currentRevision = 0;
+  private knownVersion = -1;
   private climateRegionsCache: ClimateContour[] | null = null;
   private climateRegionIds: Int32Array | null = null;
 
   constructor(
     private readonly source: (name: ContourLayerName) => ArrayLike<number>,
+    private readonly version: () => number,
   ) {}
 
-  get revision(): number {
-    return this.currentRevision;
-  }
-
-  revisionFor(names: readonly ContourLayerName[]): string {
-    return names.map((name) => `${name}:${this.layerRevisions.get(name) ?? 0}`).join('|');
-  }
-
   layer(name: ContourLayerName): ScalarContourLayer {
+    this.synchronize();
     let layer = this.layers.get(name);
     if (!layer) {
       layer = new ScalarContourLayer(() => this.source(name));
@@ -494,38 +393,24 @@ export class MapContours {
     return layer;
   }
 
+  synchronize(): void {
+    if (this.knownVersion !== this.version()) {
+      for (const layer of this.layers.values()) layer.invalidate();
+      this.climateRegionsCache = null;
+      this.climateRegionIds = null;
+      this.knownVersion = this.version();
+    }
+  }
+
   changed(bounds: ContourBounds, names?: readonly ContourLayerName[]): void {
-    const y0 = Math.max(0, bounds.y0);
-    const y1 = Math.min(MAP_HEIGHT - 1, bounds.y1);
-    if (y1 < y0) return;
     for (const [name, layer] of this.layers) {
-      if (!names || names.includes(name)) layer.invalidate(y0, y1);
+      if (!names || names.includes(name)) layer.invalidate(Math.max(0, bounds.y0), Math.min(MAP_HEIGHT - 1, bounds.y1));
     }
-    this.finishChange(names);
-  }
-
-  changedRows(rows: Iterable<number>, names?: readonly ContourLayerName[]): void {
-    const affectedRows = [...new Set([...rows]
-      .filter((row) => Number.isInteger(row) && row >= 0 && row < MAP_HEIGHT))]
-      .sort((a, b) => a - b);
-    if (!affectedRows.length) return;
-    for (const [name, layer] of this.layers) {
-      if (!names || names.includes(name)) {
-        for (const row of affectedRows) layer.invalidate(row, row);
-      }
-    }
-    this.finishChange(names);
-  }
-
-  private finishChange(names?: readonly ContourLayerName[]): void {
     if (!names || names.some((name) => ['land', 'humidity', 'temperature', 'drainage'].includes(name))) {
       this.climateRegionsCache = null;
       this.climateRegionIds = null;
     }
-    this.currentRevision += 1;
-    for (const name of names ?? CONTOUR_LAYER_NAMES) {
-      this.layerRevisions.set(name, (this.layerRevisions.get(name) ?? 0) + 1);
-    }
+    this.knownVersion = this.version();
   }
 
   climateRegions(): readonly ClimateContour[] {

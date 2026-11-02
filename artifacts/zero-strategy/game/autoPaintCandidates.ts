@@ -27,7 +27,6 @@ export class AutoPaintCandidateSelector {
   }
 
   bounded(): number[] {
-    if (this.isLayerCard()) return this.layerCandidates();
     const pixels = this.candidates();
     if (pixels.length <= MAX_SCORE_CENTERS) return pixels;
     const stride = pixels.length / MAX_SCORE_CENTERS;
@@ -39,85 +38,6 @@ export class AutoPaintCandidateSelector {
       sampled.push(this.painter.card.hint);
     }
     return sampled.sort((a, b) => a - b);
-  }
-
-  async boundedCooperatively(_yieldControl: () => Promise<void>): Promise<number[]> {
-    return this.bounded();
-  }
-
-  private layerCandidates(): number[] {
-    const { card } = this.painter;
-    const area = this.painter.strategyLayerCandidateArea({
-      x0: 0,
-      y0: 0,
-      x1: MAP_WIDTH - 1,
-      y1: MAP_HEIGHT - 1,
-    });
-    const spans = area.spans;
-    const areaSize = spans.reduce((total, span) => total + span.end - span.start, 0);
-    const hint = card.hint >= 0 ? card.hint : null;
-    const hintIsSeparate = hint !== null && !area.contains(hint);
-    const total = areaSize + (hintIsSeparate ? 1 : 0);
-
-    if (total <= MAX_SCORE_CENTERS) {
-      const pixels = [...area];
-      if (hint !== null && !pixels.includes(hint)) pixels.push(hint);
-      return pixels.sort((a, b) => a - b);
-    }
-
-    const hintRank = hintIsSeparate ? this.rankBeforeHint(area, hint) : -1;
-    const stride = total / MAX_SCORE_CENTERS;
-    const sampled: number[] = [];
-    let spanIndex = 0;
-    let spanRank = 0;
-
-    for (let index = 0; index < MAX_SCORE_CENTERS; index += 1) {
-      const orderedRank = Math.floor(index * stride);
-      if (hintIsSeparate && orderedRank === hintRank) {
-        sampled.push(hint);
-        continue;
-      }
-      const areaRank = hintIsSeparate && orderedRank > hintRank
-        ? orderedRank - 1
-        : orderedRank;
-      while (spanIndex < spans.length) {
-        const span = spans[spanIndex];
-        const spanLength = span.end - span.start;
-        if (areaRank < spanRank + spanLength) {
-          sampled.push(span.y * MAP_WIDTH + span.start + areaRank - spanRank);
-          break;
-        }
-        spanRank += spanLength;
-        spanIndex += 1;
-      }
-    }
-
-    if (hint !== null && !sampled.includes(hint)) sampled.push(hint);
-    return sampled.sort((a, b) => a - b);
-  }
-
-  private rankBeforeHint(
-    area: { spans: readonly { y: number; start: number; end: number }[] },
-    hint: number,
-  ): number {
-    const x = hint % MAP_WIDTH;
-    const y = Math.floor(hint / MAP_WIDTH);
-    let rank = 0;
-    for (const span of area.spans) {
-      const length = span.end - span.start;
-      if (span.y < y) {
-        rank += length;
-        continue;
-      }
-      if (span.y > y) break;
-      if (span.end <= x) {
-        rank += length;
-        continue;
-      }
-      if (span.start < x) rank += x - span.start;
-      break;
-    }
-    return rank;
   }
 
   private static circleOffsets(radius: number): Int16Array {
@@ -138,7 +58,11 @@ export class AutoPaintCandidateSelector {
       ? world.countries[card.newCountryId]
       : card.targetCountryId === null ? null : world.countries[card.targetCountryId];
 
-    if ((card.type === 'create' && (!target || target.pixels === 0)) ||
+    if (this.isLayerCard()) {
+      for (let pixel = 0; pixel < world.land.length; pixel += 1) {
+        if (this.painter.strategyInkCostAt(pixel) > 0) candidates.add(pixel);
+      }
+    } else if ((card.type === 'create' && (!target || target.pixels === 0)) ||
       card.type === 'warmCurrent' || card.type === 'coldCurrent' ||
       (card.targetCountryId === null && ['drought', 'rain', 'faith', 'culture'].includes(card.type))) {
       this.globalSeeds(candidates);
