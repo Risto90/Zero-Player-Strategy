@@ -12,7 +12,8 @@
         "buildType": "apk"
       },
       "env": {
-        "APP_BUILD_TARGET": "native"
+        "APP_BUILD_TARGET": "native",
+        "EXPO_PUBLIC_APP_LOG_MODE": "detailed"
       },
       "pnpm": "9.15.9"
     },
@@ -24,7 +25,8 @@
         "buildType": "apk"
       },
       "env": {
-        "APP_BUILD_TARGET": "native"
+        "APP_BUILD_TARGET": "native",
+        "EXPO_PUBLIC_APP_LOG_MODE": "errors"
       },
       "pnpm": "9.15.9"
     }

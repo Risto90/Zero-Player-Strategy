@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Проверка WASM-ядра Zero Strategy</title>
+  </head>
+  <body>
+    <output id="result">Проверка выполняется</output>
+    <script type="module">
+      import createModule from './zero_kernel.mjs';
+      import { createWasmKernel } from './wasm-binding.mjs';
+
+      try {
+        const module = await createModule();
+        const kernel = createWasmKernel(module, {
+          threaded: false,
+          crossOriginIsolated: window.crossOriginIsolated,
+        });
+        const sum = kernel.sumI32(new Int32Array([11, -4, 35]));
+        if (kernel.addI32(20, 22) !== 42 || sum !== 42n) {
+          throw new Error('Результат вызова WASM не совпал');
+        }
+        const threadedFactory = (await import('./zero_kernel_threads.mjs')).default;
+        const threadedModule = await threadedFactory();
+        const threadedKernel = createWasmKernel(threadedModule, {
+          crossOriginIsolated: window.crossOriginIsolated,
+        });
+        if (!threadedKernel.threaded || threadedKernel.addI32(19, 23) !== 42) {
+          throw new Error('Многопоточная сборка не сообщила свой режим выполнения');
+        }
+        document.querySelector('#result').textContent = 'OK: однопоточная и многопоточная WASM-сборки вызваны в браузере';
+        window.kernelSmokeResult = {
+          ok: true,
+          sum: sum.toString(),
+          threaded: threadedKernel.threaded,
+          isolated: window.crossOriginIsolated,
+        };
+      } catch (error) {
+        document.querySelector('#result').textContent = `Ошибка: ${error.message}`;
+        window.kernelSmokeResult = { ok: false, error: String(error) };
+      }
+    </script>
+  </body>
+</html>

@@ -1,25 +1,25 @@
 /**
- * Closed-curve zones — the stored form of every map layer.
+ * Зоны с замкнутыми контурами — сохраняемое представление каждого слоя карты.
  *
- * Each layer is a list of zones; a zone is the area where the layer has one value
- * (a country, "humidity 10%", "culture X at 60%") bounded by closed rings, like
- * OpenStreetMap areas. Rings run along pixel edges, so converting a zone back to
- * pixels is exact. Rings are kept as corner vertices only: [x0, y0, x1, y1, ...].
+ * Слой состоит из зон; зона — область с одним значением слоя
+ * (государство, «влажность 10%», «культура X — 60%»), ограниченная кольцами.
+ * Кольца проходят по границам пикселей, поэтому восстановление растра точное.
+ * В кольцах хранятся только угловые вершины: [x0, y0, x1, y1, ...].
  */
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from './config';
 import type { Composition } from './composition';
 
-/** Read-only view of a composition table (a frozen copy can be traced while the game goes on). */
+/** Доступ только для чтения к таблице смесей, снимок которой не меняется во время трассировки. */
 export interface TableView {
   entries: Composition[];
   shareOf(comp: number, entity: number): number;
 }
 
-/** Long jobs are generators that yield every few rows, so they can run in slices between frames. */
+/** Длинные операции уступают управление через равные промежутки строк для выполнения между кадрами. */
 export type Steps<T> = Generator<void, T, void>;
 const ROWS_PER_STEP = 24;
 
-/** Runs a sliced job to the end at once. */
+/** Выполняет пошаговую операцию до конца синхронно. */
 export function runSteps<T>(steps: Steps<T>): T {
   for (;;) {
     const next = steps.next();
@@ -39,7 +39,7 @@ const STEP = [1, VW, -1, -VW];
 class EdgeBuckets {
   readonly byKey = new Map<number, number[]>();
 
-  /** Adds the side of pixel (x, y) as a directed edge, walking with the pixel on the right. */
+  /** Добавляет сторону пикселя (x, y) как ориентированное ребро; пиксель остаётся справа. */
   add(key: number, x: number, y: number, side: number): void {
     let v: number;
     if (side === 0) v = y * VW + x;
@@ -55,7 +55,7 @@ class EdgeBuckets {
   }
 }
 
-/** Joins directed unit edges into closed rings, keeping only the corners. */
+/** Соединяет ориентированные единичные рёбра в замкнутые кольца, оставляя только углы. */
 export function linkRings(codes: number[]): Ring[] {
   const outgoing = new Map<number, number[]>();
   codes.forEach((code, index) => {
@@ -100,7 +100,7 @@ export function linkRings(codes: number[]): Ring[] {
       if (next < 0) break;
       current = next;
     }
-    // The start vertex is not a corner when the ring enters and leaves it in the same direction.
+    // Начальная вершина не является углом, если кольцо входит и выходит из неё в одном направлении.
     if (verts.length > 1 && dirs[0] === prevDir) {
       verts.shift();
     }
@@ -124,8 +124,8 @@ function* bucketsToZones(buckets: EdgeBuckets): Steps<Zone[]> {
 }
 
 /**
- * Traces a scalar raster into zones of equal value. Pixels where `include` is 0
- * (or whose value equals `skip`) belong to no zone.
+ * Преобразует скалярный растр в зоны одинаковых значений. Пиксели, у которых
+ * `include` равен 0 или значение равно `skip`, не входят ни в одну зону.
  */
 export function traceScalar(values: ArrayLike<number>, include: Uint8Array | null, skip: number | null): Zone[] {
   return runSteps(traceScalarSteps(values, include, skip));
@@ -155,8 +155,8 @@ export interface EntityZones {
 }
 
 /**
- * Traces a composition raster into one layer per entity: for every culture (or religion)
- * the zones where its share is 5%, 10%, … 100%. Outside its zones the entity's share is 0.
+ * Преобразует растр смесей в отдельный слой для каждой сущности: для каждой
+ * культуры или религии строятся зоны долей 5%, 10%, …, 100%. Вне этих зон доля равна 0.
  */
 export function traceComposition(comp: Uint16Array, table: TableView): EntityZones[] {
   return runSteps(traceCompositionSteps(comp, table));
@@ -209,7 +209,7 @@ export function* traceCompositionSteps(comp: Uint16Array, table: TableView): Ste
   return layers.sort((a, b) => a.entity - b.entity);
 }
 
-/** Calls `visit` for every pixel inside the rings (even–odd rule, pixel centres). */
+/** Вызывает `visit` для пикселей внутри колец по правилу чётности и центрам пикселей. */
 export function fillRings(rings: Ring[], visit: (p: number) => void): void {
   let minX = Infinity;
   let minY = Infinity;
@@ -247,7 +247,7 @@ export function fillRings(rings: Ring[], visit: (p: number) => void): void {
   }
 }
 
-/** Writes scalar zones back into a raster. */
+/** Записывает скалярные зоны обратно в растр. */
 export function rasterizeScalar(zones: Zone[], target: Uint8Array | Uint16Array | Float32Array): void {
   for (const zone of zones) fillRings(zone.rings, (p) => (target[p] = zone.value));
 }

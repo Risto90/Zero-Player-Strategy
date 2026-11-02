@@ -7,7 +7,9 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import colors from '@/constants/colors';
+import { initializeDiagnosticLogging, recordDiagnosticError } from '../diagnosticLogger';
 
+initializeDiagnosticLogging();
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
@@ -29,7 +31,7 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <ErrorBoundary>
+      <ErrorBoundary onError={recordDiagnosticError}>
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.light.background } }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="play" options={{ gestureEnabled: false }} />

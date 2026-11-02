@@ -1,9 +1,9 @@
 import { SHARE_STEP } from './config';
 
 /**
- * A composition is the mix of cultures (or religions) at a point: entity → share %.
- * Culture mixes always sum to 100%. Religion mixes may sum to less; the rest are non-believers.
- * Each distinct mix is stored once and referenced by index from the working raster.
+ * Композиция хранит доли культур или религий в точке: сущность → процент.
+ * Доли культур всегда составляют 100%; доли религий могут быть меньше, остаток — неверующие.
+ * Каждая уникальная смесь хранится один раз, а растр ссылается на неё по индексу.
  */
 export interface Composition {
   ids: number[];
@@ -11,7 +11,7 @@ export interface Composition {
   total: number;
 }
 
-/** Splits `total` (a multiple of the step) between entities proportionally, in whole steps. */
+/** Делит `total`, кратное шагу, между сущностями пропорционально целыми шагами. */
 export function quantizeShares(values: Map<number, number>, total: number): Map<number, number> {
   const units = Math.round(total / SHARE_STEP);
   const sum = [...values.values()].reduce((a, b) => a + b, 0);
@@ -64,7 +64,7 @@ export class CompositionTable {
     return share > 0 ? this.intern(new Map([[entity, share]])) : 0;
   }
 
-  /** Adds an entity at a share to a mix (used when rebuilding rasters from zones). */
+  /** Добавляет долю сущности в смесь при восстановлении растра из зон. */
   withEntry(comp: number, entity: number, share: number): number {
     return this.cached(`add|${entity}|${share}`, comp, () => {
       const mix = this.toMap(comp);
@@ -74,9 +74,9 @@ export class CompositionTable {
   }
 
   /**
-   * Converts a fraction of the population to `to`.
-   * With `from`: only that entity's followers convert (culture branching).
-   * Without: everyone converts proportionally, including non-believers (new faith spreading).
+   * Переводит долю населения в `to`.
+   * С `from` обращаются только последователи этой сущности (ветвление культуры).
+   * Без `from` преобразуются все пропорционально, включая неверующих (распространение веры).
    */
   convert(comp: number, to: number, fraction: number, from: number | null): number {
     return this.cached(`conv|${to}|${from}|${fraction}`, comp, () => {
