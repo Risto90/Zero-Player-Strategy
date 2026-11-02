@@ -5,8 +5,10 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -26,6 +28,130 @@ napi_value throw_error(napi_env env, const char *message) {
 napi_value throw_kernel_error(napi_env env, zk_error error) {
   napi_throw_error(env, zk_error_name(error), zk_error_message(error));
   return nullptr;
+}
+
+bool read_operation(napi_env env, napi_value value, uint32_t *operation) {
+  napi_valuetype type;
+  napi_typeof(env, value, &type);
+  if (type != napi_string)
+    return false;
+  char name[32] = {};
+  size_t length = 0;
+  napi_get_value_string_utf8(env, value, name, sizeof(name), &length);
+  const char *names[] = {"union", "intersection", "difference",
+                         "symmetricDifference", "complement"};
+  for (uint32_t index = 0; index < 5; ++index) {
+    if (std::string(name) == names[index]) {
+      *operation = index + 1;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool read_u32_array(napi_env env, napi_value value, const uint32_t **data,
+                    size_t *length) {
+  bool is_typed_array = false;
+  napi_is_typedarray(env, value, &is_typed_array);
+  if (!is_typed_array)
+    return false;
+  napi_typedarray_type type;
+  void *pointer = nullptr;
+  napi_value array_buffer;
+  size_t byte_offset = 0;
+  if (napi_get_typedarray_info(env, value, &type, length, &pointer,
+                               &array_buffer, &byte_offset) != napi_ok ||
+      type != napi_uint32_array)
+    return false;
+  *data = static_cast<const uint32_t *>(pointer);
+  return true;
+}
+
+bool read_f64_array(napi_env env, napi_value value, const double **data,
+                    size_t *length) {
+  bool is_typed_array = false;
+  napi_is_typedarray(env, value, &is_typed_array);
+  if (!is_typed_array)
+    return false;
+  napi_typedarray_type type;
+  void *pointer = nullptr;
+  napi_value array_buffer;
+  size_t byte_offset = 0;
+  if (napi_get_typedarray_info(env, value, &type, length, &pointer,
+                               &array_buffer, &byte_offset) != napi_ok ||
+      type != napi_float64_array)
+    return false;
+  *data = static_cast<const double *>(pointer);
+  return true;
+}
+
+bool read_population_measure(napi_env env, napi_value value,
+                            const uint32_t **keys, const double **mass,
+                            uint32_t *count) {
+  napi_value key_value;
+  napi_value mass_value;
+  if (napi_get_named_property(env, value, "keys", &key_value) != napi_ok ||
+      napi_get_named_property(env, value, "mass", &mass_value) != napi_ok)
+    return false;
+  size_t key_count = 0;
+  size_t mass_count = 0;
+  if (!read_u32_array(env, key_value, keys, &key_count) ||
+      !read_f64_array(env, mass_value, mass, &mass_count) ||
+      mass_count > UINT32_MAX / ZK_POPULATION_KEY_WIDTH ||
+      key_count != mass_count * ZK_POPULATION_KEY_WIDTH)
+    return false;
+  *count = static_cast<uint32_t>(mass_count);
+  return true;
+}
+
+napi_value make_u32_array(napi_env env, const uint32_t *source,
+                          uint32_t count) {
+  napi_value array_buffer;
+  void *data = nullptr;
+  const size_t bytes = static_cast<size_t>(count) * sizeof(uint32_t);
+  if (napi_create_arraybuffer(env, bytes, &data, &array_buffer) != napi_ok)
+    return throw_error(env, "Не удалось создать массив uint32");
+  if (bytes != 0)
+    std::memcpy(data, source, bytes);
+  napi_value result;
+  if (napi_create_typedarray(env, napi_uint32_array, count, array_buffer, 0,
+                             &result) != napi_ok)
+    return throw_error(env, "Не удалось создать массив uint32");
+  return result;
+}
+
+napi_value make_f64_array(napi_env env, const double *source,
+                          uint32_t count) {
+  napi_value array_buffer;
+  void *data = nullptr;
+  const size_t bytes = static_cast<size_t>(count) * sizeof(double);
+  if (napi_create_arraybuffer(env, bytes, &data, &array_buffer) != napi_ok)
+    return throw_error(env, "Не удалось создать массив f64");
+  if (bytes != 0)
+    std::memcpy(data, source, bytes);
+  napi_value result;
+  if (napi_create_typedarray(env, napi_float64_array, count, array_buffer, 0,
+                             &result) != napi_ok)
+    return throw_error(env, "Не удалось создать массив f64");
+  return result;
+}
+
+napi_value make_population_measure(napi_env env, const uint32_t *keys,
+                                   const double *mass, uint32_t count) {
+  if (count > UINT32_MAX / ZK_POPULATION_KEY_WIDTH)
+    return throw_error(env, "Число групп превышает допустимый размер");
+  napi_value result;
+  napi_value key_array =
+      make_u32_array(env, keys, count * ZK_POPULATION_KEY_WIDTH);
+  if (key_array == nullptr)
+    return nullptr;
+  napi_value mass_array = make_f64_array(env, mass, count);
+  if (mass_array == nullptr)
+    return nullptr;
+  napi_create_object(env, &result);
+  napi_set_named_property(env, result, "keys", key_array);
+  napi_set_named_property(env, result, "mass", mass_array);
+  return result;
 }
 
 napi_value abi_version(napi_env env, napi_callback_info) {
@@ -190,6 +316,102 @@ napi_value sum_i32(napi_env env, napi_callback_info info) {
   return bigint;
 }
 
+napi_value set_algebra(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  uint32_t operation = 0;
+  const uint32_t *left = nullptr;
+  const uint32_t *right = nullptr;
+  size_t left_count = 0;
+  size_t right_count = 0;
+  if (argc != 3 || !read_operation(env, argv[0], &operation) ||
+      !read_u32_array(env, argv[1], &left, &left_count) ||
+      !read_u32_array(env, argv[2], &right, &right_count) ||
+      left_count > UINT32_MAX || right_count > UINT32_MAX ||
+      left_count > UINT32_MAX - right_count)
+    return throw_error(env, "setAlgebra требует операцию и два массива uint32");
+  try {
+    std::vector<uint32_t> output(left_count + right_count);
+    uint32_t result_count = 0;
+    const zk_error error = zk_set_binary(
+        static_cast<zk_set_operation>(operation), left,
+        static_cast<uint32_t>(left_count), right,
+        static_cast<uint32_t>(right_count), output.data(),
+        static_cast<uint32_t>(output.size()), &result_count);
+    if (error != ZK_OK)
+      return throw_kernel_error(env, error);
+    return make_u32_array(env, output.data(), result_count);
+  } catch (const std::bad_alloc &) {
+    return throw_kernel_error(env, ZK_ERROR_OUT_OF_MEMORY);
+  }
+}
+
+napi_value measure_algebra(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  uint32_t operation = 0;
+  const uint32_t *left_keys = nullptr;
+  const uint32_t *right_keys = nullptr;
+  const double *left_mass = nullptr;
+  const double *right_mass = nullptr;
+  uint32_t left_count = 0;
+  uint32_t right_count = 0;
+  if (argc != 3 || !read_operation(env, argv[0], &operation) ||
+      !read_population_measure(env, argv[1], &left_keys, &left_mass,
+                              &left_count) ||
+      !read_population_measure(env, argv[2], &right_keys, &right_mass,
+                              &right_count) ||
+      right_count > UINT32_MAX / ZK_POPULATION_KEY_WIDTH ||
+      left_count > UINT32_MAX / ZK_POPULATION_KEY_WIDTH - right_count)
+    return throw_error(env, "measureAlgebra требует две совместные меры");
+  try {
+    const uint32_t capacity = left_count + right_count;
+    std::vector<uint32_t> output_keys(
+        static_cast<size_t>(capacity) * ZK_POPULATION_KEY_WIDTH);
+    std::vector<double> output_mass(capacity);
+    uint32_t result_count = 0;
+    const zk_error error = zk_measure_binary(
+        static_cast<zk_measure_operation>(operation), left_keys, left_mass,
+        left_count, right_keys, right_mass, right_count, output_keys.data(),
+        output_mass.data(), capacity, &result_count);
+    if (error != ZK_OK)
+      return throw_kernel_error(env, error);
+    return make_population_measure(env, output_keys.data(), output_mass.data(),
+                                   result_count);
+  } catch (const std::bad_alloc &) {
+    return throw_kernel_error(env, ZK_ERROR_OUT_OF_MEMORY);
+  }
+}
+
+napi_value sum_population_measure(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  const uint32_t *keys = nullptr;
+  const double *mass = nullptr;
+  uint32_t count = 0;
+  if (argc != 1 ||
+      !read_population_measure(env, argv[0], &keys, &mass, &count))
+    return throw_error(env, "sumPopulationMeasure требует совместную меру");
+  try {
+    std::vector<uint32_t> output_keys(
+        static_cast<size_t>(count) * ZK_POPULATION_KEY_WIDTH);
+    std::vector<double> output_mass(count);
+    uint32_t result_count = 0;
+    const zk_error error =
+        zk_measure_sum(keys, mass, count, output_keys.data(),
+                       output_mass.data(), count, &result_count);
+    if (error != ZK_OK)
+      return throw_kernel_error(env, error);
+    return make_population_measure(env, output_keys.data(), output_mass.data(),
+                                   result_count);
+  } catch (const std::bad_alloc &) {
+    return throw_kernel_error(env, ZK_ERROR_OUT_OF_MEMORY);
+  }
+}
+
 struct BufferFinalizer {
   zk_handle handle;
 };
@@ -277,7 +499,7 @@ napi_value create_buffer(napi_env env, napi_callback_info info) {
   return result;
 }
 
-} // namespace
+} // пространство имён
 
 NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
@@ -289,6 +511,12 @@ NAPI_MODULE_INIT() {
        napi_default, nullptr},
       {"sumI32", nullptr, sum_i32, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"setAlgebra", nullptr, set_algebra, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"measureAlgebra", nullptr, measure_algebra, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"sumPopulationMeasure", nullptr, sum_population_measure, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
       {"createBuffer", nullptr, create_buffer, nullptr, nullptr, nullptr,
        napi_default, nullptr},
   };

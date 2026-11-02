@@ -2,6 +2,14 @@
 export const KERNEL_ABI_VERSION = 1;
 
 export type KernelBufferType = 'u8' | 'u16' | 'i32' | 'u32' | 'f32' | 'f64' | 'i64' | 'u64';
+export type KernelSetOperation = 'union' | 'intersection' | 'difference' | 'symmetricDifference' | 'complement';
+export type KernelMeasureOperation = KernelSetOperation;
+export interface KernelPopulationMeasure {
+  /** По четыре uint32 на группу: культура, вера, происхождение, принадлежность. */
+  keys: Uint32Array;
+  /** Одна неотрицательная масса на группу; неверие кодируется в ключе веры как UINT32_MAX. */
+  mass: Float64Array;
+}
 
 export interface NativeKernelBinding {
   abiVersion(): number;
@@ -9,6 +17,9 @@ export interface NativeKernelBinding {
   queueAddI32(left: number, right: number): Promise<number>;
   sumI32(values: Int32Array): bigint;
   createBuffer(type: KernelBufferType, count: number): ArrayBufferView;
+  setAlgebra(operation: KernelSetOperation, left: Uint32Array, right: Uint32Array): Uint32Array;
+  measureAlgebra(operation: KernelMeasureOperation, left: KernelPopulationMeasure, right: KernelPopulationMeasure): KernelPopulationMeasure;
+  sumPopulationMeasure(input: KernelPopulationMeasure): KernelPopulationMeasure;
 }
 
 export interface KernelBuffer<T extends ArrayBufferView> {

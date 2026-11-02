@@ -1,4 +1,11 @@
-import { KERNEL_ABI_VERSION, type KernelBufferType, type NativeKernelBinding } from './contracts';
+import {
+  KERNEL_ABI_VERSION,
+  type KernelBufferType,
+  type KernelMeasureOperation,
+  type KernelPopulationMeasure,
+  type KernelSetOperation,
+  type NativeKernelBinding,
+} from './contracts';
 
 const BUFFER_CTORS = {
   u8: Uint8Array,
@@ -12,8 +19,8 @@ const BUFFER_CTORS = {
 } as const;
 
 /**
- * Нативный адаптер принимает JSI/Node-реализацию, не привязывая игровую логику
- * к конкретной платформе или способу загрузки двоичного модуля.
+ * Принимает реализацию JSI или Node, не привязывая игровую логику
+ * к платформе и способу загрузки двоичного модуля.
  */
 export function createNativeKernel(binding: NativeKernelBinding) {
   assertVersion(binding.abiVersion());
@@ -31,6 +38,19 @@ export function createNativeKernel(binding: NativeKernelBinding) {
     createBuffer(type: KernelBufferType, count: number): ArrayBufferView {
       validateCount(count);
       return binding.createBuffer(type, count);
+    },
+    setAlgebra(operation: KernelSetOperation, left: Uint32Array, right: Uint32Array): Uint32Array {
+      return binding.setAlgebra(operation, left, right);
+    },
+    measureAlgebra(
+      operation: KernelMeasureOperation,
+      left: KernelPopulationMeasure,
+      right: KernelPopulationMeasure,
+    ): KernelPopulationMeasure {
+      return binding.measureAlgebra(operation, left, right);
+    },
+    sumPopulationMeasure(input: KernelPopulationMeasure): KernelPopulationMeasure {
+      return binding.sumPopulationMeasure(input);
     },
   };
 }

@@ -1,4 +1,11 @@
-import { KERNEL_ABI_VERSION, type KernelBuffer, type KernelBufferType } from './contracts';
+import {
+  KERNEL_ABI_VERSION,
+  type KernelBuffer,
+  type KernelBufferType,
+  type KernelMeasureOperation,
+  type KernelPopulationMeasure,
+  type KernelSetOperation,
+} from './contracts';
 
 export interface EmscriptenKernelModule {
   HEAPU8: Uint8Array;
@@ -9,6 +16,13 @@ export interface EmscriptenKernelModule {
   _zk_abi_version(): number;
   _zk_execution_mode(): number;
   _zk_i32_add(left: number, right: number, resultPointer: number): number;
+  _zk_set_binary(operation: number, left: number, leftCount: number, right: number, rightCount: number,
+    output: number, outputCapacity: number, resultCount: number): number;
+  _zk_measure_binary(operation: number, leftKeys: number, leftMass: number, leftCount: number,
+    rightKeys: number, rightMass: number, rightCount: number, outputKeys: number, outputMass: number,
+    outputCapacity: number, resultCount: number): number;
+  _zk_measure_sum(keys: number, mass: number, count: number, outputKeys: number, outputMass: number,
+    outputCapacity: number, resultCount: number): number;
   _zk_buffer_create(type: number, count: number, resultPointer: number): number;
   _zk_buffer_release(handle: bigint): number;
   _zk_buffer_data(handle: bigint, byteLengthPointer: number, errorPointer: number): number;
@@ -18,6 +32,12 @@ export interface EmscriptenKernelModule {
 const TYPE_IDS: Record<KernelBufferType, number> = {
   u8: 1, u16: 2, i32: 3, u32: 4, f32: 5, f64: 6, i64: 7, u64: 8,
 };
+
+const SET_OPERATION_IDS: Record<KernelSetOperation, number> = {
+  union: 1, intersection: 2, difference: 3, symmetricDifference: 4, complement: 5,
+};
+
+const MEASURE_OPERATION_IDS: Record<KernelMeasureOperation, number> = SET_OPERATION_IDS;
 
 const BUFFER_CTORS = {
   u8: Uint8Array,
@@ -35,7 +55,7 @@ export interface WasmKernelOptions {
 }
 
 /**
- * Создаёт TS-обвязку над Emscripten-модулем. Каждый буфер остаётся в памяти WASM;
+ * Создаёт TypeScript-обвязку над Emscripten-модулем. Буферы остаются в памяти WASM,
  * возвращаемое представление — временный типизированный вид на ту же память.
  */
 export function createWasmKernel(
@@ -146,7 +166,130 @@ export function createWasmKernel(
         buffer.release();
       }
     },
+    setAlgebra(operation: KernelSetOperation, left: Uint32Array, right: Uint32Array): Uint32Array {
+      const capacity = left.length + right.length;
+      validateCount(capacity);
+      const buffers: KernelBuffer<ArrayBufferView>[] = [];
+      const resultPointer = module._malloc(4);
+      if (!resultPointer) throw new Error('Не удалось выделить память для результата алгебры');
+      try {
+        const leftBuffer = this.createBuffer<Uint32Array>('u32', left.length);
+        buffers.push(leftBuffer);
+        leftBuffer.view.set(left);
+        const rightBuffer = this.createBuffer<Uint32Array>('u32', right.length);
+        buffers.push(rightBuffer);
+        rightBuffer.view.set(right);
+        const output = this.createBuffer<Uint32Array>('u32', capacity);
+        buffers.push(output);
+        checkError(module._zk_set_binary(
+          SET_OPERATION_IDS[operation],
+          leftBuffer.view.byteOffset,
+          left.length,
+          rightBuffer.view.byteOffset,
+          right.length,
+          output.view.byteOffset,
+          capacity,
+          resultPointer,
+        ));
+        const count = module.HEAPU32[resultPointer >>> 2];
+        if (count > capacity) throw new Error('Ядро вернуло недопустимый размер множества');
+        return output.view.slice(0, count);
+      } finally {
+        module._free(resultPointer);
+        buffers.forEach((buffer) => buffer.release());
+      }
+    },
+    measureAlgebra(
+      operation: KernelMeasureOperation,
+      left: KernelPopulationMeasure,
+      right: KernelPopulationMeasure,
+    ): KernelPopulationMeasure {
+      return runMeasure(operation, left, right, this.createBuffer);
+    },
+    sumPopulationMeasure(input: KernelPopulationMeasure): KernelPopulationMeasure {
+      return runMeasureSum(input, this.createBuffer);
+    },
   };
+
+  function runMeasure(operation: KernelMeasureOperation, left: KernelPopulationMeasure,
+    right: KernelPopulationMeasure,
+    allocate: <T extends ArrayBufferView>(type: KernelBufferType, count: number) => KernelBuffer<T>): KernelPopulationMeasure {
+    validateMeasure(left);
+    validateMeasure(right);
+    const capacity = left.mass.length + right.mass.length;
+    validateCount(capacity);
+    const buffers: KernelBuffer<ArrayBufferView>[] = [];
+    const resultPointer = module._malloc(4);
+    if (!resultPointer) throw new Error('Не удалось выделить память для результата меры');
+    try {
+      const leftKeys = allocate<Uint32Array>('u32', left.keys.length);
+      buffers.push(leftKeys); leftKeys.view.set(left.keys);
+      const leftMass = allocate<Float64Array>('f64', left.mass.length);
+      buffers.push(leftMass); leftMass.view.set(left.mass);
+      const rightKeys = allocate<Uint32Array>('u32', right.keys.length);
+      buffers.push(rightKeys); rightKeys.view.set(right.keys);
+      const rightMass = allocate<Float64Array>('f64', right.mass.length);
+      buffers.push(rightMass); rightMass.view.set(right.mass);
+      const outputKeys = allocate<Uint32Array>('u32', capacity * 4);
+      buffers.push(outputKeys);
+      const outputMass = allocate<Float64Array>('f64', capacity);
+      buffers.push(outputMass);
+      checkError(module._zk_measure_binary(
+        MEASURE_OPERATION_IDS[operation],
+        leftKeys.view.byteOffset, leftMass.view.byteOffset, left.mass.length,
+        rightKeys.view.byteOffset, rightMass.view.byteOffset, right.mass.length,
+        outputKeys.view.byteOffset, outputMass.view.byteOffset, capacity, resultPointer,
+      ));
+      const count = module.HEAPU32[resultPointer >>> 2];
+      if (count > capacity) throw new Error('Ядро вернуло недопустимый размер меры');
+      return {
+        keys: outputKeys.view.slice(0, count * 4),
+        mass: outputMass.view.slice(0, count),
+      };
+    } finally {
+      module._free(resultPointer);
+      buffers.forEach((buffer) => buffer.release());
+    }
+  }
+
+  function runMeasureSum(input: KernelPopulationMeasure,
+    allocate: <T extends ArrayBufferView>(type: KernelBufferType, count: number) => KernelBuffer<T>): KernelPopulationMeasure {
+    validateMeasure(input);
+    const capacity = input.mass.length;
+    const buffers: KernelBuffer<ArrayBufferView>[] = [];
+    const resultPointer = module._malloc(4);
+    if (!resultPointer) throw new Error('Не удалось выделить память для суммы меры');
+    try {
+      const keys = allocate<Uint32Array>('u32', input.keys.length);
+      buffers.push(keys); keys.view.set(input.keys);
+      const mass = allocate<Float64Array>('f64', input.mass.length);
+      buffers.push(mass); mass.view.set(input.mass);
+      const outputKeys = allocate<Uint32Array>('u32', capacity * 4);
+      buffers.push(outputKeys);
+      const outputMass = allocate<Float64Array>('f64', capacity);
+      buffers.push(outputMass);
+      checkError(module._zk_measure_sum(
+        keys.view.byteOffset, mass.view.byteOffset, input.mass.length,
+        outputKeys.view.byteOffset, outputMass.view.byteOffset, capacity, resultPointer,
+      ));
+      const count = module.HEAPU32[resultPointer >>> 2];
+      if (count > capacity) throw new Error('Ядро вернуло недопустимый размер меры');
+      return {
+        keys: outputKeys.view.slice(0, count * 4),
+        mass: outputMass.view.slice(0, count),
+      };
+    } finally {
+      module._free(resultPointer);
+      buffers.forEach((buffer) => buffer.release());
+    }
+  }
+
+  function validateMeasure(input: KernelPopulationMeasure): void {
+    if (!(input.keys instanceof Uint32Array) || !(input.mass instanceof Float64Array) ||
+        input.keys.length !== input.mass.length * 4) {
+      throw new TypeError('Мера требует четыре ключа uint32 и один вес f64 на группу');
+    }
+  }
 }
 
 function validateCount(count: number): void {

@@ -23,6 +23,7 @@ const nativeRoot = path.join(outputRoot, 'native');
 const emscriptenCache = path.join(outputRoot, 'emscripten-cache');
 const sources = [
   path.join(kernelRoot, 'src', 'core.cpp'),
+  path.join(kernelRoot, 'src', 'algebra.cpp'),
   path.join(kernelRoot, 'src', 'buffers', 'buffer_store.cpp'),
 ];
 const header = path.join(kernelRoot, 'include');
@@ -51,6 +52,9 @@ const exports = [
   '_zk_error_message',
   '_zk_i32_add',
   '_zk_i32_sum',
+  '_zk_set_binary',
+  '_zk_measure_binary',
+  '_zk_measure_sum',
   '_zk_buffer_create',
   '_zk_buffer_release',
   '_zk_buffer_data',
@@ -133,6 +137,18 @@ run(cxx, [
   path.join(nativeRoot, 'native-queue.test'),
 ]);
 
+run(cxx, [
+  '-std=c++20',
+  '-O2',
+  '-fno-fast-math',
+  '-ffp-contract=off',
+  `-I${header}`,
+  path.join(appRoot, 'scripts', 'kernel-algebra.test.cpp'),
+  path.join(kernelRoot, 'src', 'algebra.cpp'),
+  '-o',
+  path.join(nativeRoot, 'kernel-algebra.test'),
+]);
+
 const esbuild = path.resolve(appRoot, '../api-server/node_modules/.bin/esbuild');
 if (!existsSync(esbuild)) {
   throw new Error(`Не найден esbuild для браузерной проверки: ${esbuild}`);
@@ -175,6 +191,7 @@ const buildRecord = {
     'node/native-binding.mjs',
     'native/zero_kernel_jsi.o',
     'native/native-queue.test',
+    'native/kernel-algebra.test',
   ],
 };
 await import('node:fs/promises').then(({ writeFile }) =>
