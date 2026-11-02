@@ -3,6 +3,11 @@ import {
   type KernelBuffer,
   type KernelBufferType,
   type KernelMeasureOperation,
+  type KernelMatrixOperation,
+  type KernelMatrixFactorization,
+  type KernelMatrixFactorizationResult,
+  type KernelMatrixResult,
+  type KernelMatrixScalar,
   type KernelPopulationMeasure,
   type KernelSetOperation,
 } from './contracts';
@@ -23,6 +28,26 @@ export interface EmscriptenKernelModule {
     outputCapacity: number, resultCount: number): number;
   _zk_measure_sum(keys: number, mass: number, count: number, outputKeys: number, outputMass: number,
     outputCapacity: number, resultCount: number): number;
+  _zk_matrix_execute(operation: number, type: number, left: number, leftRows: number,
+    leftColumns: number, right: number, rightRows: number, rightColumns: number,
+    output: number, outputCapacity: number, outputRows: number, outputColumns: number): number;
+  _zk_matrix_factorize(factorization: number, type: number, input: number,
+    rows: number, columns: number, outputA: number, capacityA: number,
+    rowsA: number, columnsA: number, outputB: number, capacityB: number,
+    rowsB: number, columnsB: number, outputC: number, capacityC: number,
+    rowsC: number, columnsC: number): number;
+  _zk_matrix_batch_matmul(type: number, left: number, leftBatches: number,
+    leftRows: number, leftColumns: number, right: number, rightBatches: number,
+    rightRows: number, rightColumns: number, output: number,
+    outputCapacity: number): number;
+  _zk_sparse_matvec(type: number, rows: number, columns: number,
+    rowOffsets: number, columnIndices: number, values: number,
+    nonzeroCount: number, vector: number, output: number,
+    outputCapacity: number): number;
+  _zk_sparse_matmul(type: number, rows: number, inner: number,
+    rowOffsets: number, columnIndices: number, values: number,
+    nonzeroCount: number, right: number, rightColumns: number,
+    output: number, outputCapacity: number): number;
   _zk_buffer_create(type: number, count: number, resultPointer: number): number;
   _zk_buffer_release(handle: bigint): number;
   _zk_buffer_data(handle: bigint, byteLengthPointer: number, errorPointer: number): number;
@@ -38,6 +63,16 @@ const SET_OPERATION_IDS: Record<KernelSetOperation, number> = {
 };
 
 const MEASURE_OPERATION_IDS: Record<KernelMeasureOperation, number> = SET_OPERATION_IDS;
+const MATRIX_OPERATION_IDS: Record<KernelMatrixOperation, number> = {
+  transpose: 1, add: 2, subtract: 3, hadamard: 4, divide: 5,
+  matmul: 6, matvec: 7, dot: 8, outer: 9, sum: 10, mean: 11,
+  normL1: 12, normFrobenius: 13, trace: 14, determinant: 15, rank: 16,
+  inverse: 17, pseudoinverse: 18, solve: 19,
+};
+const FACTORIZATION_IDS: Record<KernelMatrixFactorization, number> = {
+  lu: 1, qr: 2, cholesky: 3, svd: 4, symmetricEigen: 5,
+};
+const MAX_KERNEL_BYTES = 256 * 1024 * 1024;
 
 const BUFFER_CTORS = {
   u8: Uint8Array,
@@ -209,6 +244,83 @@ export function createWasmKernel(
     sumPopulationMeasure(input: KernelPopulationMeasure): KernelPopulationMeasure {
       return runMeasureSum(input, this.createBuffer);
     },
+    matrixExecute(
+      operation: KernelMatrixOperation,
+      left: KernelMatrixScalar,
+      leftRows: number,
+      leftColumns: number,
+      right: KernelMatrixScalar = left instanceof Float32Array
+        ? new Float32Array()
+        : new Float64Array(),
+      rightRows = 0,
+      rightColumns = 0,
+    ): KernelMatrixResult {
+      validateMatrix(left, leftRows, leftColumns);
+      validateMatrix(right, rightRows, rightColumns);
+      if (left.constructor !== right.constructor) {
+        throw new TypeError('Типы матриц должны совпадать');
+      }
+      return runMatrix(operation, left, leftRows, leftColumns, right, rightRows, rightColumns);
+    },
+    matrixFactorize(
+      factorization: KernelMatrixFactorization,
+      input: KernelMatrixScalar,
+      rows: number,
+      columns: number,
+    ): KernelMatrixFactorizationResult {
+      validateMatrix(input, rows, columns);
+      if (!(input instanceof Float32Array || input instanceof Float64Array)) {
+        throw new TypeError('Разложения Eigen принимают только float32 и float64');
+      }
+      return runFactorization(factorization, input, rows, columns);
+    },
+    matrixBatchMatmul(
+      left: KernelMatrixScalar,
+      leftBatches: number,
+      leftRows: number,
+      leftColumns: number,
+      right: KernelMatrixScalar,
+      rightBatches: number,
+      rightRows: number,
+      rightColumns: number,
+    ): KernelMatrixResult {
+      validateBatch(left, leftBatches, leftRows, leftColumns);
+      validateBatch(right, rightBatches, rightRows, rightColumns);
+      if (left.constructor !== right.constructor || leftColumns !== rightRows) {
+        throw new TypeError('Несовместимые типы или формы пакетных матриц');
+      }
+      return runBatchMatmul(
+        left, leftBatches, leftRows, leftColumns,
+        right, rightBatches, rightRows, rightColumns,
+      );
+    },
+    sparseMatvec(
+      rows: number,
+      columns: number,
+      rowOffsets: Uint32Array,
+      columnIndices: Uint32Array,
+      values: KernelMatrixScalar,
+      vector: KernelMatrixScalar,
+    ): KernelMatrixScalar {
+      validateCsr(rows, columns, rowOffsets, columnIndices, values);
+      validateMatrix(vector, columns, 1);
+      if (values.constructor !== vector.constructor) throw new TypeError('Типы CSR и вектора должны совпадать');
+      return runSparseMatvec(rows, columns, rowOffsets, columnIndices, values, vector);
+    },
+    sparseMatmul(
+      rows: number,
+      columns: number,
+      rowOffsets: Uint32Array,
+      columnIndices: Uint32Array,
+      values: KernelMatrixScalar,
+      right: KernelMatrixScalar,
+      rightColumns: number,
+    ): KernelMatrixResult {
+      validateCsr(rows, columns, rowOffsets, columnIndices, values);
+      validateMatrix(right, columns, rightColumns);
+      if (values.constructor !== right.constructor) throw new TypeError('Типы CSR и плотной матрицы должны совпадать');
+      return runSparseMatmul(rows, columns, rowOffsets, columnIndices, values, right, rightColumns);
+    },
   };
 
   function runMeasure(operation: KernelMeasureOperation, left: KernelPopulationMeasure,
@@ -284,6 +396,277 @@ export function createWasmKernel(
     }
   }
 
+  function runMatrix(
+    operation: KernelMatrixOperation,
+    left: KernelMatrixScalar,
+    leftRows: number,
+    leftColumns: number,
+    right: KernelMatrixScalar,
+    rightRows: number,
+    rightColumns: number,
+  ): KernelMatrixResult {
+    const outputCapacity = Math.max(
+      left.length,
+      leftRows * rightColumns,
+      operation === 'outer' ? left.length * right.length : 0,
+    );
+    validateCount(outputCapacity);
+    validateKernelBytes(
+      left.byteLength, right.byteLength, outputCapacity * left.BYTES_PER_ELEMENT,
+    );
+    const pointers: number[] = [];
+    const allocate = (bytes: number) => {
+      const pointer = module._malloc(bytes || 1);
+      if (!pointer) throw new Error('Недостаточно памяти для матричного вызова');
+      pointers.push(pointer);
+      return pointer;
+    };
+    try {
+      const isF32 = left instanceof Float32Array;
+      const leftPointer = allocate(left.byteLength);
+      const rightPointer = allocate(right.byteLength);
+      const outputPointer = allocate(outputCapacity * left.BYTES_PER_ELEMENT);
+      const rowsPointer = allocate(4);
+      const columnsPointer = allocate(4);
+      module.HEAPU8.set(new Uint8Array(left.buffer, left.byteOffset, left.byteLength), leftPointer);
+      module.HEAPU8.set(new Uint8Array(right.buffer, right.byteOffset, right.byteLength), rightPointer);
+      checkError(module._zk_matrix_execute(
+        MATRIX_OPERATION_IDS[operation],
+        isF32 ? 5 : 6,
+        leftPointer,
+        leftRows,
+        leftColumns,
+        rightPointer,
+        rightRows,
+        rightColumns,
+        outputPointer,
+        outputCapacity,
+        rowsPointer,
+        columnsPointer,
+      ));
+      const view = isF32
+        ? new Float32Array(module.HEAPU8.buffer, outputPointer)
+        : new Float64Array(module.HEAPU8.buffer, outputPointer);
+      const rows = module.HEAPU32[rowsPointer >>> 2];
+      const columns = module.HEAPU32[columnsPointer >>> 2];
+      const count = rows * columns;
+      if (!Number.isSafeInteger(count) || count > outputCapacity) {
+        throw new Error('Ядро вернуло недопустимую форму матрицы');
+      }
+      return { values: view.slice(0, count), rows, columns };
+    } finally {
+      pointers.forEach((pointer) => module._free(pointer));
+    }
+  }
+
+  function runFactorization(
+    factorization: KernelMatrixFactorization,
+    input: KernelMatrixScalar,
+    rows: number,
+    columns: number,
+  ): KernelMatrixFactorizationResult {
+    const extent = Math.min(rows, columns);
+    let capacityA = rows * rows;
+    let capacityB = rows * columns;
+    let capacityC = columns * columns;
+    if (factorization === 'qr') {
+      capacityA = rows * extent;
+      capacityB = extent * columns;
+      capacityC = 0;
+    } else if (factorization === 'lu') {
+      if (rows !== columns) throw new TypeError('LU требует квадратную матрицу');
+      capacityA = capacityB = capacityC = rows * rows;
+    } else if (factorization === 'cholesky') {
+      if (rows !== columns) throw new TypeError('Cholesky требует квадратную матрицу');
+      capacityB = capacityC = 0;
+    } else if (factorization === 'svd') {
+      capacityA = rows * rows;
+      capacityB = extent * extent;
+      capacityC = columns * columns;
+    } else if (factorization === 'symmetricEigen') {
+      if (rows !== columns) throw new TypeError('Собственные значения требуют квадратную матрицу');
+      capacityA = rows;
+      capacityB = rows * rows;
+      capacityC = 0;
+    }
+    const elementBytes = input.BYTES_PER_ELEMENT;
+    const capacities = [capacityA, capacityB, capacityC];
+    validateKernelBytes(
+      input.byteLength,
+      ...capacities.map((capacity) => capacity * elementBytes),
+    );
+    const pointers: number[] = [];
+    const allocate = (bytes: number) => {
+      const pointer = module._malloc(Math.max(bytes, 1));
+      if (!pointer) throw new Error('Недостаточно памяти для матричного разложения');
+      pointers.push(pointer);
+      return pointer;
+    };
+    try {
+      const inputPointer = allocate(input.byteLength);
+      const outputPointers = capacities.map((capacity) => allocate(capacity * elementBytes));
+      const shapePointers = Array.from({ length: 6 }, () => allocate(4));
+      module.HEAPU8.set(new Uint8Array(input.buffer, input.byteOffset, input.byteLength), inputPointer);
+      checkError(module._zk_matrix_factorize(
+        FACTORIZATION_IDS[factorization],
+        input instanceof Float32Array ? 5 : 6,
+        inputPointer, rows, columns,
+        outputPointers[0], capacityA, shapePointers[0], shapePointers[1],
+        outputPointers[1], capacityB, shapePointers[2], shapePointers[3],
+        outputPointers[2], capacityC, shapePointers[4], shapePointers[5],
+      ));
+      const shape = shapePointers.map((pointer) => module.HEAPU32[pointer >>> 2]);
+      const makeResult = (index: number) => {
+        const rowCount = shape[index * 2];
+        const columnCount = shape[index * 2 + 1];
+        const count = rowCount * columnCount;
+        const values = input instanceof Float32Array
+          ? new Float32Array(module.HEAPU8.buffer, outputPointers[index], count).slice()
+          : new Float64Array(module.HEAPU8.buffer, outputPointers[index], count).slice();
+        return { values, rows: rowCount, columns: columnCount };
+      };
+      return { a: makeResult(0), b: makeResult(1), c: makeResult(2) };
+    } finally {
+      pointers.forEach((pointer) => module._free(pointer));
+    }
+  }
+
+  function runBatchMatmul(
+    left: KernelMatrixScalar,
+    leftBatches: number,
+    leftRows: number,
+    leftColumns: number,
+    right: KernelMatrixScalar,
+    rightBatches: number,
+    rightRows: number,
+    rightColumns: number,
+  ): KernelMatrixResult {
+    const batches = Math.max(leftBatches, rightBatches);
+    const outputCapacity = batches * leftRows * rightColumns;
+    validateCount(outputCapacity);
+    validateKernelBytes(
+      left.byteLength, right.byteLength,
+      outputCapacity * left.BYTES_PER_ELEMENT,
+    );
+    const pointers: number[] = [];
+    const allocate = (bytes: number) => {
+      const pointer = module._malloc(Math.max(bytes, 1));
+      if (!pointer) throw new Error('Недостаточно памяти для пакетного умножения');
+      pointers.push(pointer);
+      return pointer;
+    };
+    try {
+      const leftPointer = allocate(left.byteLength);
+      const rightPointer = allocate(right.byteLength);
+      const outputPointer = allocate(outputCapacity * left.BYTES_PER_ELEMENT);
+      module.HEAPU8.set(new Uint8Array(left.buffer, left.byteOffset, left.byteLength), leftPointer);
+      module.HEAPU8.set(new Uint8Array(right.buffer, right.byteOffset, right.byteLength), rightPointer);
+      checkError(module._zk_matrix_batch_matmul(
+        left instanceof Float32Array ? 5 : 6,
+        leftPointer, leftBatches, leftRows, leftColumns,
+        rightPointer, rightBatches, rightRows, rightColumns,
+        outputPointer, outputCapacity,
+      ));
+      const count = outputCapacity;
+      const values = left instanceof Float32Array
+        ? new Float32Array(module.HEAPU8.buffer, outputPointer, count).slice()
+        : new Float64Array(module.HEAPU8.buffer, outputPointer, count).slice();
+      return { values, rows: batches * leftRows, columns: rightColumns };
+    } finally {
+      pointers.forEach((pointer) => module._free(pointer));
+    }
+  }
+
+  function runSparseMatvec(
+    rows: number,
+    columns: number,
+    rowOffsets: Uint32Array,
+    columnIndices: Uint32Array,
+    values: KernelMatrixScalar,
+    vector: KernelMatrixScalar,
+  ): KernelMatrixScalar {
+    validateKernelBytes(
+      rowOffsets.byteLength, columnIndices.byteLength,
+      values.byteLength, vector.byteLength, rows * values.BYTES_PER_ELEMENT,
+    );
+    const pointers: number[] = [];
+    const allocate = (bytes: number) => {
+      const pointer = module._malloc(Math.max(bytes, 1));
+      if (!pointer) throw new Error('Недостаточно памяти для разреженного вектора');
+      pointers.push(pointer);
+      return pointer;
+    };
+    try {
+      const rowPointer = allocate(rowOffsets.byteLength);
+      const indexPointer = allocate(columnIndices.byteLength);
+      const valuesPointer = allocate(values.byteLength);
+      const vectorPointer = allocate(vector.byteLength);
+      const outputPointer = allocate(rows * values.BYTES_PER_ELEMENT);
+      module.HEAPU8.set(new Uint8Array(rowOffsets.buffer, rowOffsets.byteOffset, rowOffsets.byteLength), rowPointer);
+      module.HEAPU8.set(new Uint8Array(columnIndices.buffer, columnIndices.byteOffset, columnIndices.byteLength), indexPointer);
+      module.HEAPU8.set(new Uint8Array(values.buffer, values.byteOffset, values.byteLength), valuesPointer);
+      module.HEAPU8.set(new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength), vectorPointer);
+      checkError(module._zk_sparse_matvec(
+        values instanceof Float32Array ? 5 : 6,
+        rows, columns, rowPointer, indexPointer, valuesPointer, values.length,
+        vectorPointer, outputPointer, rows,
+      ));
+      return values instanceof Float32Array
+        ? new Float32Array(module.HEAPU8.buffer, outputPointer, rows).slice()
+        : new Float64Array(module.HEAPU8.buffer, outputPointer, rows).slice();
+    } finally {
+      pointers.forEach((pointer) => module._free(pointer));
+    }
+  }
+
+  function runSparseMatmul(
+    rows: number,
+    columns: number,
+    rowOffsets: Uint32Array,
+    columnIndices: Uint32Array,
+    values: KernelMatrixScalar,
+    right: KernelMatrixScalar,
+    rightColumns: number,
+  ): KernelMatrixResult {
+    const outputCapacity = rows * rightColumns;
+    validateCount(outputCapacity);
+    validateKernelBytes(
+      rowOffsets.byteLength, columnIndices.byteLength,
+      values.byteLength, right.byteLength,
+      outputCapacity * values.BYTES_PER_ELEMENT,
+    );
+    const pointers: number[] = [];
+    const allocate = (bytes: number) => {
+      const pointer = module._malloc(Math.max(bytes, 1));
+      if (!pointer) throw new Error('Недостаточно памяти для разреженного умножения');
+      pointers.push(pointer);
+      return pointer;
+    };
+    try {
+      const rowPointer = allocate(rowOffsets.byteLength);
+      const indexPointer = allocate(columnIndices.byteLength);
+      const valuesPointer = allocate(values.byteLength);
+      const rightPointer = allocate(right.byteLength);
+      const outputPointer = allocate(outputCapacity * values.BYTES_PER_ELEMENT);
+      module.HEAPU8.set(new Uint8Array(rowOffsets.buffer, rowOffsets.byteOffset, rowOffsets.byteLength), rowPointer);
+      module.HEAPU8.set(new Uint8Array(columnIndices.buffer, columnIndices.byteOffset, columnIndices.byteLength), indexPointer);
+      module.HEAPU8.set(new Uint8Array(values.buffer, values.byteOffset, values.byteLength), valuesPointer);
+      module.HEAPU8.set(new Uint8Array(right.buffer, right.byteOffset, right.byteLength), rightPointer);
+      checkError(module._zk_sparse_matmul(
+        values instanceof Float32Array ? 5 : 6,
+        rows, columns, rowPointer, indexPointer, valuesPointer, values.length,
+        rightPointer, rightColumns, outputPointer, outputCapacity,
+      ));
+      const count = outputCapacity;
+      const result = values instanceof Float32Array
+        ? new Float32Array(module.HEAPU8.buffer, outputPointer, count).slice()
+        : new Float64Array(module.HEAPU8.buffer, outputPointer, count).slice();
+      return { values: result, rows, columns: rightColumns };
+    } finally {
+      pointers.forEach((pointer) => module._free(pointer));
+    }
+  }
+
   function validateMeasure(input: KernelPopulationMeasure): void {
     if (!(input.keys instanceof Uint32Array) || !(input.mass instanceof Float64Array) ||
         input.keys.length !== input.mass.length * 4) {
@@ -292,9 +675,69 @@ export function createWasmKernel(
   }
 }
 
+function validateMatrix(values: KernelMatrixScalar, rows: number, columns: number): void {
+  if (!(values instanceof Float32Array || values instanceof Float64Array) ||
+      !Number.isSafeInteger(rows) || !Number.isSafeInteger(columns) ||
+      rows < 0 || columns < 0 || rows * columns !== values.length) {
+    throw new TypeError('Форма матрицы не совпадает с типизированным массивом');
+  }
+  validateKernelBytes(values.byteLength);
+  for (const value of values) {
+    if (!Number.isFinite(value)) throw new TypeError('Матрица содержит NaN или бесконечность');
+  }
+}
+
+function validateBatch(values: KernelMatrixScalar, batches: number, rows: number, columns: number): void {
+  if (!Number.isSafeInteger(batches) || batches <= 0 ||
+      !Number.isSafeInteger(rows) || rows <= 0 ||
+      !Number.isSafeInteger(columns) || columns <= 0 ||
+      batches * rows * columns !== values.length) {
+    throw new TypeError('Форма пакета матриц не совпадает с типизированным массивом');
+  }
+  validateMatrix(values, batches * rows, columns);
+}
+
+function validateCsr(
+  rows: number,
+  columns: number,
+  rowOffsets: Uint32Array,
+  columnIndices: Uint32Array,
+  values: KernelMatrixScalar,
+): void {
+  if (!Number.isSafeInteger(rows) || rows <= 0 ||
+      !Number.isSafeInteger(columns) || columns <= 0 ||
+      rowOffsets.length !== rows + 1 || columnIndices.length !== values.length ||
+      rowOffsets[0] !== 0 || rowOffsets[rows] !== values.length) {
+    throw new TypeError('Неверная форма CSR-матрицы');
+  }
+  validateKernelBytes(
+    rowOffsets.byteLength, columnIndices.byteLength, values.byteLength,
+  );
+  for (let row = 0; row < rows; row += 1) {
+    if (rowOffsets[row] > rowOffsets[row + 1] || rowOffsets[row + 1] > values.length) {
+      throw new TypeError('Смещения CSR должны быть монотонными');
+    }
+    let previous = -1;
+    for (let index = rowOffsets[row]; index < rowOffsets[row + 1]; index += 1) {
+      if (columnIndices[index] >= columns || columnIndices[index] <= previous ||
+          !Number.isFinite(values[index]) || values[index] === 0) {
+        throw new TypeError('Неканоническая CSR-строка');
+      }
+      previous = columnIndices[index];
+    }
+  }
+}
+
 function validateCount(count: number): void {
   if (!Number.isSafeInteger(count) || count < 0 || count > 0xffff_ffff) {
     throw new RangeError('Количество элементов должно быть целым числом uint32');
+  }
+}
+
+function validateKernelBytes(...byteCounts: number[]): void {
+  const total = byteCounts.reduce((sum, value) => sum + value, 0);
+  if (!Number.isSafeInteger(total) || total < 0 || total > MAX_KERNEL_BYTES) {
+    throw new RangeError('Рабочая область превышает лимит памяти матричного ядра');
   }
 }
 

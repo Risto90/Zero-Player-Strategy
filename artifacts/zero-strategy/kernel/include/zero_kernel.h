@@ -60,6 +60,41 @@ typedef enum zk_measure_operation {
   ZK_MEASURE_COMPLEMENT = 5
 } zk_measure_operation;
 
+typedef enum zk_matrix_type {
+  ZK_MATRIX_F32 = 5,
+  ZK_MATRIX_F64 = 6
+} zk_matrix_type;
+
+typedef enum zk_matrix_operation {
+  ZK_MATRIX_TRANSPOSE = 1,
+  ZK_MATRIX_ADD = 2,
+  ZK_MATRIX_SUBTRACT = 3,
+  ZK_MATRIX_HADAMARD = 4,
+  ZK_MATRIX_DIVIDE = 5,
+  ZK_MATRIX_MATMUL = 6,
+  ZK_MATRIX_MATVEC = 7,
+  ZK_MATRIX_DOT = 8,
+  ZK_MATRIX_OUTER = 9,
+  ZK_MATRIX_SUM = 10,
+  ZK_MATRIX_MEAN = 11,
+  ZK_MATRIX_NORM_L1 = 12,
+  ZK_MATRIX_NORM_FROBENIUS = 13,
+  ZK_MATRIX_TRACE = 14,
+  ZK_MATRIX_DETERMINANT = 15,
+  ZK_MATRIX_RANK = 16,
+  ZK_MATRIX_INVERSE = 17,
+  ZK_MATRIX_PSEUDOINVERSE = 18,
+  ZK_MATRIX_SOLVE = 19
+} zk_matrix_operation;
+
+typedef enum zk_matrix_factorization {
+  ZK_MATRIX_LU = 1,
+  ZK_MATRIX_QR = 2,
+  ZK_MATRIX_CHOLESKY = 3,
+  ZK_MATRIX_SVD = 4,
+  ZK_MATRIX_SYMMETRIC_EIGEN = 5
+} zk_matrix_factorization;
+
 enum { ZK_POPULATION_KEY_WIDTH = 4 };
 
 /* Версия ABI и верхняя граница размера одного экземпляра ядра. */
@@ -112,6 +147,52 @@ zk_error zk_measure_sum(const uint32_t *keys, const double *mass,
                         uint32_t count, uint32_t *output_keys,
                         double *output_mass, uint32_t output_capacity,
                         uint32_t *result_count);
+
+/*
+ * Плотные матрицы хранятся построчно; вычисления принимают только f32/f64.
+ * Для операций используются построчные двумерные представления; вектор —
+ * матрица с одной строкой или одним столбцом. Пакетные вызовы идут через
+ * отдельную функцию ниже.
+ */
+zk_error zk_matrix_execute(zk_matrix_operation operation, zk_matrix_type type,
+                           const void *left, uint32_t left_rows,
+                           uint32_t left_columns, const void *right,
+                           uint32_t right_rows, uint32_t right_columns,
+                           void *output, uint32_t output_capacity,
+                           uint32_t *output_rows, uint32_t *output_columns);
+
+/*
+ * factorize возвращает до трёх построчных выходов. Неиспользуемый выход можно
+ * передать как null с нулевой ёмкостью; все указатели размеров обязательны.
+ * Размеры записываются только при успехе. LU: P, L, U; SVD: U, диагональ
+ * сингулярных значений, V; Eigen: собственные значения и векторы симметричной
+ * матрицы. Невырожденность и формы проверяются явно.
+ */
+zk_error zk_matrix_factorize(
+    zk_matrix_factorization factorization, zk_matrix_type type,
+    const void *input, uint32_t rows, uint32_t columns,
+    void *output_a, uint32_t capacity_a, uint32_t *rows_a, uint32_t *columns_a,
+    void *output_b, uint32_t capacity_b, uint32_t *rows_b, uint32_t *columns_b,
+    void *output_c, uint32_t capacity_c, uint32_t *rows_c, uint32_t *columns_c);
+
+zk_error zk_matrix_batch_matmul(
+    zk_matrix_type type, const void *left, uint32_t left_batches,
+    uint32_t left_rows, uint32_t left_columns, const void *right,
+    uint32_t right_batches, uint32_t right_rows, uint32_t right_columns,
+    void *output, uint32_t output_capacity);
+
+/* CSR: row_offsets имеет rows + 1 элементов; столбцы отсортированы в строке. */
+zk_error zk_sparse_matvec(zk_matrix_type type, uint32_t rows, uint32_t columns,
+                          const uint32_t *row_offsets,
+                          const uint32_t *column_indices, const void *values,
+                          uint32_t nonzero_count, const void *vector,
+                          void *output, uint32_t output_capacity);
+zk_error zk_sparse_matmul(zk_matrix_type type, uint32_t left_rows,
+                          uint32_t inner, const uint32_t *row_offsets,
+                          const uint32_t *column_indices, const void *values,
+                          uint32_t nonzero_count, const void *right,
+                          uint32_t right_columns, void *output,
+                          uint32_t output_capacity);
 
 #ifdef __cplusplus
 }

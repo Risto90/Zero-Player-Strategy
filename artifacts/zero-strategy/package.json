@@ -12,7 +12,7 @@
     "kernel:build": "node scripts/build-kernel.mjs",
     "kernel:android-sdk": "bash scripts/install-android-sdk.sh",
     "kernel:android-build": "node scripts/build-android-kernel.mjs",
-    "kernel:test": "pnpm run kernel:build && node scripts/kernel-smoke.test.mjs",
+    "kernel:test": "pnpm run kernel:build && node scripts/kernel-smoke.test.mjs && pnpm run test:matrix-api",
     "kernel:browser-test": "pnpm run kernel:build && node scripts/kernel-browser.test.mjs",
     "test:geometry": "../api-server/node_modules/.bin/esbuild scripts/geometry.test.mjs --bundle --platform=node --format=esm --outfile=/tmp/zero-strategy-geometry.test.mjs && node /tmp/zero-strategy-geometry.test.mjs",
     "pretest:flags": "pnpm run test:flag-module-qualification",
@@ -66,6 +66,7 @@
     "test:auto-turn": "../api-server/node_modules/.bin/esbuild scripts/auto-turn.test.mjs --bundle --platform=node --format=esm --outfile=/tmp/zero-strategy-auto-turn.test.mjs && node /tmp/zero-strategy-auto-turn.test.mjs",
     "test:nomads": "../api-server/node_modules/.bin/esbuild scripts/nomad-regressions.test.mjs --bundle --platform=node --format=esm --outfile=/tmp/zero-strategy-nomad-regressions.test.mjs && node /tmp/zero-strategy-nomad-regressions.test.mjs",
     "test:algebra": "node scripts/algebra-query.test.mjs",
+    "test:matrix-api": "node scripts/matrix-api.test.mjs",
     "test:browser-production": "node scripts/browser-production.test.mjs",
     "test:browser-performance": "EXPO_PUBLIC_PERF_BENCHMARK=true pnpm run build && node scripts/browser-performance-benchmark.test.mjs",
     "test:browser-notification-campaign": "EXPO_PUBLIC_NOTIFICATION_E2E=true pnpm run build && node scripts/browser-notification-campaign.test.mjs"

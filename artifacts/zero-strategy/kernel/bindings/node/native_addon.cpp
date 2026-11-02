@@ -4,10 +4,12 @@
 #include <node_api.h>
 
 #include <cmath>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <new>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -85,6 +87,76 @@ bool read_f64_array(napi_env env, napi_value value, const double **data,
   return true;
 }
 
+bool read_f32_array(napi_env env, napi_value value, const float **data,
+                    size_t *length) {
+  bool is_typed_array = false;
+  napi_is_typedarray(env, value, &is_typed_array);
+  if (!is_typed_array)
+    return false;
+  napi_typedarray_type type;
+  void *pointer = nullptr;
+  napi_value array_buffer;
+  size_t byte_offset = 0;
+  if (napi_get_typedarray_info(env, value, &type, length, &pointer,
+                               &array_buffer, &byte_offset) != napi_ok ||
+      type != napi_float32_array)
+    return false;
+  *data = static_cast<const float *>(pointer);
+  return true;
+}
+
+bool read_matrix_type(napi_env env, napi_value value, zk_matrix_type *type) {
+  const float *f32 = nullptr;
+  const double *f64 = nullptr;
+  size_t length = 0;
+  if (read_f32_array(env, value, &f32, &length)) {
+    *type = ZK_MATRIX_F32;
+    return true;
+  }
+  if (read_f64_array(env, value, &f64, &length)) {
+    *type = ZK_MATRIX_F64;
+    return true;
+  }
+  return false;
+}
+
+bool read_matrix_operation(napi_env env, napi_value value,
+                           zk_matrix_operation *operation) {
+  napi_valuetype type;
+  napi_typeof(env, value, &type);
+  if (type != napi_string)
+    return false;
+  char name[32] = {};
+  size_t length = 0;
+  napi_get_value_string_utf8(env, value, name, sizeof(name), &length);
+  const char *names[] = {
+      "", "transpose", "add", "subtract", "hadamard", "divide",
+      "matmul", "matvec", "dot", "outer", "sum", "mean", "normL1",
+      "normFrobenius", "trace", "determinant", "rank", "inverse",
+      "pseudoinverse", "solve"};
+  for (uint32_t index = 1; index < sizeof(names) / sizeof(names[0]); ++index) {
+    if (std::string(name) == names[index]) {
+      *operation = static_cast<zk_matrix_operation>(index);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool read_u32_number(napi_env env, napi_value value, uint32_t *result) {
+  napi_valuetype type;
+  napi_typeof(env, value, &type);
+  if (type != napi_number)
+    return false;
+  double number_value = 0;
+  napi_get_value_double(env, value, &number_value);
+  if (!std::isfinite(number_value) || number_value < 0 ||
+      number_value > UINT32_MAX || number_value != std::floor(number_value))
+    return false;
+  *result = static_cast<uint32_t>(number_value);
+  return true;
+}
+
 bool read_population_measure(napi_env env, napi_value value,
                             const uint32_t **keys, const double **mass,
                             uint32_t *count) {
@@ -134,6 +206,418 @@ napi_value make_f64_array(napi_env env, const double *source,
                              &result) != napi_ok)
     return throw_error(env, "Не удалось создать массив f64");
   return result;
+}
+
+napi_value make_f32_array(napi_env env, const float *source,
+                          uint32_t count) {
+  napi_value array_buffer;
+  void *data = nullptr;
+  const size_t bytes = static_cast<size_t>(count) * sizeof(float);
+  if (napi_create_arraybuffer(env, bytes, &data, &array_buffer) != napi_ok)
+    return throw_error(env, "Не удалось создать массив f32");
+  if (bytes != 0)
+    std::memcpy(data, source, bytes);
+  napi_value result;
+  if (napi_create_typedarray(env, napi_float32_array, count, array_buffer, 0,
+                             &result) != napi_ok)
+    return throw_error(env, "Не удалось создать массив f32");
+  return result;
+}
+
+napi_value matrix_execute(napi_env env, napi_callback_info info) {
+  size_t argc = 7;
+  napi_value argv[7];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  zk_matrix_operation operation{};
+  zk_matrix_type matrix_type{};
+  uint32_t left_rows = 0, left_columns = 0, right_rows = 0, right_columns = 0;
+  if (argc != 7 || !read_matrix_operation(env, argv[0], &operation) ||
+      !read_matrix_type(env, argv[1], &matrix_type) ||
+      !read_u32_number(env, argv[2], &left_rows) ||
+      !read_u32_number(env, argv[3], &left_columns) ||
+      !read_u32_number(env, argv[5], &right_rows) ||
+      !read_u32_number(env, argv[6], &right_columns))
+    return throw_error(env, "matrixExecute получил неверные операцию, тип или формы");
+  if (matrix_type == ZK_MATRIX_F32) {
+    const float *left = nullptr, *right = nullptr;
+    size_t left_count = 0, right_count = 0;
+    if (!read_f32_array(env, argv[1], &left, &left_count) ||
+        !read_f32_array(env, argv[4], &right, &right_count) ||
+        static_cast<uint64_t>(left_rows) * left_columns != left_count ||
+        static_cast<uint64_t>(right_rows) * right_columns != right_count)
+      return throw_error(env, "Формы матриц не совпадают с массивами f32");
+    uint64_t capacity = std::max<uint64_t>(
+        static_cast<uint64_t>(left_rows) * left_columns,
+        static_cast<uint64_t>(left_rows) * right_columns);
+    if (operation == ZK_MATRIX_OUTER) capacity =
+        static_cast<uint64_t>(left_count) * right_count;
+    if (operation == ZK_MATRIX_PSEUDOINVERSE) capacity =
+        static_cast<uint64_t>(left_rows) * left_columns;
+    if (capacity > ZK_MEMORY_LIMIT_BYTES / sizeof(float))
+      return throw_error(env, "Результат превышает лимит памяти ядра");
+    std::vector<float> output(capacity);
+    uint32_t rows = 0, columns = 0;
+    const zk_error error = zk_matrix_execute(
+        operation, matrix_type, left, left_rows, left_columns, right,
+        right_rows, right_columns, output.data(), static_cast<uint32_t>(capacity),
+        &rows, &columns);
+    if (error != ZK_OK) return throw_kernel_error(env, error);
+    napi_value result, values, row_value, column_value;
+    values = make_f32_array(env, output.data(), rows * columns);
+    napi_create_object(env, &result);
+    napi_create_uint32(env, rows, &row_value);
+    napi_create_uint32(env, columns, &column_value);
+    napi_set_named_property(env, result, "values", values);
+    napi_set_named_property(env, result, "rows", row_value);
+    napi_set_named_property(env, result, "columns", column_value);
+    return result;
+  }
+
+  const double *left = nullptr, *right = nullptr;
+  size_t left_count = 0, right_count = 0;
+  if (!read_f64_array(env, argv[1], &left, &left_count) ||
+      !read_f64_array(env, argv[4], &right, &right_count) ||
+      static_cast<uint64_t>(left_rows) * left_columns != left_count ||
+      static_cast<uint64_t>(right_rows) * right_columns != right_count)
+    return throw_error(env, "Формы матриц не совпадают с массивами f64");
+  uint64_t capacity = std::max<uint64_t>(
+      static_cast<uint64_t>(left_rows) * left_columns,
+      static_cast<uint64_t>(left_rows) * right_columns);
+  if (operation == ZK_MATRIX_OUTER)
+    capacity = static_cast<uint64_t>(left_count) * right_count;
+  if (operation == ZK_MATRIX_PSEUDOINVERSE)
+    capacity = static_cast<uint64_t>(left_rows) * left_columns;
+  if (capacity > ZK_MEMORY_LIMIT_BYTES / sizeof(double))
+    return throw_error(env, "Результат превышает лимит памяти ядра");
+  std::vector<double> output(capacity);
+  uint32_t rows = 0, columns = 0;
+  const zk_error error = zk_matrix_execute(
+      operation, matrix_type, left, left_rows, left_columns, right, right_rows,
+      right_columns, output.data(), static_cast<uint32_t>(capacity), &rows,
+      &columns);
+  if (error != ZK_OK) return throw_kernel_error(env, error);
+  napi_value result, values, row_value, column_value;
+  values = make_f64_array(env, output.data(), rows * columns);
+  napi_create_object(env, &result);
+  napi_create_uint32(env, rows, &row_value);
+  napi_create_uint32(env, columns, &column_value);
+  napi_set_named_property(env, result, "values", values);
+  napi_set_named_property(env, result, "rows", row_value);
+  napi_set_named_property(env, result, "columns", column_value);
+  return result;
+}
+
+bool read_factorization(napi_env env, napi_value value,
+                        zk_matrix_factorization *factorization) {
+  napi_valuetype type;
+  napi_typeof(env, value, &type);
+  if (type != napi_string)
+    return false;
+  char name[32] = {};
+  size_t length = 0;
+  napi_get_value_string_utf8(env, value, name, sizeof(name), &length);
+  const char *names[] = {"", "lu", "qr", "cholesky", "svd", "symmetricEigen"};
+  for (uint32_t index = 1; index < sizeof(names) / sizeof(names[0]); ++index) {
+    if (std::string(name) == names[index]) {
+      *factorization = static_cast<zk_matrix_factorization>(index);
+      return true;
+    }
+  }
+  return false;
+}
+
+template <typename T>
+napi_value make_matrix_result(napi_env env, const T *values, uint32_t rows,
+                              uint32_t columns) {
+  napi_value result, array, row_value, column_value;
+  array = nullptr;
+  if constexpr (std::is_same_v<T, float>)
+    array = make_f32_array(env, values, rows * columns);
+  else
+    array = make_f64_array(env, values, rows * columns);
+  if (array == nullptr)
+    return nullptr;
+  napi_create_object(env, &result);
+  napi_create_uint32(env, rows, &row_value);
+  napi_create_uint32(env, columns, &column_value);
+  napi_set_named_property(env, result, "values", array);
+  napi_set_named_property(env, result, "rows", row_value);
+  napi_set_named_property(env, result, "columns", column_value);
+  return result;
+}
+
+template <typename T>
+napi_value matrix_factorize_impl(
+    napi_env env, zk_matrix_factorization operation, const T *input,
+    uint32_t rows, uint32_t columns) {
+  const uint32_t extent = std::min(rows, columns);
+  uint64_t capacity_a = static_cast<uint64_t>(rows) * rows;
+  uint64_t capacity_b = static_cast<uint64_t>(rows) * columns;
+  uint64_t capacity_c = static_cast<uint64_t>(columns) * columns;
+  if (operation == ZK_MATRIX_QR) {
+    capacity_a = static_cast<uint64_t>(rows) * extent;
+    capacity_b = static_cast<uint64_t>(extent) * columns;
+    capacity_c = 0;
+  } else if (operation == ZK_MATRIX_LU) {
+    if (rows != columns) return throw_error(env, "LU требует квадратную матрицу");
+    capacity_a = capacity_b = capacity_c = static_cast<uint64_t>(rows) * rows;
+  } else if (operation == ZK_MATRIX_CHOLESKY) {
+    if (rows != columns) return throw_error(env, "Cholesky требует квадратную матрицу");
+    capacity_b = capacity_c = 0;
+  } else if (operation == ZK_MATRIX_SVD) {
+    capacity_a = static_cast<uint64_t>(rows) * rows;
+    capacity_b = static_cast<uint64_t>(extent) * extent;
+    capacity_c = static_cast<uint64_t>(columns) * columns;
+  } else if (operation == ZK_MATRIX_SYMMETRIC_EIGEN) {
+    if (rows != columns)
+      return throw_error(env, "Собственные значения требуют квадратную матрицу");
+    capacity_a = rows;
+    capacity_b = static_cast<uint64_t>(rows) * rows;
+    capacity_c = 0;
+  }
+  if (capacity_a + capacity_b + capacity_c >
+      ZK_MEMORY_LIMIT_BYTES / sizeof(T))
+    return throw_error(env, "Факторизация превышает лимит памяти ядра");
+  try {
+    std::vector<T> a(capacity_a), b(capacity_b), c(capacity_c);
+    uint32_t ar = 0, ac = 0, br = 0, bc = 0, cr = 0, cc = 0;
+    const zk_error error = zk_matrix_factorize(
+        operation, std::is_same_v<T, float> ? ZK_MATRIX_F32 : ZK_MATRIX_F64,
+        input, rows, columns, a.data(), static_cast<uint32_t>(capacity_a), &ar,
+        &ac, b.data(), static_cast<uint32_t>(capacity_b), &br, &bc, c.data(),
+        static_cast<uint32_t>(capacity_c), &cr, &cc);
+    if (error != ZK_OK) return throw_kernel_error(env, error);
+    napi_value result;
+    napi_create_object(env, &result);
+    napi_set_named_property(env, result, "a",
+                            make_matrix_result(env, a.data(), ar, ac));
+    napi_set_named_property(env, result, "b",
+                            make_matrix_result(env, b.data(), br, bc));
+    napi_set_named_property(env, result, "c",
+                            make_matrix_result(env, c.data(), cr, cc));
+    return result;
+  } catch (const std::bad_alloc &) {
+    return throw_kernel_error(env, ZK_ERROR_OUT_OF_MEMORY);
+  }
+}
+
+napi_value matrix_factorize(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value argv[4];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  zk_matrix_factorization operation{};
+  uint32_t rows = 0, columns = 0;
+  zk_matrix_type type{};
+  if (argc != 4 || !read_factorization(env, argv[0], &operation) ||
+      !read_matrix_type(env, argv[1], &type) ||
+      !read_u32_number(env, argv[2], &rows) ||
+      !read_u32_number(env, argv[3], &columns))
+    return throw_error(env, "matrixFactorize получил неверные аргументы");
+  if (type == ZK_MATRIX_F32) {
+    const float *input = nullptr;
+    size_t length = 0;
+    if (!read_f32_array(env, argv[1], &input, &length) ||
+        static_cast<uint64_t>(rows) * columns != length)
+      return throw_error(env, "Форма не совпадает с массивом f32");
+    return matrix_factorize_impl(env, operation, input, rows, columns);
+  }
+  const double *input = nullptr;
+  size_t length = 0;
+  if (!read_f64_array(env, argv[1], &input, &length) ||
+      static_cast<uint64_t>(rows) * columns != length)
+    return throw_error(env, "Форма не совпадает с массивом f64");
+  return matrix_factorize_impl(env, operation, input, rows, columns);
+}
+
+napi_value matrix_batch_matmul(napi_env env, napi_callback_info info) {
+  size_t argc = 8;
+  napi_value argv[8];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  zk_matrix_type type{};
+  uint32_t left_batches = 0, left_rows = 0, left_columns = 0;
+  uint32_t right_batches = 0, right_rows = 0, right_columns = 0;
+  if (argc != 8 || !read_matrix_type(env, argv[0], &type) ||
+      !read_u32_number(env, argv[1], &left_batches) ||
+      !read_u32_number(env, argv[2], &left_rows) ||
+      !read_u32_number(env, argv[3], &left_columns) ||
+      !read_u32_number(env, argv[5], &right_batches) ||
+      !read_u32_number(env, argv[6], &right_rows) ||
+      !read_u32_number(env, argv[7], &right_columns))
+    return throw_error(env, "matrixBatchMatmul получил неверные формы");
+  const uint64_t output_count =
+      static_cast<uint64_t>(std::max(left_batches, right_batches)) *
+      left_rows * right_columns;
+  if (output_count > ZK_MEMORY_LIMIT_BYTES / sizeof(double))
+    return throw_error(env, "Результат пакета превышает лимит памяти");
+  try {
+    uint32_t rows = 0;
+    if (type == ZK_MATRIX_F32) {
+      const float *left = nullptr, *right = nullptr;
+      size_t left_count = 0, right_count = 0;
+      if (!read_f32_array(env, argv[0], &left, &left_count) ||
+          !read_f32_array(env, argv[4], &right, &right_count) ||
+          static_cast<uint64_t>(left_batches) * left_rows * left_columns != left_count ||
+          static_cast<uint64_t>(right_batches) * right_rows * right_columns != right_count)
+        return throw_error(env, "Формы пакета не совпадают с массивами f32");
+      std::vector<float> output(output_count);
+      const zk_error error = zk_matrix_batch_matmul(
+          type, left, left_batches, left_rows, left_columns, right,
+          right_batches, right_rows, right_columns, output.data(),
+          static_cast<uint32_t>(output_count));
+      if (error != ZK_OK) return throw_kernel_error(env, error);
+      napi_value result, values, rows_value, columns_value;
+      values = make_f32_array(env, output.data(), output_count);
+      napi_create_object(env, &result);
+      rows = std::max(left_batches, right_batches) * left_rows;
+      napi_create_uint32(env, rows, &rows_value);
+      napi_create_uint32(env, right_columns, &columns_value);
+      napi_set_named_property(env, result, "values", values);
+      napi_set_named_property(env, result, "rows", rows_value);
+      napi_set_named_property(env, result, "columns", columns_value);
+      return result;
+    }
+    const double *left = nullptr, *right = nullptr;
+    size_t left_count = 0, right_count = 0;
+    if (!read_f64_array(env, argv[0], &left, &left_count) ||
+        !read_f64_array(env, argv[4], &right, &right_count) ||
+        static_cast<uint64_t>(left_batches) * left_rows * left_columns != left_count ||
+        static_cast<uint64_t>(right_batches) * right_rows * right_columns != right_count)
+      return throw_error(env, "Формы пакета не совпадают с массивами f64");
+    std::vector<double> output(output_count);
+    const zk_error error = zk_matrix_batch_matmul(
+        type, left, left_batches, left_rows, left_columns, right, right_batches,
+        right_rows, right_columns, output.data(),
+        static_cast<uint32_t>(output_count));
+    if (error != ZK_OK) return throw_kernel_error(env, error);
+    napi_value result, values, rows_value, columns_value;
+    values = make_f64_array(env, output.data(), output_count);
+    napi_create_object(env, &result);
+    rows = std::max(left_batches, right_batches) * left_rows;
+    napi_create_uint32(env, rows, &rows_value);
+    napi_create_uint32(env, right_columns, &columns_value);
+    napi_set_named_property(env, result, "values", values);
+    napi_set_named_property(env, result, "rows", rows_value);
+    napi_set_named_property(env, result, "columns", columns_value);
+    return result;
+  } catch (const std::bad_alloc &) {
+    return throw_kernel_error(env, ZK_ERROR_OUT_OF_MEMORY);
+  }
+}
+
+napi_value sparse_matvec_napi(napi_env env, napi_callback_info info) {
+  size_t argc = 6;
+  napi_value argv[6];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  uint32_t rows = 0, columns = 0;
+  zk_matrix_type type{};
+  const uint32_t *row_offsets = nullptr, *column_indices = nullptr;
+  size_t row_count = 0, index_count = 0;
+  if (argc != 6 || !read_u32_number(env, argv[0], &rows) ||
+      !read_u32_number(env, argv[1], &columns) ||
+      !read_u32_array(env, argv[2], &row_offsets, &row_count) ||
+      !read_u32_array(env, argv[3], &column_indices, &index_count) ||
+      !read_matrix_type(env, argv[4], &type) ||
+      row_count != static_cast<size_t>(rows) + 1)
+    return throw_error(env, "sparseMatvec получил неверную CSR-форму");
+  try {
+    if (type == ZK_MATRIX_F32) {
+      const float *values = nullptr, *vector = nullptr;
+      size_t value_count = 0, vector_count = 0;
+      if (!read_f32_array(env, argv[4], &values, &value_count) ||
+          !read_f32_array(env, argv[5], &vector, &vector_count) ||
+          value_count != index_count || vector_count != columns)
+        return throw_error(env, "Длины массивов sparseMatvec не совпадают");
+      std::vector<float> output(rows);
+      const zk_error error = zk_sparse_matvec(
+          type, rows, columns, row_offsets, column_indices, values,
+          value_count, vector, output.data(), rows);
+      if (error != ZK_OK) return throw_kernel_error(env, error);
+      return make_f32_array(env, output.data(), rows);
+    }
+    const double *values = nullptr, *vector = nullptr;
+    size_t value_count = 0, vector_count = 0;
+    if (!read_f64_array(env, argv[4], &values, &value_count) ||
+        !read_f64_array(env, argv[5], &vector, &vector_count) ||
+        value_count != index_count || vector_count != columns)
+      return throw_error(env, "Длины массивов sparseMatvec не совпадают");
+    std::vector<double> output(rows);
+    const zk_error error = zk_sparse_matvec(
+        type, rows, columns, row_offsets, column_indices, values, value_count,
+        vector, output.data(), rows);
+    if (error != ZK_OK) return throw_kernel_error(env, error);
+    return make_f64_array(env, output.data(), rows);
+  } catch (const std::bad_alloc &) {
+    return throw_kernel_error(env, ZK_ERROR_OUT_OF_MEMORY);
+  }
+}
+
+napi_value sparse_matmul_napi(napi_env env, napi_callback_info info) {
+  size_t argc = 7;
+  napi_value argv[7];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  uint32_t rows = 0, columns = 0, right_columns = 0;
+  zk_matrix_type type{};
+  const uint32_t *row_offsets = nullptr, *column_indices = nullptr;
+  size_t row_count = 0, index_count = 0;
+  if (argc != 7 || !read_u32_number(env, argv[0], &rows) ||
+      !read_u32_number(env, argv[1], &columns) ||
+      !read_u32_array(env, argv[2], &row_offsets, &row_count) ||
+      !read_u32_array(env, argv[3], &column_indices, &index_count) ||
+      !read_matrix_type(env, argv[4], &type) ||
+      !read_u32_number(env, argv[6], &right_columns) ||
+      row_count != static_cast<size_t>(rows) + 1)
+    return throw_error(env, "sparseMatmul получил неверную CSR-форму");
+  const uint64_t output_count = static_cast<uint64_t>(rows) * right_columns;
+  if (output_count > ZK_MEMORY_LIMIT_BYTES / sizeof(double))
+    return throw_error(env, "Результат разреженного умножения превышает лимит памяти");
+  try {
+    if (type == ZK_MATRIX_F32) {
+      const float *values = nullptr, *right = nullptr;
+      size_t value_count = 0, right_count = 0;
+      if (!read_f32_array(env, argv[4], &values, &value_count) ||
+          !read_f32_array(env, argv[5], &right, &right_count) ||
+          value_count != index_count ||
+          static_cast<uint64_t>(columns) * right_columns != right_count)
+        return throw_error(env, "Длины массивов sparseMatmul не совпадают");
+      std::vector<float> output(output_count);
+      const zk_error error = zk_sparse_matmul(
+          type, rows, columns, row_offsets, column_indices, values,
+          value_count, right, right_columns, output.data(), output_count);
+      if (error != ZK_OK) return throw_kernel_error(env, error);
+      napi_value result, values_array, rows_value, columns_value;
+      values_array = make_f32_array(env, output.data(), output_count);
+      napi_create_object(env, &result);
+      napi_create_uint32(env, rows, &rows_value);
+      napi_create_uint32(env, right_columns, &columns_value);
+      napi_set_named_property(env, result, "values", values_array);
+      napi_set_named_property(env, result, "rows", rows_value);
+      napi_set_named_property(env, result, "columns", columns_value);
+      return result;
+    }
+    const double *values = nullptr, *right = nullptr;
+    size_t value_count = 0, right_count = 0;
+    if (!read_f64_array(env, argv[4], &values, &value_count) ||
+        !read_f64_array(env, argv[5], &right, &right_count) ||
+        value_count != index_count ||
+        static_cast<uint64_t>(columns) * right_columns != right_count)
+      return throw_error(env, "Длины массивов sparseMatmul не совпадают");
+    std::vector<double> output(output_count);
+    const zk_error error = zk_sparse_matmul(
+        type, rows, columns, row_offsets, column_indices, values, value_count,
+        right, right_columns, output.data(), output_count);
+    if (error != ZK_OK) return throw_kernel_error(env, error);
+    napi_value result, values_array, rows_value, columns_value;
+    values_array = make_f64_array(env, output.data(), output_count);
+    napi_create_object(env, &result);
+    napi_create_uint32(env, rows, &rows_value);
+    napi_create_uint32(env, right_columns, &columns_value);
+    napi_set_named_property(env, result, "values", values_array);
+    napi_set_named_property(env, result, "rows", rows_value);
+    napi_set_named_property(env, result, "columns", columns_value);
+    return result;
+  } catch (const std::bad_alloc &) {
+    return throw_kernel_error(env, ZK_ERROR_OUT_OF_MEMORY);
+  }
 }
 
 napi_value make_population_measure(napi_env env, const uint32_t *keys,
@@ -517,6 +1001,16 @@ NAPI_MODULE_INIT() {
        napi_default, nullptr},
       {"sumPopulationMeasure", nullptr, sum_population_measure, nullptr,
        nullptr, nullptr, napi_default, nullptr},
+      {"matrixExecute", nullptr, matrix_execute, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"matrixFactorize", nullptr, matrix_factorize, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"matrixBatchMatmul", nullptr, matrix_batch_matmul, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"sparseMatvec", nullptr, sparse_matvec_napi, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"sparseMatmul", nullptr, sparse_matmul_napi, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"createBuffer", nullptr, create_buffer, nullptr, nullptr, nullptr,
        napi_default, nullptr},
   };

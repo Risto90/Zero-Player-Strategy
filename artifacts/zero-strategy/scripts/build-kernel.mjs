@@ -24,9 +24,11 @@ const emscriptenCache = path.join(outputRoot, 'emscripten-cache');
 const sources = [
   path.join(kernelRoot, 'src', 'core.cpp'),
   path.join(kernelRoot, 'src', 'algebra.cpp'),
+  path.join(kernelRoot, 'src', 'linear_algebra.cpp'),
   path.join(kernelRoot, 'src', 'buffers', 'buffer_store.cpp'),
 ];
 const header = path.join(kernelRoot, 'include');
+const eigenInclude = findEigenInclude();
 const cxx = process.env.CXX ?? 'clang++';
 const emcc = process.env.EMCC ?? 'emcc';
 const nodeExecutable = realpathSync(process.execPath);
@@ -55,6 +57,11 @@ const exports = [
   '_zk_set_binary',
   '_zk_measure_binary',
   '_zk_measure_sum',
+  '_zk_matrix_execute',
+  '_zk_matrix_factorize',
+  '_zk_matrix_batch_matmul',
+  '_zk_sparse_matvec',
+  '_zk_sparse_matmul',
   '_zk_buffer_create',
   '_zk_buffer_release',
   '_zk_buffer_data',
@@ -67,9 +74,11 @@ const exports = [
 const wasmCommon = [
   '-std=c++20',
   '-O2',
+  '-DEIGEN_DONT_VECTORIZE',
   '-fno-fast-math',
   '-ffp-contract=off',
   `-I${header}`,
+  `-I${eigenInclude}`,
   ...sources,
   '-sMODULARIZE=1',
   '-sEXPORT_ES6=1',
@@ -78,6 +87,7 @@ const wasmCommon = [
   `-sEXPORTED_FUNCTIONS=${exports}`,
   '-sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,HEAP32',
   '-sFILESYSTEM=0',
+  '-sSTACK_SIZE=8388608',
   '-sALLOW_MEMORY_GROWTH=1',
   '-sMAXIMUM_MEMORY=268435456',
   '-Wl,--build-id=none',
@@ -104,6 +114,7 @@ run(cxx, [
   '-pthread',
   '-DNODE_GYP_MODULE_NAME=zero_kernel_native',
   `-I${header}`,
+  `-I${eigenInclude}`,
   `-I${nodeInclude}`,
   path.join(kernelRoot, 'bindings', 'node', 'native_addon.cpp'),
   ...sources,
@@ -143,10 +154,25 @@ run(cxx, [
   '-fno-fast-math',
   '-ffp-contract=off',
   `-I${header}`,
+  `-I${eigenInclude}`,
   path.join(appRoot, 'scripts', 'kernel-algebra.test.cpp'),
   path.join(kernelRoot, 'src', 'algebra.cpp'),
+  path.join(kernelRoot, 'src', 'linear_algebra.cpp'),
   '-o',
   path.join(nativeRoot, 'kernel-algebra.test'),
+]);
+
+run(cxx, [
+  '-std=c++20',
+  '-O2',
+  '-fno-fast-math',
+  '-ffp-contract=off',
+  `-I${header}`,
+  `-I${eigenInclude}`,
+  path.join(appRoot, 'scripts', 'kernel-linear-algebra.test.cpp'),
+  path.join(kernelRoot, 'src', 'linear_algebra.cpp'),
+  '-o',
+  path.join(nativeRoot, 'kernel-linear-algebra.test'),
 ]);
 
 const esbuild = path.resolve(appRoot, '../api-server/node_modules/.bin/esbuild');
@@ -192,6 +218,7 @@ const buildRecord = {
     'native/zero_kernel_jsi.o',
     'native/native-queue.test',
     'native/kernel-algebra.test',
+    'native/kernel-linear-algebra.test',
   ],
 };
 await import('node:fs/promises').then(({ writeFile }) =>
@@ -204,6 +231,24 @@ function assertEmscriptenVersion() {
   if (!output.includes('4.0.8')) {
     throw new Error(`Ожидается Emscripten 4.0.8, установлен: ${output.split('\n')[0]}`);
   }
+}
+
+function findEigenInclude() {
+  const candidates = [
+    process.env.EIGEN3_INCLUDE_DIR,
+    '/usr/include/eigen3',
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (existsSync(path.join(candidate, 'Eigen', 'Core'))) return candidate;
+  }
+  if (existsSync('/nix/store')) {
+    for (const entry of readdirSync('/nix/store')) {
+      if (!entry.includes('-eigen-')) continue;
+      const candidate = path.join('/nix/store', entry, 'include', 'eigen3');
+      if (existsSync(path.join(candidate, 'Eigen', 'Core'))) return candidate;
+    }
+  }
+  throw new Error('Не найдены заголовки Eigen 3; добавьте пакет eigen или задайте EIGEN3_INCLUDE_DIR.');
 }
 
 function assertCompilerVersion() {
