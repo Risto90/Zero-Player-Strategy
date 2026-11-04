@@ -53,6 +53,7 @@ declare global {
     __ZERO_STRATEGY_PERFORMANCE_TEST__?: {
       advanceTurn: () => Promise<void>;
       getSnapshot: () => GameSnapshot;
+      getRendererPending: () => boolean;
       takeSamples: () => AutomaticEventSample[];
       takeStages: () => AutomaticEventStageSample[];
     };
@@ -166,6 +167,12 @@ function GameScreen({ game }: { game: Game }) {
   const showTools = 1 + Number(canBrush) + Number(canPlaceCity) + Number(canOpenChoices) >= 2;
   const mapHeight = Math.max(160, height - 72);
   const overlayHeight = Math.max(140, Math.min(620, mapHeight - 56));
+  const mapFocusRequest = game.mapFocusRequest;
+
+  useEffect(() => {
+    if (snap.mapMode !== 'political' || snap.selectedCountryId === null) return;
+    mapRef.current?.focusCountry(snap.selectedCountryId);
+  }, [game, mapFocusRequest, snap.mapMode, snap.selectedCountryId]);
 
   const onCityPress = useCallback((pixel: number) => {
     mapRef.current?.centerAtPixel(pixel);
@@ -331,12 +338,22 @@ function GameScreen({ game }: { game: Game }) {
   useEffect(() => {
     if (process.env.EXPO_PUBLIC_PERF_BENCHMARK !== 'true') return;
     const previousPersist = Game.persist;
+    const previousPause = Game.pause;
     Game.persist = false;
+    Game.pause = async () => {};
     game.stop();
     game.setPerformanceTracking(true);
+    let mapDrawCount = 0;
+    const originalMapDrawn = game.mapDrawn;
+    game.mapDrawn = function () {
+      mapDrawCount += 1;
+      originalMapDrawn.call(game);
+    };
     const bridge = {
       advanceTurn: () => game.nextTurn(true),
       getSnapshot: () => game.getSnapshot(),
+      getRendererPending: () => game.renderer.pending,
+      getMapDrawCount: () => mapDrawCount,
       takeSamples: () => game.takePerformanceSamples(),
       takeStages: () => game.takePerformanceStageSamples(),
     };
@@ -345,8 +362,10 @@ function GameScreen({ game }: { game: Game }) {
       if (window.__ZERO_STRATEGY_PERFORMANCE_TEST__ === bridge) {
         delete window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
       }
+      game.mapDrawn = originalMapDrawn;
       game.setPerformanceTracking(false);
       Game.persist = previousPersist;
+      Game.pause = previousPause;
     };
   }, [game]);
 

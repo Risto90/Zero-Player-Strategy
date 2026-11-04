@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import type { PixelInfo } from '@/game/game';
-import { fmt, pct } from '@/game/format';
+import { fmt, fmtDensity, pct } from '@/game/format';
 import { cityRankName } from '@/game/settlements';
 
 const c = colors.light;
@@ -46,7 +46,7 @@ export function InspectCard({ info, onClose, onCountryPress, onCityPress }: {
           )}
           {info.land && info.country && info.density > 0 && (
             <View style={styles.demographics} testID="inspect-demographics">
-              <Text style={styles.demographic}>Население точки: {fmt(info.density)} чел.</Text>
+              <Text style={styles.demographic}>Плотность населения: {fmtDensity(info.density)} чел./км²</Text>
               {info.cultures.length > 0 && (
                 <Text style={styles.composition}>
                   Культуры: {info.cultures.map(({ name, share }) => `${name} ${pct(share)}`).join(' · ')}

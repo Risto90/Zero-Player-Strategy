@@ -1,12 +1,12 @@
 import { autoPaint } from './autoPaint';
 import type { PaintActions } from './autoPaint';
 import { SerialCommandQueue, type QueuedCommandOptions } from './commandRuntime';
-import { ContourArea, type ContourSpan } from './contours';
+import { ContourArea, type ContourChange, type ContourLayerName, type ContourSpan } from './contours';
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
   type BrushMode, type BrushOption, type Card, type CardChoice, type CardPainterState, type CharacterEvent } from './brush';
-import { drawCountryCard, drawWorldCard, firstCreateCard } from './cards';
+import { drawCountryCard, drawWorldCard, ensureTemperatureCardPower, firstCreateCard } from './cards';
 import { createEntityEmblem } from './flagIdentity';
-import { BIOMES, BRUSH_SIZES, MAX_COUNTRIES, RANKS, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
+import { BIOMES, BRUSH_SIZES, MAX_COUNTRIES, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
 import { forEachNeighbour, type MapKind } from './geography';
 import { copyWorld, deserializeWorld, serializeSteps, type SavedWorld } from './persistence';
 import { ensureDynastyEmblems } from './dynastyHeraldry';
@@ -22,7 +22,7 @@ import { applyReform } from './politics';
 import { appoint, candidateAllowed, closeRulerTerms, ensureOffices, refreshHeirs, repairDeadOfficeHolders, successionOrder, syncRulerTerms } from './succession';
 import { randomItem } from './random';
 import { demography } from './demography';
-import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS, humanClimateSuitabilityAt, humanOriginMixFromTable, humanOriginShares } from './human';
+import { HUMAN_ANCESTRY_PROFILES, humanClimateSuitabilityAt, humanOriginProfileShares } from './human';
 import type { GameNotification, NotificationRecipient } from './notifications';
 import {
   addCityAndConcentrate,
@@ -31,9 +31,16 @@ import {
   cityInfluenceRadius,
   cityRankName,
   concentrateCityPopulation,
+  ensureCityPopulationGroups,
   populationAtPixel,
 } from './settlements';
-import { availableNomadCitySites, dissolveCountryIntoNomadicCountries, settleNomadAsCountry } from './nomads';
+import { MAP_POINT_AREA_KM2, densityToResidents, roundResidents } from './populationUnits';
+import {
+  availableNomadCitySites,
+  dissolveCountryIntoNomadicCountries,
+  nomadRevivalCountry,
+  settleNomadAsCountry,
+} from './nomads';
 import {
   chronicleReference,
   migrateChronicle,
@@ -54,6 +61,24 @@ function personChronicleReferences(...people: (Person | null | undefined)[]): Ch
 
 export type PlayerRole = 'all' | 'country' | 'world' | 'observer';
 type Slot = { scope: 'world' } | { scope: 'country'; countryId: number };
+
+const MAP_MODE_CONTOUR_LAYERS: Record<MapMode, readonly ContourLayerName[]> = {
+  political: ['owner', 'land', 'humidity', 'temperature', 'drainage', 'density', 'humanOrigins', 'elevation', 'depth', 'rivers'],
+  biomes: ['land', 'humidity', 'temperature', 'drainage', 'elevation', 'depth'],
+  cultures: ['owner', 'land', 'culture', 'elevation', 'depth'],
+  religions: ['owner', 'land', 'religion', 'elevation', 'depth'],
+  humidity: ['owner', 'land', 'humidity', 'elevation', 'depth'],
+  temperature: ['owner', 'land', 'temperature', 'elevation', 'depth'],
+  drainage: ['owner', 'land', 'drainage', 'elevation', 'depth'],
+  density: ['owner', 'land', 'density', 'elevation', 'depth'],
+  elevation: ['land', 'elevation', 'depth'],
+  cities: ['owner', 'land', 'humidity', 'temperature', 'drainage', 'elevation', 'depth'],
+  origins: ['owner', 'land', 'humanOrigins', 'elevation', 'depth'],
+};
+
+function contourChangeAffectsMap(mode: MapMode, layers: readonly ContourLayerName[] | null): boolean {
+  return layers === null || MAP_MODE_CONTOUR_LAYERS[mode].some((layer) => layers.includes(layer));
+}
 
 export interface AutomaticEventSample {
   year: number;
@@ -118,7 +143,7 @@ export interface CountryComposition {
   population: number;
   cultures: CountryShare[];
   religions: CountryShare[];
-  humanOrigins: ReturnType<typeof humanOriginShares>;
+  humanOrigins: ReturnType<typeof humanOriginProfileShares>;
 }
 
 export interface PixelInfo {
@@ -134,7 +159,7 @@ export interface PixelInfo {
   density: number;
   cultures: { id: number; name: string; color: string; share: number }[];
   religions: { id: number; name: string; color: string; share: number }[];
-  humanOrigins: ReturnType<typeof humanOriginShares>;
+  humanOrigins: ReturnType<typeof humanOriginProfileShares>;
   nonBelievers: number;
   humanClimateSuitability: number | null;
   city: City | null;
@@ -185,6 +210,7 @@ export function hasPlayerActionCard(snapshot: Pick<GameSnapshot, 'role' | 'card'
 
 export type GameAction =
   | { type: 'selectChoice'; index: number }
+  | { type: 'chooseNomadSettlement'; choice: 'revive' | 'new' }
   | { type: 'setBrushMode'; mode: BrushMode }
   | { type: 'setPainterMode'; mode: BrushMode }
   | { type: 'beginStroke'; x: number; y: number }
@@ -192,7 +218,11 @@ export type GameAction =
   | { type: 'endStroke' }
   | { type: 'dab'; x: number; y: number; radius: number }
   | { type: 'paintContour'; spans: readonly ContourSpan[]; seed?: number }
-  | { type: 'paintContours'; areas: readonly (readonly ContourSpan[])[] }
+  | {
+    type: 'paintContours';
+    areas: readonly (readonly ContourSpan[])[];
+    seeds?: readonly (number | undefined)[];
+  }
   | { type: 'line'; ax: number; ay: number; bx: number; by: number; radius: number }
   | { type: 'placeCity'; x: number; y: number }
   | { type: 'completeCard' };
@@ -247,6 +277,7 @@ export class Game {
   private focusCountryId: number | null = null;
   private selectedCountryId: number | null = null;
   private selectedCityChronicleId: number | null = null;
+  mapFocusRequest = 0;
   private card: Card | null = null;
   private painter: CardPainter | null = null;
   private activeChronicleContext: { scope: ChronicleScope; countryId?: number } | null = null;
@@ -291,7 +322,8 @@ export class Game {
   private legendCache: { version: number; legend: Legend } | null = null;
   private snapshot: GameSnapshot | null = null;
   private readonly listeners = new Set<() => void>();
-  private readonly mapListeners = new Set<() => void>();
+  private readonly mapListeners = new Set<(change: ContourChange | null) => void>();
+  private readonly stopContourSubscription: () => void;
   private timer: ReturnType<typeof setInterval> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -302,6 +334,11 @@ export class Game {
   ) {
     this.role = role;
     this.renderer = new MapRenderer(world, deferMapPreparation);
+    this.stopContourSubscription = world.contours.subscribeChanges((change) => {
+      if (!contourChangeAffectsMap(this.mapMode, change.layers)) return;
+      this.renderer.mark(change.bounds);
+      this.notifyMapListeners(change);
+    });
     // Сохранением владеет последняя созданная игра; прежние отброшенные игры больше не могут его перезаписывать.
     if (!deferMapPreparation) Game.saveOwner = this;
     if (!deferMapPreparation) this.redrawAll();
@@ -373,7 +410,7 @@ export class Game {
             capitalPixel = p;
           }
         });
-        if (capitalPixel >= 0) loadedWorld.addCity(country.id, capitalPixel, 1, true);
+        if (capitalPixel >= 0) addCityAndConcentrate(loadedWorld, country.id, capitalPixel, true);
       } else {
         const existingCapital = cities.find((city) => city.capital);
         if (existingCapital) {
@@ -416,7 +453,7 @@ export class Game {
     game.brushSize = saved.brushSize;
     game.log = migrateChronicle(saved.log, legacyNomadIds, legacyCityIds);
     if (saved.card) {
-      const card = { ...saved.card };
+      const card = ensureTemperatureCardPower({ ...saved.card });
       const legacyNomadId = (saved.card as Card & { targetNomadId?: number | null }).targetNomadId;
       if (legacyNomadId != null) {
         card.targetCountryId = legacyNomadIds.get(legacyNomadId) ?? null;
@@ -453,9 +490,20 @@ export class Game {
   };
 
   /** Вызывается, когда пиксели карты нужно перерисовать (см. `renderer.flush()`). */
-  onMapChange(listener: () => void): () => void {
+  onMapChange(listener: (change: ContourChange | null) => void): () => void {
     this.mapListeners.add(listener);
     return () => this.mapListeners.delete(listener);
+  }
+
+  /** Меняет один пиксель рельефа; интерфейс и контуры получают локальное изменение. */
+  updateTerrainPixel(pixel: number, elevation: number, depth: number): boolean {
+    if (!this.world.setTerrainPixel(pixel, elevation, depth)) return false;
+    this.renderer.updateTerrainPixel(pixel);
+    if (this.mapMode !== 'elevation') {
+      this.drawing = true;
+    }
+    this.emit();
+    return true;
   }
 
   getSnapshot = (): GameSnapshot => {
@@ -463,10 +511,14 @@ export class Game {
     return this.snapshot;
   };
 
+  private notifyMapListeners(change: ContourChange | null): void {
+    this.mapListeners.forEach((listener) => listener(change));
+  }
+
   private emit(mapChanged = false): void {
     this.snapshot = null;
     this.listeners.forEach((listener) => listener());
-    if (mapChanged) this.mapListeners.forEach((listener) => listener());
+    if (mapChanged) this.notifyMapListeners(null);
   }
 
   private setMessage(message: string, recipient: NotificationRecipient = this.messageRecipient): void {
@@ -536,11 +588,12 @@ export class Game {
     try {
       return run();
     } finally {
+      const durationMs = performance.now() - startedAt;
       this.performanceStageSamples.push({
         year: this.year,
         cardType,
         stage,
-        durationMs: performance.now() - startedAt,
+        durationMs,
       });
     }
   }
@@ -565,6 +618,7 @@ export class Game {
   dispatchAction(action: GameAction): boolean | number | void {
     switch (action.type) {
       case 'selectChoice': return this.applyChoice(action.index);
+      case 'chooseNomadSettlement': return this.applyNomadSettlementChoice(action.choice);
       case 'setBrushMode':
         this.brushMode = action.mode;
         if (this.painter) this.painter.mode = action.mode;
@@ -580,6 +634,7 @@ export class Game {
       case 'paintContour': return this.painter?.paintContour(new ContourArea(action.spans), action.seed) ?? 0;
       case 'paintContours': return this.painter?.paintContours(
         action.areas.map((spans) => new ContourArea(spans)),
+        action.seeds,
       ) ?? 0;
       case 'line': return this.applyLine(action.ax, action.ay, action.bx, action.by, action.radius);
       case 'placeCity': return this.applyCityPlacement(action.x, action.y);
@@ -609,6 +664,21 @@ export class Game {
     this.dispatchAction({ type: 'selectChoice', index });
   }
 
+  selectNomadSettlement(choice: 'revive' | 'new'): void {
+    this.dispatchAction({ type: 'chooseNomadSettlement', choice });
+  }
+
+  private applyNomadSettlementChoice(choice: 'revive' | 'new'): void {
+    const card = this.card;
+    if (!card || card.type !== 'buildCity' || card.targetCountryId === null) return;
+    const nomad = this.world.countries[card.targetCountryId];
+    if (!nomad || nomad.type !== 'nomadic') return;
+    if (choice === 'revive' && !nomadRevivalCountry(this.world, nomad)) return;
+    card.nomadSettlementChoice = choice;
+    this.emit();
+    this.scheduleSave();
+  }
+
   private applyChoice(index: number): void {
     if (!this.card?.choices || index < 0 || index >= this.card.choices.length) return;
     this.card.selectedChoice = index;
@@ -635,7 +705,18 @@ export class Game {
         this.emit();
         return false;
       }
-      const country = settleNomadAsCountry(this.world, targetCountry, pixel, this.year);
+      if (nomadRevivalCountry(this.world, targetCountry) && !card.nomadSettlementChoice) {
+        this.setMessage('Выберите, возродить ли прежнюю страну кочевья или основать новую.');
+        this.emit();
+        return false;
+      }
+      const country = settleNomadAsCountry(
+        this.world,
+        targetCountry,
+        pixel,
+        this.year,
+        card.nomadSettlementChoice ?? 'new',
+      );
       if (!country) {
         this.setMessage('Не удалось основать город и расселить кочевье.');
         this.emit();
@@ -644,8 +725,11 @@ export class Game {
       ensureOffices(this.world, country, this.year);
       refreshHeirs(this.world, this.year);
       card.newCountryId = country.id;
+      card.nomadSettledCountryId = country.id;
       card.cityPlaced = true;
-      this.setMessage(`${country.name} основано; кочевая страна стала оседлой.`);
+      this.setMessage(country.id === targetCountry.id
+        ? `${country.name} основано; кочевая страна стала оседлой.`
+        : `Возрождена страна ${country.name}; кочевье вернулось в её историческую ветвь.`);
       if (!this.resolvingAutomatically) {
         this.mapMode = 'political';
         this.layer = null;
@@ -687,15 +771,23 @@ export class Game {
       const sites = availableNomadCitySites(this.world, country);
       if (!sites.length) return -1;
       const stride = sites.length <= 4096 ? 1 : Math.max(1, Math.ceil(sites.length / 256));
-      const nomadPopulation = new Map((country.cells ?? []).map((cell) => [cell.pixel, cell.population]));
+      const nomadPopulation = new Map((country.cells ?? []).map((cell) => [cell.pixel, cell.density]));
       let best = sites[0];
       let bestScore = -1;
+      let bestCaptureCount = -1;
+      let bestEnemyDistance = Infinity;
       for (let index = 0; index < sites.length; index += stride) {
         const pixel = sites[index];
-        const score = this.expectedCityPopulation(pixel, true, nomadPopulation, true);
-        if (score > bestScore || (score === bestScore && pixel < best)) {
+        const score = this.expectedCityPopulation(pixel, true, nomadPopulation, true, country.id);
+        const strategic = this.citySiteStrategicScore(country, pixel, true);
+        if (strategic.captureCount > bestCaptureCount ||
+          (strategic.captureCount === bestCaptureCount && strategic.enemyDistance < bestEnemyDistance) ||
+          (strategic.captureCount === bestCaptureCount && strategic.enemyDistance === bestEnemyDistance &&
+            (score > bestScore || (score === bestScore && pixel < best)))) {
           best = pixel;
           bestScore = score;
+          bestCaptureCount = strategic.captureCount;
+          bestEnemyDistance = strategic.enemyDistance;
         }
       }
       return best;
@@ -705,7 +797,7 @@ export class Game {
     for (const nomad of this.world.countries) {
       if (nomad.type !== 'nomadic') continue;
       for (const cell of nomad.cells ?? []) {
-        nomadPopulation.set(cell.pixel, (nomadPopulation.get(cell.pixel) ?? 0) + cell.population);
+        nomadPopulation.set(cell.pixel, (nomadPopulation.get(cell.pixel) ?? 0) + cell.density);
       }
     }
     const [x0, y0, x1, y1] = country.box;
@@ -742,14 +834,45 @@ export class Game {
     let best = -1;
     let bestScore = -1;
     const isCapital = !this.world.cities.some((city) => city.countryId === country.id);
+    let bestCaptureCount = -1;
+    let bestEnemyDistance = Infinity;
     for (const pixel of candidates) {
-      const score = this.expectedCityPopulation(pixel, false, nomadPopulation, isCapital);
-      if (score > bestScore || (score === bestScore && pixel < best)) {
+      const score = this.expectedCityPopulation(pixel, false, nomadPopulation, isCapital, country.id);
+      const strategic = this.citySiteStrategicScore(country, pixel, isCapital);
+      if (strategic.captureCount > bestCaptureCount ||
+        (strategic.captureCount === bestCaptureCount && strategic.enemyDistance < bestEnemyDistance) ||
+        (strategic.captureCount === bestCaptureCount && strategic.enemyDistance === bestEnemyDistance &&
+          (score > bestScore || (score === bestScore && pixel < best)))) {
         best = pixel;
         bestScore = score;
+        bestCaptureCount = strategic.captureCount;
+        bestEnemyDistance = strategic.enemyDistance;
       }
     }
     return best;
+  }
+
+  private citySiteStrategicScore(
+    country: Country,
+    pixel: number,
+    capital: boolean,
+  ): { captureCount: number; enemyDistance: number } {
+    const candidate = { countryId: country.id, pixel, rank: 1, capital } as City;
+    const radius = cityInfluenceRadius(this.world, candidate);
+    const x = pixel % MAP_WIDTH;
+    const y = Math.floor(pixel / MAP_WIDTH);
+    let captureCount = 0;
+    let enemyDistance = Infinity;
+    for (const city of this.world.cities) {
+      if (city.countryId === country.id) continue;
+      const distance = Math.hypot(
+        city.pixel % MAP_WIDTH - x,
+        Math.floor(city.pixel / MAP_WIDTH) - y,
+      );
+      if (distance <= radius) captureCount += 1;
+      enemyDistance = Math.min(enemyDistance, Math.max(0, distance - radius));
+    }
+    return { captureCount, enemyDistance };
   }
 
   /** Оценивает население, которое соберёт общее правило городской концентрации. */
@@ -758,31 +881,25 @@ export class Game {
     nomadic: boolean,
     nomadPopulation = new Map<number, number>(),
     capital = nomadic,
+    countryId = -1,
   ): number {
-    const coastal = this.world.isCoastal(pixel);
-    const river = this.world.rivers[pixel] > 0;
-    const port = coastal && river ? 3 : coastal || river ? 2 : 1;
-    const radius = Math.sqrt(RANKS[0].ink * port * (capital ? 2 : 1) / Math.PI);
+    const candidate = { countryId, pixel, rank: 1, capital } as City;
+    const radius = cityInfluenceRadius(this.world, candidate);
     const x = pixel % MAP_WIDTH, y = Math.floor(pixel / MAP_WIDTH);
-    const x0 = Math.max(0, Math.floor(x - radius)), x1 = Math.min(MAP_WIDTH - 1, Math.ceil(x + radius));
-    const y0 = Math.max(0, Math.floor(y - radius)), y1 = Math.min(MAP_HEIGHT - 1, Math.ceil(y + radius));
-    const r2 = radius * radius;
-    let gathered = nomadic ? nomadPopulation.get(pixel) ?? 0 : this.world.density[pixel];
-    for (let yy = y0; yy <= y1; yy += 1) {
-      for (let xx = x0; xx <= x1; xx += 1) {
-        if ((xx - x) ** 2 + (yy - y) ** 2 > r2 || (xx === x && yy === y)) continue;
-        const source = yy * MAP_WIDTH + xx;
-        if (!this.world.land[source]) continue;
-        if (nomadic) {
-          if (this.world.owner[source] === 0 && !this.world.cityAt(source)) {
-            gathered += nomadPopulation.get(source) ?? 0;
-          }
-        } else {
-          gathered += this.world.density[source] * 0.1 + (nomadPopulation.get(source) ?? 0) * 0.1;
-        }
-      }
+    const bounds = {
+      x0: Math.max(0, Math.floor(x - radius)),
+      y0: Math.max(0, Math.floor(y - radius)),
+      x1: Math.min(MAP_WIDTH - 1, Math.ceil(x + radius)),
+      y1: Math.min(MAP_HEIGHT - 1, Math.ceil(y + radius)),
+    };
+    const circle = ContourArea.circle(x + 0.5, y + 0.5, radius);
+    const land = this.world.contours.layer('land').select((value) => value === 1, bounds, 'land');
+    let gathered = 0;
+    for (const source of circle.intersect(land)) {
+      gathered += this.world.density[source] * MAP_POINT_AREA_KM2 * 0.1;
+      if (nomadic) gathered += densityToResidents(nomadPopulation.get(source) ?? 0) * 0.1;
     }
-    return gathered;
+    return roundResidents(gathered);
   }
 
   private canPlaceCity(): boolean {
@@ -791,6 +908,7 @@ export class Game {
     if (card.type === 'buildCity' && card.targetCountryId !== null &&
       this.world.countries[card.targetCountryId]?.type === 'nomadic') {
       const country = this.world.countries[card.targetCountryId];
+      if (nomadRevivalCountry(this.world, country) && !card.nomadSettlementChoice) return false;
       return isActiveCountry(country) && !card.cityPlaced && availableNomadCitySites(this.world, country).length > 0;
     }
     const countryId = card.type === 'buildCity' ? card.targetCountryId : card.newCountryId;
@@ -829,15 +947,14 @@ export class Game {
 
   private applyBeginStroke(x: number, y: number): void {
     if (!this.painter) return;
-    if (this.card?.type === 'warmWind' || this.card?.type === 'coldWind') {
-      const px = Math.floor(x), py = Math.floor(y);
-      const countryId = this.card.targetCountryId;
-      if (px < 0 || py < 0 || px >= MAP_WIDTH || py >= MAP_HEIGHT ||
-        countryId === null || this.world.owner[py * MAP_WIDTH + px] !== countryId + 1) {
-        this.setMessage('Начните мазок на суше своей страны.');
-        this.emit();
-        return;
-      }
+    const px = Math.floor(x), py = Math.floor(y);
+    const pixel = py * MAP_WIDTH + px;
+    if (px < 0 || py < 0 || px >= MAP_WIDTH || py >= MAP_HEIGHT ||
+      !this.painter.climateStrokeEndpointAllowed(pixel)) {
+      this.lastPoint = null;
+      this.setMessage('Начните климатический мазок на допустимой суше.');
+      this.emit();
+      return;
     }
     this.painter.message = '';
     this.lastPoint = { x, y };
@@ -869,17 +986,15 @@ export class Game {
 
   private applyEndStroke(): void {
     if (!this.painter) return;
-    if ((this.card?.type === 'warmWind' || this.card?.type === 'coldWind') && this.lastPoint) {
-      const px = Math.floor(this.lastPoint.x), py = Math.floor(this.lastPoint.y);
-      const countryId = this.card.targetCountryId;
-      if (px < 0 || py < 0 || px >= MAP_WIDTH || py >= MAP_HEIGHT ||
-        countryId === null || this.world.owner[py * MAP_WIDTH + px] !== countryId + 1) {
-        this.painter.cancelStroke();
-        this.lastPoint = null;
-        this.afterPaint();
-        this.scheduleSave();
-        return;
-      }
+    if (this.lastPoint && this.card &&
+      !this.painter.climateStrokeEndpointAllowed(
+        Math.floor(this.lastPoint.y) * MAP_WIDTH + Math.floor(this.lastPoint.x),
+      )) {
+      this.painter.cancelStroke();
+      this.lastPoint = null;
+      this.afterPaint();
+      this.scheduleSave();
+      return;
     }
     this.painter.endStroke();
     this.lastPoint = null;
@@ -901,15 +1016,9 @@ export class Game {
   private afterPaint(): void {
     const painter = this.painter;
     if (!painter) return;
-    if (painter.dirty) {
-      this.renderer.mark(painter.dirty);
-      painter.dirty = null;
-    }
-    for (const rect of painter.extraDirty) this.renderer.mark(rect);
-    painter.extraDirty.length = 0;
-    painter.clearExtraDirtyTiles();
+    painter.dirty = null;
     if (painter.message) this.setMessage(painter.message);
-    this.emit(true);
+    this.emit();
   }
 
   // ---------- экран карты ----------
@@ -958,10 +1067,25 @@ export class Game {
     this.emit(true);
   }
 
+  toggleCountrySelectionOnMap(countryId: number): void {
+    if (this.selectedCountryId === countryId) {
+      this.selectCountry(null);
+      return;
+    }
+    this.showCountryOnMap(countryId);
+  }
+
   showCountryOnMap(countryId: number): void {
     if (!isActiveCountry(this.world.countries[countryId])) return;
-    this.setMapMode('political');
-    this.selectCountry(this.selectedCountryId === countryId ? null : countryId);
+    this.mapMode = 'political';
+    this.layer = null;
+    this.selectedCityChronicleId = null;
+    if (this.painter?.card.type === 'nomadExpand') this.painter.setNomadMode('range');
+    this.renderer.setView('political', null);
+    this.selectedCountryId = countryId;
+    this.renderer.setSelectedCountry(countryId);
+    this.mapFocusRequest += 1;
+    this.emit(true);
   }
 
   selectCity(cityId: number | null): void {
@@ -1002,7 +1126,7 @@ export class Game {
           population: Math.round(population), percent: percent(population),
         }))
         .sort((a, b) => b.population - a.population),
-      humanOrigins: data.population > 0 ? humanOriginShares(data.humanOrigin) : null,
+      humanOrigins: humanOriginProfileShares(data.originProfiles, data.population),
     };
   }
 
@@ -1032,8 +1156,11 @@ export class Game {
       density: owner > 0 ? w.density[p] : 0,
       cultures: owner > 0 ? cultureEntry.ids.map((id, i) => ({ id, name: w.cultures[id].name, color: w.cultures[id].color, share: cultureEntry.shares[i] })) : [],
       religions: owner > 0 ? religionEntry.ids.map((id, i) => ({ id, name: w.religions[id].name, color: w.religions[id].color, share: religionEntry.shares[i] })) : [],
-      humanOrigins: owner > 0 && w.density[p] > 0 && originEntry?.total === 100
-        ? humanOriginShares(humanOriginMixFromTable(originEntry.ids, originEntry.shares))
+      humanOrigins: owner > 0 && w.density[p] > 0 && originEntry?.total > 0
+        ? humanOriginProfileShares(
+            new Map(originEntry.ids.map((id, index) => [id, originEntry.shares[index]])),
+            originEntry.total,
+          )
         : null,
       nonBelievers: owner > 0 ? 100 - religionEntry.total : 0,
       humanClimateSuitability: owner > 0 && w.density[p] > 0
@@ -1175,7 +1302,8 @@ export class Game {
           sliceStart = Date.now();
         }
       }
-      if (this.world.discoverGeography()) this.renderer.markAll();
+      this.world.discoverGeography();
+      this.dissolveCountriesWithoutCities();
       ensureDynastyEmblems(this.world);
       this.queue = this.playerSlots();
       this.startNextPlayerCard();
@@ -1387,9 +1515,10 @@ export class Game {
       line: (ax, ay, bx, by, radius) => this.dispatchAction({ type: 'line', ax, ay, bx, by, radius }) as number,
       endStroke: () => this.dispatchAction({ type: 'endStroke' }),
       contour: (area, seed) => this.dispatchAction({ type: 'paintContour', spans: area.spans, seed }) as number,
-      contours: (areas) => this.dispatchAction({
+      contours: (areas, seeds) => this.dispatchAction({
         type: 'paintContours',
         areas: areas.map((area) => area.spans),
+        seeds,
       }) as number,
     };
     const onMeasure = this.performanceTracking
@@ -1408,6 +1537,7 @@ export class Game {
       const targetCountry = card.type === 'buildCity' && card.targetCountryId !== null
         ? this.world.countries[card.targetCountryId] : null;
       if (targetCountry?.type === 'nomadic') {
+        card.nomadSettlementChoice = nomadRevivalCountry(this.world, targetCountry) ? 'revive' : 'new';
         const pixel = this.chooseAutomaticCitySite(targetCountry);
         if (pixel >= 0) this.dispatchAction({ type: 'placeCity', x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH) });
       } else if (card.type === 'create' || card.type === 'buildCity') {
@@ -1496,7 +1626,24 @@ export class Game {
         break;
       }
       case 'buildCity': {
-        if (target && card.cityPlaced) {
+        if (card.cityPlaced && card.nomadSettledCountryId !== undefined &&
+          card.nomadSettledCountryId !== target?.id) {
+          const restored = w.countries[card.nomadSettledCountryId];
+          const city = w.cities.filter((item) => item.countryId === restored?.id).at(-1);
+          if (restored) {
+            this.log = transferCountryChronicle(this.log, target?.id ?? -1, [restored.id], true);
+            const previousContext = this.activeChronicleContext;
+            this.activeChronicleContext = { scope: 'country', countryId: restored.id };
+            try {
+              this.addLog(`${restored.name}: возрождена прежняя страна; кочевая ветвь вернулась в её историю.`, [
+                chronicleReference('country', restored.id),
+                ...(city ? [chronicleReference('city', city.chronicleId)] : []),
+              ], [chronicleReference('country', restored.id)]);
+            } finally {
+              this.activeChronicleContext = previousContext;
+            }
+          }
+        } else if (target && card.cityPlaced) {
           const city = w.cities[w.cities.length - 1];
           this.addLog(`${target.name}: основан городок.`, [
             chronicleReference('country', target.id),
@@ -1597,7 +1744,6 @@ export class Game {
         }
         const name = generatePlaceName(w, target.cultureId, usedNames);
         w.nameGeographyFeature(kind, id, name);
-        this.renderer.markAll();
         const objectName = kind === 'river' ? 'река' : kind === 'peak' ? 'вершина' : 'вулкан';
         this.addLog(`${target.name}: на карту нанесено название «${name}» (${objectName}).`,
           [chronicleReference('country', target.id)]);
@@ -1613,7 +1759,7 @@ export class Game {
           [chronicleReference('country', target.id)]);
         break;
       case 'colonization':
-        if (colonizedPixels > 0 && target) this.addLog(`${target.name} колонизирует ${colonizedPixels} участков: переселено ${fmt(colonistsMoved)} человек, столько же местных жителей удалено.`, [chronicleReference('country', target.id)]);
+        if (colonizedPixels > 0 && target) this.addLog(`${target.name} колонизирует ${colonizedPixels} участков: переселено ${fmt(colonistsMoved)} жителей. На своей территории при двойной покраске прежнее население сохраняется.`, [chronicleReference('country', target.id)]);
         break;
       case 'split': {
         const country = w.countries[card.newCountryId as number];
@@ -1735,10 +1881,19 @@ export class Game {
         if (target && card.newCountryId !== null) this.mergeCountries(target, w.countries[card.newCountryId]);
         break;
     }
+    ensureUniqueDynastySurnames(w);
+    w.version += 1;
+  }
+
+  /** Распускает страны без городов только после завершения всех событий текущего хода. */
+  private dissolveCountriesWithoutCities(): void {
+    const w = this.world;
     let dissolved = false;
     for (const country of [...w.countries]) {
-      if (country.type !== 'settled' || country.pixels <= 0 || w.cities.some((city) => city.countryId === country.id)) continue;
+      if (country.type !== 'settled' || country.pixels <= 0 ||
+          w.cities.some((city) => city.countryId === country.id)) continue;
       const newCountries = dissolveCountryIntoNomadicCountries(w, country, this.year);
+      if (!newCountries.length) continue;
       this.log = transferCountryChronicle(this.log, country.id, newCountries.map(({ id }) => id), true);
       this.addLog(`${country.name}: без городов страна распущена; население перешло в ${newCountries.length} кочевых стран.`, [
         chronicleReference('country', country.id),
@@ -1752,10 +1907,7 @@ export class Game {
       dissolved = true;
     }
     if (dissolved) this.renderer.markAll();
-    ensureUniqueDynastySurnames(w);
-    w.version += 1;
   }
-
   private mergeCountries(main: Country, incoming?: Country, cause: 'union' | 'inheritance' = 'union'): void {
     if (!incoming || incoming.id === main.id || incoming.pixels <= 0) return;
     const w = this.world;
@@ -2313,7 +2465,7 @@ export class Game {
     const countryPop = new Float64Array(w.countries.length);
     const culturePop = new Float64Array(w.cultures.length);
     const religionPop = new Float64Array(w.religions.length);
-    const originPop = new Float64Array(HUMAN_ORIGINS.length);
+    const originPop = new Float64Array(HUMAN_ANCESTRY_PROFILES.length);
     const biomeCount = new Float64Array(BIOMES.length);
     const cultureAcc = new Float64Array(w.cultureTable.entries.length);
     const religionAcc = new Float64Array(w.religionTable.entries.length);
@@ -2322,26 +2474,38 @@ export class Game {
     const addOriginPopulation = (mixId: number, population: number) => {
       if (!(population > 0)) return;
       const entry = w.humanOriginTable.entries[mixId];
-      if (entry?.total !== 100) return;
+       if (!(entry?.total > 0)) return;
       entry.ids.forEach((id, index) => {
-        if (HUMAN_ORIGINS[id]) originPop[id] += population * (entry.shares[index] ?? 0) / 100;
+         if (HUMAN_ANCESTRY_PROFILES[id]) originPop[id] += population * (entry.shares[index] ?? 0) / entry.total;
       });
     };
     for (const p of w.landIndex) {
       biomeCount[w.biomeAt(p)] += 1;
       const owner = w.owner[p];
       if (owner === 0) continue;
-      const d = populationAtPixel(w, p);
+      const ruralResidents = densityToResidents(w.density[p]);
+      const city = w.cityAt(p);
+      const d = ruralResidents + (city?.population ?? 0);
       countryPop[owner - 1] += d;
       total += d;
-      cultureAcc[w.culture[p]] += d;
-      religionAcc[w.religion[p]] += d;
-      addOriginPopulation(w.humanOrigins[p], d);
+      if (ruralResidents > 0) {
+        cultureAcc[w.culture[p]] += ruralResidents;
+        religionAcc[w.religion[p]] += ruralResidents;
+        addOriginPopulation(w.humanOrigins[p], ruralResidents);
+      }
+      if (city) {
+        for (const group of ensureCityPopulationGroups(w, city)) {
+          culturePop[group.cultureId] += group.population;
+          if (group.religionId === null) nonBelievers += group.population;
+          else religionPop[group.religionId] += group.population;
+          addOriginPopulation(group.humanOriginMix, group.population);
+        }
+      }
     }
     for (const country of w.countries) {
       if (country.type !== 'nomadic') continue;
       for (const cell of country.cells ?? []) {
-        const population = cell.population;
+        const population = densityToResidents(cell.density);
         countryPop[country.id] += population;
         total += population;
         cultureAcc[cell.cultureMix] += population;
@@ -2397,13 +2561,13 @@ export class Game {
           detail: `с ${r.foundedYear} г.`,
         }))
         .sort(byValue),
-      origins: HUMAN_ORIGINS
-        .map((origin, id) => ({
-          id,
+      origins: HUMAN_ANCESTRY_PROFILES
+        .map((origin) => ({
+          id: origin.id,
           name: origin.name,
-          color: HUMAN_ORIGIN_COLORS[origin.id],
-          value: Math.round(originPop[id]),
-          percent: percent(originPop[id], total),
+          color: origin.color,
+          value: Math.round(originPop[origin.id]),
+          percent: percent(originPop[origin.id], total),
           detail: '',
         }))
         .filter((row) => originPop[row.id] > 0)
@@ -2521,6 +2685,7 @@ export class Game {
   /** Останавливает игру без сохранения; уже начатое сохранение отменяется. */
   discard(): void {
     this.disposed = true;
+    this.stopContourSubscription();
     this.actionQueue.dispose();
     if (Game.saveOwner === this) Game.saveOwner = null;
     this.stop();

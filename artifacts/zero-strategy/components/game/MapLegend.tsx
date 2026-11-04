@@ -16,9 +16,9 @@ const MODE_LABELS: Record<MapMode, string> = {
   religions: 'Религии',
   origins: 'Расы',
   humidity: 'Влажность',
-  temperature: 'Температура',
+  temperature: 'Температура, °C',
   drainage: 'Дренаж',
-  density: 'Плотность',
+  density: 'Плотность, чел./км²',
   elevation: 'Высоты',
   cities: 'Города',
 };
@@ -76,14 +76,14 @@ function LegendContents({ game, snap }: { game: Game; snap: GameSnapshot }) {
     case 'density':
       return (
         <View style={styles.rampContents}>
-          <Text style={styles.scaleLabel}>Меньше</Text>
+            <Text style={styles.scaleLabel}>{snap.mapMode === 'temperature' ? '−55 °C' : 'Меньше'}</Text>
           <LinearGradient
             colors={RAMPS[snap.mapMode] as [string, string, ...string[]]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.ramp}
           />
-          <Text style={styles.scaleLabel}>Больше</Text>
+            <Text style={styles.scaleLabel}>{snap.mapMode === 'temperature' ? '+31 °C' : 'Больше'}</Text>
         </View>
       );
     case 'elevation':

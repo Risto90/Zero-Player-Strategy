@@ -1,25 +1,31 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { pct } from '@/game/format';
-import type { HumanOriginShare } from '@/game/human';
+import type { HumanOriginProfileShare, HumanOriginShare } from '@/game/human';
 import { raceProfileRoute } from '@/game/profileRoutes';
 import { openProfile } from '@/game/profileNavigation';
 
 const c = colors.light;
 
-export function OriginComposition({ rows }: { rows: HumanOriginShare[] | null }) {
+export function OriginComposition({ rows }: { rows: (HumanOriginShare | HumanOriginProfileShare)[] | null }) {
   return (
     <View style={styles.list} testID="human-origin-composition">
       {rows?.length
-        ? rows.map((row) => (
-          <Pressable key={row.id} onPress={() => openProfile(raceProfileRoute(row.id))}
-            accessibilityRole="link" accessibilityLabel={`Открыть карточку расы: ${row.name}`}
-            style={styles.row} testID={`link-race-profile-${row.id}`}>
-            <View style={[styles.swatch, { backgroundColor: row.color }]} />
-            <Text style={styles.label}>{row.name}</Text>
-            <Text style={styles.share}>{pct(row.share)}</Text>
-          </Pressable>
-        ))
+        ? rows.map((row) => {
+          const originId = typeof row.id === 'string' ? row.id : row.originId;
+          const content = (
+            <>
+              <View style={[styles.swatch, { backgroundColor: row.color }]} />
+              <Text style={styles.label}>{row.name}</Text>
+              <Text style={styles.share}>{pct(row.share)}</Text>
+            </>
+          );
+          return originId
+            ? <Pressable key={row.id} onPress={() => openProfile(raceProfileRoute(originId))}
+                accessibilityRole="link" accessibilityLabel={`Открыть карточку расы: ${row.name}`}
+                style={styles.row} testID={`link-race-profile-${row.id}`}>{content}</Pressable>
+            : <View key={row.id} style={styles.row} testID={`row-race-profile-${row.id}`}>{content}</View>;
+        })
         : <Text style={styles.empty}>Нет данных.</Text>}
     </View>
   );

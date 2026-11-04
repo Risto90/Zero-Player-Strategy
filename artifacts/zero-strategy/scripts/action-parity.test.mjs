@@ -4,6 +4,7 @@ import { mulberry32 } from '../game/random.ts';
 import { forEachNeighbour } from '../game/geography.ts';
 import { marry, newCitizen, registerPerson } from '../game/characters.ts';
 import { World } from '../game/world.ts';
+import { residentsToDensity } from '../game/populationUnits.ts';
 
 function withSeed(seed, callback) {
   const previousRandom = Math.random;
@@ -51,7 +52,7 @@ function fixture() {
       world.setOwner(pixel, country.id + 1);
       world.density[pixel] = 80;
       world.humidity[pixel] = 50;
-      world.temperature[pixel] = 50;
+      world.temperature[pixel] = 23;
       world.drainage[pixel] = 50;
       world.culture[pixel] = cultureMix;
     }
@@ -74,12 +75,18 @@ function cloneFixture(source) {
   clone.density.set(source.world.density);
   clone.culture.set(source.world.culture);
   clone.religion.set(source.world.religion);
+  clone.humanOrigins.set(source.world.humanOrigins);
+  clone.populationCohorts.set(source.world.populationCohorts);
   for (const entry of source.world.cultureTable.entries.slice(1)) {
     clone.cultureTable.intern(new Map(entry.ids.map((id, index) => [id, entry.shares[index]])));
   }
   for (const entry of source.world.religionTable.entries.slice(1)) {
     clone.religionTable.intern(new Map(entry.ids.map((id, index) => [id, entry.shares[index]])));
   }
+  for (const entry of source.world.humanOriginTable.entries.slice(1)) {
+    clone.humanOriginTable.intern(new Map(entry.ids.map((id, index) => [id, entry.shares[index]])));
+  }
+  clone.populationCohortTable.restore(source.world.populationCohortTable.entries);
   const entities = structuredClone({
     countries: source.world.countries,
     cities: source.world.cities,
@@ -119,17 +126,23 @@ function card(type, updates = {}) {
     selectedChoice: 0,
     characterEvent: null,
     hint: -1,
+    ...(['warmCurrent', 'coldCurrent'].includes(type) ? { temperatureStepC: 2 } : {}),
+    ...(['warmWind', 'coldWind'].includes(type) ? { temperatureStepC: 1 } : {}),
     ...updates,
   };
 }
 
 let nextScenarioSeed = 120000;
 function scenario(name, createCard) {
+  return { name, createCard };
+}
+
+function prepareScenario(definition) {
   const first = fixture();
-  const card = withSeed(nextScenarioSeed++, () => createCard(first));
+  const card = withSeed(nextScenarioSeed++, () => definition.createCard(first));
   const second = cloneFixture(first);
   return {
-    name,
+    name: definition.name,
     card,
     mirrorCard: structuredClone(card),
     first,
@@ -138,7 +151,10 @@ function scenario(name, createCard) {
 }
 
 function worldState(world) {
-  const rasterNames = ['owner', 'density', 'humidity', 'temperature', 'drainage', 'culture', 'religion'];
+  const rasterNames = [
+    'owner', 'density', 'humidity', 'temperature', 'drainage', 'culture', 'religion',
+    'humanOrigins', 'populationCohorts',
+  ];
   const rasters = Object.fromEntries(rasterNames.map((name) => [
     name,
     Buffer.from(world[name].buffer, world[name].byteOffset, world[name].byteLength),
@@ -177,10 +193,11 @@ function worldState(world) {
   return {
     rasters,
     countries: world.countries.map(normalizePolitical),
-    cities: world.cities,
+    cities: world.cities.map((city) => ({ ...city, name: null })),
     cultures: world.cultures,
     religions: world.religions,
     people: world.people.map(normalizePerson),
+    populationCohortTable: world.populationCohortTable.entries,
     version: world.version,
   };
 }
@@ -285,8 +302,8 @@ const cases = [
       newCountryId: founded.id,
       newCultureId: foundedCulture.id,
       hint: -1,
-      ink: 0,
-      inkTotal: 0,
+      ink: 1200,
+      inkTotal: 1200,
     });
   }),
   scenario('expand', ({ country }) => card('expand', {
@@ -382,7 +399,13 @@ const cases = [
       parentId: country.id,
     });
     nomadicCountry.type = 'nomadic';
-    nomadicCountry.cells = [{ pixel: pixels[0], population: 80, cultureMix: world.culture[pixels[0]], religionMix: 0 }];
+    nomadicCountry.cells = [{
+      pixel: pixels[0],
+      density: residentsToDensity(80),
+      cultureMix: world.culture[pixels[0]],
+      religionMix: 0,
+      humanOriginMix: world.humanOriginTable.single(0, 100),
+    }];
     nomadicCountry.range = [pixels[0]];
     nomadicCountry.sourceCountryId = country.id;
     nomadicCountry.pixels = 0;
@@ -494,12 +517,21 @@ const cases = [
   }),
 ];
 
-for (const [index, testCase] of cases.entries()) {
+for (const [index, definition] of cases.entries()) {
+  const testCase = prepareScenario(definition);
   const seed = 620000 + index;
   const automatic = new Game(testCase.first.world, 'observer');
   const manual = new Game(testCase.second.world, 'all');
   try {
     const trace = recordAutomaticActions(automatic, testCase.card, seed);
+    if (testCase.name === 'create') {
+      const contourPaints = trace.filter(({ action }) => action.type === 'paintContour');
+      assert.ok(contourPaints.length > 0 &&
+        contourPaints.every(({ action }) => Number.isInteger(action.seed)),
+      'создание задаёт точку начала для каждого отдельного контура');
+      assert.ok(!trace.some(({ action }) => action.type === 'paintContours' && action.areas.length > 1),
+        'создание обновляет доступный фронтир перед выбором следующего контура');
+    }
     replayAsPlayer(manual, testCase.mirrorCard, trace, seed);
     sameWorld(testCase.first.world, testCase.second.world, testCase.name);
     assert.deepEqual(

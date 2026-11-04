@@ -1,10 +1,16 @@
-import { MAP_PIXELS } from './config';
+import { MAP_PIXELS, legacyTemperatureIndexToCelsius } from './config';
+import { residentsToDensity, roundResidents } from './populationUnits';
 import type { MapKind } from './geography';
-import { decodeEarthLand, fillOceanTemperature } from './geography';
+import { decodeEarthLand, fillOceanTemperature, fillOceanTemperatureLegacy } from './geography';
+import { earthMeanHumidityPercent } from './data/earthHumidity';
 import { fillRings, rasterizeScalar, runSteps, traceCompositionSteps, traceScalarSteps, type EntityZones, type Steps, type TableView, type Zone } from './zones';
-import { World, type City, type Country, type Culture, type DynastyHeraldry, type NomadCell, type Religion, type SavedGeographyState } from './world';
+import { World, type City, type Country, type Culture, type DynastyHeraldry, type NomadCell, type Religion, type SavedGeographyState, type TerrainOverride } from './world';
 import { generateCityIdentity } from './cityNames';
 import { ensureCityPopulationGroups } from './settlements';
+import {
+  populationCohortsFromMixes,
+  type PopulationCohortShare,
+} from './populationCohorts';
 import {
   cultureTags,
   ensureFlagIdentity,
@@ -12,10 +18,10 @@ import {
 } from './flagIdentity';
 
 /**
- * Saved map: every layer is stored as closed-curve zones, never as per-pixel values.
- *  - political: one zone set per country;
- *  - climate and population density: one zone set per value ("humidity 10%");
- *  - each culture / religion: its own layer of zones per share.
+ * Сохранённая карта хранит каждый слой замкнутыми контурами, а не значениями отдельных точек.
+ *  - политический слой: отдельный набор зон для каждого государства;
+ *  - климат и плотность населения: зоны для каждого значения;
+ *  - культуры, религии и совместные группы населения: отдельные слои долей.
  */
 export interface SavedLayers {
   land: Zone[] | null;
@@ -26,17 +32,21 @@ export interface SavedLayers {
   drainage: Zone[];
   cultures: EntityZones[];
   religions: EntityZones[];
-  /** Added with human-origin composition; omitted by older saves. */
+  /** Добавлен вместе с составом происхождения; отсутствует в старых сохранениях. */
   humanOrigins?: EntityZones[];
+  /** Совместные группы населения; отсутствует в старых сохранениях. */
+  populationCohorts?: Zone[];
 }
 
 export interface SavedWorld {
+  populationUnits?: 'people-per-km2-v1';
+  temperatureUnit?: 'celsius-v1';
   mapKind: MapKind;
   seed: number;
   countries: Country[];
   cities?: City[];
   nextCityChronicleId?: number;
-  /** Read-only compatibility for pre-unification saves; never emitted by new saves. */
+  /** Совместимость только для чтения со старыми сохранениями до объединения; новые сохранения это поле не записывают. */
   nomads?: LegacyNomadSave[];
   cultures: Culture[];
   religions: Religion[];
@@ -44,12 +54,17 @@ export interface SavedWorld {
   cultureTable?: { ids: number[]; shares: number[] }[];
   religionTable?: { ids: number[]; shares: number[] }[];
   humanOriginTable?: { ids: number[]; shares: number[] }[];
+  populationCohortTable?: PopulationCohortShare[][];
   people: World['people'];
   dynastyEmblems?: Record<number, DynastyHeraldry>;
   cardMultipliers?: Record<string, number>;
   geography?: SavedGeographyState;
-  /** Added when sea temperatures became part of climate layers. */
+  /** Пустое или отсутствующее поле означает исходный рельеф карты из seed. */
+  terrainOverrides?: TerrainOverride[];
+  /** Поле добавлено, когда температура моря стала частью климатических слоёв. */
   climateWater?: boolean;
+  /** Новые сохранения явно включают влажность моря в контурный слой. */
+  humidityWater?: boolean;
   layers: SavedLayers;
 }
 
@@ -82,22 +97,25 @@ interface LegacyNomadSave {
   pressures: Country['pressures'];
 }
 
-/** Frozen copy of everything a save needs, so it can be traced in slices while the game goes on. */
+/** Неизменяемая копия данных сохранения для поэтапной обработки во время игры. */
 export interface WorldCopy {
   mapKind: MapKind;
   seed: number;
+  terrainOverrides: TerrainOverride[];
   land: Uint8Array;
   owner: Uint16Array;
-  density: Float32Array;
+  density: Float64Array;
   humidity: Uint8Array;
-  temperature: Uint8Array;
+  temperature: Float32Array;
   drainage: Uint8Array;
   culture: Uint16Array;
   religion: Uint16Array;
   humanOrigins: Uint16Array;
+  populationCohorts: Uint32Array;
   cultureTable: TableView;
   religionTable: TableView;
   humanOriginTable: TableView;
+  populationCohortTable: PopulationCohortShare[][];
   countries: Country[];
   cities: City[];
   nextCityChronicleId: number;
@@ -142,6 +160,7 @@ export function copyWorld(world: World): WorldCopy {
   return {
     mapKind: world.mapKind,
     seed: world.seed,
+    terrainOverrides: [...world.terrainOverrides.values()].sort((a, b) => a.pixel - b.pixel),
     land: world.land,
     owner: world.owner.slice(),
     density: world.density.slice(),
@@ -151,15 +170,26 @@ export function copyWorld(world: World): WorldCopy {
     culture: world.culture.slice(),
     religion: world.religion.slice(),
     humanOrigins: world.humanOrigins.slice(),
+    populationCohorts: world.populationCohorts.slice(),
     cultureTable: freezeTable(world.cultureTable),
     religionTable: freezeTable(world.religionTable),
     humanOriginTable: freezeTable(world.humanOriginTable),
+    populationCohortTable: world.populationCohortTable.entries.map((entry) =>
+      entry.map((group) => ({ ...group })),
+    ),
     countries: world.countries.map((c) => ({
       ...c,
       ...copyFlagged(c),
       box: [...c.box] as Country['box'],
       ...(c.range ? { range: [...c.range] } : {}),
-      ...(c.cells ? { cells: c.cells.map((cell) => ({ ...cell })) } : {}),
+      ...(c.cells ? {
+        cells: c.cells.map((cell) => ({
+          ...cell,
+          ...(cell.populationGroups ? {
+            populationGroups: cell.populationGroups.map((group) => ({ ...group })),
+          } : {}),
+        })),
+      } : {}),
       rulerTerms: c.rulerTerms.map((term) => ({ ...term })),
       ruler: { ...c.ruler, humanOrigin: c.ruler.humanOrigin ? { ids: [...c.ruler.humanOrigin.ids], shares: [...c.ruler.humanOrigin.shares] } : undefined, parents: [...c.ruler.parents], spouseIds: [...c.ruler.spouseIds], loverIds: [...c.ruler.loverIds], traits: [...c.ruler.traits], formerRulerOf: [...c.ruler.formerRulerOf] },
       heir: c.heir ? { ...c.heir, humanOrigin: c.heir.humanOrigin ? { ids: [...c.heir.humanOrigin.ids], shares: [...c.heir.humanOrigin.shares] } : undefined, parents: [...c.heir.parents], spouseIds: [...c.heir.spouseIds], loverIds: [...c.heir.loverIds], traits: [...c.heir.traits], formerRulerOf: [...c.heir.formerRulerOf] } : null,
@@ -179,7 +209,7 @@ export function copyWorld(world: World): WorldCopy {
   };
 }
 
-/** Traces every layer of the copy into closed-curve zones, in slices. */
+/** Поэтапно преобразует каждый слой копии в замкнутые контурные зоны. */
 export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
   const populated = new Uint8Array(MAP_PIXELS);
   for (let p = 0; p < MAP_PIXELS; p += 1) populated[p] = copy.owner[p] > 0 ? 1 : 0;
@@ -187,13 +217,16 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
   const land = copy.mapKind === 'world' ? null : yield* traceScalarSteps(copy.land, null, 0);
   const political = yield* traceScalarSteps(copy.owner, null, 0);
   const density = yield* traceScalarSteps(copy.density, populated, null);
-  const humidity = yield* traceScalarSteps(copy.humidity, copy.land, null);
+  const humidity = yield* traceScalarSteps(copy.humidity, null, 0);
   const temperature = yield* traceScalarSteps(copy.temperature, null, null);
   const drainage = yield* traceScalarSteps(copy.drainage, copy.land, null);
   const cultures = yield* traceCompositionSteps(copy.culture, copy.cultureTable);
   const religions = yield* traceCompositionSteps(copy.religion, copy.religionTable);
   const humanOrigins = yield* traceCompositionSteps(copy.humanOrigins, copy.humanOriginTable);
+  const populationCohorts = yield* traceScalarSteps(copy.populationCohorts, populated, 0);
   return {
+    populationUnits: 'people-per-km2-v1',
+      temperatureUnit: 'celsius-v1',
     mapKind: copy.mapKind,
     seed: copy.seed,
     countries: copy.countries,
@@ -205,8 +238,13 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
     dynastyEmblems: copy.dynastyEmblems,
     cardMultipliers: copy.cardMultipliers,
     geography: copy.geography,
+    terrainOverrides: copy.terrainOverrides,
     climateWater: true,
-    layers: { land, political, density, humidity, temperature, drainage, cultures, religions, humanOrigins },
+    humidityWater: true,
+    layers: {
+      land, political, density, humidity, temperature, drainage, cultures, religions, humanOrigins,
+      populationCohorts,
+    },
     cultureTable: copy.cultureTable.entries.map((entry) => ({
       ids: [...entry.ids],
       shares: [...entry.shares],
@@ -219,6 +257,9 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
       ids: [...entry.ids],
       shares: [...entry.shares],
     })),
+    populationCohortTable: copy.populationCohortTable.map((entry) =>
+      entry.map((group) => ({ ...group })),
+    ),
   };
 }
 
@@ -231,17 +272,32 @@ function rasterize<T extends Uint8Array | Uint16Array | Float32Array>(zones: Zon
   return target;
 }
 
-/** Rebuilds the working rasters from the stored zones. */
+/** Восстанавливает рабочие растры из сохранённых зон. */
 export function deserializeWorld(saved: SavedWorld): World {
   const layers = saved.layers;
   const land = saved.mapKind === 'world' ? decodeEarthLand() : rasterize(layers.land ?? [], new Uint8Array(MAP_PIXELS));
-  const temperature = rasterize(layers.temperature, new Uint8Array(MAP_PIXELS));
-  if (!saved.climateWater) fillOceanTemperature(land, saved.seed, temperature);
+  const humidity = !saved.humidityWater && saved.mapKind === 'world'
+    ? earthMeanHumidityPercent().slice()
+    : new Uint8Array(MAP_PIXELS);
+  rasterize(layers.humidity, humidity);
+  let temperature: Float32Array;
+  if (saved.temperatureUnit === 'celsius-v1') {
+    temperature = rasterize(layers.temperature, new Float32Array(MAP_PIXELS));
+    if (!saved.climateWater) fillOceanTemperature(land, saved.seed, temperature, saved.mapKind);
+  } else {
+    const legacyTemperature = rasterize(layers.temperature, new Uint8Array(MAP_PIXELS));
+    if (!saved.climateWater) fillOceanTemperatureLegacy(land, saved.seed, legacyTemperature);
+    temperature = new Float32Array(MAP_PIXELS);
+    for (let pixel = 0; pixel < MAP_PIXELS; pixel += 1) {
+      temperature[pixel] = legacyTemperatureIndexToCelsius(legacyTemperature[pixel]);
+    }
+  }
   const world = new World(saved.mapKind, saved.seed, land, {
-    humidity: rasterize(layers.humidity, new Uint8Array(MAP_PIXELS)),
+    humidity,
     temperature,
     drainage: rasterize(layers.drainage, new Uint8Array(MAP_PIXELS)),
   });
+  world.restoreTerrainOverrides(saved.terrainOverrides ?? []);
   const restoreCompositionTable = (
     table: World['cultureTable'],
     entries: SavedWorld['cultureTable'],
@@ -265,14 +321,31 @@ export function deserializeWorld(saved: SavedWorld): World {
   } else {
     world.humanOriginTable.single(0, 100);
   }
+  if (saved.populationCohortTable) world.populationCohortTable.restore(saved.populationCohortTable);
+  if (!!saved.populationCohortTable !== !!layers.populationCohorts) {
+    throw new Error('Сохранение содержит неполные данные совместных групп населения.');
+  }
+  const hasCurrentPopulationUnits = saved.populationUnits === 'people-per-km2-v1';
+  const restoreNomadCell = (cell: NomadCell): NomadCell => {
+    const { population: legacyPopulation, ...rest } = cell;
+    const density = hasCurrentPopulationUnits
+      ? cell.density
+      : residentsToDensity(legacyPopulation ?? cell.density ?? 0);
+    if (!Number.isFinite(density)) throw new Error('В сохранении найдена некорректная плотность кочевого населения.');
+    return {
+      ...rest,
+      density,
+      humanOriginMix: Number.isFinite(cell.humanOriginMix)
+        ? cell.humanOriginMix
+        : world.humanOriginTable.single(0, 100),
+    };
+  };
   world.countries = saved.countries.map((c) => ({
     ...c,
     type: c.type ?? 'settled',
+    density: hasCurrentPopulationUnits ? c.density : residentsToDensity(c.density),
     ...(c.range ? { range: [...c.range] } : {}),
-    ...(c.cells ? { cells: c.cells.map((cell) => ({
-      ...cell,
-      humanOriginMix: Number.isFinite(cell.humanOriginMix) ? cell.humanOriginMix : world.humanOriginTable.single(0, 100),
-    })) } : {}),
+    ...(c.cells ? { cells: c.cells.map(restoreNomadCell) } : {}),
   }));
   const legacyNomads = saved.nomads ?? [];
   const legacyNomadIds = new Map<number, number>();
@@ -289,13 +362,13 @@ export function deserializeWorld(saved: SavedWorld): World {
       parentId: legacy.sourceCountryId,
       pixels: 0,
       box: [MAP_PIXELS, MAP_PIXELS, -1, -1],
-      density: legacy.density ?? (legacy.cells ?? []).reduce((sum, cell) => sum + cell.population, 0) /
-        Math.max(1, legacy.range?.length ?? 0),
+      density: hasCurrentPopulationUnits
+        ? legacy.density ?? 0
+        : residentsToDensity(legacy.density ?? (legacy.cells ?? []).reduce(
+          (sum, cell) => sum + (cell.population ?? 0), 0,
+        ) / Math.max(1, legacy.range?.length ?? 0)),
       range: [...(legacy.range ?? [])],
-      cells: (legacy.cells ?? []).map((cell) => ({
-        ...cell,
-        humanOriginMix: Number.isFinite(cell.humanOriginMix) ? cell.humanOriginMix : world.humanOriginTable.single(0, 100),
-      })),
+      cells: (legacy.cells ?? []).map(restoreNomadCell),
       sourceCountryId: legacy.sourceCountryId,
     } as Country);
   }
@@ -372,6 +445,17 @@ export function deserializeWorld(saved: SavedWorld): World {
   }
   rasterizeScalar(layers.political, world.owner);
   rasterizeScalar(layers.density, world.density);
+  if (!hasCurrentPopulationUnits) {
+    for (const city of world.cities) {
+      if (Number.isFinite(city.population)) continue;
+      const legacyResidents = roundResidents(world.density[city.pixel]);
+      city.population = legacyResidents;
+      world.density[city.pixel] = 0;
+    }
+    for (let pixel = 0; pixel < MAP_PIXELS; pixel += 1) {
+      world.density[pixel] = residentsToDensity(world.density[pixel]);
+    }
+  }
   for (const layer of layers.cultures) {
     for (const zone of layer.zones) {
       fillRings(zone.rings, (p) => (world.culture[p] = world.cultureTable.withEntry(world.culture[p], layer.entity, zone.value)));
@@ -395,10 +479,26 @@ export function deserializeWorld(saved: SavedWorld): World {
       if (world.owner[pixel] > 0 && world.density[pixel] > 0) world.humanOrigins[pixel] = legacyOrigin;
     }
   }
+  if (layers.populationCohorts) {
+    rasterizeScalar(layers.populationCohorts, world.populationCohorts);
+  } else {
+    for (let pixel = 0; pixel < MAP_PIXELS; pixel += 1) {
+      if (world.owner[pixel] <= 0 || world.density[pixel] <= 0) continue;
+      world.populationCohorts[pixel] = world.populationCohortTable.intern(
+        populationCohortsFromMixes(
+          world,
+          world.culture[pixel],
+          world.religion[pixel],
+          world.humanOrigins[pixel],
+          100,
+        ),
+      );
+    }
+  }
   for (const city of world.cities) {
-    // Before city population was stored separately, density at the city pixel held
-    // the whole city. Preserve that count when opening an older save.
-    if (!Number.isFinite(city.population)) city.population = world.density[city.pixel];
+    if (!Number.isFinite(city.population)) {
+      throw new Error('В сохранении отсутствует численность города после миграции плотности.');
+    }
     ensureCityPopulationGroups(world, city);
     if (!city.name) Object.assign(city, generateCityIdentity(world, city.pixel));
     if (city.rank >= 2 && city.rank <= 6) {
@@ -416,7 +516,7 @@ export function deserializeWorld(saved: SavedWorld): World {
   }
   world.recountCountries();
   world.restoreGeographyState(saved.geography);
-  // A version-2 save from before the family system has rulers/heirs but no person registry.
-  // Game.load supplies its saved year for migration after the map has been reconstructed.
+  // В сохранении версии 2 до появления системы семей есть правители и наследники, но нет реестра персонажей.
+  // После восстановления карты Game.load передаёт сохранённый год для миграции.
   return world;
 }

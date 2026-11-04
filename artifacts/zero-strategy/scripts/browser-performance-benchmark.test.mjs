@@ -104,7 +104,20 @@ class ObserverPerformanceBenchmark {
     }, { seed: 160_100 });
     this.page = await this.context.newPage();
     this.page.setDefaultTimeout(120_000);
-    this.page.on('pageerror', (error) => this.pageErrors.push(error.message));
+    this.page.on('pageerror', (error) => this.pageErrors.push(error.stack ?? error.message));
+    this.page.on('crash', () => {
+      const message = 'Браузерная страница аварийно завершилась.';
+      this.pageErrors.push(message);
+      console.error(message);
+    });
+    this.page.on('console', (message) => {
+      const text = message.text();
+      if (message.type() === 'error') {
+        const location = message.location();
+        const source = location.url ? ` (${location.url}:${location.lineNumber}:${location.columnNumber})` : '';
+        this.pageErrors.push(`${text}${source}`);
+      }
+    });
     await this.page.goto(`http://127.0.0.1:${this.port}${publicPath('/')}`);
     await this.page.getByTestId('button-role-observer').click();
     await this.page.getByTestId('button-start').click();
@@ -133,11 +146,34 @@ class ObserverPerformanceBenchmark {
       };
     });
 
-    await this.page.evaluate(() => window.__ZERO_STRATEGY_PERFORMANCE_TEST__.advanceTurn());
-    await this.page.waitForFunction((previousYear) => {
-      const state = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
-      return !!state && state.year > previousYear && !state.busy && !state.drawing && state.progress === null;
-    }, before.year, { timeout: this.timeoutMs, polling: 50 });
+    await this.page.evaluate(() => {
+      const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
+      window.__ZERO_STRATEGY_BENCHMARK_ERROR__ = null;
+      setTimeout(() => {
+        try {
+          void bridge.advanceTurn().catch((error) => {
+            window.__ZERO_STRATEGY_BENCHMARK_ERROR__ = error?.stack ?? String(error);
+            console.error(window.__ZERO_STRATEGY_BENCHMARK_ERROR__);
+          });
+        } catch (error) {
+          window.__ZERO_STRATEGY_BENCHMARK_ERROR__ = error?.stack ?? String(error);
+          console.error(window.__ZERO_STRATEGY_BENCHMARK_ERROR__);
+        }
+      }, 0);
+    });
+    try {
+      await this.page.waitForFunction((previousYear) => {
+        const state = window.__ZERO_STRATEGY_PERFORMANCE_TEST__?.getSnapshot();
+        return !!state && (state.year > previousYear && !state.busy && !state.drawing && state.progress === null ||
+          !!window.__ZERO_STRATEGY_BENCHMARK_ERROR__);
+      }, before.year, { timeout: this.timeoutMs, polling: 50 });
+    } catch (error) {
+      console.log(`Ход ${index}/${this.years} не завершился за ${this.timeoutMs} мс; год до запуска: ${before.year}.`);
+      console.log(`Ошибки браузера: ${JSON.stringify(this.pageErrors)}`);
+      throw error;
+    }
+    const advanceError = await this.page.evaluate(() => window.__ZERO_STRATEGY_BENCHMARK_ERROR__);
+    if (advanceError) throw new Error(`Автоматический ход завершился с ошибкой: ${advanceError}`);
 
     const result = await this.page.evaluate(({ index, before }) => {
       const bridge = window.__ZERO_STRATEGY_PERFORMANCE_TEST__;
@@ -158,6 +194,23 @@ class ObserverPerformanceBenchmark {
     const slowest = [...resolved].sort((a, b) => b.durationMs - a.durationMs)[0];
     const slowestStage = [...result.stages].sort((a, b) => b.durationMs - a.durationMs)[0];
     console.log(`Ход ${index}/${this.years}, год ${result.year}: ${result.durationMs.toFixed(1)} мс, событий ${resolved.length}${slowest ? `, медленнейшее ${slowest.cardType}: выбор ${slowest.drawDurationMs.toFixed(1)} мс, выполнение ${slowest.resolutionDurationMs.toFixed(1)} мс` : ''}${slowestStage ? `; этап ${slowestStage.stage} (${slowestStage.cardType}): ${slowestStage.durationMs.toFixed(1)} мс` : ''}.`);
+    if (process.env.PERF_VERBOSE === '1') {
+      const slowStages = [...result.stages].sort((a, b) => b.durationMs - a.durationMs).slice(0, 8);
+      console.log(`Самые долгие подэтапы: ${slowStages.map(({ stage, cardType, durationMs }) =>
+        `${stage} (${cardType}): ${durationMs.toFixed(1)} мс`).join('; ')}`);
+      const totals = new Map();
+      for (const { stage, cardType, durationMs } of result.stages) {
+        const key = `${stage} (${cardType})`;
+        const total = totals.get(key) ?? { durationMs: 0, count: 0, maximumMs: 0 };
+        total.durationMs += durationMs;
+        total.count += 1;
+        total.maximumMs = Math.max(total.maximumMs, durationMs);
+        totals.set(key, total);
+      }
+      const slowTotals = [...totals].sort((a, b) => b[1].durationMs - a[1].durationMs).slice(0, 8);
+      console.log(`Суммарные этапы: ${slowTotals.map(([stage, total]) =>
+        `${stage}: ${total.durationMs.toFixed(1)} мс за ${total.count} вызовов, максимум ${total.maximumMs.toFixed(1)} мс`).join('; ')}`);
+    }
     return result;
   }
 
@@ -208,34 +261,37 @@ class ObserverPerformanceBenchmark {
   }
 
   async close() {
-    await this.context?.close();
-    await this.browser?.close();
+    await this.browser?.close().catch(() => {});
     if (this.server && this.server.exitCode === null) this.server.kill('SIGTERM');
   }
 
   async run() {
+    let profiler = null;
     try {
       await this.open();
-      const profiler = process.env.PERF_CPU_PROFILE === '1'
+      profiler = process.env.PERF_CPU_PROFILE === '1'
         ? await this.context.newCDPSession(this.page) : null;
       if (profiler) {
         await profiler.send('Profiler.enable');
         await profiler.send('Profiler.start');
       }
-      for (let index = 1; index <= this.years; index += 1) await this.measureTurn(index);
-      if (profiler) {
-        const { profile } = await profiler.send('Profiler.stop');
-        const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
-        const samples = new Map();
-        profile.samples?.forEach((id, index) => {
-          samples.set(id, (samples.get(id) ?? 0) + (profile.timeDeltas?.[index] ?? 0));
-        });
-        console.log('Профиль процессора:', [...samples].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([id, microseconds]) => ({
-          function: nodes.get(id).callFrame.functionName,
-          milliseconds: Math.round(microseconds / 1000),
-          line: nodes.get(id).callFrame.lineNumber,
-          parent: profile.nodes.find((node) => node.children?.includes(id))?.callFrame.functionName,
-        })));
+      try {
+        for (let index = 1; index <= this.years; index += 1) await this.measureTurn(index);
+      } finally {
+        if (profiler) {
+          const { profile } = await profiler.send('Profiler.stop');
+          const nodes = new Map(profile.nodes.map((node) => [node.id, node]));
+          const samples = new Map();
+          profile.samples?.forEach((id, index) => {
+            samples.set(id, (samples.get(id) ?? 0) + (profile.timeDeltas?.[index] ?? 0));
+          });
+          console.log('Профиль процессора:', [...samples].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([id, microseconds]) => ({
+            function: nodes.get(id)?.callFrame.functionName ?? 'неизвестная функция',
+            milliseconds: Math.round(microseconds / 1000),
+            line: nodes.get(id)?.callFrame.lineNumber ?? -1,
+            parent: profile.nodes.find((node) => node.children?.includes(id))?.callFrame.functionName ?? null,
+          })));
+        }
       }
       this.summarize();
     } finally {

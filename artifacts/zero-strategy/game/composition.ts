@@ -1,9 +1,5 @@
-import { SHARE_STEP } from './config';
-
 /**
- * Композиция хранит доли культур или религий в точке: сущность → процент.
- * Доли культур всегда составляют 100%; доли религий могут быть меньше, остаток — неверующие.
- * Каждая уникальная смесь хранится один раз, а растр ссылается на неё по индексу.
+ * Состав хранит точные доли групп в точке. Остаток веры означает атеистов.
  */
 export interface Composition {
   ids: number[];
@@ -11,24 +7,17 @@ export interface Composition {
   total: number;
 }
 
-/** Делит `total`, кратное шагу, между сущностями пропорционально целыми шагами. */
+/** Нормирует доли без округления до порогов, применяемых только к отдельным персонам. */
 export function quantizeShares(values: Map<number, number>, total: number): Map<number, number> {
-  const units = Math.round(total / SHARE_STEP);
-  const sum = [...values.values()].reduce((a, b) => a + b, 0);
+  const valid = [...values].filter(([, value]) => Number.isFinite(value) && value > 0);
+  const sum = valid.reduce((a, [, value]) => a + value, 0);
   const result = new Map<number, number>();
-  if (units <= 0 || sum <= 0) return result;
-  const parts = [...values.entries()].map(([id, value]) => {
-    const exact = (value / sum) * units;
-    return { id, whole: Math.floor(exact), rest: exact - Math.floor(exact) };
-  });
-  let left = units - parts.reduce((a, part) => a + part.whole, 0);
-  parts.sort((a, b) => b.rest - a.rest || a.id - b.id);
-  for (const part of parts) {
-    if (left <= 0) break;
-    part.whole += 1;
-    left -= 1;
+  if (!(total > 0) || !(sum > 0)) return result;
+  for (const [id, value] of valid) result.set(id, total * value / sum);
+  const largest = [...result].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
+  if (largest !== undefined) {
+    result.set(largest, (result.get(largest) ?? 0) + total - [...result.values()].reduce((a, b) => a + b, 0));
   }
-  for (const part of parts) if (part.whole > 0) result.set(part.id, part.whole * SHARE_STEP);
   return result;
 }
 
@@ -93,7 +82,7 @@ export class CompositionTable {
       const scaled = new Map<number, number>();
       mix.forEach((share, id) => scaled.set(id, share * (1 - fraction)));
       scaled.set(to, (scaled.get(to) ?? 0) + 100 * fraction);
-      const total = Math.min(100, Math.round((entry.total * (1 - fraction) + 100 * fraction) / SHARE_STEP) * SHARE_STEP);
+      const total = Math.min(100, entry.total * (1 - fraction) + 100 * fraction);
       return this.intern(quantizeShares(scaled, total));
     });
   }

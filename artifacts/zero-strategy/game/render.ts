@@ -1,8 +1,16 @@
 import type { Rect } from './brush';
 import type { CompositionTable } from './composition';
-import { BIOMES, biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE } from './config';
-import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS } from './human';
+import {
+  BIOMES,
+  biomeFor,
+  MAP_HEIGHT,
+  MAP_PIXELS,
+  MAP_WIDTH,
+  PALETTE,
+} from './config';
+import { HUMAN_ANCESTRY_PROFILES } from './human';
 import { ensureCityPopulationGroups } from './settlements';
+import { densityToResidents } from './populationUnits';
 import type { World } from './world';
 
 export type MapMode = 'political' | 'biomes' | 'cultures' | 'religions' | 'humidity' | 'temperature' | 'drainage' | 'density' | 'elevation' | 'cities' | 'origins';
@@ -85,7 +93,7 @@ export function elevationPackedColor(elevation: number): number {
   return pack(mix(hexToRgb(lowHex), hexToRgb(highHex), amount));
 }
 
-/** Colour ramps for value layers (0–100). */
+/** Цветовые опорные цвета слоёв карты. */
 export const RAMPS: Record<'humidity' | 'temperature' | 'drainage' | 'density' | 'elevation', string[]> = {
   humidity: ['#c9a66b', '#d9cf98', '#9fbf8c', '#5f9c8f', '#2f6f86'],
   temperature: ['#eef1f4', '#8fb3cf', '#a9c48b', '#e0c065', '#c96a43'],
@@ -102,36 +110,39 @@ function rampColor(stops: RGB[], t: number): RGB {
   return mix(stops[i], stops[i + 1], x - i);
 }
 
+/** Цвет температуры интерполируется непосредственно по значениям в градусах Цельсия. */
+const TEMPERATURE_COLOR_STOPS_C = [-55, -10, 0, 18, 31] as const;
+export function temperaturePackedColor(celsius: number): number {
+  const colors = RAMPS.temperature.map(hexToRgb);
+  const bounded = Math.max(TEMPERATURE_COLOR_STOPS_C[0], Math.min(
+    TEMPERATURE_COLOR_STOPS_C[TEMPERATURE_COLOR_STOPS_C.length - 1],
+    celsius,
+  ));
+  let stop = 1;
+  while (stop < TEMPERATURE_COLOR_STOPS_C.length - 1 && bounded > TEMPERATURE_COLOR_STOPS_C[stop]) stop += 1;
+  const low = TEMPERATURE_COLOR_STOPS_C[stop - 1];
+  const high = TEMPERATURE_COLOR_STOPS_C[stop];
+  return pack(mix(colors[stop - 1], colors[stop], (bounded - low) / (high - low)));
+}
 
-/** The map is repainted in tiles; a strip is one full-width row of tiles (the unit uploaded to the GPU). */
+
+/** Карта перерисовывается плитками; полоса — это полный ряд плиток, передаваемый на графический процессор. */
 export const STRIPS = 16;
 export const STRIP_H = MAP_HEIGHT / STRIPS;
 const TILE_COLS = 8;
 const TILE_W = MAP_WIDTH / TILE_COLS;
 const TILES = TILE_COLS * STRIPS;
 
-/** Biome for every (humidity, temperature, drainage) triple, filled on first use (255 = not yet known). */
-const biomeTable = new Uint8Array(101 * 101 * 101).fill(255);
-function biomeOf(h: number, t: number, d: number): number {
-  const i = (h * 101 + t) * 101 + d;
-  let b = biomeTable[i];
-  if (b === 255) {
-    b = biomeFor(h, t, d);
-    biomeTable[i] = b;
-  }
-  return b;
-}
-
 const MODE_CODE: Record<MapMode, number> = { political: 0, biomes: 1, cultures: 2, religions: 3, humidity: 5, temperature: 6, drainage: 7, density: 4, elevation: 8, cities: 9, origins: 11 };
 
-// Neighbour bits of `nb`: which of the 4 neighbours are land, plus whether the pixel touches water.
+// Биты соседей `nb`: суша ли у каждого из четырёх соседей и соприкасается ли точка с водой.
 const LEFT = 1;
 const RIGHT = 2;
 const UP = 4;
 const DOWN = 8;
 const COAST = 16;
 
-/** Paints the map into a 32-bit RGBA pixel buffer, a few tiles at a time. */
+/** Пошагово рисует карту в 32-разрядный буфер пикселей RGBA. */
 export class MapRenderer {
   readonly pixels = new Uint32Array(MAP_PIXELS);
   mode: MapMode = 'political';
@@ -139,9 +150,11 @@ export class MapRenderer {
   private selectedCountryId: number | null = null;
   private readonly dirtyTiles = new Uint8Array(TILES);
   private dirtyCount = 0;
-  /** Tile index to continue from, so a long repaint walks the map top to bottom. */
+  private completedMode: MapMode | null = null;
+  private paintedTileCount = 0;
+  /** Индекс плитки продолжения, чтобы длинная перерисовка проходила карту сверху вниз. */
   private cursor = 0;
-  /** Strips with freshly painted tiles that are not on screen yet. */
+  /** Полосы с заново нарисованными плитками, которые ещё не показаны на экране. */
   private readonly unsent = new Uint8Array(STRIPS);
   private countryColors: number[] = [];
   private cultureColors: number[] = [];
@@ -152,23 +165,22 @@ export class MapRenderer {
   private readonly nomadDensity = new Float32Array(MAP_PIXELS);
   private nomadRasterVersion = -1;
   private originRasterVersion = -1;
-  private readonly originRaster = new Uint8Array(MAP_PIXELS);
+  private readonly originRaster = new Uint16Array(MAP_PIXELS);
   private readonly originComputed = new Uint8Array(MAP_PIXELS);
   private readonly nomadOriginScores = new Map<number, Float64Array>();
-  private readonly originColors = HUMAN_ORIGINS.map((origin) => pack(hexToRgb(HUMAN_ORIGIN_COLORS[origin.id])));
+  private readonly originColors = HUMAN_ANCESTRY_PROFILES.map((origin) => pack(hexToRgb(origin.color)));
   private cityColors = CITY_COLORS.map((color) => pack(hexToRgb(color)));
   private colorKey = '';
-  /** Colour per composition id (0 = not computed yet); compositions never change once interned. */
+  /** Цвет для каждого идентификатора состава (0 означает «ещё не вычислен»); зарегистрированные составы неизменяемы. */
   private compCache = { culture: new Int32Array(256), religion: new Int32Array(256) };
   private readonly unclaimed = hexToRgb(PALETTE.unclaimedLand);
   private readonly biomeRgb = BIOMES.map((b) => hexToRgb(b.color));
   private readonly biomePacked = Int32Array.from(this.biomeRgb.map(pack));
-  private readonly unclaimedByBiome = Int32Array.from(this.biomeRgb.map((c) => pack(mix(hexToRgb(PALETTE.unclaimedLand), c, 0.22))));
   private readonly unclaimedPacked = pack(hexToRgb(PALETTE.unclaimedLand));
   private readonly ramps = Object.fromEntries(
     Object.entries(RAMPS).map(([key, stops]) => [key, Int32Array.from({ length: 101 }, (_, v) => pack(rampColor(stops.map(hexToRgb), v / 100)))]),
   ) as Record<keyof typeof RAMPS, Int32Array>;
-  /** Water never changes: its colours are computed once and copied row by row. */
+  /** Вода неизменна: её цвета вычисляются один раз и копируются построчно. */
   private readonly base = new Uint32Array(MAP_PIXELS);
   private readonly nb = new Uint8Array(MAP_PIXELS);
 
@@ -187,7 +199,12 @@ export class MapRenderer {
     const landNeighbours = (bits & 1) + ((bits >> 1) & 1) + ((bits >> 2) & 1) + ((bits >> 3) & 1);
     if (landNeighbours < neighbours) bits |= COAST;
     this.nb[p] = bits;
-    if (!land[p]) this.base[p] = bits & (LEFT | RIGHT | UP | DOWN) ? shallow : ocean;
+    if (!land[p]) {
+      const depth = this.world.depth?.[p] ?? Math.max(0, -this.world.elevation[p]);
+      this.base[p] = depth > 0
+        ? seaDepthPackedColor(-depth)
+        : bits & (LEFT | RIGHT | UP | DOWN) ? shallow : ocean;
+    }
   }
 
   private prepareSync(): void {
@@ -214,10 +231,33 @@ export class MapRenderer {
     const same = mode === this.mode &&
       (layer === this.layer || (layer !== null && this.layer !== null && layer.kind === this.layer.kind && layer.id === this.layer.id));
     if (same) return;
+    const previousMode = this.mode;
+    const reusablePoliticalRaster = this.selectedCountryId === null &&
+      layer === null &&
+      this.layer === null &&
+      this.dirtyCount === 0 &&
+      this.completedMode === previousMode &&
+      (previousMode === 'political' || previousMode === 'cities') &&
+      (mode === 'political' || mode === 'cities');
     this.mode = mode;
     this.layer = layer;
     this.compCache.culture.fill(0);
     this.compCache.religion.fill(0);
+    if (mode === 'elevation') {
+      this.dirtyTiles.fill(0);
+      this.dirtyCount = 0;
+      this.unsent.fill(0);
+      return;
+    }
+    if (reusablePoliticalRaster) {
+      for (const city of this.world.cities) {
+        const x = city.pixel % MAP_WIDTH;
+        const y = Math.floor(city.pixel / MAP_WIDTH);
+        this.mark({ x0: x, y0: y, x1: x, y1: y });
+      }
+      if (this.dirtyCount === 0) this.completedMode = mode;
+      return;
+    }
     this.markAll();
   }
 
@@ -261,12 +301,31 @@ export class MapRenderer {
   }
 
   markAll(): void {
+    if (this.mode === 'elevation') {
+      this.dirtyTiles.fill(0);
+      this.dirtyCount = 0;
+      this.unsent.fill(0);
+      return;
+    }
     this.dirtyTiles.fill(1);
     this.dirtyCount = TILES;
   }
 
-  /** Marks an area (plus a 1-pixel rim, whose borders may change) for repainting. */
+  /** Обновляет только сохранённый цвет батиметрии для изменённой водной точки. */
+  updateTerrainPixel(pixel: number): void {
+    if (pixel < 0 || pixel >= MAP_PIXELS || this.world.land[pixel]) return;
+    const ocean = pack(hexToRgb(PALETTE.ocean));
+    const shallow = pack(mix(hexToRgb(PALETTE.ocean), [255, 255, 255], 0.25));
+    this.preparePixel(pixel, this.world.land, ocean, shallow);
+  }
+
+  get tilePaintCount(): number {
+    return this.paintedTileCount;
+  }
+
+  /** Помечает область вместе с однопиксельной каймой, где могут измениться границы, для перерисовки. */
   mark(rect: Rect): void {
+    if (this.mode === 'elevation') return;
     const c0 = Math.max(0, Math.floor((rect.x0 - 1) / TILE_W));
     const c1 = Math.min(TILE_COLS - 1, Math.floor((rect.x1 + 1) / TILE_W));
     const r0 = Math.max(0, Math.floor((rect.y0 - 1) / STRIP_H));
@@ -286,26 +345,29 @@ export class MapRenderer {
     return this.dirtyCount > 0;
   }
 
-  /** Repaints everything at once (tests and tools). */
+  /** Перерисовывает всё сразу; используется в тестах и инструментах. */
   flush(): number[] {
     return this.flushSome(Infinity);
   }
 
   /**
-   * Repaints dirty tiles for about `budgetMs` milliseconds. Returns the strips that are now
-   * complete and changed since the last call; a strip is returned only once all its tiles are done.
+   * Перерисовывает изменённые плитки в течение примерно `budgetMs` миллисекунд.
+   * Возвращает полосы, завершённые и изменившиеся с прошлого вызова; полоса
+   * возвращается только после готовности всех её плиток.
    */
   flushSome(budgetMs: number): number[] {
+    let painted = false;
     if (this.dirtyCount > 0) {
       this.syncColors();
       const started = Date.now();
       for (let i = 0; i < TILES && this.dirtyCount > 0; i += 1) {
         const t = (this.cursor + i) % TILES;
         if (!this.dirtyTiles[t]) continue;
+        const strip = Math.floor(t / TILE_COLS);
         this.dirtyTiles[t] = 0;
         this.dirtyCount -= 1;
-        const strip = Math.floor(t / TILE_COLS);
         this.paintTile((t % TILE_COLS) * TILE_W, strip * STRIP_H);
+        painted = true;
         this.unsent[strip] = 1;
         if (Date.now() - started >= budgetMs) {
           this.cursor = (t + 1) % TILES;
@@ -314,6 +376,7 @@ export class MapRenderer {
       }
       if (this.dirtyCount === 0) this.cursor = 0;
     }
+    if (this.dirtyCount === 0 && painted) this.completedMode = this.mode;
     const ready: number[] = [];
     for (let s = 0; s < STRIPS; s += 1) {
       if (!this.unsent[s]) continue;
@@ -329,7 +392,7 @@ export class MapRenderer {
 
   private syncColors(): void {
     const w = this.world;
-    // Entities may be discarded and recreated with new colours at the same id.
+    // Сущности могут быть удалены и созданы заново с новыми цветами под тем же идентификатором.
     const key = `${w.countries.map((c) => c.color).join()}|${w.cultures.map((c) => c.color).join()}|${w.religions.map((c) => c.color).join()}`;
     if (key !== this.colorKey) {
       this.colorKey = key;
@@ -355,7 +418,7 @@ export class MapRenderer {
         }
         for (const cell of nomad.cells ?? []) {
           if (cell.pixel < 0 || cell.pixel >= MAP_PIXELS || !w.land[cell.pixel]) continue;
-          this.nomadDensity[cell.pixel] += cell.population;
+        this.nomadDensity[cell.pixel] += cell.density;
           const old = this.nomadRaster[cell.pixel];
           this.nomadRaster[cell.pixel] = old
             ? pack(mix([old & 255, (old >> 8) & 255, (old >> 16) & 255], [color & 255, (color >> 8) & 255, (color >> 16) & 255], 0.75))
@@ -375,20 +438,20 @@ export class MapRenderer {
     for (const country of w.countries) {
       if (country.type !== 'nomadic') continue;
       for (const cell of country.cells ?? []) {
-        if (!(cell.population > 0) || cell.pixel < 0 || cell.pixel >= MAP_PIXELS || !w.land[cell.pixel]) continue;
+        if (!(cell.density > 0) || cell.pixel < 0 || cell.pixel >= MAP_PIXELS || !w.land[cell.pixel]) continue;
         const entry = w.humanOriginTable.entries[cell.humanOriginMix];
-        if (entry?.total !== 100) continue;
-        const scores = this.nomadOriginScores.get(cell.pixel) ?? new Float64Array(HUMAN_ORIGINS.length);
-        this.addTableMix(scores, entry, cell.population);
+        if (!(entry?.total > 0)) continue;
+        const scores = this.nomadOriginScores.get(cell.pixel) ?? new Float64Array(HUMAN_ANCESTRY_PROFILES.length);
+        this.addTableMix(scores, entry, densityToResidents(cell.density));
         this.nomadOriginScores.set(cell.pixel, scores);
       }
     }
     this.originRasterVersion = w.version;
   }
 
-  private addTableMix(scores: Float64Array, entry: { ids: number[]; shares: number[] }, population: number): void {
+  private addTableMix(scores: Float64Array, entry: { ids: number[]; shares: number[]; total: number }, population: number): void {
     entry.ids.forEach((id, index) => {
-      if (HUMAN_ORIGINS[id]) scores[id] += population * (entry.shares[index] ?? 0) / 100;
+      if (HUMAN_ANCESTRY_PROFILES[id]) scores[id] += population * (entry.shares[index] ?? 0) / entry.total;
     });
   }
 
@@ -399,23 +462,24 @@ export class MapRenderer {
     const nomadScores = this.nomadOriginScores.get(pixel);
     let scores: Float64Array | null = null;
     if (city || nomadScores) {
-      scores = new Float64Array(HUMAN_ORIGINS.length);
+      scores = new Float64Array(HUMAN_ANCESTRY_PROFILES.length);
       if (city) {
         for (const group of ensureCityPopulationGroups(w, city)) {
           if (!(group.population > 0)) continue;
           const entry = w.humanOriginTable.entries[group.humanOriginMix];
-          if (entry?.total === 100) this.addTableMix(scores, entry, group.population);
+          if (entry?.total > 0) this.addTableMix(scores, entry, group.population);
         }
-      } else if (w.owner[pixel] > 0 && w.density[pixel] > 0) {
+      }
+      if (w.owner[pixel] > 0 && w.density[pixel] > 0) {
         const entry = w.humanOriginTable.entries[w.humanOrigins[pixel]];
-        if (entry?.total === 100) this.addTableMix(scores, entry, w.density[pixel]);
+        if (entry?.total > 0) this.addTableMix(scores, entry, densityToResidents(w.density[pixel]));
       }
       if (nomadScores) {
         for (let index = 0; index < scores.length; index += 1) scores[index] += nomadScores[index];
       }
     } else if (w.owner[pixel] > 0 && w.density[pixel] > 0) {
       const entry = w.humanOriginTable.entries[w.humanOrigins[pixel]];
-      if (entry?.total === 100) {
+      if (entry?.total > 0) {
         let leading = 0;
         for (let index = 1; index < entry.ids.length; index += 1) {
           if (entry.shares[index] > entry.shares[leading]) leading = index;
@@ -435,17 +499,17 @@ export class MapRenderer {
   }
 
   private originShareAt(pixel: number, originId: number): number {
-    if (!HUMAN_ORIGINS[originId]) return 0;
+    if (!HUMAN_ANCESTRY_PROFILES[originId]) return 0;
     const w = this.world;
     let population = 0;
     let selectedPopulation = 0;
     const addMix = (mixId: number, amount: number) => {
       if (!(amount > 0)) return;
       const entry = w.humanOriginTable.entries[mixId];
-      if (entry?.total !== 100) return;
+      if (!(entry?.total > 0)) return;
       population += amount;
       entry.ids.forEach((id, index) => {
-        if (id === originId) selectedPopulation += amount * (entry.shares[index] ?? 0) / 100;
+        if (id === originId) selectedPopulation += amount * (entry.shares[index] ?? 0) / entry.total;
       });
     };
 
@@ -454,8 +518,9 @@ export class MapRenderer {
       for (const group of ensureCityPopulationGroups(w, city)) {
         addMix(group.humanOriginMix, group.population);
       }
-    } else if (w.owner[pixel] > 0 && w.density[pixel] > 0) {
-      addMix(w.humanOrigins[pixel], w.density[pixel]);
+    }
+    if (w.owner[pixel] > 0 && w.density[pixel] > 0) {
+      addMix(w.humanOrigins[pixel], densityToResidents(w.density[pixel]));
     }
 
     const nomadScores = this.nomadOriginScores.get(pixel);
@@ -467,6 +532,7 @@ export class MapRenderer {
   }
 
   private paintTile(x0: number, y0: number): void {
+    this.paintedTileCount += 1;
     const w = this.world;
     const pixels = this.pixels;
     const base = this.base;
@@ -481,7 +547,6 @@ export class MapRenderer {
     const religion = w.religion;
     const mode = MODE_CODE[this.mode];
     const countryColors = this.countryColors;
-    const unclaimedByBiome = this.unclaimedByBiome;
     const biomePacked = this.biomePacked;
     const unclaimedPacked = this.unclaimedPacked;
       const ramp = mode >= 4 && mode <= 7 ? this.ramps[this.mode as keyof typeof RAMPS] : this.ramps.density;
@@ -493,17 +558,23 @@ export class MapRenderer {
     const selectedCountry = this.selectedCountryId === null ? null : w.countries[this.selectedCountryId];
     for (let y = y0; y < y0 + STRIP_H; y += 1) {
       const row = y * MAP_WIDTH;
+      pixels.set(base.subarray(row + x0, row + x1), row + x0);
       if (scalarContours) {
         for (const span of scalarContours.row(y)) {
           if (span.start >= x1) break;
           if (span.end <= x0) continue;
-          pixels.fill(ramp[span.value], row + Math.max(x0, span.start), row + Math.min(x1, span.end));
+          if (!Number.isFinite(span.value)) continue;
+          const color = mode === 6
+            ? temperaturePackedColor(span.value)
+            : ramp[Math.max(0, Math.min(100, Math.round(span.value)))];
+          if (color !== undefined) {
+            pixels.fill(color, row + Math.max(x0, span.start), row + Math.min(x1, span.end));
+          }
         }
-      } else pixels.set(base.subarray(row + x0, row + x1), row + x0);
+      }
       for (let p = row + x0; p < row + x1; p += 1) {
         if (!land[p]) {
-          const depth = Math.max(0, Math.min(11000, -w.elevation[p]));
-          pixels[p] = SEA_DEPTH_COLORS[depth];
+          if (!scalarContours) pixels[p] = base[p];
           continue;
         }
         const o = owner[p];
@@ -518,26 +589,33 @@ export class MapRenderer {
             color = pack(mix([238, 233, 218], selectedColor, this.originShareAt(p, this.layer.id)));
           } else {
             const origin = this.originAt(p);
-            color = origin ? this.originColors[origin - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
+            color = origin ? this.originColors[origin - 1] : biomePacked[biomeFor(humidity[p], temperature[p], drainage[p])];
           }
         }
         else if (mode === 8) color = unclaimedPacked;
         else if (mode === 0) {
-          color = o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
-          if (!selected && this.nomadRaster[p] && ((p % MAP_WIDTH + Math.floor(p / MAP_WIDTH)) % 7 < 3)) {
+          color = o > 0 ? countryColors[o - 1] : biomePacked[biomeFor(humidity[p], temperature[p], drainage[p])];
+          if (selected && selectedCountry) color = countryColors[selectedCountry.id] ?? color;
+          if (this.nomadRaster[p] &&
+              ((p % MAP_WIDTH + Math.floor(p / MAP_WIDTH)) % 6 < 3)) {
             const nomad = this.nomadRaster[p];
-            color = pack(mix(
-              [color & 255, (color >> 8) & 255, (color >> 16) & 255],
-              [nomad & 255, (nomad >> 8) & 255, (nomad >> 16) & 255],
-              0.48,
-            ));
+            const baseRgb: RGB = [color & 255, (color >> 8) & 255, (color >> 16) & 255];
+            if (selected && selectedCountry?.type === 'nomadic' && this.selectedNomadRaster[p]) {
+              color = pack(mix(baseRgb, [255, 255, 255], 0.56));
+            } else {
+              color = pack(mix(
+                baseRgb,
+                [nomad & 255, (nomad >> 8) & 255, (nomad >> 16) & 255],
+                0.78,
+              ));
+            }
           }
         }
         else if (mode === 9) {
           const cityId = w.cityIdAt[p];
           const city = cityId >= 0 ? w.cities[cityId] : null;
-          color = city ? this.cityColors[city.rank - 1] : o > 0 ? countryColors[o - 1] : unclaimedByBiome[biomeOf(humidity[p], temperature[p], drainage[p])];
-        } else if (mode === 1) color = biomePacked[biomeOf(humidity[p], temperature[p], drainage[p])];
+          color = city ? this.cityColors[city.rank - 1] : o > 0 ? countryColors[o - 1] : biomePacked[biomeFor(humidity[p], temperature[p], drainage[p])];
+        } else if (mode === 1) color = biomePacked[biomeFor(humidity[p], temperature[p], drainage[p])];
         else if (o === 0 && mode !== 4) color = scalarContours ? pixels[p] : unclaimedPacked;
         else if (mode === 2) color = this.compColor('culture', culture[p]);
         else if (mode === 3) color = this.compColor('religion', religion[p]);
@@ -557,9 +635,7 @@ export class MapRenderer {
         );
         if (mode !== 8 && boundary) color = shade(color, borderShade);
         else if (mode !== 8 && (bits & COAST)) color = shade(color, 0.82);
-        pixels[p] = mode === 0 && selected && selectedCountry
-          ? selectedBoundary ? pack([250, 230, 177]) : countryColors[selectedCountry.id] ?? color
-          : color;
+        pixels[p] = mode === 0 && selected && selectedBoundary ? pack([250, 230, 177]) : color;
       }
     }
   }

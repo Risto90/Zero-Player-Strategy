@@ -72,6 +72,41 @@ export interface MatrixFactorizationResult {
 
 const MAX_MATRIX_ELEMENTS = 64 * 1024 * 1024;
 
+/** Размечает четырёхсвязные компоненты ненулевых ячеек построчной матрицы. */
+export function labelGridComponents(mask: Uint8Array, width: number, height: number): Int32Array {
+  if (!Number.isSafeInteger(width) || width <= 0 ||
+      !Number.isSafeInteger(height) || height <= 0 ||
+      width * height !== mask.length) {
+    throw new RangeError('Размеры матрицы компонентов не совпадают с маской');
+  }
+  const labels = new Int32Array(mask.length).fill(-1);
+  const queue = new Int32Array(mask.length);
+  let component = 0;
+  for (let seed = 0; seed < mask.length; seed += 1) {
+    if (!mask[seed] || labels[seed] >= 0) continue;
+    let head = 0;
+    let tail = 0;
+    labels[seed] = component;
+    queue[tail++] = seed;
+    while (head < tail) {
+      const pixel = queue[head++];
+      const x = pixel % width;
+      const visit = (neighbor: number) => {
+        if (mask[neighbor] && labels[neighbor] < 0) {
+          labels[neighbor] = component;
+          queue[tail++] = neighbor;
+        }
+      };
+      if (x > 0) visit(pixel - 1);
+      if (x + 1 < width) visit(pixel + 1);
+      if (pixel >= width) visit(pixel - width);
+      if (pixel + width < mask.length) visit(pixel + width);
+    }
+    component += 1;
+  }
+  return labels;
+}
+
 /** Построчная плотная матрица или представление с шагом без копирования. */
 export class DenseMatrix {
   readonly values: MatrixValues;

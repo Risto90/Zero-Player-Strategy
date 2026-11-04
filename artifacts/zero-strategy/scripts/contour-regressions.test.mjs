@@ -150,7 +150,7 @@ let version = 0;
 const layers = {
   land: new Uint8Array(MAP_PIXELS),
   humidity: values,
-  temperature: new Uint8Array(MAP_PIXELS).fill(50),
+  temperature: new Float32Array(MAP_PIXELS).fill(20),
   drainage: new Uint8Array(MAP_PIXELS).fill(60),
 };
 rectangle(10, 10, 40, 40).forEachPixel((p) => { layers.land[p] = 1; });
@@ -158,6 +158,19 @@ const map = new MapContours((name) => layers[name], () => version);
 const area = rectangle(10, 10, 40, 40);
 const parts = map.climateIntersections(area);
 assert.equal(parts.reduce((total, part) => total + part.area.size, 0), area.size, 'Пересечения климатов покрывают всю область');
+assert.equal(map.climateIntersections(area), parts, 'Одинаковый запрос возвращает сохранённый результат');
+map.changed({ x0: 0, y0: 0, x1: 0, y1: 0 }, ['owner']);
+assert.equal(map.climateIntersections(area), parts, 'Изменение другого слоя сохраняет кэш климата');
+const ownershipClippedArea = area.subtract(rectangle(14, 14, 16, 14));
+const ownershipClippedParts = map.climateIntersections(ownershipClippedArea);
+assert.equal(ownershipClippedParts.reduce((total, part) => total + part.area.size, 0),
+  ownershipClippedArea.size, 'Новая маска владельца использует неизменный климатический индекс');
+for (const part of ownershipClippedParts) part.area.forEachPixel((pixel) => {
+  assert.equal(part.humidity, layers.humidity[pixel]);
+  assert.equal(part.temperature, layers.temperature[pixel]);
+  assert.equal(part.drainage, layers.drainage[pixel]);
+});
+const unchangedClimateArea = parts.find((part) => part.humidity === 40).area;
 for (const part of parts) part.area.forEachPixel((p) => {
   assert.equal(part.humidity, layers.humidity[p]);
   assert.equal(part.temperature, layers.temperature[p]);
@@ -166,12 +179,36 @@ for (const part of parts) part.area.forEachPixel((p) => {
 const regions = map.climateRegions();
 assert.equal(map.climateRegions(), regions, 'Климатические контуры повторно используются');
 version += 1;
-layers.temperature[20 * MAP_WIDTH + 20] = 70;
+layers.temperature[20 * MAP_WIDTH + 20] = 22;
 map.changed({ x0: 20, y0: 20, x1: 20, y1: 20 }, ['temperature']);
+const updatedParts = map.climateIntersections(area);
+assert.notEqual(updatedParts, parts, 'Изменение климата обновляет сохранённый ответ');
+assert.equal(updatedParts.find((part) => part.humidity === 40).area, unchangedClimateArea,
+  'Неизменённое климатическое пересечение сохраняет свой контур');
 assert.notEqual(map.climateRegions(), regions, 'Изменение климата обновляет пересечения');
-assert.equal(map.climateRegions()[map.climateRegionAt(20 * MAP_WIDTH + 20)].temperature, 70);
+assert.equal(map.climateRegions()[map.climateRegionAt(20 * MAP_WIDTH + 20)].temperature, 22);
+const cachedClimateArea = map.climateIntersectionArea(20, 20, 60, area);
+assert.equal(map.climateIntersectionArea(20, 20, 60, area), cachedClimateArea,
+  'Повторный выбор климатического множества использует кэш пересечений');
+const locallyChangedArea = area.subtract(rectangle(20, 20, 22, 20));
+const locallyChangedParts = map.climateIntersections(locallyChangedArea);
+assert.equal(locallyChangedParts.reduce((total, part) => total + part.area.size, 0), locallyChangedArea.size,
+  'Новый геометрический запрос обрезает сохранённый климатический индекс');
+for (const part of locallyChangedParts) part.area.forEachPixel((pixel) => {
+  assert.equal(part.humidity, layers.humidity[pixel]);
+  assert.equal(part.temperature, layers.temperature[pixel]);
+  assert.equal(part.drainage, layers.drainage[pixel]);
+});
 assert.ok(donut.border().size > 0);
 assert.equal(donut.border().intersect(donut).size, 0, 'Граница не включает сам контур');
+const centrePixel = rectangle(10, 10, 10, 10);
+assert.deepEqual(pixels(centrePixel.neighbourhood8()), [
+  9 * MAP_WIDTH + 9, 9 * MAP_WIDTH + 10, 9 * MAP_WIDTH + 11,
+  10 * MAP_WIDTH + 9, 10 * MAP_WIDTH + 10, 10 * MAP_WIDTH + 11,
+  11 * MAP_WIDTH + 9, 11 * MAP_WIDTH + 10, 11 * MAP_WIDTH + 11,
+], 'Восьмисвязное расширение контура содержит центр и все соседние пиксели');
+assert.deepEqual(pixels(rectangle(0, 0, 0, 0).neighbourhood8()), [0, 1, MAP_WIDTH, MAP_WIDTH + 1],
+  'Восьмисвязное расширение корректно обрезается границами карты');
 const demographicLayers = Object.fromEntries(['owner', 'culture', 'religion', 'humanOrigins', 'density']
   .map((name) => [name, name === 'density' ? new Float32Array(MAP_PIXELS) : new Uint16Array(MAP_PIXELS)]));
 const country = { id: 0, box: [3, 4, 63, 65] };

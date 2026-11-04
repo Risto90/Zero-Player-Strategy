@@ -1,21 +1,37 @@
-import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, SHARE_STEP } from './config';
+import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from './config';
+import { rasterizePolygonContours } from '../kernel/contour-spans';
 import { quantizeShares } from './composition';
 import { combineHumanOriginTableMixes } from './human';
-import { demography } from './demography';
+import { untrimmedDiscoveredRiverPaths } from './geographyGeometry';
 import { forEachNeighbour } from './geography';
-import type { ContourBounds } from './contours';
-import { resizeCityPopulation } from './settlements';
+import { ContourArea, type ContourBounds } from './contours';
+import { densityToResidents } from './populationUnits';
+import {
+  sumPopulationMeasures,
+  takePopulationMeasure,
+  type PopulationPriorityTier,
+} from './populationMeasures';
+import {
+  populationCohortsAtPixel,
+  setPopulationCohortsAtPixel,
+} from './populationCohorts';
+import {
+  cityInfluenceRadius,
+  type CityAccessRoutePoint,
+  type CityInfluenceContour,
+} from './settlements';
 import type { Country, World } from './world';
 
-export const RIVER_COLONIZATION_RADIUS = 18;
 const EPSILON = 1e-9;
 
 export interface ColonizationPlan {
   targets: Uint8Array;
   anchors: Uint8Array;
   connectedTerritory: Uint8Array;
+  routePoints: CityAccessRoutePoint[];
+  cityInfluenceAreas: CityInfluenceContour[];
   donors: number[];
-  averageDensity: number;
+  maximumHomeDensity: number;
   availablePopulation: number;
   targetCount: number;
   hint: number;
@@ -34,7 +50,13 @@ export interface ColonizationTransfer {
   ink: number;
 }
 
-let cached: { world: World; version: number; countryId: number; plan: ColonizationPlan } | null = null;
+let cached: {
+  world: World;
+  version: number;
+  territoryVersion: number;
+  countryId: number;
+  plan: ColonizationPlan;
+} | null = null;
 
 /** Поддерживает наверху участки колонизатора с наибольшей текущей плотностью населения. */
 export class ColonizationDonorHeap {
@@ -102,123 +124,63 @@ export class ColonizationDonorHeap {
   }
 }
 
-/** Builds culture × religion cohorts using the same proportional mixing used by demography(). */
+/** Формирует совместные группы культуры, веры и происхождения для переселяемого населения. */
 export function populationGroupsAt(world: World, pixel: number): PopulationGroup[] {
   const population = world.density[pixel];
   if (population <= EPSILON) return [];
-  const culture = world.cultureTable.entries[world.culture[pixel]];
-  const religion = world.religionTable.entries[world.religion[pixel]];
-  const humanOriginMix = world.humanOriginTable.entries[world.humanOrigins[pixel]]?.total === 100
-    ? world.humanOrigins[pixel]
-    : world.humanOriginTable.single(0, 100);
-  const religionIds: (number | null)[] = [...religion.ids, null];
-  const religionShares = [...religion.shares, 100 - religion.total];
-  const groups: PopulationGroup[] = [];
-  culture.ids.forEach((cultureId, ci) => {
-    religionIds.forEach((religionId, ri) => {
-      const share = culture.shares[ci] * religionShares[ri] / 100;
-      if (share > 0) groups.push({
-        cultureId,
-        religionId,
-        population: population * share / 100,
-        humanOriginMix,
-      });
-    });
-  });
-  return groups;
-}
-
-function cohortKey(cultureId: number, religionId: number | null): string {
-  return `${cultureId}/${religionId ?? 'a'}`;
+  return populationCohortsAtPixel(world, pixel, population).map((group) => ({
+    cultureId: group.cultureId,
+    religionId: group.religionId,
+    population: group.weight,
+    humanOriginMix: world.humanOriginTable.single(group.originProfileId, 100),
+  }));
 }
 
 function splitGroups(
-  groups: PopulationGroup[],
+  groups: readonly PopulationGroup[],
   amount: number,
-  reference: PopulationGroup[],
-  priority: number[],
+  reference: readonly PopulationGroup[],
+  priority: readonly PopulationPriorityTier[],
 ): { selected: PopulationGroup[]; remaining: PopulationGroup[] } {
-  const total = groups.reduce((sum, group) => sum + group.population, 0);
-  let remainingToSelect = Math.min(amount, total);
-  const selected: PopulationGroup[] = [];
-  const remaining: PopulationGroup[] = [];
-  const cultures = new Set(reference.filter((group) => group.population > EPSILON).map((group) => group.cultureId));
-  const religions = new Set(reference.filter((group) => group.population > EPSILON).map((group) => group.religionId));
-  const exactPairs = new Set(reference.filter((group) => group.population > EPSILON)
-    .map((group) => cohortKey(group.cultureId, group.religionId)));
-  const tiers = groups.map((group) => {
-    const sameCulture = cultures.has(group.cultureId);
-    const sameReligion = religions.has(group.religionId);
-    const tier = sameCulture && sameReligion && exactPairs.has(cohortKey(group.cultureId, group.religionId))
-      ? 0
-      : sameCulture || sameReligion ? 1 : 2;
-    return { group, tier };
-  });
-  const handled = new Set<PopulationGroup>();
-  for (const tier of priority) {
-    const bucket = tiers.filter((item) => item.tier === tier);
-    const tierTotal = bucket.reduce((sum, item) => sum + item.group.population, 0);
-    const tierTaken = Math.min(remainingToSelect, tierTotal);
-    const share = tierTotal > EPSILON ? tierTaken / tierTotal : 0;
-    for (const { group } of bucket) {
-      handled.add(group);
-      const taken = group.population * share;
-      if (taken > EPSILON) selected.push({ ...group, population: taken });
-      if (group.population - taken > EPSILON) remaining.push({ ...group, population: group.population - taken });
-    }
-    remainingToSelect -= tierTaken;
-    if (remainingToSelect <= EPSILON) break;
-  }
-  for (const { group } of tiers) {
-    if (!handled.has(group)) remaining.push({ ...group });
-  }
-  return { selected, remaining };
+  return takePopulationMeasure(groups, amount, reference, priority);
 }
 
-function combineGroups(...sets: PopulationGroup[][]): PopulationGroup[] {
-  const totals = new Map<string, PopulationGroup>();
-  for (const group of sets.flat()) {
-    const key = `${cohortKey(group.cultureId, group.religionId)}/${group.humanOriginMix}`;
-    const current = totals.get(key);
-    if (current) current.population += group.population;
-    else totals.set(key, { ...group });
-  }
-  return [...totals.values()].filter((group) => group.population > EPSILON);
+function combineGroups(...sets: readonly PopulationGroup[][]): PopulationGroup[] {
+  return sumPopulationMeasures(...sets);
 }
 
 function setPixelComposition(world: World, pixel: number, groups: PopulationGroup[]): void {
-  const total = groups.reduce((sum, group) => sum + group.population, 0);
-  if (total <= EPSILON) {
-    world.culture[pixel] = 0;
-    world.religion[pixel] = 0;
-    world.humanOrigins[pixel] = 0;
-    return;
-  }
-  const cultures = new Map<number, number>();
-  const religions = new Map<number, number>();
-  let faithful = 0;
+  const cohorts = [];
   for (const group of groups) {
-    cultures.set(group.cultureId, (cultures.get(group.cultureId) ?? 0) + group.population);
-    if (group.religionId !== null) {
-      faithful += group.population;
-      religions.set(group.religionId, (religions.get(group.religionId) ?? 0) + group.population);
+    const origins = world.humanOriginTable.entries[group.humanOriginMix];
+    if (!(origins?.total > 0)) {
+      cohorts.push({
+        cultureId: group.cultureId,
+        religionId: group.religionId,
+        originProfileId: 0,
+        weight: group.population,
+      });
+      continue;
     }
+    origins.ids.forEach((originProfileId, index) => {
+      cohorts.push({
+        cultureId: group.cultureId,
+        religionId: group.religionId,
+        originProfileId,
+        weight: group.population * origins.shares[index] / origins.total,
+      });
+    });
   }
-  const faithfulShare = Math.round((faithful / total * 100) / SHARE_STEP) * SHARE_STEP;
-  world.culture[pixel] = world.cultureTable.intern(quantizeShares(cultures, 100));
-  world.religion[pixel] = world.religionTable.intern(quantizeShares(religions, faithfulShare));
-  world.humanOrigins[pixel] = combineHumanOriginTableMixes(
-    world.humanOriginTable,
-    groups.map((group) => ({ id: group.humanOriginMix, weight: group.population })),
-  );
+  setPopulationCohortsAtPixel(world, pixel, cohorts);
 }
 
-/** Moves up to 10% of a densest donor into one target, displacing the same number of locals. */
+/** Переносит до 10% населения самого плотного донора в целевую точку, вытесняя столько же местных жителей. */
 export function transferColonizationPopulation(
   world: World,
   donor: number,
   target: number,
   inkRemaining: number,
+  preserveTargetPopulation = false,
 ): ColonizationTransfer | null {
   const sourceDensity = world.density[donor];
   const targetDensity = world.owner[target] > 0 ? world.density[target] : 0;
@@ -226,7 +188,7 @@ export function transferColonizationPopulation(
   if (ideal <= EPSILON || inkRemaining <= 0) return null;
 
   let maximum = Math.min(ideal, sourceDensity - targetDensity);
-  if (world.owner[target] > 0) maximum = Math.min(maximum, targetDensity);
+  if (world.owner[target] > 0 && !preserveTargetPopulation) maximum = Math.min(maximum, targetDensity);
   const amount = Math.min(maximum, inkRemaining * ideal);
   if (amount <= EPSILON) return null;
 
@@ -234,22 +196,16 @@ export function transferColonizationPopulation(
   const targetGroups = world.owner[target] > 0 ? populationGroupsAt(world, target) : [];
   const donorSplit = splitGroups(sourceGroups, amount, targetGroups, [0, 1, 2]);
   const migrants = donorSplit.selected;
-  const nativeRemoval = world.owner[target] > 0
+  const nativeRemoval = world.owner[target] > 0 && !preserveTargetPopulation
     ? splitGroups(targetGroups, amount, sourceGroups, [2, 1, 0])
-    : { selected: [], remaining: [] };
+    : { selected: [], remaining: targetGroups };
   const targetAfter = combineGroups(nativeRemoval.remaining, migrants);
 
   const remainingDensity = Math.max(0, sourceDensity - amount);
-  const donorCity = world.cityAt(donor);
-  if (donorCity) {
-    resizeCityPopulation(
-      world,
-      donorCity,
-      donorCity.population * (sourceDensity > EPSILON ? remainingDensity / sourceDensity : 0),
-    );
-  }
   world.density[donor] = remainingDensity;
-  world.density[target] = world.owner[target] > 0 ? targetDensity : amount;
+  world.density[target] = world.owner[target] > 0
+    ? targetDensity + (preserveTargetPopulation ? amount : 0)
+    : amount;
   setPixelComposition(world, donor, donorSplit.remaining);
   setPixelComposition(world, target, targetAfter);
   return { amount, ink: amount / ideal };
@@ -264,7 +220,7 @@ function rulingFamilies(world: World, country: Country): Set<number> {
   return families;
 }
 
-/** Countries are allies when one dynasty rules both or their ruling families are linked by marriage. */
+/** Страны считаются союзниками, если ими правит одна династия или их правящие семьи связаны браком. */
 export function areColonizationAllies(world: World, a: Country, b: Country): boolean {
   const aFamilies = rulingFamilies(world, a);
   const bFamilies = rulingFamilies(world, b);
@@ -280,69 +236,217 @@ export function areColonizationAllies(world: World, a: Country, b: Country): boo
   return false;
 }
 
-function geographicScope(world: World, country: Country): { scope: Uint8Array; anchors: Uint8Array } {
+interface CityAreaRecord {
+  cityId: number;
+  countryId: number;
+  x: number;
+  y: number;
+  radius: number;
+  area: ContourArea;
+}
+
+function cityAreaRecords(world: World, cities: readonly World['cities'][number][]): CityAreaRecord[] {
+  return cities.map((city) => {
+    const x = city.pixel % MAP_WIDTH;
+    const y = Math.floor(city.pixel / MAP_WIDTH);
+    const radius = cityInfluenceRadius(world, city);
+    return {
+      cityId: city.id,
+      countryId: city.countryId,
+      x,
+      y,
+      radius,
+      area: ContourArea.integerCircle(x, y, radius),
+    };
+  });
+}
+
+function riverBasins(riverAreas: ReadonlyMap<number, ContourArea>): ContourArea[] {
+  const pending = new Map(riverAreas);
+  const basins: ContourArea[] = [];
+  while (pending.size > 0) {
+    const first = pending.entries().next().value as [number, ContourArea];
+    pending.delete(first[0]);
+    let basin = first[1];
+    let joined: boolean;
+    do {
+      joined = false;
+      for (const [riverId, area] of pending) {
+        if (!basin.intersects(area)) continue;
+        basin = basin.union(area);
+        pending.delete(riverId);
+        joined = true;
+      }
+    } while (joined);
+    basins.push(basin);
+  }
+  return basins;
+}
+
+const riverBasinCache = new WeakMap<World, Map<string, ContourArea[]>>();
+
+function countryRiverBasins(world: World, countryId: number): ContourArea[] {
+  const cache = riverBasinCache.get(world) ?? new Map<string, ContourArea[]>();
+  riverBasinCache.set(world, cache);
+  const key = `${countryId}/${world.geographyRevision}`;
+  const cachedBasins = cache.get(key);
+  if (cachedBasins) return cachedBasins;
+  const riverAreas = new Map<number, ContourArea>();
+  for (const segment of untrimmedDiscoveredRiverPaths(world, countryId)) {
+    const area = new ContourArea(rasterizePolygonContours(
+      segment.contourPolygons, MAP_WIDTH, MAP_HEIGHT,
+    ));
+    const current = riverAreas.get(segment.riverId);
+    riverAreas.set(segment.riverId, current ? current.union(area) : area);
+  }
+  const basins = riverBasins(riverAreas);
+  cache.set(key, basins);
+  return basins;
+}
+
+function extendByRiverBasins(area: ContourArea, basins: readonly ContourArea[]): ContourArea {
+  let expanded = area;
+  for (const basin of basins) {
+    if (expanded.intersects(basin)) expanded = expanded.union(basin);
+  }
+  return expanded;
+}
+
+function coastalRoutes(
+  world: World,
+  cityAreas: readonly CityAreaRecord[],
+  allowedCoast: ContourArea,
+): { area: ContourArea; routePoints: CityAccessRoutePoint[] } {
+  const routeByPixel = new Map<number, number>();
+  let area = new ContourArea();
+  const routeColumns = Math.ceil(MAP_WIDTH / 64);
+  const routeRows = Math.ceil(MAP_HEIGHT / 64);
+
+  for (let sea = 0; sea < world.water.coastsOf.length; sea += 1) {
+    const shore = world.water.coastsOf[sea] ?? [];
+    if (!shore.length) continue;
+    const seaArea = ContourArea.pixels(shore);
+    const coastComponents = seaArea.components().filter((component) => component.intersects(allowedCoast));
+    if (!coastComponents.length) continue;
+    const linkedCities = cityAreas.filter((city) => city.area.intersects(seaArea));
+    if (!linkedCities.length) continue;
+
+    const cityBuckets = new Map<number, CityAreaRecord[]>();
+    for (const city of linkedCities) {
+      const key = Math.floor(city.y / 64) * routeColumns + Math.floor(city.x / 64);
+      const bucket = cityBuckets.get(key) ?? [];
+      bucket.push(city);
+      cityBuckets.set(key, bucket);
+    }
+    const nearestCityEdge = (pixel: number): number => {
+      const x = pixel % MAP_WIDTH;
+      const y = Math.floor(pixel / MAP_WIDTH);
+      const bx = Math.floor(x / 64);
+      const by = Math.floor(y / 64);
+      let nearest = Infinity;
+      const check = (bucketX: number, bucketY: number) => {
+        if (bucketX < 0 || bucketY < 0 || bucketX >= routeColumns || bucketY >= routeRows) return;
+        for (const city of cityBuckets.get(bucketY * routeColumns + bucketX) ?? []) {
+          nearest = Math.min(nearest, Math.max(0, Math.hypot(x - city.x, y - city.y) - city.radius));
+        }
+      };
+      for (let ring = 0; ring < Math.max(routeColumns, routeRows); ring += 1) {
+        for (let dx = -ring; dx <= ring; dx += 1) {
+          check(bx + dx, by - ring);
+          if (ring > 0) check(bx + dx, by + ring);
+        }
+        for (let dy = -ring + 1; dy < ring; dy += 1) {
+          check(bx - ring, by + dy);
+          if (ring > 0) check(bx + ring, by + dy);
+        }
+        if (nearest <= Math.max(0, (ring - 1) * 64 - Math.SQRT2 * 64)) break;
+      }
+      return nearest;
+    };
+
+    for (const component of coastComponents) {
+      area = area.union(component);
+      for (const span of component.spans) {
+        const row = span.y * MAP_WIDTH;
+        for (let x = span.start; x < span.end; x += 1) {
+          const pixel = row + x;
+          const extraDistance = nearestCityEdge(pixel) / 2;
+          if (!Number.isFinite(extraDistance)) continue;
+          const previous = routeByPixel.get(pixel);
+          if (previous === undefined || extraDistance < previous) routeByPixel.set(pixel, extraDistance);
+        }
+      }
+    }
+  }
+
+  return {
+    area,
+    routePoints: [...routeByPixel].map(([pixel, extraDistance]) => ({ pixel, extraDistance })),
+  };
+}
+
+function geographicScope(world: World, country: Country): {
+  scope: Uint8Array;
+  anchors: Uint8Array;
+  routePoints: CityAccessRoutePoint[];
+  cityInfluenceAreas: CityInfluenceContour[];
+} {
   const scope = new Uint8Array(MAP_PIXELS);
   const anchors = new Uint8Array(MAP_PIXELS);
-  const seas = new Set<number>();
-  const riverSeeds: number[] = [];
-  world.forEachCountryPixel(country, (p) => {
-    world.seasOfPixel(p, seas);
-    if (world.knownRivers[p] > 0) riverSeeds.push(p);
-  });
+  const allCityAreas = cityAreaRecords(world, world.cities);
+  const cityAreas = allCityAreas.filter((city) => city.countryId === country.id);
+  const cityArea = cityAreas.reduce((area, city) => area.union(city.area), new ContourArea());
+  const coast = coastalRoutes(world, cityAreas, cityArea);
+  const routePoints: CityAccessRoutePoint[] = [...coast.routePoints];
+  const basinsByCountry = new Map<number, ContourArea[]>();
+  const basinsForCountry = (countryId: number) => {
+    let basins = basinsByCountry.get(countryId);
+    if (!basins) {
+      basins = countryRiverBasins(world, countryId);
+      basinsByCountry.set(countryId, basins);
+    }
+    return basins;
+  };
+  const ownBasins = basinsForCountry(country.id);
+  const cityInfluenceAreas = allCityAreas.map(({ cityId, countryId, area }) => ({
+    cityId,
+    area: extendByRiverBasins(area, basinsForCountry(countryId)),
+  }));
+  const expandedOwnArea = cityAreas.reduce(
+    (area, city) => area.union(extendByRiverBasins(city.area, ownBasins)),
+    new ContourArea(),
+  );
+  const riverArea = expandedOwnArea.subtract(cityArea);
 
-  // Прибрежное государство может заселять берега морей, которых уже касается.
-  for (const sea of seas) {
-    for (const p of world.water.coastsOf[sea] ?? []) {
-      scope[p] = 1;
-      anchors[p] = 1;
+  for (const span of riverArea.spans) {
+    for (let x = span.start; x < span.end; x += 1) {
+      routePoints.push({ pixel: span.y * MAP_WIDTH + x, extraDistance: 0 });
     }
   }
 
-  // Находит связанную речную сеть, уже проходящую по территории государства.
-  const riverSeen = new Uint8Array(MAP_PIXELS);
-  const riverPixels: number[] = [];
-  for (const seed of riverSeeds) {
-    if (riverSeen[seed]) continue;
-    riverSeen[seed] = 1;
-    const queue = [seed];
-    for (let head = 0; head < queue.length; head += 1) {
-      const p = queue[head];
-      riverPixels.push(p);
-      scope[p] = 1;
-      anchors[p] = 1;
-      forEachNeighbour(p, (n) => {
-        if (world.knownRivers[n] > 0 && !riverSeen[n]) {
-          riverSeen[n] = 1;
-          queue.push(n);
-        } else if (world.land[n]) {
-          scope[n] = 1;
-          anchors[n] = 1;
-        }
-      });
+  const accessibleArea = cityArea.union(coast.area).union(riverArea);
+  for (const areaPixel of accessibleArea.spans) {
+    const row = areaPixel.y * MAP_WIDTH;
+    for (let x = areaPixel.start; x < areaPixel.end; x += 1) {
+      const pixel = row + x;
+      scope[pixel] = 1;
+      anchors[pixel] = 1;
     }
   }
+  return { scope, anchors, routePoints, cityInfluenceAreas };
+}
 
-  // Представляет речной бассейн как сухопутный коридор вокруг связанного русла.
-  if (riverPixels.length > 0) {
-    const distance = new Uint8Array(MAP_PIXELS).fill(255);
-    const queue: number[] = [];
-    for (const p of riverPixels) {
-      distance[p] = 0;
-      queue.push(p);
-    }
-    for (let head = 0; head < queue.length; head += 1) {
-      const p = queue[head];
-      const nextDistance = distance[p] + 1;
-      if (nextDistance > RIVER_COLONIZATION_RADIUS) continue;
-      forEachNeighbour(p, (n) => {
-        if (!world.land[n] || distance[n] <= nextDistance) return;
-        distance[n] = nextDistance;
-        scope[n] = 1;
-        queue.push(n);
-      });
-    }
-  }
-  return { scope, anchors };
+export function expansionCoastRoutePoints(world: World, country: Country): CityAccessRoutePoint[] {
+  const cityAreas = cityAreaRecords(
+    world,
+    world.cities.filter((city) => city.countryId === country.id),
+  );
+  if (!cityAreas.length) return [];
+  const countryArea = world.contours.layer('owner').select(
+    (owner) => owner === country.id + 1,
+    { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 },
+  );
+  return coastalRoutes(world, cityAreas, countryArea).routePoints;
 }
 
 function connectedCountryTerritory(world: World, country: Country, anchors: Uint8Array): Uint8Array {
@@ -365,11 +469,12 @@ function connectedCountryTerritory(world: World, country: Country, anchors: Uint
 }
 
 export function colonizationPlan(world: World, country: Country): ColonizationPlan {
-  if (cached?.world === world && cached.version === world.version && cached.countryId === country.id) {
+  if (cached?.world === world && cached.version === world.version &&
+    cached.territoryVersion === world.territoryVersion && cached.countryId === country.id) {
     return cached.plan;
   }
-  const averageDensity = demography(world, country).density;
-  const { scope: geographic, anchors } = geographicScope(world, country);
+  let maximumHomeDensity = 0;
+  const { scope: geographic, anchors, routePoints, cityInfluenceAreas } = geographicScope(world, country);
   const connectedTerritory = connectedCountryTerritory(world, country, anchors);
   const candidates = new Uint8Array(MAP_PIXELS);
   const targets = new Uint8Array(MAP_PIXELS);
@@ -382,15 +487,17 @@ export function colonizationPlan(world: World, country: Country): ColonizationPl
   const donors: number[] = [];
   let availablePopulation = 0;
   world.forEachCountryPixel(country, (p) => {
+    maximumHomeDensity = Math.max(maximumHomeDensity, world.density[p]);
     if (world.density[p] > 0) {
       donors.push(p);
-      availablePopulation += world.density[p];
+      availablePopulation += densityToResidents(world.density[p]);
     }
   });
   for (const p of world.landIndex) {
     if (!geographic[p] || world.owner[p] === country.id + 1) continue;
     const owner = world.owner[p];
-    if (owner > 0 && (world.density[p] <= EPSILON || world.density[p] >= averageDensity || allies.has(owner - 1))) continue;
+    if (owner > 0 && (world.density[p] <= EPSILON ||
+      world.density[p] >= maximumHomeDensity || allies.has(owner - 1))) continue;
     candidates[p] = 1;
   }
 
@@ -430,13 +537,21 @@ export function colonizationPlan(world: World, country: Country): ColonizationPl
     targets,
     anchors,
     connectedTerritory,
+    routePoints,
+    cityInfluenceAreas,
     donors,
-    averageDensity,
+    maximumHomeDensity,
     availablePopulation,
     targetCount,
     hint,
     targetBounds,
   };
-  cached = { world, version: world.version, countryId: country.id, plan };
+  cached = {
+    world,
+    version: world.version,
+    territoryVersion: world.territoryVersion,
+    countryId: country.id,
+    plan,
+  };
   return plan;
 }

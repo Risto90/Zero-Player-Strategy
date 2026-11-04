@@ -1,35 +1,39 @@
-# Human-origin categories and climate fit
+# Климатические диапазоны категорий происхождения
 
-## Model contract
+## Правила модели
 
-The eight requested labels are game ancestry categories under one human species. They all share the same human age stages. The categories do not change culture, religion, or age rules.
+Все категории относятся к одному виду людей и используют общие стадии возраста. Климатические профили описывают широкие игровые ареалы, где исторически были распространены соответствующие популяции; это не неизменные пределы выживания человека.
 
-Climate ranges represent broad reference habitats associated with generations living in those regions. They are game-scale habitat estimates, not fixed individual thermal limits or a claim that the labels are discrete biological races. A person's ancestry mix is separate from their current residence; children inherit a canonical mixture from both parents, and new population at a point uses the local category counts and pair frequencies.
+Общий комфортный температурный диапазон задан для игры как **18–28 °C**. Температура карты хранится и показывается в градусах Цельсия. Значение 30 °C уже считается зоной повышенного риска перегрева.
 
-## Scale and approximation
+Для каждой категории берутся игровые биомы, соответствующие её наиболее характерным реальным ареалам. Температурные границы профиля рассчитываются как среднее между границей биома и общей комфортной границей человека. Диапазоны влажности и дренажа объединяют значения выбранных биомов. Влажность и дренаж остаются игровыми шкалами 0–100, а не процентами.
 
-Temperature and humidity are game indices from 0 to 100, not Celsius or relative humidity percentages. `geography.ts` derives temperature mainly from latitude (`96 − |latitude| × 1.22`), then adds terrain-scale noise and a small inland reduction. Humidity starts from a latitude curve (wet equator, dry subtropics, wetter temperate belt, drier poles), then changes with inland distance and noise.
+Вне диапазона каждый климатический параметр уменьшает численность новой группы по формуле `0,5^(расстояние за границей / ширина диапазона)`. Факторы температуры, влажности и дренажа перемножаются. Например, отклонение на ширину диапазона по всем трём параметрам даёт множитель `1/8`. Для смеси происхождения множитель определяется долями категорий в группе; при создании населения он меняет только объём новых групп и их взаимные доли. Уже существующее население и перемещение существующих групп не изменяются.
 
-The ranges below are broad, rounded envelopes chosen to match those internal scales. They are not direct measurements of human comfort. The range distance is converted to a simple fit score (100 inside the interval, decreasing with distance outside it); a mixed population receives the weighted score from its stored canonical shares only.
+## Профили
 
-| Category | Temperature | Humidity | Habitat used as the broad reference |
-| --- | ---: | ---: | --- |
-| Европейская | 35–65 | 35–75 | Temperate Europe |
-| Негрская | 50–85 | 35–85 | Broad sub-Saharan African environments |
-| Пигмейская | 65–95 | 65–100 | Equatorial Central African rainforest |
-| Бушменская | 55–90 | 10–45 | Kalahari and adjacent semi-arid southern Africa |
-| Эфиопская | 30–70 | 20–65 | Ethiopian/East African highlands and nearby drylands |
-| Американоидная | 25–85 | 20–90 | Broad range of the Americas |
-| Австралоидная | 45–90 | 10–65 | Australian interior and tropical north |
-| Веддоидная | 55–85 | 45–90 | South Asian tropical and monsoon environments |
+| Категория | Игровые биомы-ориентиры | Температура, °C | Влажность, шкала 0–100 | Дренаж, шкала 0–100 |
+| --- | --- | ---: | ---: | ---: |
+| Европейская | Лиственный лес, степь | 11,5–23 | 20–100 | 25–85 |
+| Негрская | Саванна, тропический лес | 18–29 | 20–100 | 30–90 |
+| Пигмейская | Тропический лес | 18–29 | 50–100 | 30–80 |
+| Бушменская | Пустыня, саванна | 11,5–29 | 0–49 | 45–95 |
+| Эфиопская | Лиственный лес, степь, саванна | 11,5–29 | 20–100 | 25–90 |
+| Американоидная | Болота, лиственный лес, степь, саванна, тропический лес | 4–29 | 20–100 | 0–90 |
+| Австралоидная | Лиственный лес, пустыня, саванна, тропический лес | 11,5–29 | 0–100 | 25–95 |
+| Веддоидная | Саванна, тропический лес | 18–29 | 20–100 | 30–90 |
 
-The broad ranges intentionally overlap. The Americas and Africa are climatically diverse, and the game's two climate axes cannot represent elevation, seasonal extremes, wind, housing, clothing, diet, or individual acclimatization. The intervals are consequently design approximations, not claims of one optimal climate per population.
+Широкие диапазоны отдельных категорий следуют из объединения разнообразных ареалов и грубой детализации игровых биомов. Они не кодируют различия в одежде, жилье, сезонности, высоте над уровнем моря или индивидуальной акклиматизации.
 
-## Sources
+## Географические источники
 
-- WorldClim 2.1 global climate normals, used as a regional reference for broad temperature and precipitation/humidity envelopes: https://worldclim.org/data/worldclim21.html
-- Köppen–Geiger global climate classification, used as a cross-check for broad tropical, arid, temperate, and highland habitat groupings: https://www.nature.com/articles/sdata201724
-- UNESCO tentative-list description of the Central Kalahari, used for the semi-arid southern African reference: https://whc.unesco.org/en/tentativelists/5555/
-- Review of human thermal comfort research, used only as context for the general distinction between environmental comfort and the simplified game score: https://link.springer.com/article/10.1186/s40101-022-00302-3
+- Классификация наземных биомов: https://openstax.org/books/biology-2e/pages/44-3-terrestrial-biomes
+- Умеренные широколиственные и смешанные леса: https://ecoregions.worldwildlife.org/biomes/temperate-broadleaf-and-mixed-forests/
+- Центральноафриканские лесные ареалы пигмейских народов: https://pmc.ncbi.nlm.nih.gov/articles/PMC4711706/
+- Полузасушливые территории Сан и Калахари: https://whc.unesco.org/en/tentativelists/6096/
+- Эфиопские высокогорные экосистемы: https://pmc.ncbi.nlm.nih.gov/articles/PMC7567763/
+- Разнообразие ландшафтов и территорий коренных народов Южной Америки: https://www.landislife.org/south-america/
+- Лесные и иные территории коренных народов Австралии: https://data.gov.au/data/dataset/australia-s-indigenous-land-and-forest-estate-2024
+- Исследование общин Ведда Шри-Ланки: https://pmc.ncbi.nlm.nih.gov/articles/PMC6015624/
 
-These sources inform the geographic framing; the exact 0–100 endpoints are rounded game parameters selected to fit the current map-generation curves.
+Источники используются для выбора широких географических ориентиров, а не как измерение индивидуального температурного комфорта. Игровые границы профилей вычисляются из таблицы биомов проекта.

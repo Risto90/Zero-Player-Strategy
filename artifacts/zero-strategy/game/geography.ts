@@ -1,6 +1,14 @@
-import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, VALUE_STEP } from './config';
+import {
+  MAP_HEIGHT,
+  MAP_PIXELS,
+  MAP_WIDTH,
+  VALUE_STEP,
+} from './config';
 import { EARTH_DEG_PER_PX, EARTH_LAND_RLE, EARTH_TOP_LAT } from './data/earthLand';
+import { earthMeanHumidityPercent } from './data/earthHumidity';
+import { earthMeanTemperatureDeciC } from './data/earthTemperature';
 import { fractalField, mulberry32, valueNoise } from './random';
+import { DenseMatrix, elementwise } from '../kernel/matrix';
 
 export type MapKind = 'world' | 'random';
 
@@ -114,6 +122,42 @@ async function fractalFieldCooperative(
 }
 
 /** Фрактальные континенты случайного мира; его зерно сохраняется вместе с игрой. */
+function writeRandomLandScoreBlock(
+  field: Float32Array,
+  centres: { x: number; y: number; r: number }[],
+  firstRow: number,
+  rowCount: number,
+  score: Float32Array,
+): void {
+  const length = rowCount * MAP_WIDTH;
+  const base = new Float64Array(length);
+  const edgeValues = new Float64Array(length);
+  for (let row = 0; row < rowCount; row += 1) {
+    const y = firstRow + row;
+    const ny = y / MAP_HEIGHT;
+    const edge = Math.min(1, ny / 0.08, (1 - ny) / 0.08);
+    for (let x = 0; x < MAP_WIDTH; x += 1) {
+      const nx = x / MAP_WIDTH;
+      let bump = 0;
+      for (const centre of centres) {
+        const dx = (nx - centre.x) * 2.4;
+        const dy = ny - centre.y;
+        const distance = Math.sqrt(dx * dx + dy * dy) / centre.r;
+        bump = Math.max(bump, 1 - distance);
+      }
+      const index = row * MAP_WIDTH + x;
+      base[index] = field[y * MAP_WIDTH + x] * 0.9 + bump * 0.55;
+      edgeValues[index] = edge;
+    }
+  }
+  const scores = elementwise(
+    new DenseMatrix(base, rowCount, MAP_WIDTH),
+    new DenseMatrix(edgeValues, rowCount, MAP_WIDTH),
+    'multiply',
+  );
+  score.set(scores.values, firstRow * MAP_WIDTH);
+}
+
 export function makeRandomLand(seed: number): Uint8Array {
   const rng = mulberry32(seed);
   const field = fractalField(MAP_WIDTH, MAP_HEIGHT, seed, 5, 6);
@@ -124,21 +168,8 @@ export function makeRandomLand(seed: number): Uint8Array {
   }));
   const land = new Uint8Array(MAP_PIXELS);
   const score = new Float32Array(MAP_PIXELS);
-  for (let y = 0; y < MAP_HEIGHT; y += 1) {
-    const ny = y / MAP_HEIGHT;
-    const edge = Math.min(1, ny / 0.08, (1 - ny) / 0.08);
-    for (let x = 0; x < MAP_WIDTH; x += 1) {
-      const nx = x / MAP_WIDTH;
-      let bump = 0;
-      for (const c of centres) {
-        const dx = (nx - c.x) * 2.4;
-        const dy = ny - c.y;
-        const d = Math.sqrt(dx * dx + dy * dy) / c.r;
-        bump = Math.max(bump, 1 - d);
-      }
-      const i = y * MAP_WIDTH + x;
-      score[i] = (field[i] * 0.9 + bump * 0.55) * edge;
-    }
+  for (let y = 0; y < MAP_HEIGHT; y += 64) {
+    writeRandomLandScoreBlock(field, centres, y, Math.min(64, MAP_HEIGHT - y), score);
   }
   // Подбирается порог, при котором сушей становится около 30% карты.
   const sample = Array.from({ length: 4000 }, () => score[Math.floor(rng() * MAP_PIXELS)]).sort((a, b) => b - a);
@@ -157,22 +188,9 @@ export async function makeRandomLandCooperative(seed: number): Promise<Uint8Arra
   }));
   const land = new Uint8Array(MAP_PIXELS);
   const score = new Float32Array(MAP_PIXELS);
-  for (let y = 0; y < MAP_HEIGHT; y += 1) {
-    const ny = y / MAP_HEIGHT;
-    const edge = Math.min(1, ny / 0.08, (1 - ny) / 0.08);
-    for (let x = 0; x < MAP_WIDTH; x += 1) {
-      const nx = x / MAP_WIDTH;
-      let bump = 0;
-      for (const c of centres) {
-        const dx = (nx - c.x) * 2.4;
-        const dy = ny - c.y;
-        const d = Math.sqrt(dx * dx + dy * dy) / c.r;
-        bump = Math.max(bump, 1 - d);
-      }
-      const i = y * MAP_WIDTH + x;
-      score[i] = (field[i] * 0.9 + bump * 0.55) * edge;
-    }
-    if (y % 8 === 7) await yieldToUi();
+  for (let y = 0; y < MAP_HEIGHT; y += 64) {
+    writeRandomLandScoreBlock(field, centres, y, Math.min(64, MAP_HEIGHT - y), score);
+    await yieldToUi();
   }
   const sample = Array.from({ length: 4000 }, () => score[Math.floor(rng() * MAP_PIXELS)]).sort((a, b) => b - a);
   const threshold = sample[Math.floor(sample.length * 0.3)];
@@ -371,22 +389,55 @@ export function quantize(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value / VALUE_STEP) * VALUE_STEP));
 }
 
-/** Заполняет температуру моря при открытии сохранения, созданного до сохранения морского климата. */
-export function fillOceanTemperature(land: Uint8Array, seed: number, temperature: Uint8Array): void {
+function generatedTemperatureC(latitude: number, noise: number, inland: number, onLand: boolean): number {
+  const meanByLatitude = 28 - latitude * 0.56;
+  const variation = (noise - 0.5) * (onLand ? 12 : 8);
+  const continentalCooling = onLand ? inland * 4 : 0;
+  const roundedDeciC = Math.round((meanByLatitude + variation - continentalCooling) * 10);
+  return roundedDeciC === 0 ? 0 : roundedDeciC / 10;
+}
+
+/** Заполняет воду средней температурой Земли либо прямой процедурной температурой в °C. */
+export function fillOceanTemperature(
+  land: Uint8Array,
+  seed: number,
+  temperature: Float32Array,
+  mapKind: MapKind = 'random',
+): void {
+  if (mapKind === 'world') {
+    const climatology = earthMeanTemperatureDeciC();
+    for (let pixel = 0; pixel < MAP_PIXELS; pixel += 1) {
+      if (!land[pixel]) temperature[pixel] = climatology[pixel] / 10;
+    }
+    return;
+  }
   const noise = fractalField(MAP_WIDTH, MAP_HEIGHT, seed + 11, 9, 4);
   for (let y = 0; y < MAP_HEIGHT; y += 1) {
-    const baseTemp = 96 - Math.abs(latitudeOfRow(y)) * 1.22;
+    const latitude = Math.abs(latitudeOfRow(y));
     const row = y * MAP_WIDTH;
     for (let x = 0; x < MAP_WIDTH; x += 1) {
-      const p = row + x;
-      if (!land[p]) temperature[p] = quantize(baseTemp + (noise[p] - 0.5) * 16 - 8);
+      const pixel = row + x;
+      if (!land[pixel]) temperature[pixel] = generatedTemperatureC(latitude, noise[pixel], 0, false);
+    }
+  }
+}
+
+/** Восстанавливает водную часть старого сохранения до перевода шкалы в °C. */
+export function fillOceanTemperatureLegacy(land: Uint8Array, seed: number, temperature: Uint8Array): void {
+  const noise = fractalField(MAP_WIDTH, MAP_HEIGHT, seed + 11, 9, 4);
+  for (let y = 0; y < MAP_HEIGHT; y += 1) {
+    const baseValue = 96 - Math.abs(latitudeOfRow(y)) * 1.22;
+    const row = y * MAP_WIDTH;
+    for (let x = 0; x < MAP_WIDTH; x += 1) {
+      const pixel = row + x;
+      if (!land[pixel]) temperature[pixel] = quantize(baseValue + (noise[pixel] - 0.5) * 16 - 8);
     }
   }
 }
 
 export interface Climate {
   humidity: Uint8Array;
-  temperature: Uint8Array;
+  temperature: Float32Array;
   drainage: Uint8Array;
 }
 
@@ -539,58 +590,68 @@ export function generateRivers(
   return rivers;
 }
 
-/** Детерминированный климат по зерну: температура зависит от широты, влажность — от широты и расстояния до моря. */
-export function generateClimate(land: Uint8Array, seed: number): Climate {
+/** Климат мира берётся из реальных растров; случайный климат строится детерминированно по зерну. */
+export function generateClimate(land: Uint8Array, seed: number, mapKind: MapKind = 'random'): Climate {
   const humidity = new Uint8Array(MAP_PIXELS);
-  const temperature = new Uint8Array(MAP_PIXELS);
+  const temperature = new Float32Array(MAP_PIXELS);
   const drainage = new Uint8Array(MAP_PIXELS);
-  const tempNoise = fractalField(MAP_WIDTH, MAP_HEIGHT, seed + 11, 9, 4);
+  const tempNoise = mapKind === 'world' ? null : fractalField(MAP_WIDTH, MAP_HEIGHT, seed + 11, 9, 4);
   const wetNoise = fractalField(MAP_WIDTH, MAP_HEIGHT, seed + 23, 12, 5);
   const drainNoise = fractalField(MAP_WIDTH, MAP_HEIGHT, seed + 37, 18, 5);
   const distance = coastDistance(land);
+  const earthHumidity = mapKind === 'world' ? earthMeanHumidityPercent() : null;
+  const earthTemperature = mapKind === 'world' ? earthMeanTemperatureDeciC() : null;
   for (let y = 0; y < MAP_HEIGHT; y += 1) {
     const lat = Math.abs(latitudeOfRow(y));
-    const baseTemp = 96 - lat * 1.22;
     const baseWet = interpolate(HUMIDITY_BY_LAT, lat);
     const tropical = lat < 14 ? 0.3 : 1;
     for (let x = 0; x < MAP_WIDTH; x += 1) {
       const p = y * MAP_WIDTH + x;
-      if (!land[p]) {
-        temperature[p] = quantize(baseTemp + (tempNoise[p] - 0.5) * 16 - 8);
-        continue;
+      temperature[p] = earthTemperature
+        ? earthTemperature[p] / 10
+        : generatedTemperatureC(lat, tempNoise![p], Math.min(1, distance[p] / 160), !!land[p]);
+      if (earthHumidity) {
+        humidity[p] = earthHumidity[p];
+      } else if (land[p]) {
+        const inland = Math.min(1, distance[p] / 160);
+        humidity[p] = quantize(baseWet * (1 - inland * 0.55 * tropical) + (wetNoise[p] - 0.5) * 40);
       }
-      const inland = Math.min(1, distance[p] / 160);
-      temperature[p] = quantize(baseTemp + (tempNoise[p] - 0.5) * 22 - inland * 4);
-      humidity[p] = quantize(baseWet * (1 - inland * 0.55 * tropical) + (wetNoise[p] - 0.5) * 40);
-      drainage[p] = quantize(8 + drainNoise[p] * 92);
+      if (land[p]) drainage[p] = quantize(8 + drainNoise[p] * 92);
     }
   }
   return { humidity, temperature, drainage };
 }
 
-export async function generateClimateCooperative(land: Uint8Array, seed: number): Promise<Climate> {
+export async function generateClimateCooperative(
+  land: Uint8Array,
+  seed: number,
+  mapKind: MapKind = 'random',
+): Promise<Climate> {
   const humidity = new Uint8Array(MAP_PIXELS);
-  const temperature = new Uint8Array(MAP_PIXELS);
+  const temperature = new Float32Array(MAP_PIXELS);
   const drainage = new Uint8Array(MAP_PIXELS);
-  const tempNoise = await fractalFieldCooperative(MAP_WIDTH, MAP_HEIGHT, seed + 11, 9, 4);
+  const tempNoise = mapKind === 'world' ? null : await fractalFieldCooperative(MAP_WIDTH, MAP_HEIGHT, seed + 11, 9, 4);
   const wetNoise = await fractalFieldCooperative(MAP_WIDTH, MAP_HEIGHT, seed + 23, 12, 5);
   const drainNoise = await fractalFieldCooperative(MAP_WIDTH, MAP_HEIGHT, seed + 37, 18, 5);
   const distance = await coastDistanceCooperative(land);
+  const earthHumidity = mapKind === 'world' ? earthMeanHumidityPercent() : null;
+  const earthTemperature = mapKind === 'world' ? earthMeanTemperatureDeciC() : null;
   for (let y = 0; y < MAP_HEIGHT; y += 1) {
     const lat = Math.abs(latitudeOfRow(y));
-    const baseTemp = 96 - lat * 1.22;
     const baseWet = interpolate(HUMIDITY_BY_LAT, lat);
     const tropical = lat < 14 ? 0.3 : 1;
     for (let x = 0; x < MAP_WIDTH; x += 1) {
       const p = y * MAP_WIDTH + x;
-      if (!land[p]) {
-        temperature[p] = quantize(baseTemp + (tempNoise[p] - 0.5) * 16 - 8);
-        continue;
+      temperature[p] = earthTemperature
+        ? earthTemperature[p] / 10
+        : generatedTemperatureC(lat, tempNoise![p], Math.min(1, distance[p] / 160), !!land[p]);
+      if (earthHumidity) {
+        humidity[p] = earthHumidity[p];
+      } else if (land[p]) {
+        const inland = Math.min(1, distance[p] / 160);
+        humidity[p] = quantize(baseWet * (1 - inland * 0.55 * tropical) + (wetNoise[p] - 0.5) * 40);
       }
-      const inland = Math.min(1, distance[p] / 160);
-      temperature[p] = quantize(baseTemp + (tempNoise[p] - 0.5) * 22 - inland * 4);
-      humidity[p] = quantize(baseWet * (1 - inland * 0.55 * tropical) + (wetNoise[p] - 0.5) * 40);
-      drainage[p] = quantize(8 + drainNoise[p] * 92);
+      if (land[p]) drainage[p] = quantize(8 + drainNoise[p] * 92);
     }
     if (y % 8 === 7) await yieldToUi();
   }

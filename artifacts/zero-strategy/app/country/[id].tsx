@@ -7,6 +7,7 @@ import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/g
 import { fmt, pct } from '@/game/format';
 import { ageStage, GOVERNMENTS, MODIFIERS, personDeathStatus } from '@/game/government';
 import { currentGame } from '@/game/session';
+import { cityHasPort } from '@/game/settlements';
 import { useGameSnapshot } from '@/game/useGame';
 import { countryCandidates, countryRulerHistory, expectedHeirFor, rulers } from '@/game/succession';
 import type { Game } from '@/game/game';
@@ -132,7 +133,7 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
           kind: 'city' as const,
           key: String(city.id),
           city,
-          hasPort: game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0,
+          hasPort: cityHasPort(game.world, city),
           country: game.world.countries[city.countryId],
         }))} />
       </ProfileSection>

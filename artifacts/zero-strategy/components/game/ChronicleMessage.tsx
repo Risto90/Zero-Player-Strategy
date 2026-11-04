@@ -12,6 +12,7 @@ import {
   religionProfileRoute,
 } from '@/game/profileRoutes';
 import { openProfile } from '@/game/profileNavigation';
+import { cityHasPort } from '@/game/settlements';
 import type { City, World } from '@/game/world';
 import type { FlagSpec } from '@/game/flagSpec';
 
@@ -78,7 +79,7 @@ function entityForReference(world: World, reference: ChronicleReference): Mentio
     kind: 'city',
     href: cityProfileRoute(city.id),
     city,
-    hasPort: world.isCoastal(city.pixel) || world.knownRivers[city.pixel] > 0,
+    hasPort: cityHasPort(world, city),
   };
 }
 

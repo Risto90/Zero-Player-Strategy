@@ -5,15 +5,19 @@ import {
   drawClimateCard,
   drawCountryCard,
   drawWorldCard,
+  ensureTemperatureCardPower,
   normalizedCardProbabilities,
   setCardDrawTraceListener,
   updateCardDrawMultipliers,
 } from '../game/cards.ts';
 import { CardPainter } from '../game/brush.ts';
 import { autoPaint } from '../game/autoPaint.ts';
+import { ContourArea } from '../game/contours.ts';
 import { forEachNeighbour } from '../game/geography.ts';
+import { residentsToDensity } from '../game/populationUnits.ts';
 import { arePartners, birth as createChild, newCitizen, related } from '../game/characters.ts';
 import { oldAgeDeathChance, randomDeathChance } from '../game/government.ts';
+import { MAP_HEIGHT, MAP_WIDTH } from '../game/config.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
 
@@ -141,7 +145,13 @@ try {
     parentId: country.id,
   });
   nomad.type = 'nomadic';
-  nomad.cells = [{ pixel: world.landIndex[0], population: 50, cultureMix: world.cultureTable.single(country.cultureId, 100), religionMix: 0 }];
+  nomad.cells = [{
+    pixel: world.landIndex[0],
+    density: residentsToDensity(50),
+    cultureMix: world.cultureTable.single(country.cultureId, 100),
+    religionMix: 0,
+    humanOriginMix: world.humanOriginTable.single(0, 100),
+  }];
   nomad.range = [world.landIndex[0]];
   nomad.pixels = 0;
   world.cardMultipliers[`country:${nomad.id}:nomadExpand`] = 1e100;
@@ -164,7 +174,7 @@ try {
     'nomad expansion ink is capped by connected new land or existing range density targets');
 
   // Кисть ветра тратит на воду половину чернил, а на сушу страны — одно чернило.
-  world.temperature.fill(100);
+  world.temperature.fill(30);
   let coastalLand = -1;
   let coastalSea = -1;
   for (const pixel of world.landIndex) {
@@ -183,14 +193,25 @@ try {
   world.recountCountries();
   const countryPixels = [];
   world.forEachCountryPixel(country, (pixel) => countryPixels.push(pixel));
-  countryPixels.slice(0, 2).forEach((pixel) => { world.temperature[pixel] = 50; });
+  countryPixels.forEach((pixel) => { world.temperature[pixel] = 58; });
+  countryPixels.slice(0, 2).forEach((pixel) => { world.temperature[pixel] = 23; });
   const seas = new Set();
   world.forEachCountryPixel(country, (pixel) => world.seasOfPixel(pixel, seas));
   assert.ok(seas.has(coastalSea), 'the country is adjacent to the selected sea');
+  for (let pixel = 0; pixel < world.land.length; pixel += 1) {
+    if (!world.land[pixel] && seas.has(world.water.bodyOf[pixel])) world.temperature[pixel] = 58;
+  }
   const seaPixel = world.water.bodyOf.findIndex((body) => body === coastalSea);
   assert.ok(seaPixel >= 0, 'the selected sea includes a paintable water point');
-  world.temperature[seaPixel] = 50;
+  world.temperature[seaPixel] = 23;
   const wind = drawClimateCard(world, 'warmWind', country);
+  assert.ok([0.25, 1, 5].includes(wind.temperatureStepC),
+    'wind power is chosen once from the specified Celsius steps');
+  assert.match(wind.detail, /Шаг температуры: .+ °C/,
+    'the drawn card reports its fixed Celsius step');
+  const migratedWind = ensureTemperatureCardPower({ ...wind, temperatureStepC: undefined });
+  assert.equal(migratedWind.temperatureStepC, 1,
+    'legacy saved temperature cards restore with the middle wind step');
   assert.equal(wind?.inkTotal, 2.5,
     'a wind card counts two land points and one half-cost sea point');
   const painter = new CardPainter(world, wind, 'respect');
@@ -200,16 +221,22 @@ try {
   }
   assert.equal(availableInk, wind.inkTotal,
     'the generated climate quota equals its brush-eligible capacity');
+  const temperatureBeforeWind = world.temperature.slice();
   autoPaint(painter, {
     beginStroke: (x, y) => painter.dab(x, y, 11),
     dab: (x, y, radius) => painter.dab(x, y, radius),
     line: (ax, ay, bx, by, radius) => painter.line(ax, ay, bx, by, radius),
     endStroke: () => painter.endStroke(),
   });
+  for (const pixel of painter.changed) {
+    assert.equal(world.temperature[pixel],
+      Math.min(58, temperatureBeforeWind[pixel] + wind.temperatureStepC),
+      'a warm wind changes temperature by its fixed Celsius step');
+  }
   assert.equal(wind.ink, 0, 'the automatic wind painter spends the entire land-and-sea quota');
   assert.ok(wind.ink >= 0, 'the wind brush never overspends a fractional sea quota');
-  for (const pixel of countryPixels) world.temperature[pixel] = 100;
-  world.temperature[seaPixel] = 50;
+  for (const pixel of countryPixels) world.temperature[pixel] = 58;
+  world.temperature[seaPixel] = 23;
   const seaOnlyWind = drawClimateCard(world, 'warmWind', country);
   assert.equal(seaOnlyWind?.inkTotal, 0.5,
     'a sea-only climate opportunity uses a land point only to start the stroke');
@@ -221,6 +248,39 @@ try {
     endStroke: () => seaPainter.endStroke(),
   });
   assert.equal(seaOnlyWind.ink, 0, 'the automatic wind painter can spend a half-ink sea-only quota');
+
+  // Дождь может менять море в мазке, который начинается на суше целевой страны.
+  countryPixels.forEach((pixel) => { world.humidity[pixel] = 100; });
+  world.humidity[seaPixel] = 40;
+  const rain = drawClimateCard(world, 'rain', country);
+  assert.ok(rain, 'rain remains available when only an adjacent sea can still change');
+  assert.ok(rain.inkTotal > 0, 'rain ink capacity includes eligible points in the adjacent sea');
+  assert.ok(world.land[rain.hint] && world.owner[rain.hint] === country.id + 1,
+    'a country rain stroke always starts on that country’s land');
+  const rainPainter = new CardPainter(world, rain, 'respect');
+  const fullMap = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
+  const rainStroke = rainPainter.strategyStrokeContours(fullMap);
+  assert.ok(rainStroke.paint.contains(seaPixel), 'the rain target contour includes an adjacent sea');
+  assert.ok(rainStroke.start.contains(rain.hint) && !rainStroke.start.contains(seaPixel),
+    'the rain stroke starts and ends on land, while its paint contour may include sea');
+  assert.equal(rainPainter.strategyInkCostAt(seaPixel), 1,
+    'the AI and player use the same full-ink cost for a rain-painted sea point');
+  assert.equal(rainPainter.climateStrokeEndpointAllowed(seaPixel), false,
+    'a climate stroke cannot begin or end on sea');
+  assert.equal(rainPainter.climateStrokeEndpointAllowed(rain.hint), true,
+    'a country climate stroke may begin or end on its own land');
+  const seaHumidityBeforeRain = world.humidity[seaPixel];
+  rainPainter.paintContour(ContourArea.pixels([rain.hint, seaPixel]));
+  assert.ok(world.humidity[seaPixel] > seaHumidityBeforeRain,
+    'a mixed land-and-sea rain contour changes humidity over water');
+
+  const drainage = drawClimateCard(world, 'desertification', country);
+  assert.ok(drainage, 'the fixture has eligible country land for the drainage card');
+  const drainagePainter = new CardPainter(world, drainage, 'respect');
+  assert.equal(drainagePainter.strategyInkCostAt(seaPixel), 0,
+    'drainage remains unavailable on sea');
+  assert.equal(drainagePainter.strategyLayerTargetArea(fullMap).contains(seaPixel), false,
+    'the drainage target contour excludes sea');
 
   const ruler = country.ruler;
   ruler.age = 30;

@@ -3,7 +3,6 @@ import {
   affine,
   booleanPolygons,
   boundsOfCircle,
-  brushScalingBatch,
   circleIntersections,
   circleSegmentIntersections,
   circleSpatialEntry,
@@ -35,14 +34,17 @@ import {
   segmentLength,
   serializeSvgPath,
   strokePath,
+  strokePolylineComponents,
+  strokePolyline,
   transformPath,
   vector,
-  weightedGridSegmentDistance,
+  gridPathDistance,
 } from '../kernel/geometry.ts';
 import { FLAG_REFERENCE_CORPUS } from '../game/flagReferences.ts';
 import { renderFlagSpec } from '../game/flagRenderer.ts';
-import { RANKS } from '../game/config.ts';
-import { cityInfluenceArea, cityInfluenceMultiplier, cityInfluenceRadius } from '../game/settlements.ts';
+import { MAP_WIDTH } from '../game/config.ts';
+import { ContourArea, ContourDistanceBands } from '../game/contours.ts';
+import { CITY_BASE_INFLUENCE_AREA_PIXELS, cityInfluenceArea, cityInfluenceMultiplier, cityInfluenceRadius } from '../game/settlements.ts';
 
 const near = (actual, expected, tolerance = 1e-8, message = '') =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${message} ожидалось ${expected}, получено ${actual}`);
@@ -50,6 +52,34 @@ const boxPath = (x, y, width, height) => parseSvgPath(
   `M${x} ${y} h${width} v${height} h-${width} z`,
 );
 
+const distanceCenter = 100 * MAP_WIDTH + 100;
+const baseDistanceSource = ContourArea.pixels([distanceCenter]);
+const routeDistanceSource = ContourArea.pixels([distanceCenter + 8]);
+const distanceBandsEngine = new ContourDistanceBands([
+  { area: baseDistanceSource },
+  { area: routeDistanceSource, additionalDistance: 2 },
+]);
+const distanceTestArea = new ContourArea(
+  Array.from({ length: 17 }, (_, row) => ({ y: 92 + row, start: 92, end: 120 })),
+  true,
+);
+const distanceBands = distanceBandsEngine.bands(distanceTestArea, 2, 8);
+assert.ok(distanceBands.length >= 5);
+const reachableAtDistance = (distance) => baseDistanceSource.offset(distance).union(
+  distance >= 2 ? routeDistanceSource.offset(distance - 2) : new ContourArea(),
+);
+for (let bandIndex = 0; bandIndex < 5; bandIndex += 1) {
+  const distance = bandIndex * 2;
+  const reached = distanceTestArea.intersect(reachableAtDistance(distance));
+  const previous = distance > 0
+    ? distanceTestArea.intersect(reachableAtDistance(distance - 2))
+    : new ContourArea();
+  assert.deepEqual(
+    distanceBands[bandIndex].spans,
+    reached.subtract(previous).spans,
+    `дистанционный слой ${distance} совпадает с точным смещением контура`,
+  );
+}
 assert.deepEqual(vector.add({ x: 2, y: -3 }, { x: 4, y: 7 }), { x: 6, y: 4 });
 near(vector.dot({ x: 2, y: 3 }, { x: 4, y: -1 }), 5);
 assert.deepEqual(vector.normalize({ x: 0, y: 0 }), { x: 0, y: 0 });
@@ -183,6 +213,32 @@ near(strokeBounds.minY, -1, 0.02);
 near(strokeBounds.maxY, 1, 0.02);
 const closedStroke = strokePath(parseSvgPath('M0 0 L10 0 L10 10 L0 10 Z'), 2, 0.01);
 assert.ok(closedStroke.length > 0);
+const denseRiverStroke = strokePolyline([
+  { x: 1466, y: 240 },
+  { x: 1468, y: 239 },
+  { x: 1468, y: 240 },
+  { x: 1465, y: 242 },
+  { x: 1447, y: 242 },
+  { x: 1447, y: 243 },
+  { x: 1446, y: 243 },
+  { x: 1444, y: 240 },
+  { x: 1441, y: 240 },
+], 3, 0.25, 'butt', 'miter', 2);
+assert.ok(denseRiverStroke.length > 0, 'a short, tightly bending centerline yields a complete stroked contour');
+assert.ok(denseRiverStroke.flat(2).every(({ x, y }) => Number.isFinite(x) && Number.isFinite(y)),
+  'the stroked contour contains only finite vertices');
+const denseRiverParts = strokePolylineComponents([
+  { x: 1466, y: 240 },
+  { x: 1468, y: 239 },
+  { x: 1468, y: 240 },
+  { x: 1465, y: 242 },
+  { x: 1447, y: 242 },
+  { x: 1447, y: 243 },
+  { x: 1446, y: 243 },
+  { x: 1444, y: 240 },
+  { x: 1441, y: 240 },
+], 3, 0.25, 'butt', 'miter', 2);
+assert.ok(denseRiverParts.length > 0, 'the contour kernel exposes reusable stroke components before topological union');
 const closedStrokePoints = closedStroke.flat(2);
 near(Math.min(...closedStrokePoints.map(({ x }) => x)), -1, 0.02);
 near(Math.max(...closedStrokePoints.map(({ x }) => x)), 11, 0.02);
@@ -209,32 +265,29 @@ assert.equal(index.query({ minX: 45, minY: -1, maxX: 55, maxY: 2 }).length, 1);
 assert.equal(index.remove('coast'), true);
 assert.equal(index.nearest({ x: 0, y: 0 }).id, 'city');
 
-const landDistance = weightedGridSegmentDistance({ x: 0, y: 0 }, { x: 4, y: 0 }, (x) => x <= 2, 3);
+const landDistance = gridPathDistance({ x: 0, y: 0 }, { x: 4, y: 0 }, (x) => x <= 2 ? 1 : 1 / 3);
 near(landDistance, 2 + 2 / 3);
-near(weightedGridSegmentDistance({ x: 0, y: 0 }, { x: 0, y: 0 }, () => false, 5), 0);
-assert.throws(() => weightedGridSegmentDistance({ x: 0, y: 0 }, { x: 1, y: 0 }, () => true, 0), /Коэффициент/u);
-const scaling = brushScalingBatch([
-  { kind: 'expand', point: { x: 4, y: 0 }, duchyRadius: 5, terrain: (x) => x <= 2,
-    influence: { ownRankSum: 6, ownLargestRank: 4, foreignRankSum: 0, nearestOwnDistance: 99,
-      nearestOwnAnchorDistance: Infinity, nearestOwnRadius: 1, nearestOwnCity: { x: 0, y: 0 }, nearestOwnAnchor: null } },
-  { kind: 'colonization', point: { x: 4, y: 0 }, duchyRadius: 5, terrain: (x) => x <= 2,
-    influence: { ownRankSum: 6, ownLargestRank: 4, foreignRankSum: 0, nearestOwnDistance: 0,
-      nearestOwnAnchorDistance: Infinity, nearestOwnRadius: 1, nearestOwnCity: null, nearestOwnAnchor: { x: 0, y: 0 } } },
-  { kind: 'nomadExpand', point: { x: 0, y: 0 }, duchyRadius: 5, terrain: () => true,
-    influence: { ownRankSum: 0, ownLargestRank: 0, foreignRankSum: 2, nearestOwnDistance: Infinity,
-      nearestOwnAnchorDistance: Infinity, nearestOwnRadius: 0, nearestOwnCity: null, nearestOwnAnchor: null } },
-]);
-near(scaling[0].strength, 1.5);
-near(scaling[0].cost, 2 / 3);
-near(scaling[1].cost, (1 + (2 + 2 / 5) / 5) / 7);
-near(scaling[1].strength, 1 / scaling[1].cost);
-assert.deepEqual(scaling[2], { cost: 2, strength: 0.5 });
-const rulesWorld = { isCoastal: (pixel) => pixel === 7, rivers: new Uint8Array(8) };
-rulesWorld.rivers[7] = 1;
-const portCapital = { pixel: 7, rank: 1, capital: true };
+near(gridPathDistance({ x: 0, y: 0 }, { x: 0, y: 0 }, () => 7), 0);
+assert.throws(() => gridPathDistance({ x: 0, y: 0 }, { x: 1, y: 0 }, () => -1), /не может быть отрицательным/u);
+const rulesWorld = {
+  version: 1,
+  territoryVersion: 1,
+  geographyRevision: 1,
+  isCoastal: (pixel) => pixel === 7,
+  water: { coastsOf: [[7]] },
+  riverFeatures: [{
+    id: 0,
+    scaleRank: 1,
+    paths: [[{ x: 7, y: 0 }, { x: 7, y: 10 }]],
+    pixels: [7],
+    name: 'Тестовая река',
+    discoveredBy: [0],
+  }],
+};
+const portCapital = { countryId: 0, pixel: 7, rank: 1, capital: true };
 assert.equal(cityInfluenceMultiplier(rulesWorld, portCapital), 6);
-near(cityInfluenceArea(rulesWorld, portCapital), RANKS[0].ink * 6);
-near(cityInfluenceRadius(rulesWorld, portCapital), Math.sqrt(RANKS[0].ink * 6 / Math.PI));
+near(cityInfluenceArea(rulesWorld, portCapital), CITY_BASE_INFLUENCE_AREA_PIXELS * 6);
+near(cityInfluenceRadius(rulesWorld, portCapital), Math.sqrt(CITY_BASE_INFLUENCE_AREA_PIXELS * 6 / Math.PI));
 
 const flag = FLAG_REFERENCE_CORPUS.find(({ id }) => id === 'japan');
 assert.ok(flag, 'эталонный флаг доступен для проверки геометрии');

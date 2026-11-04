@@ -1,17 +1,65 @@
 import type { CardPainter } from './brush';
 import { MAP_HEIGHT, MAP_WIDTH } from './config';
+import { ContourArea } from './contours';
 import { forEachNeighbour } from './geography';
 import type { Country } from './world';
+
+export interface CompetitiveContourSelection<T> {
+  candidate: T;
+  sampleSize: number;
+}
+
+/**
+ * Расширяет выборку соперников по одному: выгодные варианты сравниваются
+ * с худшим контуром текущей выборки, а на последнем шаге остаётся последний
+ * доступный вариант без соперника.
+ */
+export function selectCompetitiveContour<T extends { accessible: { size: number } }>(
+  candidates: readonly T[],
+  requestedSampleSize: number,
+  limit: (candidate: T, competitor: T | null) => T | null,
+  compare: (left: T, right: T) => number,
+): CompetitiveContourSelection<T> | null {
+  if (!candidates.length) return null;
+  const firstSampleSize = Math.min(
+    candidates.length,
+    Math.max(2, Math.floor(requestedSampleSize)),
+  );
+  for (let sampleSize = firstSampleSize; sampleSize <= candidates.length; sampleSize += 1) {
+    const hasCompetitor = sampleSize > 1;
+    const competitor = hasCompetitor ? candidates[sampleSize - 1] : null;
+    const choiceCount = hasCompetitor ? sampleSize - 1 : sampleSize;
+    const available: T[] = [];
+    for (let index = 0; index < choiceCount; index += 1) {
+      const bounded = limit(candidates[index], competitor);
+      if (bounded?.accessible.size) available.push(bounded);
+    }
+    if (available.length) {
+      available.sort(compare);
+      return { candidate: available[0], sampleSize };
+    }
+    if (hasCompetitor && sampleSize === candidates.length) {
+      const last = limit(candidates[sampleSize - 1], null);
+      if (last?.accessible.size) return { candidate: last, sampleSize };
+    }
+  }
+  return null;
+}
 
 export const MAX_SCORE_CENTERS = 24;
 export const MAX_TERRITORY_DABS = 256;
 export const MAX_LAYER_FALLBACK_DABS = MAP_WIDTH * MAP_HEIGHT;
+const CLIMATE_REGION_SAMPLE_LIMIT = 4096;
 
 /** Подбирает ограниченный набор точек-кандидатов для автоматической кисти. */
 export class AutoPaintCandidateSelector {
   private static readonly LAYER_CARDS = new Set([
     'drought', 'rain', 'desertification', 'swamping',
     'warmCurrent', 'coldCurrent', 'warmWind', 'coldWind', 'faith', 'culture',
+  ]);
+  private static readonly CLIMATE_CARDS = new Set([
+    'drought', 'rain', 'desertification', 'swamping',
+    'warmCurrent', 'coldCurrent', 'warmWind', 'coldWind',
   ]);
   private static readonly TERRITORY_SCORE_OFFSETS = AutoPaintCandidateSelector.circleOffsets(10);
   private static readonly OTHER_SCORE_OFFSETS = AutoPaintCandidateSelector.circleOffsets(16);
@@ -27,17 +75,69 @@ export class AutoPaintCandidateSelector {
   }
 
   bounded(): number[] {
+    if (AutoPaintCandidateSelector.CLIMATE_CARDS.has(this.painter.card.type)) {
+      return this.climateContourCandidates();
+    }
     const pixels = this.candidates();
     if (pixels.length <= MAX_SCORE_CENTERS) return pixels;
-    const stride = pixels.length / MAX_SCORE_CENTERS;
+    const sampleCount = MAX_SCORE_CENTERS;
+    const stride = pixels.length / sampleCount;
     const sampled = Array.from(
-      { length: MAX_SCORE_CENTERS },
+      { length: sampleCount },
       (_, index) => pixels[Math.floor(index * stride)],
     );
     if (this.painter.card.hint >= 0 && !sampled.includes(this.painter.card.hint)) {
       sampled.push(this.painter.card.hint);
     }
-    return sampled.sort((a, b) => a - b);
+    return [...new Set(sampled)].sort((a, b) => a - b);
+  }
+
+  private climateContourCandidates(): number[] {
+    const bounds = { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 };
+    const target = this.painter.strategyLayerTargetArea(bounds);
+    const occupied = this.painter.world.contours.layer('density')
+      .select((value) => value > 0, bounds)
+      .union(ContourArea.pixels(this.painter.world.cities
+        .filter((city) => city.population > 0)
+        .map((city) => city.pixel)))
+      .intersect(target);
+    const regions = this.painter.world.contours.climateIntersections(occupied);
+    const sampleCount = Math.min(CLIMATE_REGION_SAMPLE_LIMIT, regions.length);
+    const stride = sampleCount > 0 ? regions.length / sampleCount : 0;
+    const spatial: number[] = [];
+    const ranked: { pixel: number; value: number }[] = [];
+    for (let index = 0; index < sampleCount; index += 1) {
+      const region = regions[Math.floor(index * stride)];
+      const spans = region.area.spans;
+      if (!spans.length) continue;
+      const rows = spans.length <= 3
+        ? spans
+        : [spans[0], spans[Math.floor((spans.length - 1) / 2)], spans[spans.length - 1]];
+      for (const span of rows) {
+        const pixel = span.y * MAP_WIDTH + Math.floor((span.start + span.end - 1) / 2);
+        const cost = this.painter.strategyInkCostAt(pixel);
+        if (cost <= 0) continue;
+        spatial.push(pixel);
+        const impact = this.painter.strategyImpactAt(pixel);
+        if (impact > 0) ranked.push({ pixel, value: impact / cost });
+      }
+    }
+    const spatialCount = Math.ceil(MAX_SCORE_CENTERS / 2);
+    const spatialStride = spatial.length / spatialCount;
+    const sampled = spatial.length <= MAX_SCORE_CENTERS
+      ? spatial
+      : Array.from(
+        { length: spatialCount },
+        (_, index) => spatial[Math.floor(index * spatialStride)],
+      );
+    ranked.sort((a, b) => b.value - a.value || a.pixel - b.pixel);
+    sampled.push(...ranked
+      .slice(0, MAX_SCORE_CENTERS - Math.min(spatialCount, sampled.length))
+      .map((candidate) => candidate.pixel));
+    if (this.painter.card.hint >= 0 && !sampled.includes(this.painter.card.hint)) {
+      sampled.push(this.painter.card.hint);
+    }
+    return [...new Set(sampled)].sort((a, b) => a - b);
   }
 
   private static circleOffsets(radius: number): Int16Array {
@@ -81,7 +181,6 @@ export class AutoPaintCandidateSelector {
         world.seasOfPixel(pixel, seas);
       }
       this.addCoastSeeds(seas, candidates, 400);
-      this.globalSeeds(candidates, 80);
     } else if (card.type === 'nomadExpand' && target) {
       this.addCountrySeeds(target, candidates);
       if (!card.nomadDensityOnly) {

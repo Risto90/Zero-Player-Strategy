@@ -5,9 +5,8 @@ import { MAP_WIDTH } from '@/game/config';
 import { useGameSnapshot } from '@/game/useGame';
 import { currentGame } from '@/game/session';
 import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
-import { fmt, pct } from '@/game/format';
-import { humanOriginShares } from '@/game/human';
-import { cityComposition, cityRankName } from '@/game/settlements';
+import { fmt, fmtDensity, pct } from '@/game/format';
+import { cityComposition, cityHasPort, cityIsRiverPort, cityRankName } from '@/game/settlements';
 import { countryProfileRoute, cultureProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
 import { openProfile } from '@/game/profileNavigation';
 import { MissingProfile, ProfileFact, ProfileLayout, ProfileLink, ProfileSection, ProfileScrollList } from '@/components/profiles/ProfileLayout';
@@ -30,7 +29,7 @@ export default function CityPage() {
   if (!city) return <MissingProfile title="Город не найден" />;
   const country = game.world.countries[city.countryId];
   const composition = useMemo(() => cityComposition(game.world, city), [game, city, game.world.version]);
-  const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
+  const hasPort = cityHasPort(game.world, city);
   const cityIcon = CITY_ICON_SOURCES[cityIconIndex(city, hasPort)] ?? CITY_ICON_SOURCES[0];
   const details = (
     <>
@@ -50,9 +49,9 @@ export default function CityPage() {
       <View style={styles.facts}>
         <ProfileFact>Ранг · {cityRankName(city.rank)}</ProfileFact>
         <ProfileFact>Население · {fmt(Math.round(city.population))} чел.</ProfileFact>
-        <ProfileFact>Сельская плотность · {fmt(Math.round(game.world.density[city.pixel]))} чел. на участок</ProfileFact>
+        <ProfileFact>Сельская плотность · {fmtDensity(game.world.density[city.pixel])} чел./км²</ProfileFact>
         <ProfileFact>Положение · x {city.pixel % MAP_WIDTH}, y {Math.floor(city.pixel / MAP_WIDTH)}</ProfileFact>
-        <ProfileFact>{game.world.isCoastal(city.pixel) ? 'Побережье' : game.world.rivers[city.pixel] > 0 ? 'У реки' : 'Внутренний город'}{city.capital ? ' · столица' : ''}</ProfileFact>
+        <ProfileFact>{game.world.isCoastal(city.pixel) ? 'Побережье' : cityIsRiverPort(game.world, city) ? 'У реки' : 'Внутренний город'}{city.capital ? ' · столица' : ''}</ProfileFact>
       </View>
       <ProfileSection title="СТРАНА">
         {country ? (
@@ -86,7 +85,7 @@ export default function CityPage() {
           })} />
       </ProfileSection>
       <ProfileSection title="РАСЫ">
-        <OriginComposition rows={composition.humanOrigins ? humanOriginShares(composition.humanOrigins) : null} />
+        <OriginComposition rows={composition.humanOrigins} />
       </ProfileSection>
     </>
   );

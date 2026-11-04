@@ -4,10 +4,18 @@ import { MAP_WIDTH } from '../game/config.ts';
 import { mulberry32 } from '../game/random.ts';
 import { World } from '../game/world.ts';
 import { clearSaveBytes } from '../game/storage.ts';
-import { availableNomadCitySites, dissolveCountryIntoNomadicCountries, settleNomadAsCountry } from '../game/nomads.ts';
+import {
+  availableNomadCitySites,
+  dissolveCountryIntoNomadicCountries,
+  nomadRevivalCountry,
+  settleNomadAsCountry,
+} from '../game/nomads.ts';
 import { newCitizen, registerPerson } from '../game/characters.ts';
 import { filterChronicle, chronicleReference, isChronicleImportant } from '../game/chronicle.ts';
 import { appoint, countryRulerHistory } from '../game/succession.ts';
+import { ancestryProfileId } from '../game/human.ts';
+import { populationCohortsAtPixel, setPopulationCohortsAtPixel } from '../game/populationCohorts.ts';
+import { deserializeWorld, serializeWorld } from '../game/persistence.ts';
 
 function makeFixture() {
   const world = World.create('random', 7721);
@@ -26,7 +34,7 @@ function makeFixture() {
     world.setOwner(pixel, country.id + 1);
     world.density[pixel] = 80;
     world.humidity[pixel] = 50;
-    world.temperature[pixel] = 50;
+    world.temperature[pixel] = 23;
     world.drainage[pixel] = 50;
     world.culture[pixel] = cultureMix;
   }
@@ -61,7 +69,10 @@ function makeCard(type, updates = {}) {
 
 function worldState(world) {
   const rasters = Object.fromEntries(
-    ['owner', 'density', 'humidity', 'temperature', 'drainage', 'culture', 'religion', 'humanOrigins'].map((key) => {
+    [
+      'owner', 'density', 'humidity', 'temperature', 'drainage', 'culture', 'religion',
+      'humanOrigins', 'populationCohorts',
+    ].map((key) => {
       const raster = world[key];
       return [key, Buffer.from(raster.buffer, raster.byteOffset, raster.byteLength)];
     }),
@@ -73,11 +84,27 @@ function worldState(world) {
     cultures: structuredClone(world.cultures),
     religions: structuredClone(world.religions),
     people: structuredClone(world.people),
+    populationCohortTable: structuredClone(world.populationCohortTable.entries),
   };
 }
 
 function sameResult(left, right, name) {
-  assert.deepEqual(worldState(left.world), worldState(right.world), `${name}: final world`);
+  const actual = worldState(left.world);
+  const expected = worldState(right.world);
+  for (const [layer, raster] of Object.entries(actual.rasters)) {
+    const other = expected.rasters[layer];
+    if (raster.equals(other)) continue;
+    let byte = 0;
+    while (byte < raster.length && raster[byte] === other[byte]) byte += 1;
+    assert.fail(
+      `${name}: слой «${layer}» различается у байта ${byte}: ${raster[byte]} вместо ${other[byte]}`,
+    );
+  }
+  assert.deepEqual(
+    { ...actual, rasters: undefined },
+    { ...expected, rasters: undefined },
+    `${name}: entities and counters`,
+  );
   assert.deepEqual(left.log, right.log, `${name}: card effects and log`);
 }
 
@@ -103,6 +130,84 @@ const previousPause = Game.pause;
 Game.persist = true;
 Game.pause = async () => {};
 try {
+  await clearSaveBytes();
+  const terrainFixture = makeFixture();
+  const terrainPixel = terrainFixture.world.land.findIndex((value) => value === 0);
+  assert.ok(terrainPixel >= 0, 'карта содержит водную точку для проверки независимой глубины');
+  const originalTerrain = {
+    elevation: terrainFixture.world.elevation[terrainPixel],
+    depth: terrainFixture.world.depth[terrainPixel],
+  };
+  const terrainGame = new Game(terrainFixture.world, 'all');
+  assert.equal(terrainGame.updateTerrainPixel(terrainPixel, 25, 321), true,
+    'изменение высоты и глубины проходит через игровой интерфейс');
+  await terrainGame.saveNow();
+  const terrainResumed = await Game.load();
+  assert.ok(terrainResumed, 'игра загружается с локальной правкой высоты и глубины');
+  assert.equal(terrainResumed.world.elevation[terrainPixel], 25);
+  assert.equal(terrainResumed.world.depth[terrainPixel], 321);
+  assert.equal(terrainResumed.world.terrainOverrides.size, 1);
+  const oldTerrainSave = structuredClone(serializeWorld(terrainFixture.world));
+  delete oldTerrainSave.terrainOverrides;
+  const oldTerrainWorld = deserializeWorld(oldTerrainSave);
+  assert.equal(oldTerrainWorld.elevation[terrainPixel], originalTerrain.elevation,
+    'старое сохранение без правок рельефа восстанавливает высоту из seed');
+  assert.equal(oldTerrainWorld.depth[terrainPixel], originalTerrain.depth,
+    'старое сохранение без отдельной глубины восстанавливается без миграции данных');
+  terrainGame.discard();
+  terrainResumed.discard();
+
+  await clearSaveBytes();
+  const cohortFixture = makeFixture();
+  const addedCulture = cohortFixture.world.newCulture(
+    cohortFixture.world.cultures[cohortFixture.country.cultureId],
+    1000,
+  );
+  const addedReligion = cohortFixture.world.newReligion(1000);
+  const cohortPixel = cohortFixture.pixels[1];
+  setPopulationCohortsAtPixel(cohortFixture.world, cohortPixel, [
+    {
+      cultureId: cohortFixture.country.cultureId,
+      religionId: null,
+      originProfileId: ancestryProfileId({ ids: ['european'], shares: [100] }),
+      weight: 3,
+    },
+    {
+      cultureId: addedCulture.id,
+      religionId: addedReligion.id,
+      originProfileId: ancestryProfileId({ ids: ['pygmy'], shares: [100] }),
+      weight: 7,
+    },
+  ]);
+  const cohortGame = new Game(cohortFixture.world, 'all');
+  await cohortGame.saveNow();
+  const cohortResumed = await Game.load();
+  assert.ok(cohortResumed, 'a saved world with correlated population groups loads');
+  assert.deepEqual(
+    populationCohortsAtPixel(cohortResumed.world, cohortPixel, 100),
+    populationCohortsAtPixel(cohortFixture.world, cohortPixel, 100),
+    'save and load preserve exact culture, religion, and ancestry intersections',
+  );
+  const legacyCohortSave = structuredClone(serializeWorld(cohortFixture.world));
+  delete legacyCohortSave.populationCohortTable;
+  delete legacyCohortSave.layers.populationCohorts;
+  const legacyCohortWorld = deserializeWorld(legacyCohortSave);
+  const legacyGroups = populationCohortsAtPixel(legacyCohortWorld, cohortPixel, 100);
+  for (const [cultureId, expected] of [
+    [cohortFixture.country.cultureId, 30],
+    [addedCulture.id, 70],
+  ]) {
+    assert.ok(Math.abs(legacyGroups
+      .filter((group) => group.cultureId === cultureId)
+      .reduce((sum, group) => sum + group.weight, 0) - expected) < 1e-9,
+    'older saves reconstruct cohort groups without changing culture shares');
+  }
+  assert.ok(Math.abs(legacyGroups.filter((group) => group.religionId === addedReligion.id)
+    .reduce((sum, group) => sum + group.weight, 0) - 70) < 1e-9,
+  'older saves reconstruct cohort groups without changing religious shares');
+  cohortGame.discard();
+  cohortResumed.discard();
+
   // Повторные назначения правителя сохраняются при обычной загрузке и сохранении игры.
   await clearSaveBytes();
   const tenureFixture = makeFixture();
@@ -232,6 +337,27 @@ try {
   uninterrupted.discard();
   resumed.discard();
 
+  // Незавершённый выбор возрождения и связь с исходной страной переживают загрузку.
+  await clearSaveBytes();
+  const revivalFixture = makeFixture();
+  revivalFixture.world.cities = [];
+  const [revivalNomad] = dissolveCountryIntoNomadicCountries(
+    revivalFixture.world,
+    revivalFixture.country,
+    1001,
+  );
+  const revivalGame = new Game(revivalFixture.world, 'all');
+  revivalGame.startCard(makeCard('buildCity', {
+    targetCountryId: revivalNomad.id,
+    nomadSettlementChoice: 'revive',
+  }));
+  const revivalResumed = await saveAndLoad(revivalGame);
+  const loadedNomad = revivalResumed.world.countries[revivalNomad.id];
+  assert.equal(revivalResumed.getSnapshot().card.nomadSettlementChoice, 'revive');
+  assert.equal(nomadRevivalCountry(revivalResumed.world, loadedNomad)?.id, revivalFixture.country.id);
+  revivalGame.discard();
+  revivalResumed.discard();
+
   const globalFixture = makeFixture();
   const globalWeather = new Game(globalFixture.world, 'all');
   const globalPixel = globalFixture.pixels[16];
@@ -260,6 +386,15 @@ try {
   colonizationGame.startCard(colonizationCard);
   const target = colonizationGame.painter.colonizationMask?.findIndex((value) => value === 1) ?? -1;
   assert.ok(target >= 0, 'the fixture has a colonization target');
+  colonizationFixture.world.density[target] = 20;
+  colonizationFixture.world.culture[target] = colonizationFixture.world.cultureTable.single(
+    colonizationFixture.country.cultureId,
+    100,
+  );
+  const targetX = target % MAP_WIDTH, targetY = Math.floor(target / MAP_WIDTH);
+  colonizationFixture.world.contours.changed({
+    x0: targetX, y0: targetY, x1: targetX, y1: targetY,
+  }, ['density', 'culture']);
   colonizationGame.dispatchAction({
     type: 'dab', x: target % MAP_WIDTH, y: Math.floor(target / MAP_WIDTH), radius: 0,
   });
@@ -618,6 +753,7 @@ try {
   // При распаде на кочевые государства общая запись сохраняется, а ссылка на страну заменяется.
   const collapseFixture = makeFixture();
   collapseFixture.world.cities = [];
+  collapseFixture.world.discoverGeography = () => {};
   const collapseGame = new Game(collapseFixture.world, 'all');
   collapseGame.addLog('История распавшейся страны', [
     { type: 'country', id: collapseFixture.country.id },
@@ -629,6 +765,9 @@ try {
     colonistsMoved: 0,
     dispose() {},
   });
+  assert.equal(collapseFixture.world.countries.some((country) => country.type === 'nomadic'), false,
+    'завершение отдельного события не распускает страну до конца хода');
+  await collapseGame.nextTurn();
   const nomadicSuccessors = collapseFixture.world.countries.filter((country) => country.type === 'nomadic');
   assert.ok(nomadicSuccessors.length > 0, 'the test country actually dissolves into nomadic successors');
   const dissolutionEvent = collapseGame.log.find(({ text }) => text.includes('страна распущена'));

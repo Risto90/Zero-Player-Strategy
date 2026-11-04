@@ -5,7 +5,7 @@ import { useGameSnapshot } from '@/game/useGame';
 import { currentGame } from '@/game/session';
 import { chronicleObjectOptions, filterChronicle, chronicleReference } from '@/game/chronicle';
 import { fmt } from '@/game/format';
-import { cityComposition } from '@/game/settlements';
+import { cityComposition, cityHasPort } from '@/game/settlements';
 import { countryProfileRoute, cultureProfileRoute } from '@/game/profileRoutes';
 import { openProfile } from '@/game/profileNavigation';
 import { MissingProfile, ProfileFact, ProfileLayout, ProfileLink, ProfileSection } from '@/components/profiles/ProfileLayout';
@@ -66,7 +66,7 @@ export default function CulturePage() {
           kind: 'city' as const,
           key: String(city.id),
           city,
-          hasPort: game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0,
+          hasPort: cityHasPort(game.world, city),
           country: game.world.countries[city.countryId],
         }))} />
       </ProfileSection>

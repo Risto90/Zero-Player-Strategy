@@ -4,7 +4,9 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
+import type { ContourChange } from '@/game/contours';
 import { cityLabelFontSize } from '@/game/cityVisibility';
+import { cityHasPort } from '@/game/settlements';
 import { Terrain3DRenderer } from './Terrain3DRenderer';
 import {
   countryLabelViewportLayout,
@@ -26,7 +28,16 @@ import { circleHatchLines } from './cityInfluenceHatching';
 import { isCityVisibleAtZoom } from './cityIconMath';
 import { MapGestures } from './gestures';
 import { PAINT_BUDGET_MS, type MapViewHandle, type MapViewProps, type ViewTransform } from './types';
-import { centerOnMapPoint, clampView, initialView, minScale, toMap, zoomAround } from './viewMath';
+import {
+  centerOnMapPoint,
+  clampView,
+  fitMapBounds,
+  initialView,
+  minScale,
+  toMap,
+  visibleMapBounds,
+  zoomAround,
+} from './viewMath';
 
 import { renderFlagSpec } from '@/game/flagRenderer';
 
@@ -84,7 +95,7 @@ function drawCityInfluence(
     const centerY = view.oy + Math.floor(city.pixel / MAP_WIDTH) * view.scale;
     const radius = cityInfluenceRadius(game.world, city) * view.scale;
     if (centerX + radius < 0 || centerY + radius < 0 || centerX - radius > width || centerY - radius > height) continue;
-    const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
+    const hasPort = cityHasPort(game.world, city);
     const selected = selectedCity?.id === city.id;
     if (!selected && !isCityVisibleAtZoom(view.scale, baseScale, cityVisibilityRank(city, hasPort))) continue;
     const color = game.world.countries[city.countryId]?.color ?? '#8f3036';
@@ -119,8 +130,9 @@ function mapTextColor(game: MapViewProps['game'], pixel: number): string {
   let packed = game.renderer.pixels[pixel] ?? 0xffeeeeee;
   if (game.getSnapshot().mapMode === 'elevation') {
     const elevation = game.world.elevation[pixel] ?? 0;
-    packed = elevation < 0
-      ? seaDepthPackedColor(elevation)
+    const depth = game.world.depth[pixel] ?? 0;
+    packed = depth > 0
+      ? seaDepthPackedColor(-depth)
       : elevationPackedColor(elevation);
   }
   const red = packed & 255;
@@ -151,19 +163,23 @@ function drawRivers(
     if (view.ox + maxX * view.scale < 0 || view.oy + maxY * view.scale < 0 ||
       view.ox + minX * view.scale > ctx.canvas.clientWidth ||
       view.oy + minY * view.scale > ctx.canvas.clientHeight) continue;
-    ctx.beginPath();
-    for (let index = 0; index < segment.contourPoints.length; index += 1) {
-      const point = segment.contourPoints[index];
-      const x = view.ox + point.x * view.scale;
-      const y = view.oy + point.y * view.scale;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    for (const polygon of segment.contourPolygons) {
+      ctx.beginPath();
+      for (const ring of polygon) {
+        for (let index = 0; index < ring.length; index += 1) {
+          const point = ring[index];
+          const x = view.ox + point.x * view.scale;
+          const y = view.oy + point.y * view.scale;
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+      }
+      ctx.fillStyle = RIVER_COLORS[segment.strength];
+      ctx.fill('evenodd');
     }
-    ctx.closePath();
     ctx.strokeStyle = RIVER_COLORS[segment.strength];
     ctx.globalAlpha = segment.strength === 1 ? 0.82 : 0.94;
-    ctx.fillStyle = RIVER_COLORS[segment.strength];
-    ctx.fill();
   }
   ctx.restore();
 }
@@ -557,7 +573,7 @@ function drawMapLabels(
 
   const cityIconBounds: LabelScreenBounds[] = [];
   if (shouldShowCityMarks(snapshot.mapMode)) for (const city of game.world.cities) {
-    const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
+    const hasPort = cityHasPort(game.world, city);
     if (!isCityVisibleAtZoom(view.scale, baseScale, cityVisibilityRank(city, hasPort))) continue;
     const size = hasPort ? 30 + city.rank : 24 + city.rank;
     const x = view.ox + (city.pixel % MAP_WIDTH) * view.scale;
@@ -756,6 +772,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   const sizeRef = useRef({ width: 1, height: 1, dpr: 1 });
   const baseScaleRef = useRef(1);
   const frameRef = useRef(0);
+  const pendingCountryFocusRef = useRef<number | null>(null);
   const orbitPointerRef = useRef<number | null>(null);
   const orbitLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const cursorRef = useRef<{ x: number; y: number } | null>(null);
@@ -774,7 +791,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     const image = imageRef.current;
     if (!canvas || !offscreen || !image) return;
     const octx = offscreen.getContext('2d');
-    for (const s of game.renderer.flushSome(PAINT_BUDGET_MS)) octx?.putImageData(image, 0, 0, 0, s * STRIP_H, MAP_WIDTH, STRIP_H);
+    for (const strip of game.renderer.flushSome(PAINT_BUDGET_MS)) {
+      octx?.putImageData(image, 0, 0, 0, strip * STRIP_H, MAP_WIDTH, STRIP_H);
+    }
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const { width, height, dpr } = sizeRef.current;
@@ -844,7 +863,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       occupiedMapLabels,
     );
     if (shouldShowCityMarks(mapMode)) for (const city of game.world.cities) {
-      const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
+      const hasPort = cityHasPort(game.world, city);
       const zoomRank = cityVisibilityRank(city, hasPort);
       if (!isCityVisibleAtZoom(view.scale, baseScaleRef.current, zoomRank)) continue;
       const icon = cityImagesRef.current[cityIconIndex(city, hasPort)];
@@ -961,6 +980,42 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     [requestDraw],
   );
 
+  const focusCountry = useCallback((countryId: number) => {
+    const country = game.world.countries[countryId];
+    if (!country || sizeRef.current.width <= 1 || sizeRef.current.height <= 1) {
+      if (country) pendingCountryFocusRef.current = countryId;
+      return;
+    }
+    let bounds: { x0: number; y0: number; x1: number; y1: number } | null = null;
+    if (country.type === 'settled') {
+      const [x0, y0, x1, y1] = country.box;
+      bounds = { x0, y0, x1, y1 };
+    } else {
+      let x0 = MAP_WIDTH;
+      let y0 = MAP_HEIGHT;
+      let x1 = -1;
+      let y1 = -1;
+      const include = (pixel: number) => {
+        if (pixel < 0 || pixel >= MAP_WIDTH * MAP_HEIGHT) return;
+        const x = pixel % MAP_WIDTH;
+        const y = Math.floor(pixel / MAP_WIDTH);
+        x0 = Math.min(x0, x);
+        y0 = Math.min(y0, y);
+        x1 = Math.max(x1, x);
+        y1 = Math.max(y1, y);
+      };
+      for (const pixel of country.range ?? []) include(pixel);
+      for (const cell of country.cells ?? []) include(cell.pixel);
+      if (x1 >= x0 && y1 >= y0) bounds = { x0, y0, x1, y1 };
+    }
+    if (!bounds) return;
+    const { width, height } = sizeRef.current;
+    const occupiedPixels = country.type === 'settled'
+      ? country.pixels
+      : country.range?.length ?? country.cells?.length ?? 1;
+    applyView(fitMapBounds(bounds, width, height, occupiedPixels));
+  }, [applyView, game]);
+
   useImperativeHandle(ref, () => ({
     zoomBy: (factor: number) => {
       const { width, height } = sizeRef.current;
@@ -974,7 +1029,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       const { width, height } = sizeRef.current;
       applyView(centerOnMapPoint(viewRef.current, pixel % MAP_WIDTH, Math.floor(pixel / MAP_WIDTH), width, height));
     },
-  }));
+    focusCountry,
+  }), [applyView, focusCountry]);
 
   const gestures = useMemo(
     () =>
@@ -1005,9 +1061,20 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     offscreen.height = MAP_HEIGHT;
     offscreenRef.current = offscreen;
     imageRef.current = new ImageData(new Uint8ClampedArray(game.renderer.pixels.buffer), MAP_WIDTH, MAP_HEIGHT);
-    game.redrawAll();
+    offscreen.getContext('2d')?.putImageData(imageRef.current, 0, 0);
     requestDraw();
-    const off = game.onMapChange(requestDraw);
+    const off = game.onMapChange((change: ContourChange | null) => {
+      if (!change) {
+        requestDraw();
+        return;
+      }
+      const { width, height } = sizeRef.current;
+      const visible = visibleMapBounds(viewRef.current, width, height);
+      if (visible && visible.x0 <= change.bounds.x1 && visible.x1 >= change.bounds.x0 &&
+        visible.y0 <= change.bounds.y1 && visible.y1 >= change.bounds.y0) {
+        requestDraw();
+      }
+    });
     return () => {
       off();
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
@@ -1035,10 +1102,15 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       baseScaleRef.current = initialView(width, height).scale;
       applyView(first ? initialView(width, height) : clampView(viewRef.current, width, height));
       first = false;
+      const pendingCountryId = pendingCountryFocusRef.current;
+      if (pendingCountryId !== null) {
+        pendingCountryFocusRef.current = null;
+        focusCountry(pendingCountryId);
+      }
     });
     observer.observe(wrap);
     return () => observer.disconnect();
-  }, [applyView]);
+  }, [applyView, focusCountry]);
 
   // Масштабирование колёсиком мыши.
   useEffect(() => {

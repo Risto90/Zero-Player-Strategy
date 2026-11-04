@@ -75,8 +75,8 @@ function assertConnected(world, countryId) {
   assert.equal(visited.size, owned.length, `country ${countryId} is connected`);
 }
 
-// Player card split: no city choice, a missing-city territory blocks both
-// next-turn and direct completion, and the largest transferred city becomes capital.
+// Разделение карточкой игрока: город не выбирается, отсутствие города блокирует
+// переход к следующему ходу и прямое завершение, а крупнейший переданный город становится столицей.
 {
   const { world, country, pixels, cities } = patchWorld(80, 50, [
     { column: 5, rank: 1 },
@@ -124,7 +124,7 @@ function assertConnected(world, countryId) {
   game.discard();
 }
 
-// The automatic country turn uses the same split card and shared validators.
+// Автоматический ход страны использует ту же карту разделения и общие проверки.
 {
   const { world, country, cities } = patchWorld(80, 50, [
     { column: 5, rank: 1 },
@@ -159,8 +159,8 @@ function assertConnected(world, countryId) {
   game.discard();
 }
 
-// Player auto-completion continues from the active split painter, while an
-// unpaintable invalid split remains blocked by the shared territory validator.
+// Автоматическое завершение игрока продолжает активную кисть разделения,
+// а невыполнимое разделение блокируется общей проверкой территории.
 for (const completeAutomatically of [true, false]) {
   const { world, country, cities } = patchWorld(80, 50, [
     { column: 5, rank: 1 },
@@ -258,7 +258,7 @@ function paintInheritancePart(game, world, card, startPixel) {
   assert.equal(card.ink, 0, 'the full inheritance quota was painted');
 }
 
-// A player-controlled succession opens a manual brush stage for each new state.
+// Наследование под управлением игрока открывает ручной этап кисти для каждого нового государства.
 {
   const { world, country, cities, game, deceased, children } = makePartitionFixture('country');
   game.startCard(deathCard(country, deceased, children[0]));
@@ -293,8 +293,8 @@ function paintInheritancePart(game, world, card, startPixel) {
   game.discard();
 }
 
-// AI inheritance uses the same transfer guard, quotas, connectivity, city checks,
-// and largest-city capital rule without requiring a player interaction.
+// Наследование под управлением ИИ использует те же проверки перемещения,
+// квоты, связность, города и правило крупнейшей столицы без участия игрока.
 {
   const { world, country, cities, game, deceased, children } = makePartitionFixture('observer');
   country.ruler = children[0];
@@ -329,8 +329,8 @@ function paintInheritancePart(game, world, card, startPixel) {
   game.discard();
 }
 
-// An heir who co-rules an adjacent country keeps that country's land and
-// city baseline; the common brush still allocates the unchanged source quota.
+// Наследник, совместно правящий соседней страной, сохраняет её территорию
+// и исходные города; общая кисть распределяет неизменную квоту источника.
 {
   const { world, country, pixels, cities } = patchWorld(40, 1, [
     { column: 2, rank: 1 },
@@ -368,11 +368,20 @@ function paintInheritancePart(game, world, card, startPixel) {
   });
   for (const pixel of homePixels) {
     world.setOwner(pixel, home.id + 1);
+    world.density[pixel] = 10;
     world.culture[pixel] = world.cultureTable.single(country.cultureId, 100);
   }
+  world.contours.changed({
+    x0: homePixels[0] % MAP_WIDTH,
+    y0: Math.floor(homePixels[0] / MAP_WIDTH),
+    x1: homePixels[homePixels.length - 1] % MAP_WIDTH,
+    y1: Math.floor(homePixels[homePixels.length - 1] / MAP_WIDTH),
+  }, ['density', 'culture']);
   home.modifiers = ['consulate'];
   home.coRulerIds.push(children[1].id);
-  const homeCity = world.addCity(home.id, homePixels[0], 1, true);
+  const homeCity = world.cityAt(homePixels[0]) ?? world.addCity(home.id, homePixels[0], 1, true);
+  assert.ok(homeCity, 'домашний город наследника создаётся с положительным населением');
+  assert.equal(homeCity.countryId, home.id, 'город следует за владельцем территории');
 
   const game = new Game(world, 'observer');
   game.partitionCountry(country, deceased, children[2]);
@@ -389,8 +398,8 @@ function paintInheritancePart(game, world, card, startPixel) {
   game.discard();
 }
 
-// If an AI heir cannot receive its full connected quota, no territory or empty
-// country is left partially committed.
+// Если наследник под управлением ИИ не может получить всю связную квоту,
+// территория не передаётся частично и пустая страна не остаётся.
 {
   const { world, country, pixels, cities } = patchWorld(30, 1, [
     { column: 2, rank: 1 },
@@ -420,8 +429,8 @@ function paintInheritancePart(game, world, card, startPixel) {
   game.discard();
 }
 
-// A failed automatic split also restores an heir's pre-existing country instead
-// of discarding its land together with the temporary inheritance state.
+// После неудачного автоматического разделения наследник возвращается в свою
+// прежнюю страну, а его территория не теряется вместе с временным состоянием наследования.
 {
   const { world, country, pixels, cities } = patchWorld(30, 1, [
     { column: 2, rank: 1 },
@@ -455,10 +464,21 @@ function paintInheritancePart(game, world, card, startPixel) {
     foundedYear: 0,
     parentId: null,
   });
-  for (const pixel of homePixels) world.setOwner(pixel, home.id + 1);
+  for (const pixel of homePixels) {
+    world.setOwner(pixel, home.id + 1);
+    world.density[pixel] = 10;
+    world.culture[pixel] = world.cultureTable.single(country.cultureId, 100);
+  }
+  world.contours.changed({
+    x0: homePixels[0] % MAP_WIDTH,
+    y0: Math.floor(homePixels[0] / MAP_WIDTH),
+    x1: homePixels[homePixels.length - 1] % MAP_WIDTH,
+    y1: Math.floor(homePixels[homePixels.length - 1] / MAP_WIDTH),
+  }, ['density', 'culture']);
   home.modifiers = ['consulate'];
   home.coRulerIds.push(children[1].id);
-  const homeCity = world.addCity(home.id, homePixels[0], 1, true);
+  const homeCity = world.cityAt(homePixels[0]) ?? world.addCity(home.id, homePixels[0], 1, true);
+  assert.ok(homeCity, 'дополнительный домашний город существует перед откатом разделения');
   const countryCount = world.countries.length;
   const game = new Game(world, 'observer');
   game.partitionCountry(country, deceased, children[2]);
@@ -472,7 +492,7 @@ function paintInheritancePart(game, world, card, startPixel) {
   game.discard();
 }
 
-// Shared end-state checks reject a cityless territory and disconnected islands.
+// Общая итоговая проверка отклоняет территорию без города и несвязанные острова.
 {
   const { world, country, pixels, cities } = patchWorld(30, 1, [
     { column: 3, rank: 1 },

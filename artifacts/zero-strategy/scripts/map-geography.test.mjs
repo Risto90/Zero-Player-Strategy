@@ -5,9 +5,23 @@ import {
   riverVisibilityScale,
 } from '../game/geographyGeometry.ts';
 import { MAP_PIXELS, MAP_WIDTH } from '../game/config.ts';
+import { EARTH_DEG_PER_PX, EARTH_TOP_LAT } from '../game/data/earthLand.ts';
 import { generateGeography } from '../game/geographyFeatures.ts';
 
 const earthGeography = generateGeography(new Uint8Array(MAP_PIXELS).fill(1), 1, 'world');
+const pixelAt = (longitude, latitude) => {
+  const x = Math.round((longitude + 180) / 360 * MAP_WIDTH);
+  const y = Math.round((EARTH_TOP_LAT - latitude) / EARTH_DEG_PER_PX);
+  return y * MAP_WIDTH + ((x % MAP_WIDTH) + MAP_WIDTH) % MAP_WIDTH;
+};
+const andes = pixelAt(-70, -15);
+const pacific = pixelAt(-140, 0);
+assert.ok(earthGeography.elevation[andes] > 1_000,
+  'South American mountain heights are sampled at their real southern latitude');
+assert.equal(earthGeography.depth[andes], 0,
+  'land elevation remains separate from the water-depth raster');
+assert.ok(earthGeography.elevation[pacific] < 0 && earthGeography.depth[pacific] > 0,
+  'water depth is retained without erasing the signed elevation raster');
 assert.equal(earthGeography.volcanoes.length, 1194, 'Earth volcanoes retain an activity profile for each catalogue entry');
 assert.ok(earthGeography.volcanoes.every((volcano) =>
   Number.isInteger(volcano.activityIntervalYears) &&
@@ -19,6 +33,7 @@ assert.ok(earthGeography.volcanoes.every((volcano) =>
 const world = {
   version: 1,
   territoryVersion: 1,
+  geographyRevision: 0,
   riverFeatures: [
     {
       id: 0,
@@ -102,10 +117,12 @@ assert.ok(equalRankTributary.points.at(-1).y > 100 && equalRankTributary.points.
 assert.equal(discoveredRiverPaths(world), visible, 'unchanged geography reuses its prepared paths');
 
 world.territoryVersion += 1;
-assert.notEqual(discoveredRiverPaths(world), visible, 'new territory refreshes the discovered river paths');
+assert.equal(discoveredRiverPaths(world), visible,
+  'изменение только территории повторно использует неизменную геометрию рек');
 world.riverFeatures[1].discoveredBy.push(0);
+world.geographyRevision += 1;
 world.version += 1;
 assert.ok(discoveredRiverPaths(world).some((segment) => segment.riverId === 1),
-  'newly discovered rivers enter the map geometry after a world update');
+  'обнаруженная река появляется в геометрии после изменения географической версии');
 
 console.log('River discovery, zoom hierarchy, and map-edge geometry checks passed.');

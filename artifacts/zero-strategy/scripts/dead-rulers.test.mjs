@@ -5,6 +5,7 @@ import { createFamilyId, createPerson, personDeathStatus } from '../game/governm
 import { countryCandidates, leadershipOptions, successionOrder } from '../game/succession.ts';
 import { clearSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
+import { residentsToDensity } from '../game/populationUnits.ts';
 import { chronicleReference, isChronicleImportant } from '../game/chronicle.ts';
 
 function makeFixture() {
@@ -26,7 +27,7 @@ function makeFixture() {
     world.setOwner(pixel, country.id + 1);
     world.density[pixel] = 80;
     world.humidity[pixel] = 50;
-    world.temperature[pixel] = 50;
+    world.temperature[pixel] = 23;
     world.drainage[pixel] = 50;
     world.culture[pixel] = cultureMix;
   }
@@ -302,7 +303,7 @@ try {
   nomad.coRulerIds = [];
   nomad.cells = [{
     pixel: staleFixture.pixels[1],
-    population: 80,
+    density: residentsToDensity(80),
     cultureMix: staleFixture.world.cultureTable.single(staleFixture.country.cultureId, 100),
     religionMix: 0,
   }];

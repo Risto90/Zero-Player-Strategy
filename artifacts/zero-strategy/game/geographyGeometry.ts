@@ -1,4 +1,5 @@
 import { MAP_WIDTH } from './config';
+import { strokePolylineComponents, type MultiPolygon2 } from '../kernel/geometry';
 import type { RiverFeature } from './geographyFeatures';
 import type { World } from './world';
 
@@ -10,6 +11,7 @@ export interface RiverPathSegment {
   name: string | null;
   points: { x: number; y: number }[];
   path: string;
+  contourPolygons: MultiPolygon2;
   contourPoints: { x: number; y: number }[];
   contourPath: string;
   length: number;
@@ -17,8 +19,11 @@ export interface RiverPathSegment {
 }
 
 const discoveredPathCache = new WeakMap<World, {
-  version: number;
-  territoryVersion: number;
+  geographyRevision: number;
+  segments: RiverPathSegment[];
+}>();
+const untrimmedPathCache = new WeakMap<World, {
+  geographyRevision: number;
   segments: RiverPathSegment[];
 }>();
 
@@ -47,36 +52,6 @@ function pathLength(points: { x: number; y: number }[]): number {
     length += Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y);
   }
   return length;
-}
-
-function riverContour(points: { x: number; y: number }[], width: number): { x: number; y: number }[] {
-  const halfWidth = width / 2;
-  const left: { x: number; y: number }[] = [];
-  const right: { x: number; y: number }[] = [];
-  for (let index = 0; index < points.length; index += 1) {
-    const point = points[index];
-    const before = points[Math.max(0, index - 1)];
-    const after = points[Math.min(points.length - 1, index + 1)];
-    const previousLength = Math.hypot(point.x - before.x, point.y - before.y) || 1;
-    const nextLength = Math.hypot(after.x - point.x, after.y - point.y) || 1;
-    const previousNormal = { x: -(point.y - before.y) / previousLength, y: (point.x - before.x) / previousLength };
-    const nextNormal = { x: -(after.y - point.y) / nextLength, y: (after.x - point.x) / nextLength };
-    let nx = previousNormal.x + nextNormal.x;
-    let ny = previousNormal.y + nextNormal.y;
-    const normalLength = Math.hypot(nx, ny);
-    if (normalLength < 0.001) {
-      nx = nextNormal.x;
-      ny = nextNormal.y;
-    } else {
-      nx /= normalLength;
-      ny /= normalLength;
-    }
-    const denominator = Math.max(0.5, Math.abs(nx * nextNormal.x + ny * nextNormal.y));
-    const offset = Math.min(halfWidth / denominator, halfWidth * 2);
-    left.push({ x: point.x + nx * offset, y: point.y + ny * offset });
-    right.push({ x: point.x - nx * offset, y: point.y - ny * offset });
-  }
-  return [...left, ...right.reverse()];
 }
 
 function unwrapPath(points: { x: number; y: number }[]): { x: number; y: number }[] {
@@ -259,19 +234,19 @@ function appendSegment(
   const length = pathLength(points);
   if (length <= 0) return;
   const width = strength;
-  const contourPoints = riverContour(points, width);
-  const contourPath = asClosedPath(contourPoints);
+  const contourPolygons = strokePolylineComponents(points, width, 0.25, 'butt', 'miter', 2);
+  const contourPoints = contourPolygons[0]?.[0] ?? [];
+  const contourPath = contourPolygons.flatMap((polygon) =>
+    polygon.map((ring) => asClosedPath(ring)),
+  ).filter(Boolean).join(' ');
   if (!contourPath) return;
-  let minX = contourPoints[0].x;
-  let minY = contourPoints[0].y;
-  let maxX = contourPoints[0].x;
-  let maxY = contourPoints[0].y;
-  for (const point of contourPoints) {
-    minX = Math.min(minX, point.x);
-    minY = Math.min(minY, point.y);
-    maxX = Math.max(maxX, point.x);
-    maxY = Math.max(maxY, point.y);
-  }
+  const contourVertices = contourPolygons.flat(2);
+  const bounds = contourVertices.reduce((current, point) => ({
+    minX: Math.min(current.minX, point.x),
+    minY: Math.min(current.minY, point.y),
+    maxX: Math.max(current.maxX, point.x),
+    maxY: Math.max(current.maxY, point.y),
+  }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
   output.push({
     riverId: river.id,
     scaleRank: river.scaleRank,
@@ -280,10 +255,11 @@ function appendSegment(
     name: river.name,
     points,
     path: asPath(points),
+    contourPolygons,
     contourPoints,
     contourPath,
     length,
-    bounds: [minX, minY, maxX, maxY],
+    bounds: [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY],
   });
 }
 
@@ -316,10 +292,13 @@ function splitAtMapSeam(
   appendSegment(output, river, current, strength);
 }
 
-export function discoveredRiverPaths(world: World): RiverPathSegment[] {
+export function discoveredRiverPaths(world: World, countryId?: number): RiverPathSegment[] {
   const cached = discoveredPathCache.get(world);
-  if (cached?.version === world.version && cached.territoryVersion === world.territoryVersion) {
-    return cached.segments;
+  if (cached?.geographyRevision === world.geographyRevision) {
+    return countryId === undefined
+      ? cached.segments
+      : cached.segments.filter((segment) =>
+        world.riverFeatures[segment.riverId]?.discoveredBy.includes(countryId));
   }
   const lines: {
     river: RiverFeature;
@@ -363,9 +342,43 @@ export function discoveredRiverPaths(world: World): RiverPathSegment[] {
     splitAtMapSeam(line.river, wrapped, line.strength, segments);
   }
   discoveredPathCache.set(world, {
-    version: world.version,
-    territoryVersion: world.territoryVersion,
+    geographyRevision: world.geographyRevision,
     segments,
   });
-  return segments;
+  return countryId === undefined
+    ? segments
+    : segments.filter((segment) =>
+      world.riverFeatures[segment.riverId]?.discoveredBy.includes(countryId));
+}
+
+/** Возвращает полные русла для расчёта речных бассейнов без графической обрезки у слияний. */
+export function untrimmedDiscoveredRiverPaths(world: World, countryId?: number): RiverPathSegment[] {
+  const cached = untrimmedPathCache.get(world);
+  if (cached?.geographyRevision === world.geographyRevision) {
+    return countryId === undefined
+      ? cached.segments
+      : cached.segments.filter((segment) =>
+        world.riverFeatures[segment.riverId]?.discoveredBy.includes(countryId));
+  }
+  const segments: RiverPathSegment[] = [];
+  for (const river of world.riverFeatures) {
+    if (river.discoveredBy.length === 0) continue;
+    const strength = riverStrengthForRank(river.scaleRank);
+    for (const path of river.paths) {
+      if (path.length < 2) continue;
+      const wrapped = unwrapPath(path).map((point) => ({
+        x: ((point.x % MAP_WIDTH) + MAP_WIDTH) % MAP_WIDTH,
+        y: point.y,
+      }));
+      splitAtMapSeam(river, wrapped, strength, segments);
+    }
+  }
+  untrimmedPathCache.set(world, {
+    geographyRevision: world.geographyRevision,
+    segments,
+  });
+  return countryId === undefined
+    ? segments
+    : segments.filter((segment) =>
+      world.riverFeatures[segment.riverId]?.discoveredBy.includes(countryId));
 }

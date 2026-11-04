@@ -3,6 +3,7 @@ import { Text, View } from 'react-native';
 import { MissingProfile, ProfileFact, ProfileLayout, ProfileSection } from '@/components/profiles/ProfileLayout';
 import { fmt, pct } from '@/game/format';
 import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS } from '@/game/human';
+import { BIOMES } from '@/game/config';
 import { currentGame } from '@/game/session';
 import { useGameSnapshot } from '@/game/useGame';
 
@@ -29,9 +30,15 @@ export default function RacePage() {
         <ProfileFact>Доля населения · {pct(population?.percent ?? 0)}</ProfileFact>
       </View>
       <ProfileSection title="КЛИМАТИЧЕСКИЙ ПРОФИЛЬ">
-        <ProfileFact>Температура · {race.climate.temperature[0]}–{race.climate.temperature[1]}</ProfileFact>
+        <ProfileFact>Температура · {race.climate.temperature[0]}–{race.climate.temperature[1]} °C</ProfileFact>
         <ProfileFact>Влажность · {race.climate.humidity[0]}–{race.climate.humidity[1]}</ProfileFact>
-        <ProfileFact>Это условные игровые диапазоны климата, а не свойства отдельного персонажа.</ProfileFact>
+        <ProfileFact>Дренаж · {race.climate.drainage[0]}–{race.climate.drainage[1]}</ProfileFact>
+        <ProfileFact>
+          Биомы ареала · {race.nativeBiomes.map((biomeId) => BIOMES[biomeId]?.name).filter(Boolean).join(', ')}
+        </ProfileFact>
+        <ProfileFact>
+          Отклонение от диапазонов снижает количество создаваемого населения. Существующее население и его состав не меняются.
+        </ProfileFact>
       </ProfileSection>
     </>
   );

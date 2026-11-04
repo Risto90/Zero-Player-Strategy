@@ -1,3 +1,4 @@
+import { EARTH_DEG_PER_PX, EARTH_TOP_LAT } from './data/earthLand';
 import { EARTH_ELEVATION_BASE64, EARTH_ELEVATION_COLUMNS, EARTH_ELEVATION_LAT_START, EARTH_ELEVATION_LON_START, EARTH_ELEVATION_ROWS, EARTH_ELEVATION_STEP } from './data/earthElevation';
 import {
   EARTH_PEAKS_BASE64,
@@ -31,6 +32,7 @@ export interface RiverFeature {
 
 export interface GeneratedGeography {
   elevation: Int16Array;
+  depth: Uint16Array;
   rivers: Uint8Array;
   riverFeatures: RiverFeature[];
   peaks: GeographyFeature[];
@@ -191,9 +193,8 @@ function earthElevationMap(): Int16Array {
   const sample = (row: number, column: number) =>
     source[Math.max(0, Math.min(EARTH_ELEVATION_ROWS - 1, row)) * EARTH_ELEVATION_COLUMNS +
       ((column % EARTH_ELEVATION_COLUMNS) + EARTH_ELEVATION_COLUMNS) % EARTH_ELEVATION_COLUMNS];
-  const latitudeStep = 180 / MAP_WIDTH;
   for (let y = 0; y < MAP_HEIGHT; y += 1) {
-    const latitude = 84 - (y + 0.5) * latitudeStep;
+    const latitude = EARTH_TOP_LAT - (y + 0.5) * EARTH_DEG_PER_PX;
     const sourceY = (latitude - EARTH_ELEVATION_LAT_START) / EARTH_ELEVATION_STEP;
     const y0 = Math.floor(sourceY);
     const yf = sourceY - y0;
@@ -367,12 +368,20 @@ function randomRiverFeatures(
 }
 
 export function generateGeography(land: Uint8Array, seed: number, mapKind: MapKind): GeneratedGeography {
-  const elevation = mapKind === 'world' ? earthElevationMap() : randomElevation(land, seed);
+  const rawElevation = mapKind === 'world' ? earthElevationMap() : randomElevation(land, seed);
+  const elevation = new Int16Array(rawElevation.length);
+  const depth = new Uint16Array(rawElevation.length);
+  for (let pixel = 0; pixel < rawElevation.length; pixel += 1) {
+    const value = rawElevation[pixel];
+    elevation[pixel] = value;
+    if (value < 0) depth[pixel] = Math.min(65_535, -value);
+  }
   if (mapKind === 'world') {
     const riverFeatures = earthRiverFeatures();
     const rivers = rasterizeRiverPaths(riverFeatures, land);
     return {
       elevation,
+      depth,
       rivers,
       riverFeatures,
       peaks: pointFeatureRows(EARTH_PEAKS_BASE64, false),
@@ -382,5 +391,5 @@ export function generateGeography(land: Uint8Array, seed: number, mapKind: MapKi
   const riverFlows: { pixels: number[]; scaleRank: number }[] = [];
   const rivers = generateRivers(land, seed, mapKind, riverFlows);
   const { peaks, volcanoes } = randomPointFeatures(elevation, land, seed);
-  return { elevation, rivers, riverFeatures: randomRiverFeatures(rivers, riverFlows), peaks, volcanoes };
+  return { elevation, depth, rivers, riverFeatures: randomRiverFeatures(rivers, riverFlows), peaks, volcanoes };
 }

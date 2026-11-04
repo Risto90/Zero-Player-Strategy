@@ -1,5 +1,5 @@
 import { CompositionTable } from './composition';
-import { biomeFor, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, NAMES, PALETTE } from './config';
+import { biomeFor, countryRankForArea, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, NAMES, PALETTE } from './config';
 import {
   decodeEarthLand,
   forEachNeighbour,
@@ -20,6 +20,13 @@ import type { HumanOriginId } from './human';
 import { MapContours } from './contours';
 import { generateGeography, type GeographyFeature, type RiverFeature } from './geographyFeatures';
 import { riverStrengthForRank } from './geographyGeometry';
+import { apportionIntegerTotal } from '../kernel/proportions';
+import { densityToWholeResidents, roundResidents } from './populationUnits';
+import {
+  PopulationCohortTable,
+  populationCohortsAtPixel,
+  type PopulationCohortShare,
+} from './populationCohorts';
 import { createEntityEmblem, createFlagStyleProfile, cultureTags, ensureFlagIdentity } from './flagIdentity';
 import type { FlagIdentity, FlagStyleProfile } from './flagIdentity';
 import type { FlagSpec } from './flagSpec';
@@ -38,13 +45,19 @@ export interface SavedGeographyState {
   volcanoes: { id: number; name: string | null; discoveredBy: number[] }[];
 }
 
+export interface TerrainOverride {
+  pixel: number;
+  elevation: number;
+  depth: number;
+}
+
 export interface Country extends PoliticalState {
   id: number;
   type: 'settled' | 'nomadic';
   name: string;
   color: string;
   rank: string;
-  /** Население на каждую точку, передаваемое новой оседлой территории. */
+  /** Плотность населения новой оседлой территории, человек на км². */
   density: number;
   cultureId: number;
   religionId: number | null;
@@ -78,7 +91,7 @@ export interface City {
   countryId: number;
   pixel: number;
   rank: CityRank;
-  /** Общее население города; плотность сельского населения в точке остаётся в слое населения. */
+  /** Общее население города; сельская плотность в этой точке хранится отдельно в людях на км². */
   population: number;
   /** Городские группы культуры и вероисповедания, не зависящие от сельского состава этой точки. */
   populationGroups?: CityPopulationGroup[];
@@ -99,12 +112,18 @@ export interface CityPopulationGroup {
   humanOriginMix: number;
 }
 
+export interface CityPopulationGroupWeight extends Omit<CityPopulationGroup, 'population'> {
+  weight: number;
+}
+
 export interface NomadCell {
   pixel: number;
-  population: number;
+  density: number;
+  population?: number;
   cultureMix: number;
   religionMix: number;
   humanOriginMix: number;
+  populationGroups?: PopulationCohortShare[];
 }
 
 export interface Culture {
@@ -139,6 +158,8 @@ export class World {
   readonly land: Uint8Array;
   readonly water: WaterInfo;
   readonly elevation: Int16Array;
+  readonly depth: Uint16Array;
+  readonly terrainOverrides = new Map<number, TerrainOverride>();
   /** Индексы точек суши для случайной выборки. */
   readonly landIndex: Int32Array;
   /** Детерминированный слой рек: 0 — нет реки, 1 — приток, 2–3 — крупное русло. */
@@ -152,17 +173,20 @@ export class World {
   readonly majorRiverPixelCount: number;
   readonly owner = new Uint16Array(MAP_PIXELS);
   readonly cityIdAt = new Int32Array(MAP_PIXELS).fill(-1);
-  readonly density = new Float32Array(MAP_PIXELS);
+  readonly density = new Float64Array(MAP_PIXELS);
   humidity: Uint8Array;
-  temperature: Uint8Array;
+  temperature: Float32Array;
   drainage: Uint8Array;
   readonly culture = new Uint16Array(MAP_PIXELS);
   readonly religion = new Uint16Array(MAP_PIXELS);
   /** Состав по происхождению не зависит от культуры и вероисповедания. */
   readonly humanOrigins = new Uint16Array(MAP_PIXELS);
+  /** Совместные доли населения по культуре, вере и профилю происхождения. */
+  readonly populationCohorts = new Uint32Array(MAP_PIXELS);
   readonly cultureTable = new CompositionTable();
   readonly religionTable = new CompositionTable();
   readonly humanOriginTable = new CompositionTable();
+  readonly populationCohortTable = new PopulationCohortTable();
   countries: Country[] = [];
   cities: City[] = [];
   nextCityChronicleId = 0;
@@ -179,8 +203,10 @@ export class World {
   territoryVersion = 0;
   private geographyScanVersion = 0;
   private geographyVersion = 0;
+  private terrainVersion = 0;
   private readonly geographyNameCache = new Map<number, {
-    version: number;
+    geographyVersion: number;
+    territoryVersion: number;
     targets: GeographyNameTarget[];
   }>();
   readonly contours = new MapContours(
@@ -193,11 +219,16 @@ export class World {
     return this.geographyVersion;
   }
 
+  /** Меняется только при изменении высоты или глубины, а не при открытии географии. */
+  get terrainRevision(): number {
+    return this.terrainVersion;
+  }
+
   constructor(
     readonly mapKind: MapKind,
     readonly seed: number,
     land: Uint8Array,
-    climate: { humidity: Uint8Array; temperature: Uint8Array; drainage: Uint8Array } | null,
+    climate: { humidity: Uint8Array; temperature: Float32Array; drainage: Uint8Array } | null,
     prepared?: {
       water: WaterInfo;
       landIndex: Int32Array;
@@ -207,6 +238,7 @@ export class World {
     this.water = prepared?.water ?? labelWater(land);
     const geography = generateGeography(land, seed, mapKind);
     this.elevation = geography.elevation;
+    this.depth = geography.depth;
     this.rivers = geography.rivers;
     this.riverFeatures = geography.riverFeatures;
     this.peaks = geography.peaks;
@@ -225,7 +257,7 @@ export class World {
       for (let p = 0; p < MAP_PIXELS; p += 1) if (land[p]) index.push(p);
       this.landIndex = Int32Array.from(index);
     }
-    const generated = climate ?? generateClimate(land, seed);
+    const generated = climate ?? generateClimate(land, seed, mapKind);
     this.humidity = generated.humidity;
     this.temperature = generated.temperature;
     this.drainage = generated.drainage;
@@ -250,7 +282,7 @@ export class World {
     const water = await labelWaterCooperative(land);
     onProgress?.('Строим рельеф и реки');
     onProgress?.('Рассчитываем климат');
-    const climate = await generateClimateCooperative(land, actualSeed);
+    const climate = await generateClimateCooperative(land, actualSeed, mapKind);
     onProgress?.('Индексируем сушу и реки');
     let landCount = 0;
     for (let p = 0; p < MAP_PIXELS; p += 1) {
@@ -289,18 +321,74 @@ export class World {
     });
   }
 
+  /** Изменяет высоту и глубину независимо и отправляет локальное контурное уведомление. */
+  setTerrainPixel(pixel: number, elevation: number, depth: number): boolean {
+    if (!Number.isInteger(pixel) || pixel < 0 || pixel >= MAP_PIXELS) {
+      throw new RangeError('Точка рельефа находится за пределами карты.');
+    }
+    if (!Number.isInteger(elevation) || elevation < 0 || elevation > 32_767) {
+      throw new RangeError('Высота должна быть целым числом от 0 до 32767 метров.');
+    }
+    if (!Number.isInteger(depth) || depth < 0 || depth > 65_535) {
+      throw new RangeError('Глубина должна быть целым числом от 0 до 65535 метров.');
+    }
+    if (this.elevation[pixel] === elevation && this.depth[pixel] === depth) return false;
+    this.elevation[pixel] = elevation;
+    this.depth[pixel] = depth;
+    const override = { pixel, elevation, depth };
+    this.terrainOverrides.set(pixel, override);
+    this.version += 1;
+    this.terrainVersion += 1;
+    const x = pixel % MAP_WIDTH;
+    const y = Math.floor(pixel / MAP_WIDTH);
+    this.contours.changed({ x0: x, x1: x, y0: y, y1: y }, ['elevation', 'depth']);
+    return true;
+  }
+
+  /** Восстанавливает совместимые с прежними сохранениями локальные правки рельефа. */
+  restoreTerrainOverrides(overrides: readonly TerrainOverride[] = []): void {
+    let changed = false;
+    for (const override of overrides) {
+      const { pixel, elevation, depth } = override;
+      if (!Number.isInteger(pixel) || pixel < 0 || pixel >= MAP_PIXELS ||
+        !Number.isInteger(elevation) || elevation < 0 || elevation > 32_767 ||
+        !Number.isInteger(depth) || depth < 0 || depth > 65_535) {
+        throw new Error('Сохранение содержит недопустимые данные высоты или глубины.');
+      }
+      this.elevation[pixel] = elevation;
+      this.depth[pixel] = depth;
+      this.terrainOverrides.set(pixel, { pixel, elevation, depth });
+      changed = true;
+    }
+    if (!changed) return;
+    this.version += 1;
+    this.terrainVersion += 1;
+    this.contours.changed(
+      { x0: 0, y0: 0, x1: MAP_WIDTH - 1, y1: MAP_HEIGHT - 1 },
+      ['elevation', 'depth'],
+    );
+  }
+
   setOwner(p: number, id: number): void {
     const previous = this.owner[p];
     if (previous === id) return;
     this.territoryVersion += 1;
     this.contours.synchronize();
-    if (previous > 0) this.countries[previous - 1].pixels -= 1;
+    if (previous > 0) {
+      const country = this.countries[previous - 1];
+      country.pixels -= 1;
+      if (country.type === 'settled') country.rank = countryRankForArea(country.pixels);
+    }
     this.owner[p] = id;
-    const row = Math.floor(p / MAP_WIDTH);
-    this.contours.changed({ x0: 0, x1: MAP_WIDTH - 1, y0: row, y1: row }, ['owner']);
+    const city = this.cityAt(p);
+    if (city && id > 0) city.countryId = id - 1;
+    const x = p % MAP_WIDTH;
+    const y = Math.floor(p / MAP_WIDTH);
+    this.contours.changed({ x0: x, x1: x, y0: y, y1: y }, ['owner']);
     if (id > 0) {
       const country = this.countries[id - 1];
       country.pixels += 1;
+      if (country.type === 'settled') country.rank = countryRankForArea(country.pixels);
       const x = p % MAP_WIDTH;
       const y = (p - x) / MAP_WIDTH;
       const box = country.box;
@@ -321,20 +409,28 @@ export class World {
 
   unnamedGeographyForCountry(countryId: number): GeographyNameTarget[] {
     const cached = this.geographyNameCache.get(countryId);
-    if (cached?.version === this.geographyVersion) return cached.targets;
+    if (cached?.geographyVersion === this.geographyVersion &&
+      cached.territoryVersion === this.territoryVersion) return cached.targets;
+    const country = this.countries[countryId];
+    const nomadicRange = country?.type === 'nomadic' ? new Set(country.range ?? []) : null;
+    const onCountryTerritory = (pixel: number) => country !== undefined &&
+      (nomadicRange
+        ? nomadicRange.has(pixel)
+        : this.owner[pixel] === countryId + 1);
     const result: GeographyNameTarget[] = [];
     for (const feature of this.riverFeatures) {
-      if (!feature.name && feature.discoveredBy.includes(countryId)) {
+      if (!feature.name && feature.discoveredBy.includes(countryId) &&
+        feature.pixels.some(onCountryTerritory)) {
         result.push({ kind: 'river', id: feature.id, pixel: feature.pixels[Math.floor(feature.pixels.length / 2)] ?? -1, elevation: 0 });
       }
     }
     for (const feature of this.peaks) {
-      if (!feature.name && feature.discoveredBy.includes(countryId)) {
+      if (!feature.name && feature.discoveredBy.includes(countryId) && onCountryTerritory(feature.pixel)) {
         result.push({ kind: 'peak', id: feature.id, pixel: feature.pixel, elevation: feature.elevation });
       }
     }
     for (const feature of this.volcanoes) {
-      if (!feature.name && feature.discoveredBy.includes(countryId)) {
+      if (!feature.name && feature.discoveredBy.includes(countryId) && onCountryTerritory(feature.pixel)) {
         result.push({
           kind: 'volcano',
           id: feature.id,
@@ -344,7 +440,11 @@ export class World {
         });
       }
     }
-    this.geographyNameCache.set(countryId, { version: this.geographyVersion, targets: result });
+    this.geographyNameCache.set(countryId, {
+      geographyVersion: this.geographyVersion,
+      territoryVersion: this.territoryVersion,
+      targets: result,
+    });
     return result;
   }
 
@@ -471,17 +571,29 @@ export class World {
     return cityId >= 0 ? this.cities[cityId] ?? null : null;
   }
 
-  addCity(countryId: number, pixel: number, rank: CityRank = 1, capital = false): City | null {
+  addCity(
+    countryId: number,
+    pixel: number,
+    rank: CityRank = 1,
+    capital = false,
+    initialPopulation?: number,
+    initialGroups?: CityPopulationGroup[],
+  ): City | null {
     const country = this.countries[countryId];
     if (!country || pixel < 0 || pixel >= MAP_PIXELS || !this.land[pixel] || this.cityAt(pixel)) return null;
+    const population = initialPopulation === undefined
+      ? densityToWholeResidents(this.density[pixel])
+      : roundResidents(initialPopulation);
+    if (population === 0) return null;
     const city: City = {
       id: this.cities.length,
       chronicleId: this.nextCityChronicleId++,
       countryId,
       pixel,
       rank,
-      population: this.density[pixel],
-      populationGroups: cityPopulationGroupsAtPixel(this, pixel, this.density[pixel]),
+      population,
+      populationGroups: initialGroups?.map((group) => ({ ...group })) ??
+        cityPopulationGroupsAtPixel(this, pixel, population),
       capital,
       ...generateCityIdentity(this, pixel),
     };
@@ -548,6 +660,9 @@ export class World {
       country.box[2] = Math.max(country.box[2], x);
       country.box[3] = Math.max(country.box[3], y);
     }
+    for (const country of this.countries) {
+      if (country.type === 'settled') country.rank = countryRankForArea(country.pixels);
+    }
   }
 
   // ---------- сущности ----------
@@ -570,6 +685,7 @@ export class World {
       pixels: 0,
       box: [MAP_WIDTH, MAP_HEIGHT, -1, -1],
       ...fields,
+      rank: countryRankForArea(0),
     };
     const cultureStyle = culture?.styleProfile;
     Object.assign(country, ensureFlagIdentity(
@@ -662,24 +778,72 @@ export class World {
   }
 }
 
-export function cityPopulationGroupsAtPixel(world: World, pixel: number, population: number): CityPopulationGroup[] {
-  if (population <= 0) return [];
-  const culture = world.cultureTable.entries[world.culture[pixel]];
-  const religion = world.religionTable.entries[world.religion[pixel]];
-  let humanOriginMix = world.humanOrigins[pixel];
-  if (world.humanOriginTable.entries[humanOriginMix]?.total !== 100) {
-    humanOriginMix = world.humanOriginTable.single(0, 100);
-  }
+export function cityPopulationGroupWeightsAtPixel(
+  world: World,
+  pixel: number,
+  population: number,
+): CityPopulationGroupWeight[] {
+  if (!(population > 0)) return [];
+  return populationCohortsAtPixel(world, pixel, population).map((group) => ({
+    cultureId: group.cultureId,
+    religionId: group.religionId,
+    humanOriginMix: world.humanOriginTable.single(group.originProfileId, 100),
+    weight: group.weight,
+  }));
+}
+
+export function cityPopulationGroupWeightsFromMix(
+  world: World,
+  cultureMixId: number,
+  religionMixId: number,
+  originMixId: number,
+  population: number,
+): CityPopulationGroupWeight[] {
+  if (!(population > 0)) return [];
+  const culture = world.cultureTable.entries[cultureMixId];
+  const religion = world.religionTable.entries[religionMixId];
+  const originMix = world.humanOriginTable.entries[originMixId];
+  const originIds = originMix?.total > 0 ? originMix.ids : [0];
+  const originShares = originMix?.total > 0 ? originMix.shares : [100];
   const religionIds: (number | null)[] = [...religion.ids, null];
   const religionShares = [...religion.shares, 100 - religion.total];
-  const groups: CityPopulationGroup[] = [];
+  const groups: { cultureId: number; religionId: number | null; weight: number; humanOriginMix: number }[] = [];
   culture.ids.forEach((cultureId, ci) => {
     religionIds.forEach((religionId, ri) => {
-      const amount = population * culture.shares[ci] / 100 * religionShares[ri] / 100;
-      if (amount > 0) groups.push({ cultureId, religionId, population: amount, humanOriginMix });
+      originIds.forEach((profileId, oi) => {
+        const weight = culture.shares[ci] * religionShares[ri] * originShares[oi];
+        if (weight > 0) groups.push({
+          cultureId,
+          religionId,
+          weight,
+          humanOriginMix: world.humanOriginTable.single(profileId, 100),
+        });
+      });
     });
   });
-  return groups;
+  const totalWeight = groups.reduce((sum, group) => sum + group.weight, 0);
+  if (!(totalWeight > 0)) return [];
+  return groups.map((group) => ({
+    cultureId: group.cultureId,
+    religionId: group.religionId,
+    humanOriginMix: group.humanOriginMix,
+    weight: population * group.weight / totalWeight,
+  }));
+}
+
+export function cityPopulationGroupsAtPixel(world: World, pixel: number, population: number): CityPopulationGroup[] {
+  const total = roundResidents(population);
+  if (total <= 0) return [];
+  const groups = cityPopulationGroupWeightsAtPixel(world, pixel, total);
+  const amounts = apportionIntegerTotal(total, groups.map((group) => group.weight));
+  return groups.flatMap((group, index) => amounts[index] > 0
+    ? [{
+        cultureId: group.cultureId,
+        religionId: group.religionId,
+        population: amounts[index],
+        humanOriginMix: group.humanOriginMix,
+      }]
+    : []);
 }
 
 export function uniqueName(make: () => string, used: Set<string>): string {

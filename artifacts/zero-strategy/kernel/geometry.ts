@@ -651,18 +651,41 @@ export function booleanPolygons(operation: PolygonBooleanOperation, ...inputs: r
   if (geometries.length === 1) return fromPolygonCoordinate(geometries[0]);
   return fromPolygonCoordinate(polygonClipping.difference(geometries[0], ...geometries.slice(1)));
 }
+function unionPolygonParts(parts: readonly MultiPolygon2[]): MultiPolygon2 {
+  let level = parts.filter((part) => part.length > 0);
+  while (level.length > 1) {
+    const next: MultiPolygon2[] = [];
+    for (let index = 0; index < level.length; index += 2) {
+      const merged = index + 1 < level.length
+        ? booleanPolygons('union', level[index], level[index + 1])
+        : level[index];
+      if (merged.length) next.push(merged);
+    }
+    level = next;
+  }
+  return level[0] ?? [];
+}
 export function clipPath(subject: GeometryPath, clip: GeometryPath, tolerance: number, fillRule: FillRule = 'nonzero'): MultiPolygon2 {
   return booleanPolygons('intersection', pathToPolygons(subject, tolerance, fillRule), pathToPolygons(clip, tolerance, fillRule));
 }
-export function strokePolyline(points: readonly Point2[], width: number, tolerance: number, cap: StrokeCap = 'butt',
-  join: StrokeJoin = 'miter', miterLimit = 4, closed = false): MultiPolygon2 {
+function strokePolylineParts(points: readonly Point2[], width: number, tolerance: number, cap: StrokeCap = 'butt',
+  join: StrokeJoin = 'miter', miterLimit = 4, closed = false): MultiPolygon2[] {
   validTolerance(tolerance);
   const half = finite(width, 'толщина штриха') / 2;
   if (half < 0 || !Number.isFinite(miterLimit) || miterLimit < 1) throw new RangeError('Недопустимая толщина или предел скоса');
   if (half === 0 || points.length < 2) return [];
-  const source = points.map((point) => validPoint(point));
+  const source: Point2[] = [];
+  for (const raw of points) {
+    const point = validPoint(raw);
+    if (!source.length || !samePoint(source[source.length - 1], point)) source.push(point);
+  }
+  if (closed && source.length > 1 && samePoint(source[0], source[source.length - 1])) source.pop();
+  if (source.length < 2) return [];
   const lineCount = source.length - 1 + (closed ? 1 : 0);
   const parts: MultiPolygon2[] = [];
+  const addRing = (ring: Ring2) => {
+    if (Math.abs(ringSignedArea(ring)) > EPSILON) parts.push([[ring]]);
+  };
   const disk = (center: Point2) => {
     const angle = Math.acos(Math.max(-1, 1 - tolerance / half));
     const count = Math.max(8, Math.ceil(Math.PI / angle));
@@ -681,7 +704,7 @@ export function strokePolyline(points: readonly Point2[], width: number, toleran
     }
     const normal = scale(vector.perpendicular(tangent), half);
     const rect: Ring2 = [add(a, normal), add(b, normal), subtract(b, normal), subtract(a, normal)];
-    parts.push([[rect]]);
+    addRing(rect);
     if (!closed && cap === 'round') {
       if (index === 0) parts.push(disk(source[0]));
       if (index === lineCount - 1) parts.push(disk(source[source.length - 1]));
@@ -701,10 +724,19 @@ export function strokePolyline(points: readonly Point2[], width: number, toleran
       const t = cross(subtract(p2, p1), second) / denominator;
       const miter = add(p1, scale(first, t));
       const useMiter = join === 'miter' && vector.distance(point, miter) <= half * miterLimit;
-      parts.push([[[p1, useMiter ? miter : point, p2]]]);
+      addRing([p1, useMiter ? miter : point, p2]);
     }
   }
-  return parts.length ? booleanPolygons('union', ...parts) : [];
+  return parts;
+}
+/** Строит исходные полигоны штриха без их топологического объединения. */
+export function strokePolylineComponents(points: readonly Point2[], width: number, tolerance: number, cap: StrokeCap = 'butt',
+  join: StrokeJoin = 'miter', miterLimit = 4, closed = false): MultiPolygon2 {
+  return strokePolylineParts(points, width, tolerance, cap, join, miterLimit, closed).flatMap((part) => part);
+}
+export function strokePolyline(points: readonly Point2[], width: number, tolerance: number, cap: StrokeCap = 'butt',
+  join: StrokeJoin = 'miter', miterLimit = 4, closed = false): MultiPolygon2 {
+  return unionPolygonParts(strokePolylineParts(points, width, tolerance, cap, join, miterLimit, closed));
 }
 export function strokePath(path: GeometryPath, width: number, tolerance: number, cap: StrokeCap = 'butt',
   join: StrokeJoin = 'miter', miterLimit = 4): MultiPolygon2 {
@@ -892,61 +924,18 @@ export function polylineSpatialEntry<T>(id: string | number, value: T, points: r
   }, closestPointToPoint(point) { return closestPointOnPolyline(point, vertices) ?? { ...point }; } };
 }
 
-/** Текущая кисть округляет координату каждого шага и считает воду как 1 / waterDivisor. */
-export function weightedGridSegmentDistance(from: Point2, to: Point2, isLand: (x: number, y: number) => boolean,
-  waterDivisor: number): number {
-  const start = validPoint(from), end = validPoint(to), divisor = finite(waterDivisor, 'коэффициент воды');
-  if (divisor <= 0) throw new RangeError('Коэффициент воды должен быть больше нуля');
+/** Универсальная длина растрового пути с весом шага, заданным вызывающей стороной. */
+export function gridPathDistance(from: Point2, to: Point2, stepWeight: (x: number, y: number) => number): number {
+  const start = validPoint(from), end = validPoint(to);
   const distance = vector.distance(start, end), steps = Math.max(1, Math.ceil(distance)), step = distance / steps;
   let total = 0;
   for (let index = 1; index <= steps; index += 1) {
     const x = Math.round(start.x + (end.x - start.x) * index / steps);
     const y = Math.round(start.y + (end.y - start.y) * index / steps);
-    total += step * (isLand(x, y) ? 1 : 1 / divisor);
+    const weight = finite(stepWeight(x, y), 'вес шага');
+    if (weight < 0) throw new RangeError('Вес шага не может быть отрицательным');
+    total += step * weight;
   }
   return total;
-}
-export interface BrushInfluence {
-  ownRankSum: number; ownLargestRank: number; foreignRankSum: number;
-  nearestOwnDistance: number; nearestOwnAnchorDistance: number;
-  nearestOwnRadius: number; nearestOwnCity: Point2 | null; nearestOwnAnchor: Point2 | null;
-}
-export interface BrushScalingInput { kind: 'expand' | 'colonization' | 'nomadExpand' | 'other'; influence: BrushInfluence;
-  point: Point2; duchyRadius: number; terrain: (x: number, y: number) => boolean }
-export interface BrushScalingResult { cost: number; strength: number }
-/** Пакетная чистая формула: коэффициенты и городские множители совпадают с текущим слоем игры. */
-export function brushScalingBatch(inputs: readonly BrushScalingInput[]): BrushScalingResult[] {
-  return inputs.map(({ kind, influence, point, duchyRadius, terrain }) => {
-    validPoint(point);
-    const rankSum = finite(influence.ownRankSum, 'сумма рангов своих городов');
-    const foreign = finite(influence.foreignRankSum, 'сумма рангов чужих городов');
-    const largestRank = finite(influence.ownLargestRank, 'наибольший ранг своего города');
-    if (rankSum < 0 || foreign < 0 || largestRank < 0) throw new RangeError('Ранговые суммы не могут быть отрицательными');
-    if (kind === 'nomadExpand') return foreign > 0 ? { cost: foreign, strength: 1 / foreign } : { cost: 1, strength: 1 };
-    if (kind !== 'expand' && kind !== 'colonization') return { cost: 1, strength: 1 };
-    if (!Number.isFinite(duchyRadius) || duchyRadius <= 0) throw new RangeError('Радиус великого герцогства должен быть больше нуля');
-    let distance: number;
-    if (kind === 'expand') {
-      const nearestOwnRadius = finite(influence.nearestOwnRadius, 'радиус своего города');
-      if (nearestOwnRadius < 0) throw new RangeError('Радиус своего города не может быть отрицательным');
-      distance = influence.nearestOwnCity
-        ? Math.max(0, weightedGridSegmentDistance(influence.nearestOwnCity, point, terrain, 3) - nearestOwnRadius)
-        : nonnegativeDistance(influence.nearestOwnDistance, 'расстояние до своего города');
-      let penalty = distance / duchyRadius;
-      if (rankSum === 0 && foreign > 0) penalty *= foreign;
-      const strength = Math.max(1, rankSum - largestRank) / (1 + penalty);
-      return { cost: 1 / strength, strength };
-    }
-    distance = influence.nearestOwnAnchor
-      ? weightedGridSegmentDistance(influence.nearestOwnAnchor, point, terrain, 5)
-      : influence.nearestOwnCity
-        ? Math.max(0, weightedGridSegmentDistance(influence.nearestOwnCity, point, terrain, 5) -
-          finite(influence.nearestOwnRadius, 'радиус своего города'))
-        : nonnegativeDistance(influence.nearestOwnAnchorDistance, 'расстояние до допустимого якоря');
-    let distanceFactor = 1 + distance / duchyRadius;
-    if (rankSum === 0 && foreign > 0) distanceFactor = 1 + (distance / duchyRadius) * foreign;
-    const cost = Math.max(0.05, distanceFactor * (1 + foreign) / (1 + rankSum));
-    return { cost, strength: 1 / cost };
-  });
 }
 

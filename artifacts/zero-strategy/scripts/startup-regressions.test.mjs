@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { Game } from '../game/game.ts';
-import { mulberry32 } from '../game/random.ts';
+import { fractalField, mulberry32 } from '../game/random.ts';
+import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from '../game/config.ts';
 import { World } from '../game/world.ts';
 import { currentGame, deleteSavedGame, startNewGameCooperative } from '../game/session.ts';
 
@@ -24,6 +25,41 @@ function sameRaster(left, right, name) {
     Buffer.from(right.buffer, right.byteOffset, right.byteLength),
     `${name} must match the synchronous generator exactly`,
   );
+}
+
+function legacyRandomLand(seed) {
+  const rng = mulberry32(seed);
+  const field = fractalField(MAP_WIDTH, MAP_HEIGHT, seed, 5, 6);
+  const centres = Array.from({ length: 5 + Math.floor(rng() * 3) }, () => ({
+    x: 0.08 + rng() * 0.84,
+    y: 0.2 + rng() * 0.6,
+    r: 0.12 + rng() * 0.16,
+  }));
+  const land = new Uint8Array(MAP_PIXELS);
+  const score = new Float32Array(MAP_PIXELS);
+  for (let y = 0; y < MAP_HEIGHT; y += 1) {
+    const ny = y / MAP_HEIGHT;
+    const edge = Math.min(1, ny / 0.08, (1 - ny) / 0.08);
+    for (let x = 0; x < MAP_WIDTH; x += 1) {
+      const nx = x / MAP_WIDTH;
+      let bump = 0;
+      for (const centre of centres) {
+        const dx = (nx - centre.x) * 2.4;
+        const dy = ny - centre.y;
+        const distance = Math.sqrt(dx * dx + dy * dy) / centre.r;
+        bump = Math.max(bump, 1 - distance);
+      }
+      const index = y * MAP_WIDTH + x;
+      score[index] = (field[index] * 0.9 + bump * 0.55) * edge;
+    }
+  }
+  const sample = Array.from({ length: 4000 }, () =>
+    score[Math.floor(rng() * MAP_PIXELS)]).sort((a, b) => b - a);
+  const threshold = sample[Math.floor(sample.length * 0.3)];
+  for (let index = 0; index < MAP_PIXELS; index += 1) {
+    land[index] = score[index] >= threshold ? 1 : 0;
+  }
+  return land;
 }
 
 function assertWorldParity(sync, cooperative, name) {
@@ -57,6 +93,8 @@ try {
     assert.ok(sync.elevation.some((height) => height > 0), `${mapKind} has positive terrain elevation`);
     assert.ok(sync.elevation.some((height) => height < 0), `${mapKind} has negative elevation or bathymetry`);
     if (mapKind === 'random') {
+      sameRaster(sync.land, legacyRandomLand(RANDOM_MAP_SEED),
+        'Матричный расчёт случайного мира сохраняет исходный результат зерна');
       const connectedPixels = new Set();
       let hasConfluence = false;
       for (const river of sync.riverFeatures) {

@@ -6,6 +6,7 @@ import { MAP_WIDTH } from '../game/config.ts';
 import { MapRenderer, hexToRgb } from '../game/render.ts';
 import { cityInfluenceRadius } from '../game/settlements.ts';
 import { World } from '../game/world.ts';
+import { residentsToDensity } from '../game/populationUnits.ts';
 import { ATHEIST_FLAG_SVG } from '../game/atheistFlag.ts';
 import { hasMapObjectList } from '../game/mapModeCapabilities.ts';
 import { clearProfileHistory, hasVisitedProfilePath, rememberProfilePath } from '../game/profileRouteHistory.ts';
@@ -20,6 +21,7 @@ import {
 
 const root = resolve(process.cwd());
 const legendPanel = readFileSync(resolve(root, 'components/game/LegendPanel.tsx'), 'utf8');
+const cardPanel = readFileSync(resolve(root, 'components/game/CardPanel.tsx'), 'utf8');
 const modes = readFileSync(resolve(root, 'components/game/ModeTabs.tsx'), 'utf8');
 const rendererSource = readFileSync(resolve(root, 'game/render.ts'), 'utf8');
 const webMap = readFileSync(resolve(root, 'components/map/MapView.web.tsx'), 'utf8');
@@ -67,9 +69,9 @@ assert.doesNotMatch(emblemPreview, /showSaveFilePicker|createObjectURL|downloadF
 assert.match(webMap, /renderFlagSpec\(city\.emblemSpec\)/u, 'в браузерных подписях карты отображаются сохранённые флаги городов');
 assert.match(webMap, /MaterialCommunityIcons\.getRawGlyphMap\(\)\.crown/u,
   'браузерная карта использует тот же значок короны, что и карточки персонажей');
-assert.match(webMap, /if \(city\.capital && iconFontsLoaded\) \{[\s\S]*drawGoldCrown\([\s\S]*labelY - flagHeight \/ 2 - crownSize \/ 2/u,
+assert.match(webMap, /if \(city\.capital && iconFontsLoaded\) \{\s*drawGoldCrown\([\s\S]*labelY - labelFontSize \* 0\.88 - crownSize \/ 2 - 2/u,
   'у столицы с гербом золотая корона остаётся над гербом');
-assert.match(webMap, /else if \(city\.capital && iconFontsLoaded\) \{\s*drawGoldCrown\(ctx, labelLeft \+ markWidth \/ 2, labelY, crownSize\)/u,
+assert.match(webMap, /else if \(city\.capital && iconFontsLoaded\) \{\s*drawGoldCrown\(ctx, labelLeft \+ markWidth \/ 2, labelY - labelFontSize \/ 2, crownSize\)/u,
   'корона столицы без собственного герба занимает место перед названием');
 assert.doesNotMatch(webMap, /labelY - labelFontSize \/ 2 - crownHeight/u,
   'корона не располагается над названием города');
@@ -108,7 +110,10 @@ assert.equal(hasVisitedProfilePath('/person/12'), true, 'страница пер
 rememberProfilePath('/play');
 assert.equal(hasVisitedProfilePath('/person/12'), false, 'при возврате к карте устаревшая история карточек очищается');
 assert.match(legendPanel, /game\.selectCity\(row\.id\)/u, 'выбор строки города выделяет его на карте');
-assert.match(legendPanel, /game\.showCountryOnMap\(row\.id\)/u, 'строки стран выделяют оседлые и кочевые страны');
+assert.match(legendPanel, /game\.toggleCountrySelectionOnMap\(row\.id\)/u,
+  'повторное нажатие на страну в списке снимает выделение');
+assert.match(cardPanel, /button-nomad-settlement-revive/u, 'карта города предлагает возрождение исходной страны');
+assert.match(cardPanel, /button-nomad-settlement-new/u, 'карта города предлагает основать новое государство');
 assert.doesNotMatch(modes, /id: 'nomads'/u, 'в меню карты нет отдельного режима кочевников');
 assert.doesNotMatch(rendererSource, /'nomads'\s*:/u, 'отрисовщик карты не содержит отдельного режима кочевников');
 assert.equal(
@@ -173,8 +178,21 @@ assert.notEqual(inside, undefined, 'на тестовой карте найде�
 const center = inside;
 const patch = [];
 for (let dy = -2; dy <= 2; dy += 1) for (let dx = -2; dx <= 2; dx += 1) patch.push(center + dy * MAP_WIDTH + dx);
-for (const pixel of patch) {
+const ownershipChanges = [];
+const stopOwnershipChanges = world.contours.subscribeChanges((change) => ownershipChanges.push(change));
+world.setOwner(patch[0], settled.id + 1);
+stopOwnershipChanges();
+const firstOwnedPixel = patch[0];
+assert.deepEqual(ownershipChanges[0].bounds, {
+  x0: firstOwnedPixel % MAP_WIDTH,
+  y0: Math.floor(firstOwnedPixel / MAP_WIDTH),
+  x1: firstOwnedPixel % MAP_WIDTH,
+  y1: Math.floor(firstOwnedPixel / MAP_WIDTH),
+}, 'смена владельца сообщает только изменённую точку, не целую строку');
+for (const pixel of patch.slice(1)) {
   world.setOwner(pixel, settled.id + 1);
+}
+for (const pixel of patch) {
   world.density[pixel] = 50;
 }
 world.recountCountries();
@@ -190,7 +208,7 @@ nomad.type = 'nomadic';
 nomad.range = patch;
 nomad.cells = [{
   pixel: center,
-  population: 50,
+  density: residentsToDensity(50),
   cultureMix: world.cultureTable.single(culture.id, 100),
   religionMix: 0,
   humanOriginMix: world.humanOriginTable.single(0, 100),
@@ -201,6 +219,23 @@ assert.ok(city);
 assert.ok(laterCity);
 const game = new Game(world, 'observer');
 game.renderer.flush();
+const mapChanges = [];
+const stopMapChanges = game.onMapChange((change) => mapChanges.push(change));
+const changedBounds = { x0: 100, y0: 120, x1: 103, y1: 123 };
+world.contours.changed(changedBounds, ['owner']);
+assert.equal(mapChanges.length, 1, 'локальное изменение геометрии доходит до активной карты');
+assert.deepEqual(mapChanges[0].bounds, changedBounds);
+assert.equal(game.renderer.pending, true, 'рендерер помечает локально изменённую область');
+game.renderer.flush();
+game.setMapMode('cultures');
+game.renderer.flush();
+mapChanges.length = 0;
+world.contours.changed(changedBounds, ['density']);
+assert.equal(mapChanges.length, 0, 'неактивный слой не запрашивает перерисовку карты');
+world.contours.changed(changedBounds, ['culture']);
+assert.equal(mapChanges.length, 1, 'изменение активного слоя культуры доходит до карты');
+game.renderer.flush();
+stopMapChanges();
 const packed = (hex) => {
   const [r, g, b] = hexToRgb(hex);
   return ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
@@ -211,22 +246,49 @@ const blend = (base, overlay, share) => {
   const mixed = a.map((channel, i) => Math.round(channel + (b[i] - channel) * share));
   return ((255 << 24) | (mixed[2] << 16) | (mixed[1] << 8) | mixed[0]) >>> 0;
 };
-const stripePixel = center;
+const interiorPixels = patch.filter((pixel) =>
+  Math.abs(pixel % MAP_WIDTH - center % MAP_WIDTH) <= 1 &&
+  Math.abs(Math.floor(pixel / MAP_WIDTH) - Math.floor(center / MAP_WIDTH)) <= 1);
+const hasSettledNeighbours = (pixel) => [
+  pixel - 1,
+  pixel + 1,
+  pixel - MAP_WIDTH,
+  pixel + MAP_WIDTH,
+].every((neighbour) => world.land[neighbour] && world.owner[neighbour] === settled.id + 1);
+const stripePixel = interiorPixels.find((pixel) =>
+  (pixel % MAP_WIDTH + Math.floor(pixel / MAP_WIDTH)) % 6 < 3 && hasSettledNeighbours(pixel));
+const plainPixel = interiorPixels.find((pixel) =>
+  (pixel % MAP_WIDTH + Math.floor(pixel / MAP_WIDTH)) % 6 >= 3 && hasSettledNeighbours(pixel));
+assert.notEqual(stripePixel, undefined);
+assert.notEqual(plainPixel, undefined);
 game.setMapMode('political');
 game.renderer.flush();
-assert.equal(game.renderer.pixels[stripePixel], blend(settled.color, nomad.color, 0.48),
-  'невыбранная кочевая территория штрихуется поверх заливки оседлой страны');
+assert.equal(game.renderer.pixels[stripePixel], blend(settled.color, nomad.color, 0.78),
+  'невыбранная кочевая территория получает заметную контрастную штриховку');
+assert.equal(game.renderer.pixels[plainPixel], packed(settled.color),
+  'между штрихами остаётся виден цвет оседлой страны');
+const focusRequest = game.mapFocusRequest;
 game.showCountryOnMap(nomad.id);
 assert.equal(game.getSnapshot().mapMode, 'political', 'выбор кочевой страны включает политический режим');
 assert.equal(game.getSnapshot().selectedCountryId, nomad.id);
+assert.equal(game.mapFocusRequest, focusRequest + 1, 'выбор страны запрашивает центрирование карты');
 game.renderer.flush();
-assert.equal(game.renderer.pixels[center], packed(nomad.color), 'выбранная кочевая страна отображается сплошным цветом');
+assert.equal(game.renderer.pixels[stripePixel], blend(nomad.color, '#ffffff', 0.56),
+  'выделение сохраняет контрастную штриховку кочевой территории');
+assert.equal(game.renderer.pixels[patch[0]], packed('#fae6b1'),
+  'граница выделенного кочевья отображается поверх штриховки');
 game.showCountryOnMap(nomad.id);
-assert.equal(game.getSnapshot().selectedCountryId, null, 'повторный выбор страны снимает выделение');
+assert.equal(game.getSnapshot().selectedCountryId, nomad.id, 'повторный выбор не снимает цель показа на карте');
+assert.equal(game.mapFocusRequest, focusRequest + 2, 'повторный выбор повторно центрирует карту');
+game.toggleCountrySelectionOnMap(nomad.id);
+assert.equal(game.getSnapshot().selectedCountryId, null, 'повторное нажатие в списке снимает выделение');
+game.toggleCountrySelectionOnMap(nomad.id);
+assert.equal(game.getSnapshot().selectedCountryId, nomad.id, 'следующее нажатие снова выделяет страну');
 game.showCountryOnMap(settled.id);
 assert.equal(game.getSnapshot().selectedCountryId, settled.id);
 game.renderer.flush();
-assert.equal(game.renderer.pixels[center], packed(settled.color), 'выбранная оседлая страна отображается сплошным цветом');
+assert.equal(game.renderer.pixels[stripePixel], blend(settled.color, nomad.color, 0.78),
+  'ареал кочевья штрихуется поверх выделенной оседлой страны');
 game.setMapMode('cultures');
 assert.equal(game.getSnapshot().selectedCountryId, null, 'смена режима карты снимает выделение страны');
 
@@ -249,5 +311,6 @@ game.setMapMode('cities');
 assert.equal(game.getSnapshot().selectedCityId, laterCity.id, 'выделение сохраняется, если удалён город с меньшим ID');
 game.selectCity(laterCity.id);
 assert.equal(game.getSnapshot().selectedCityId, null, 'выделение снимается после сдвига ID городов');
+game.discard();
 
 console.log('Проверены общие строки сущностей, выделение на карте, кочевые территории и сферы городов.');

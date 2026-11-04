@@ -3,13 +3,24 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Game } from '../game/game.ts';
 import { MAP_WIDTH } from '../game/config.ts';
-import { HUMAN_ORIGINS, HUMAN_ORIGIN_COLORS, humanOriginIndex, humanOriginShares } from '../game/human.ts';
+import {
+  HUMAN_ORIGINS,
+  HUMAN_ORIGIN_COLORS,
+  ancestryProfileId,
+  humanOriginIndex,
+  humanOriginShares,
+} from '../game/human.ts';
 import { MapRenderer, hexToRgb } from '../game/render.ts';
 import { cityComposition } from '../game/settlements.ts';
 import { World } from '../game/world.ts';
 import { createPerson } from '../game/government.ts';
 import { hasMapObjectList } from '../game/mapModeCapabilities.ts';
 import { raceProfileRoute } from '../game/profileRoutes.ts';
+import { densityToResidents, residentsToDensity } from '../game/populationUnits.ts';
+import { fmtDensity } from '../game/format.ts';
+
+assert.equal(fmtDensity(0.00334), '0,00334');
+assert.equal(fmtDensity(1234.5), '1\u00a0234,5');
 
 const root = resolve(process.cwd());
 const world = World.create('random', 15501);
@@ -38,17 +49,20 @@ for (const pixel of [cityPixel, cityPixel - 1, cityPixel + 1, cityPixel - MAP_WI
   world.setOwner(pixel, country.id + 1);
 }
 world.density[cityPixel] = 100;
-world.density[ruralPixel] = 100;
+world.density[ruralPixel] = residentsToDensity(100);
 world.culture[cityPixel] = world.cultureTable.single(culture.id, 100);
 world.culture[ruralPixel] = world.cultureTable.single(culture.id, 100);
-const europeanMix = world.humanOriginTable.single(humanOriginIndex('european'), 100);
+const europeanProfile = ancestryProfileId({ ids: ['european'], shares: [100] });
+const pygmyProfile = ancestryProfileId({ ids: ['pygmy'], shares: [100] });
+const bushmanProfile = ancestryProfileId({ ids: ['bushman'], shares: [100] });
+const europeanMix = world.humanOriginTable.single(europeanProfile, 100);
 const pygmyMix = world.humanOriginTable.intern(new Map([
-  [humanOriginIndex('european'), 25],
-  [humanOriginIndex('pygmy'), 75],
+  [europeanProfile, 25],
+  [pygmyProfile, 75],
 ]));
 world.humanOrigins[cityPixel] = world.humanOriginTable.intern(new Map([
-  [humanOriginIndex('european'), 75],
-  [humanOriginIndex('pygmy'), 25],
+  [europeanProfile, 75],
+  [pygmyProfile, 25],
 ]));
 world.humanOrigins[ruralPixel] = europeanMix;
 
@@ -69,20 +83,21 @@ nomad.type = 'nomadic';
 nomad.range = [ruralPixel];
 nomad.cells = [{
   pixel: ruralPixel,
-  population: 300,
+  density: residentsToDensity(300),
   cultureMix: world.cultureTable.single(culture.id, 100),
   religionMix: 0,
   humanOriginMix: world.humanOriginTable.intern(new Map([
-    [humanOriginIndex('european'), 25],
-    [humanOriginIndex('bushman'), 75],
+    [europeanProfile, 25],
+    [bushmanProfile, 75],
   ])),
 }];
 
 const game = new Game(world, 'observer');
 const inspect = (pixel) => game.inspect(pixel % MAP_WIDTH, Math.floor(pixel / MAP_WIDTH));
 const point = inspect(cityPixel);
+const pointOriginEntry = world.humanOriginTable.entries[world.humanOrigins[cityPixel]];
 assert.deepEqual(point.humanOrigins.map(({ id, share }) => [id, share]), [
-  ['european', 75], ['pygmy', 25],
+  ...pointOriginEntry.ids.map((id, index) => [id, pointOriginEntry.shares[index]]),
 ], 'point inspector keeps the selected raster mix, independent of city groups');
 assert.equal(point.humanClimateSuitability !== null, true, 'populated points include the existing climate score');
 assert.equal(inspect(cityPixel + 2).humanOrigins, null, 'empty owned land is distinct from a real 100% origin mix');
@@ -92,12 +107,33 @@ assert.equal(humanOriginShares({ ids: ['european', 'pygmy'], shares: [75, 20] })
   'incomplete compositions are not presented as complete data');
 
 const cityData = cityComposition(world, city);
-assert.deepEqual(cityData.humanOrigins, { ids: ['european', 'pygmy'], shares: [25, 75] },
-  'city composition comes from urban groups, not the raster');
+const cityGroupOriginEntry = world.humanOriginTable.entries[city.populationGroups[0].humanOriginMix];
+assert.deepEqual(
+  cityData.humanOrigins.map(({ id, share }) => [id, share]),
+  cityGroupOriginEntry.ids.map((id, index) => [id, cityGroupOriginEntry.shares[index]])
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0]),
+  'city composition comes from urban groups, not the raster',
+);
 const countryData = game.countryComposition(country.id);
-assert.deepEqual(countryData.humanOrigins.map(({ id, share }) => [id, share]), [
-  ['european', 75], ['pygmy', 25],
-], 'country composition weights actual rural and urban residents');
+const ruralResidents = densityToResidents(world.density[cityPixel]);
+const otherRuralResidents = densityToResidents(world.density[ruralPixel]);
+const countryResidents = ruralResidents + otherRuralResidents + city.population;
+const expectedCountryOriginShares = new Map([
+  [europeanProfile,
+    (ruralResidents * 0.75 + otherRuralResidents + city.population * 0.25) / countryResidents * 100],
+  [pygmyProfile,
+    (ruralResidents * 0.25 + city.population * 0.75) / countryResidents * 100],
+]);
+const actualCountryOriginShares = countryData.humanOrigins.map(({ id, share }) => [id, share]);
+const sortedExpectedCountryShares =
+  [...expectedCountryOriginShares].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+assert.deepEqual(actualCountryOriginShares.map(([id]) => id),
+  sortedExpectedCountryShares.map(([id]) => id),
+  'country composition includes the expected ancestry profiles');
+actualCountryOriginShares.forEach(([id, share], index) =>
+  assert.ok(Math.abs(share - sortedExpectedCountryShares[index][1]) < 1e-10,
+    'country shares preserve rural and urban population weights'),
+);
 const emptyCountry = world.newCountry({
   rank: 'пустая',
   cultureId: culture.id,
@@ -134,16 +170,19 @@ const packedBlend = (hex, share) => {
 const ruralHasCountryBorder = [
   ruralPixel - 1, ruralPixel + 1, ruralPixel - MAP_WIDTH, ruralPixel + MAP_WIDTH,
 ].some((pixel) => world.land[pixel] && world.owner[pixel] !== world.owner[ruralPixel]);
-assert.equal(renderer.pixels[cityPixel], packed(HUMAN_ORIGIN_COLORS.pygmy),
-  'the origin map chooses the city groups’ leading category');
+assert.equal(renderer.pixels[cityPixel], packed(HUMAN_ORIGIN_COLORS.european),
+  'the origin map includes both rural density and city residents');
 assert.equal(renderer.pixels[ruralPixel], ruralHasCountryBorder
   ? packedShade(HUMAN_ORIGIN_COLORS.bushman, 0.7)
   : packed(HUMAN_ORIGIN_COLORS.bushman),
   'overlapping nomadic cohorts contribute their population-weighted origins');
 renderer.setView('origins', { kind: 'origin', id: humanOriginIndex('pygmy') });
 renderer.flush();
-assert.equal(renderer.pixels[cityPixel], packedBlend(HUMAN_ORIGIN_COLORS.pygmy, 0.75),
-  'selecting a race renders its mixed share as a dedicated map layer');
+const cityPygmyShare = (
+  densityToResidents(world.density[cityPixel]) * 0.25 + city.population * 0.75
+) / (densityToResidents(world.density[cityPixel]) + city.population);
+assert.equal(renderer.pixels[cityPixel], packedBlend(HUMAN_ORIGIN_COLORS.pygmy, cityPygmyShare),
+  'selecting a race renders its share of rural and urban residents');
 game.showLayer({ kind: 'origin', id: humanOriginIndex('pygmy') });
 assert.equal(game.getSnapshot().mapMode, 'origins', 'race selection keeps the dedicated race map mode');
 assert.equal(game.getSnapshot().layer?.kind, 'origin', 'race selection is recorded as an entity layer');
@@ -187,11 +226,11 @@ assert.deepEqual(raceProfileRoute('pygmy'), { pathname: '/race/[id]', params: { 
 assert.match(routeSource, /export function raceProfileRoute/u);
 assert.match(racePage, /КАРТОЧКА РАСЫ/u);
 assert.match(racePage, /showChronicleTab=\{false\}/u);
-assert.match(originComposition, /raceProfileRoute\(row\.id\)/u,
+assert.match(originComposition, /raceProfileRoute\(originId\)/u,
   'origin composition rows link to race profiles too');
 assert.match(inspectCard, /inspect-human-origins/u);
 assert.match(inspectCard, /Игровая агрегированная оценка/u);
 assert.ok(profiles.every((source) => /OriginComposition/u.test(source)),
   'country, city, and character profiles render the shared composition');
 
-console.log('Human-origin display, profiles, point inspector, and map rendering passed.');
+console.log('Проверки отображения происхождения, профилей, инспектора точки и карты пройдены.');

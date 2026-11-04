@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Game } from '../game/game.ts';
 import { MAP_WIDTH } from '../game/config.ts';
+import { forEachNeighbour } from '../game/geography.ts';
 import { AUTO_TURN_HOLD_MS } from '../game/holdConfirmation.ts';
 import { World } from '../game/world.ts';
 
@@ -26,7 +27,7 @@ function makeFixture(seed) {
     world.setOwner(pixel, country.id + 1);
     world.density[pixel] = 80;
     world.humidity[pixel] = 45;
-    world.temperature[pixel] = 50;
+    world.temperature[pixel] = 23;
     world.drainage[pixel] = 50;
     world.culture[pixel] = mix;
   }
@@ -103,6 +104,64 @@ try {
     game.tick();
     assert.equal(game.secondsLeft, nextTurnSeconds - 1, 'the timer resumes after the redraw callback');
     game.discard();
+  }
+
+  // Климатический мазок может менять море внутри сухопутных концов, но не начинаться в море.
+  {
+    const { world, country } = makeFixture(61_405);
+    let coastalLand = -1;
+    let adjacentSea = -1;
+    for (const pixel of world.landIndex) {
+      let water = -1;
+      forEachNeighbour(pixel, (neighbor) => {
+        if (water < 0 && !world.land[neighbor] && world.water.bodyOf[neighbor] >= 0) water = neighbor;
+      });
+      if (water >= 0) {
+        coastalLand = pixel;
+        adjacentSea = water;
+        break;
+      }
+    }
+    assert.ok(coastalLand >= 0 && adjacentSea >= 0, 'the fixture includes a land-sea boundary');
+    world.setOwner(coastalLand, country.id + 1);
+    world.recountCountries();
+    const card = makeCard('rain', { targetCountryId: country.id, hint: coastalLand, ink: 1000, inkTotal: 1000 });
+    const game = new Game(world, 'all');
+    game.startCard(card);
+    const seaHumidity = world.humidity[adjacentSea];
+    game.beginStroke((coastalLand % MAP_WIDTH) + 0.5, Math.floor(coastalLand / MAP_WIDTH) + 0.5);
+    game.endStroke();
+    assert.ok(world.humidity[adjacentSea] > seaHumidity,
+      'дождь, начатый на суше, может изменить соседнюю воду и законно завершиться на суше');
+    game.discard();
+
+    const seaOnlyCard = makeCard('rain', { targetCountryId: country.id, hint: coastalLand });
+    const seaOnlyGame = new Game(world, 'all');
+    seaOnlyGame.startCard(seaOnlyCard);
+    const beforeSeaOnly = world.humidity[adjacentSea];
+    seaOnlyGame.beginStroke((adjacentSea % MAP_WIDTH) + 0.5, Math.floor(adjacentSea / MAP_WIDTH) + 0.5);
+    seaOnlyGame.endStroke();
+    assert.equal(world.humidity[adjacentSea], beforeSeaOnly,
+      'a rain stroke cannot start and remain exclusively on sea');
+    seaOnlyGame.discard();
+
+    const invalidEndCard = makeCard('rain', {
+      targetCountryId: country.id,
+      hint: coastalLand,
+      ink: 1000,
+      inkTotal: 1000,
+    });
+    const invalidEndGame = new Game(world, 'all');
+    invalidEndGame.startCard(invalidEndCard);
+    const beforeInvalidEnd = world.humidity[adjacentSea];
+    invalidEndGame.beginStroke((coastalLand % MAP_WIDTH) + 0.5, Math.floor(coastalLand / MAP_WIDTH) + 0.5);
+    invalidEndGame.strokeTo((adjacentSea % MAP_WIDTH) + 0.5, Math.floor(adjacentSea / MAP_WIDTH) + 0.5);
+    invalidEndGame.endStroke();
+    assert.equal(world.humidity[adjacentSea], beforeInvalidEnd,
+      'a climate stroke ending at sea rolls back its humidity changes');
+    assert.equal(invalidEndCard.ink, invalidEndCard.inkTotal,
+      'canceling a sea-ended climate stroke restores its ink');
+    invalidEndGame.discard();
   }
 
   // A blank city card uses the automatic placement strategy without bypassing its city rule.

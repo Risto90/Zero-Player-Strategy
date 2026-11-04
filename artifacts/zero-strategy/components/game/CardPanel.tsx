@@ -3,12 +3,16 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
 import { personDeathStatus } from '@/game/government';
 import type { Game, GameSnapshot } from '@/game/game';
+import { nomadRevivalCountry } from '@/game/nomads';
 import { openProfile } from '@/game/profileNavigation';
 
 const c = colors.light;
 
 export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
   const card = snap.card;
+  const nomad = card?.type === 'buildCity' && card.targetCountryId !== null
+    ? game.world.countries[card.targetCountryId] : null;
+  const revivalCountry = nomad?.type === 'nomadic' ? nomadRevivalCountry(game.world, nomad) : null;
   return (
     <View style={styles.panel} testID="panel-card">
       {snap.progress ? (
@@ -28,6 +32,9 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
           <View style={styles.titleRow}>
             {snap.cardCountry && <View style={[styles.swatch, { backgroundColor: snap.cardCountry.color }]} />}
             <Text style={styles.title} numberOfLines={1} testID="text-card-title">{card.title}</Text>
+            {card.brushRank && (
+              <Text style={styles.brushRank} testID="text-brush-rank">{card.brushRank}</Text>
+            )}
             {snap.queuedCards > 0 && (
               <Text style={styles.queued} testID="text-queued">ЕЩЁ {snap.queuedCards}</Text>
             )}
@@ -36,6 +43,32 @@ export function CardPanel({ game, snap }: { game: Game; snap: GameSnapshot }) {
             <Text style={styles.country} testID="text-card-country">{snap.cardCountry.rank} {snap.cardCountry.name}</Text>
           )}
           <Text style={styles.detail} testID="text-card-detail">{card.detail}</Text>
+          {nomad?.type === 'nomadic' && revivalCountry ? (
+            <View style={styles.choices} testID="nomad-settlement-choices">
+              <Pressable
+                onPress={() => game.selectNomadSettlement('revive')}
+                style={[styles.choice, card.nomadSettlementChoice === 'revive' && styles.choiceSelected]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: card.nomadSettlementChoice === 'revive' }}
+                testID="button-nomad-settlement-revive">
+                <Text style={styles.choiceTitle}>Возродить {revivalCountry.name}</Text>
+                <Text style={styles.choiceDetail}>Сохранить её имя, герб, правление и модификаторы.</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => game.selectNomadSettlement('new')}
+                style={[styles.choice, card.nomadSettlementChoice === 'new' && styles.choiceSelected]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: card.nomadSettlementChoice === 'new' }}
+                testID="button-nomad-settlement-new">
+                <Text style={styles.choiceTitle}>Создать новую страну</Text>
+                <Text style={styles.choiceDetail}>Оставить кочевую ветвь отдельным государством.</Text>
+              </Pressable>
+            </View>
+          ) : nomad?.type === 'nomadic' ? (
+            <Text style={styles.choiceDetail}>
+              Прежняя страна уже возрождена или недоступна; кочевье станет отдельным оседлым государством.
+            </Text>
+          ) : null}
           {card.characterEvent?.personIds.length ? (
             <View style={styles.subjects}>
               <Text style={styles.choiceDetail}>Персонажи:</Text>
@@ -98,6 +131,7 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   swatch: { width: 12, height: 12, borderRadius: 2, borderWidth: 1, borderColor: 'rgba(44,30,23,0.5)' },
   title: { flexShrink: 1, fontFamily: fonts.display, fontSize: 18, lineHeight: 22, color: c.foreground },
+  brushRank: { fontFamily: fonts.sansSemiBold, fontSize: 10, color: c.secondaryForeground, backgroundColor: c.secondary, borderRadius: 3, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden' },
   queued: { marginLeft: 'auto', fontFamily: fonts.sansSemiBold, fontSize: 10, letterSpacing: 1, color: c.secondaryForeground, backgroundColor: c.secondary, borderRadius: 3, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden' },
   country: { fontFamily: fonts.sans, fontSize: 12, color: c.mutedForeground },
   detail: { marginTop: 4, fontFamily: fonts.sans, fontSize: 13, lineHeight: 17, color: c.foreground, opacity: 0.82 },

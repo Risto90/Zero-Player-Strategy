@@ -73,8 +73,10 @@ assert.match(contourStrategyBody, /this\.actions\.contour!\(/);
 assert.match(contourStrategyBody, /this\.actions\.endStroke\(/);
 assert.doesNotMatch(contourStrategyBody, /this\.painter\.(dab|line|paintContour|paintContours)\(/,
   'контурная стратегия применяет заливку через общий обработчик');
-assert.match(autoPaint, /if \(card\.type === 'colonization'\)[\s\S]{0,220}new ContourTerritoryStrategy/,
-  'ИИ выбирает колонизацию через контурную стратегию');
+assert.match(autoPaint, /if \(card\.type === 'colonization'\)/,
+  'ИИ направляет колонизацию в контурную стратегию');
+assert.match(autoPaint, /new ContourTerritoryStrategy\(/,
+  'ИИ использует общий расчёт и нанесение контурных мазков');
 assert.doesNotMatch(autoPaintCandidates, /card\.type === 'colonization'[\s\S]{0,220}colonizationMask/,
   'поиск случайных точек больше не используется для выбора места колонизации');
 assert.match(autoPaint, /export function autoPaint\(\s*painter: CardPainter,\s*actions: PaintActions(?:,|\))/,

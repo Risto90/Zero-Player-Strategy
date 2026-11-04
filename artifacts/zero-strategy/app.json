@@ -4,7 +4,9 @@
     "slug": "zero-strategy",
     "version": "1.0.0",
     "icon": "./assets/images/icon.png",
-    "platforms": ["web"],
+    "platforms": [
+      "web"
+    ],
     "userInterfaceStyle": "light",
     "web": {
       "bundler": "metro",

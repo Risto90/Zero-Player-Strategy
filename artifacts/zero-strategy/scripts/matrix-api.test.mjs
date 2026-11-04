@@ -15,6 +15,13 @@ execFileSync(path.join(appRoot, '../api-server/node_modules/.bin/esbuild'), [
 const matrix = await import(pathToFileURL(output));
 const { DenseMatrix, CsrMatrix, DenseVector, MatrixBatch } = matrix;
 
+assert.deepEqual(
+  [...matrix.labelGridComponents(new Uint8Array([1, 1, 0, 0, 1, 0, 1, 1, 0]), 3, 3)],
+  [0, 0, -1, -1, 0, -1, 0, 0, -1],
+  'компоненты сетки используют четырёхсвязность и помечают пустые ячейки',
+);
+assert.throws(() => matrix.labelGridComponents(new Uint8Array([1, 0]), 3, 1), /Размеры матрицы/u);
+
 const source = DenseMatrix.fromRows([[1, 2, 3], [4, 5, 6]]);
 const transpose = source.transpose();
 assert.deepEqual(transpose.toRows(), [[1, 4], [2, 5], [3, 6]]);

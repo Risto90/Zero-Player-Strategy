@@ -2,6 +2,7 @@ import { ContourArea, type ContourBounds, type ContourSpan } from './contours';
 import { MAP_HEIGHT, MAP_WIDTH } from './config';
 import { cityLabelFontSize, cityVisibilityRank, isCityVisibleAtZoom } from './cityVisibility';
 import { HUMAN_ORIGINS } from './human';
+import { cityHasPort } from './settlements';
 import {
   fitLabelToVisibleContour,
   type LabelAvoidanceRect,
@@ -94,7 +95,7 @@ function pointToSegmentDistance(
   return Math.hypot(x - (ax + dx * t), y - (ay + dy * t));
 }
 
-/** Расстояние между границами вычисляется по векторным кольцам после быстрой проверки bbox. */
+/** Расстояние между границами вычисляется по векторным кольцам после быстрой проверки ограничивающих прямоугольников. */
 function contourDistance(first: ContourArea, second: ContourArea, limit: number): number {
   const a = first.bounds, b = second.bounds;
   const dx = Math.max(0, a.x0 - b.x1 - 1, b.x0 - a.x1 - 1);
@@ -405,7 +406,7 @@ export function entityMapLabels(
       for (const country of world.countries) {
         if (country.type !== 'nomadic') continue;
         for (const cell of country.cells ?? []) {
-          if (!(cell.population > 0) || cell.pixel < 0 || cell.pixel >= MAP_WIDTH * MAP_HEIGHT || !world.land[cell.pixel]) continue;
+          if (!(cell.density > 0) || cell.pixel < 0 || cell.pixel >= MAP_WIDTH * MAP_HEIGHT || !world.land[cell.pixel]) continue;
           const composition = definition.table.entries[cell.humanOriginMix];
           if (!composition?.ids.length) continue;
           let targetId = selectedId;
@@ -528,7 +529,7 @@ export function visibleCityLabelIds(
 
   const candidates = world.cities
     .map((city) => {
-      const hasPort = world.isCoastal(city.pixel) || world.knownRivers[city.pixel] > 0;
+      const hasPort = cityHasPort(world, city);
       return { city, hasPort, zoomRank: cityVisibilityRank(city, hasPort) };
     })
     .filter(({ city, zoomRank }) => city.name && isCityVisibleAtZoom(scale, baseScale, zoomRank))
@@ -586,7 +587,7 @@ export function shouldShowStateLabels(mode: MapMode): boolean {
   return mode === 'political' || mode === 'cities';
 }
 
-/** Web-холст запоминает гистерезис между кадрами; нативный холст использует shared value. */
+/** Браузерный холст запоминает гистерезис между кадрами; нативный холст использует разделяемое значение. */
 export function labelVisibilityThreshold(key: string): number {
   return labelVisibility.get(key) ? 9 : 11;
 }

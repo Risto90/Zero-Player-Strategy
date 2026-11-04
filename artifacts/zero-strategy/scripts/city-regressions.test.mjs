@@ -15,6 +15,7 @@ import {
   applyDensityLoss,
   canUpgradeCityRank,
   cityAtUpperPopulationThreshold,
+  cityInfluenceMultiplier,
   cityAtWaningThreshold,
   cityPopulationMaximum,
   cityPopulationMinimum,
@@ -26,6 +27,12 @@ import { encodeSave } from '../game/saveFile.ts';
 import { serializeWorld } from '../game/persistence.ts';
 import { writeSaveBytes } from '../game/storage.ts';
 import { World } from '../game/world.ts';
+import {
+  densityToResidents,
+  residentsToDensity,
+  roundResidents,
+} from '../game/populationUnits.ts';
+import { apportionIntegerTotal } from '../kernel/proportions.ts';
 
 function makeCountry(pixelCount, cityRanks = []) {
   const world = World.create('random', 4321);
@@ -46,7 +53,7 @@ function makeCountry(pixelCount, cityRanks = []) {
     world.culture[pixel] = cultureMix;
   }
   const cities = cityRanks.map((rank, index) =>
-    world.addCity(country.id, pixels[index], rank, index === 0),
+    world.addCity(country.id, pixels[index], rank, index === 0, 200),
   );
   assert.ok(cities.every(Boolean), 'fixture cities should be created');
   return { world, country, pixels, cities };
@@ -110,7 +117,7 @@ function makeNearbyCityFixture(cityCount, foreignFrom = Infinity, countryPixels 
     world.density[locations[i]] = 10;
     world.culture[locations[i]] = world.cultureTable.single(culture.id, 100);
     if (i < cityCount) {
-      const city = world.addCity(owner.id, locations[i], 1, i === 0);
+      const city = world.addCity(owner.id, locations[i], 1, i === 0, 200);
       assert.ok(city, 'nearby fixture city should be created');
       cities.push(city);
     }
@@ -158,7 +165,7 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   game.discard();
 }
 
-// Population bands are thresholds for decisions, not hard caps on growth.
+// Диапазоны населения задают пороги решений, а не жёсткие пределы роста.
 {
   assert.deepEqual(
     Array.from({ length: 6 }, (_, i) => [cityPopulationMinimum(i + 1), cityPopulationMaximum(i + 1)]),
@@ -174,10 +181,16 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   const beforeTotal = totalOwnedPopulation(world);
   const influence = new CityInfluenceIndex(world, cities[0].countryId);
   applyDensityGrowth(world, target, 100, influence.citiesAt(target));
-  assert.deepEqual(cities.map((city) => city.population), beforeCities.map((population) => population + 10),
-    'each of up to five covering cities receives ten percent, including foreign cities');
-  assert.equal(world.density[target], 70, 'the remaining sixty percent is added to the rural point');
-  assert.equal(totalOwnedPopulation(world) - beforeTotal, 100, 'city growth shares conserve the full population increase');
+  const expectedShares = apportionIntegerTotal(roundResidents(densityToResidents(40)), cities.map(() => 1));
+  assert.deepEqual(
+    cities.map((city, index) => city.population - beforeCities[index]),
+    expectedShares,
+    'each of up to five covering cities receives ten percent of density growth, including foreign cities',
+  );
+  assert.ok(Math.abs(world.density[target] - 70) < 1e-3,
+    'the remaining sixty percent is added to the rural point');
+  assert.ok(Math.abs(totalOwnedPopulation(world) - beforeTotal - densityToResidents(100)) < 1e-6,
+    'city growth shares conserve the full population increase');
 }
 
 {
@@ -187,9 +200,11 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   assert.notEqual(target, undefined, 'five overlapping city spheres cover the growth point');
   const totalBefore = totalOwnedPopulation(world);
   applyDensityGrowth(world, target, 100, new CityInfluenceIndex(world, country.id).citiesAt(target));
-  assert.equal(cities.reduce((sum, city) => sum + city.population, 0), 50 + 5 * 10,
+  assert.equal(cities.reduce((sum, city) => sum + city.population, 0),
+    5 * 200 + roundResidents(densityToResidents(50)),
     'five cities receive exactly fifty percent in total');
-  assert.equal(totalOwnedPopulation(world) - totalBefore, 100, 'the five-city rule conserves population');
+  assert.ok(Math.abs(totalOwnedPopulation(world) - totalBefore - densityToResidents(100)) < 1e-6,
+    'the five-city rule conserves population');
 }
 
 {
@@ -207,19 +222,17 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   assert.equal(cities[0].population, before[0], 'a city at its upper threshold receives no growth share');
   const eligible = cities.slice(1);
   const received = eligible.map((city, i) => cities[i + 1].population - before[i + 1]);
-  assert.ok(Math.abs(received.reduce((sum, value) => sum + value, 0) - 50) < 1e-8,
+  const expectedCityResidents = roundResidents(densityToResidents(50));
+  assert.equal(received.reduce((sum, value) => sum + value, 0), expectedCityResidents,
     'more than five cities split no more than fifty percent among eligible cities');
   for (let i = 0; i < eligible.length; i += 1) {
-    const weight = eligible[i].rank * (eligible[i].capital ? 2 : 1) *
-      (world.isCoastal(eligible[i].pixel) && world.rivers[eligible[i].pixel] ? 3 :
-        world.isCoastal(eligible[i].pixel) || world.rivers[eligible[i].pixel] ? 2 : 1);
-    const expected = 50 * weight / eligible.reduce((sum, city) =>
-      sum + city.rank * (city.capital ? 2 : 1) *
-      (world.isCoastal(city.pixel) && world.rivers[city.pixel] ? 3 :
-        world.isCoastal(city.pixel) || world.rivers[city.pixel] ? 2 : 1), 0);
-    assert.ok(Math.abs(received[i] - expected) < 1e-8, 'growth is allocated by rank times sphere multiplier');
+    const expected = apportionIntegerTotal(
+      expectedCityResidents,
+      eligible.map((city) => city.rank * cityInfluenceMultiplier(world, city)),
+    );
+    assert.equal(received[i], expected[i], 'growth is allocated by rank times sphere multiplier');
   }
-  assert.ok(Math.abs(totalOwnedPopulation(world) - totalBefore - 100) < 1e-8,
+  assert.ok(Math.abs(totalOwnedPopulation(world) - totalBefore - densityToResidents(100)) < 1e-6,
     'the capped city is excluded without losing growth');
 }
 
@@ -230,8 +243,8 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   resizeCityPopulation(world, cities[0], 200);
   resizeCityPopulation(world, cities[1], 200);
   const before = cities.map((city) => city.population);
-  const result = applyDensityLoss(world, target, 30);
-  assert.equal(result, 30, 'ordinary loss is applied to its full requested amount');
+  const result = applyDensityLoss(world, target, residentsToDensity(30));
+  assert.equal(result, residentsToDensity(30), 'ordinary loss is applied to its full requested density');
   assert.equal(world.density[target], 80, 'same-country cities fully compensate a supported rural loss');
   assert.equal(before[0] - cities[0].population + before[1] - cities[1].population, 30,
     'city residents fill the density loss');
@@ -242,7 +255,7 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   foreignFixture.world.density[foreignTarget] = 80;
   foreignFixture.cities.forEach((city) => resizeCityPopulation(foreignFixture.world, city, 200));
   const foreignBefore = foreignFixture.cities.slice(2).map((city) => city.population);
-  applyDensityLoss(foreignFixture.world, foreignTarget, 20);
+  applyDensityLoss(foreignFixture.world, foreignTarget, residentsToDensity(20));
   assert.deepEqual(foreignFixture.cities.slice(2).map((city) => city.population), foreignBefore,
     'foreign cities do not compensate another country’s population loss');
 
@@ -250,14 +263,14 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   cappedFixture.world.density[cappedFixture.targetPixel] = 80;
   resizeCityPopulation(cappedFixture.world, cappedFixture.cities[0], 110);
   resizeCityPopulation(cappedFixture.world, cappedFixture.cities[1], 200);
-  applyDensityLoss(cappedFixture.world, cappedFixture.targetPixel, 60);
+  applyDensityLoss(cappedFixture.world, cappedFixture.targetPixel, residentsToDensity(60));
   assert.equal(cappedFixture.cities[0].population, 100,
     'a city contributes only the ten residents it has above its lower rank limit');
   assert.ok(cappedFixture.cities[1].population > 100,
     'the remaining compensation is apportioned to other cities with available population');
 }
 
-// City promotion requires the upper population threshold and two same-rank neighbors in its sphere.
+// Для повышения ранга города нужны верхний порог населения и два соседних города того же ранга в его сфере.
 {
   const { world, country, cities } = makeNearbyCityFixture(3);
   resizeCityPopulation(world, cities[0], 499);
@@ -275,7 +288,7 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
     'a city at the upper threshold cannot upgrade without two other same-rank cities');
 }
 
-// Waning eligibility, threshold-first targets, capital exclusion, and rank-weighted card weight.
+// Проверки упадка, приоритет пороговых целей, исключение столицы и вес карты с учётом ранга.
 {
   const { world, country, cities } = makeNearbyCityFixture(3);
   cities.forEach((city) => resizeCityPopulation(world, city, 200));
@@ -301,7 +314,7 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
     'waning-card weight grows in direct proportion to total city ranks');
 }
 
-// A city above its lower threshold loses twenty percent and resettles half the loss.
+// Город выше нижнего порога теряет 20% населения и переселяет половину потерь.
 {
   const { world, country, cities } = makeNearbyCityFixture(2, Infinity, 300);
   const city = cities[0];
@@ -324,7 +337,7 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
     'half the city loss is deleted and half remains in the country');
 }
 
-// Cities at or below the lower threshold lose rank; a rank-one capital can be removed safely.
+// Города на нижнем пороге или ниже теряют ранг; столицу первого ранга можно безопасно удалить.
 {
   const { world, country, cities } = makeNearbyCityFixture(2, Infinity, 300);
   resizeCityPopulation(world, cities[0], 500);
@@ -344,13 +357,12 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   assert.ok(removed.transferredPopulation > 0, 'half the removed city population is resettled');
 }
 
-// The single-city target is automatic; removing it converts the remaining population to nomadic countries.
+// Цель для единственного города выбирается автоматически; его удаление превращает оставшееся население в кочевые страны.
 {
   const { world, country, cities } = makeNearbyCityFixture(1, Infinity, 100);
   const city = cities[0];
   resizeCityPopulation(world, city, 100);
-  const expectedNomadPopulation = totalOwnedPopulation(world) -
-    city.population * 0.5 + world.density[city.pixel];
+  const expectedNomadPopulation = totalOwnedPopulation(world) - city.population * 0.5;
   const card = drawWaneCityCard(world, country);
   assert.equal(card.choices.length, 1, 'a single city is the only automatic target');
   assert.equal(card.choices[0].cityId, city.id, 'the card selects the sole city without asking the player');
@@ -369,13 +381,14 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   assert.ok(world.landIndex.every((pixel) => world.owner[pixel] !== country.id + 1),
     'the former state territory becomes unclaimed');
   const nomadicCountries = world.countries.filter((item) => item.type === 'nomadic' && item.sourceCountryId === country.id);
-  const nomadPopulation = nomadicCountries.flatMap((item) => item.cells ?? []).reduce((sum, cell) => sum + cell.population, 0);
+  const nomadPopulation = nomadicCountries.flatMap((item) => item.cells ?? [])
+    .reduce((sum, cell) => sum + densityToResidents(cell.density), 0);
   assert.ok(Math.abs(nomadPopulation - expectedNomadPopulation) < 1e-3,
     'all population remaining after waning, including resettled urban residents, becomes nomadic');
 }
 
-// A country with its mandatory capital still offers another city, and the actual
-// player placement path accepts that city on an unoccupied home pixel.
+// Страна с обязательной столицей всё ещё предлагает построить другой город,
+// а настоящий путь размещения игрока допускает его в свободной точке своей территории.
 {
   const { world, country, pixels, cities } = makeCountry(4, [1]);
   const card = drawBuildCityCard(world, country);
@@ -390,9 +403,9 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   game.discard();
 }
 
-// A fully occupied country must not offer a build card or report a usable
-// placement tool. The game-side gate must also reject a card made before the
-// country's last open site was occupied.
+// Для полностью занятой страны нельзя предлагать карту строительства или
+// показывать доступный инструмент размещения. Проверка игры также должна
+// отклонить карту, созданную до занятия последней свободной точки.
 {
   const { world, country } = makeCountry(4, [1, 1, 1, 1]);
   assert.equal(drawBuildCityCard(world, country), null, 'a fully occupied country has no build-city card');
@@ -419,7 +432,7 @@ function assertInvalidCityPlacementIsNoop(getTargetPixel, description) {
   game.discard();
 }
 
-// Invalid targets must not add a city, transfer population, or change capitals.
+// Недопустимая цель не должна создавать город, перемещать население или менять столицы.
 assertInvalidCityPlacementIsNoop(
   ({ world }) => world.land.findIndex((isLand) => !isLand),
   'water',
@@ -433,8 +446,8 @@ assertInvalidCityPlacementIsNoop(
   'an occupied point',
 );
 
-// Merging by union or inheritance retains the main country's capital and
-// demotes every capital from the incoming country to an ordinary city.
+// При объединении или наследовании столица основной страны сохраняется,
+// а столицы присоединяемой страны становятся обычными городами.
 for (const cause of ['union', 'inheritance']) {
   const { world, country: main, pixels: mainPixels } = makeCountry(4, [1, 1]);
   const incoming = world.newCountry({
@@ -489,8 +502,8 @@ for (const cause of ['union', 'inheritance']) {
   game.discard();
 }
 
-// Loading a saved world with duplicate capital flags keeps the first capital in
-// saved city order; countries with no capital still promote their best city.
+// При загрузке сохранения с несколькими столицами сохраняется первая по
+// порядку городов; страны без столицы по-прежнему повышают лучший город.
 {
   const { world, country: main, pixels } = makeCountry(6, [1, 1, 1]);
   world.cities[1].capital = true;
@@ -543,8 +556,8 @@ for (const cause of ['union', 'inheritance']) {
   }
 }
 
-// Automatic play may choose either option. The actual selected city must be the
-// one promoted, with a capital and multiple ordinary cities in the country.
+// Автоматический ход может выбрать любой вариант. Повышен должен быть именно
+// выбранный город; в стране остаётся столица и несколько обычных городов.
 for (const selectedIndex of [0, 1]) {
   const { world, country, cities } = makeCountry(6, [1, 1, 1, 1]);
   cities.forEach((city) => resizeCityPopulation(world, city, cityPopulationMaximum(city.rank)));
@@ -584,8 +597,8 @@ for (const selectedIndex of [0, 1]) {
   }
 }
 
-// A 3,000-pixel country with a capital and another city can split without
-// binding the player to a selected city.
+// Страну из 3000 точек со столицей и ещё одним городом можно разделить,
+// не привязывая игрока к конкретному городу.
 {
   const { world, country, cities } = makeCountry(3000, [1, 1]);
   const split = drawSplitCard(world, country, 1000);
@@ -596,7 +609,7 @@ for (const selectedIndex of [0, 1]) {
   assert.equal(split?.newCountryId, world.countries.length - 1, 'the split card creates its destination country');
 }
 
-// Run the real observer engine for a fixed 100-year window and report activity.
+// Запускает настоящий движок наблюдателя на фиксированные 100 лет и выводит статистику.
 {
   const previousRandom = Math.random;
   const previousPause = Game.pause;

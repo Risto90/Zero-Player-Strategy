@@ -2,13 +2,26 @@ import { GOVERNMENTS, MODIFIERS } from './government';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, RANKS } from './config';
 import { quantizeShares } from './composition';
 import { combineHumanOriginTableMixes } from './human';
-import type { Country, NomadCell, World } from './world';
+import {
+  populationCohortsAtPixel,
+  populationCohortsFromMixes,
+  setPopulationCohortsAtPixel,
+  type PopulationCohortWeight,
+} from './populationCohorts';
+import { densityToResidents, residentsToDensity } from './populationUnits';
+import { isActiveCountry, type Country, type NomadCell, type World } from './world';
 import { forEachNeighbour } from './geography';
 import { addCityAndConcentrate, cityInfluenceRadius } from './settlements';
-import { appoint, closeRulerTerms, successionOrder } from './succession';
+import { appoint, closeRulerTerms, successionOrder, syncRulerTerms } from './succession';
 import { newCitizen, registerPerson, setPersonHome } from './characters';
 
-type Cohort = { cultureId: number; religionId: number | null; population: number; pixel: number; humanOriginMix: number };
+type Cohort = {
+  cultureId: number;
+  religionId: number | null;
+  population: number;
+  pixel: number;
+  humanOriginMix: number;
+};
 type SplitGroup = { cultures: Set<number>; religions: Set<number | null> };
 
 function memberships(values: (number | null)[], probability: number, forceSplit: boolean): Set<number | null>[] {
@@ -30,7 +43,7 @@ function splitProbability(country: Country): number {
   return 0;
 }
 
-/** Converts an area-less country's population into overlapping nomadic people. */
+/** Превращает население государства без территории в кочевые группы. */
 export function dissolveCountryIntoNomadicCountries(
   world: World,
   country: Country,
@@ -47,25 +60,19 @@ export function dissolveCountryIntoNomadicCountries(
   for (const pixel of pixels) {
     const density = world.density[pixel];
     if (density <= 0) continue;
-    const culture = world.cultureTable.entries[world.culture[pixel]];
-    const religion = world.religionTable.entries[world.religion[pixel]];
-    const faithIds: (number | null)[] = [...religion.ids, null];
-    const faithShares = [...religion.shares, 100 - religion.total];
-    culture.ids.forEach((cultureId, ci) => {
-      faithIds.forEach((religionId, ri) => {
-        const population = density * culture.shares[ci] / 100 * faithShares[ri] / 100;
-        if (population <= 1e-9) return;
-        cohorts.push({
-          cultureId,
-          religionId,
-          population,
-          pixel,
-          humanOriginMix: world.humanOrigins[pixel] || world.humanOriginTable.single(0, 100),
-        });
-        cultureTotals.set(cultureId, (cultureTotals.get(cultureId) ?? 0) + population);
-        religionTotals.set(religionId, (religionTotals.get(religionId) ?? 0) + population);
+    const residents = densityToResidents(density);
+    for (const group of populationCohortsAtPixel(world, pixel, residents)) {
+      if (group.weight <= 1e-9) continue;
+      cohorts.push({
+        cultureId: group.cultureId,
+        religionId: group.religionId,
+        population: group.weight,
+        pixel,
+        humanOriginMix: world.humanOriginTable.single(group.originProfileId, 100),
       });
-    });
+      cultureTotals.set(group.cultureId, (cultureTotals.get(group.cultureId) ?? 0) + group.weight);
+      religionTotals.set(group.religionId, (religionTotals.get(group.religionId) ?? 0) + group.weight);
+    }
   }
   const cultureIds = [...cultureTotals.keys()].sort((a, b) => cultureTotals.get(b)! - cultureTotals.get(a)!);
   const faithIds = [...religionTotals.keys()].sort((a, b) => religionTotals.get(b)! - religionTotals.get(a)!);
@@ -143,7 +150,7 @@ export function dissolveCountryIntoNomadicCountries(
       }
       cells.push({
         pixel,
-        population: cellTotal,
+        density: residentsToDensity(cellTotal),
         cultureMix: world.cultureTable.intern(quantizeShares(cultureMix, 100)),
         religionMix: world.religionTable.intern(
           new Map([...religionMix].map(([religionId, amount]) => [religionId, amount / cellTotal * 100])),
@@ -152,6 +159,12 @@ export function dissolveCountryIntoNomadicCountries(
           world.humanOriginTable,
           entries.map((entry) => ({ id: entry.humanOriginMix, weight: entry.population })),
         ),
+        populationGroups: entries.map((entry) => ({
+          cultureId: entry.cultureId,
+          religionId: entry.religionId,
+          originProfileId: world.humanOriginTable.entries[entry.humanOriginMix]?.ids[0] ?? 0,
+          share: entry.population * 100 / cellTotal,
+        })),
       });
     }
     const dominantCulture = [...groupCultures].sort((a, b) => b[1] - a[1])[0][0];
@@ -234,6 +247,7 @@ export function dissolveCountryIntoNomadicCountries(
     world.culture[pixel] = 0;
     world.religion[pixel] = 0;
     world.humanOrigins[pixel] = 0;
+    world.populationCohorts[pixel] = 0;
   }
   country.pixels = 0;
   closeRulerTerms(country, year);
@@ -249,14 +263,31 @@ export function availableNomadCitySites(world: World, nomad: Country): number[] 
   );
 }
 
-/** Founding a town changes this same country from nomadic to settled. */
-export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: number, year: number): Country | null {
+/** Возвращает распущенную оседлую страну, которую ещё может возродить эта ветвь. */
+export function nomadRevivalCountry(world: World, nomad: Country): Country | null {
+  if (nomad.type !== 'nomadic' || !Number.isInteger(nomad.sourceCountryId)) return null;
+  const source = world.countries[nomad.sourceCountryId as number];
+  if (!source || source.id === nomad.id || source.type !== 'settled' || isActiveCountry(source)) return null;
+  if (world.cities.some((city) => city.countryId === source.id)) return null;
+  return source;
+}
+
+/** Основание города переводит то же государство из кочевого в оседлое. */
+export function settleNomadAsCountry(
+  world: World,
+  nomad: Country,
+  cityPixel: number,
+  year: number,
+  choice: 'revive' | 'new' = 'new',
+): Country | null {
   if (nomad.type !== 'nomadic') return null;
   if (!availableNomadCitySites(world, nomad).includes(cityPixel)) return null;
+  const revivedCountry = choice === 'revive' ? nomadRevivalCountry(world, nomad) : null;
+  const settledCountry = revivedCountry ?? nomad;
   const proposedCity = {
     id: -1,
     chronicleId: -1,
-    countryId: -1,
+    countryId: settledCountry.id,
     pixel: cityPixel,
     rank: 1 as const,
     population: 0,
@@ -272,21 +303,25 @@ export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: nu
   });
   if (!territory.includes(cityPixel)) return null;
 
-  const rank = [...RANKS].reverse().find((candidate) => candidate.ink <= territory.length) ?? RANKS[0];
+  const rank = [...RANKS].reverse().find((candidate) => candidate.ink <= territory.length) ?? RANKS[RANKS.length - 1];
   const cells = nomad.cells ?? [];
-  const heir = successionOrder(world, nomad)[0] ?? null;
-  nomad.type = 'settled';
-  nomad.rank = rank.name;
-  nomad.foundedYear = year;
-  nomad.modifiers = [...new Set([
-    ...GOVERNMENTS.tribal.modifiers,
-    ...nomad.modifiers.filter((modifier) => MODIFIERS[modifier].forms?.includes('tribal') ?? true),
-  ])];
-  nomad.heir = heir;
-  delete nomad.range;
-  delete nomad.cells;
-  delete nomad.sourceCountryId;
-  for (const pixel of territory) world.setOwner(pixel, nomad.id + 1);
+  if (revivedCountry) {
+    revivedCountry.rank = rank.name;
+  } else {
+    const heir = successionOrder(world, nomad)[0] ?? null;
+    nomad.type = 'settled';
+    nomad.rank = rank.name;
+    nomad.foundedYear = year;
+    nomad.modifiers = [...new Set([
+      ...GOVERNMENTS.tribal.modifiers,
+      ...nomad.modifiers.filter((modifier) => MODIFIERS[modifier].forms?.includes('tribal') ?? true),
+    ])];
+    nomad.heir = heir;
+    delete nomad.range;
+    delete nomad.cells;
+    delete nomad.sourceCountryId;
+  }
+  for (const pixel of territory) world.setOwner(pixel, settledCountry.id + 1);
   const destinations = new Set(territory);
   const nearest = new Int32Array(MAP_PIXELS).fill(-1);
   const queue = new Int32Array(MAP_PIXELS);
@@ -304,63 +339,74 @@ export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: nu
     });
   }
 
-  const additions = new Map<number, {
-    population: number;
-    cultures: Map<number, number>;
-    religions: Map<number, number>;
-    humanOrigins: { id: number; weight: number }[];
-  }>();
-  const addMix = (totals: Map<number, number>, mixId: number, population: number, table: World['cultureTable']): void => {
-    const entry = table.entries[mixId];
-    for (let index = 0; index < entry.ids.length; index += 1) {
-      const id = entry.ids[index];
-      totals.set(id, (totals.get(id) ?? 0) + population * entry.shares[index] / 100);
-    }
-  };
+  const additions = new Map<number, { population: number; cohorts: PopulationCohortWeight[] }>();
   for (const cell of cells) {
-    if (cell.population <= 0) continue;
+    if (cell.density <= 0) continue;
+    const population = densityToResidents(cell.density);
     const destination = destinations.has(cell.pixel) ? cell.pixel : nearest[cell.pixel];
     if (destination < 0) continue;
     let addition = additions.get(destination);
     if (!addition) {
-      addition = { population: 0, cultures: new Map(), religions: new Map(), humanOrigins: [] };
+      addition = { population: 0, cohorts: [] };
       additions.set(destination, addition);
     }
-    addition.population += cell.population;
-    addMix(addition.cultures, cell.cultureMix, cell.population, world.cultureTable);
-    addMix(addition.religions, cell.religionMix, cell.population, world.religionTable as World['cultureTable']);
-    addition.humanOrigins.push({
-      id: cell.humanOriginMix ?? world.humanOriginTable.single(0, 100),
-      weight: cell.population,
-    });
+    addition.population += population;
+    const cohorts = cell.populationGroups?.map((group) => ({
+      cultureId: group.cultureId,
+      religionId: group.religionId,
+      originProfileId: group.originProfileId,
+      weight: population * group.share / 100,
+    })) ?? populationCohortsFromMixes(
+      world,
+      cell.cultureMix,
+      cell.religionMix,
+      cell.humanOriginMix ?? world.humanOriginTable.single(0, 100),
+      population,
+    );
+    addition.cohorts.push(...cohorts);
   }
   for (const [pixel, addition] of additions) {
-    const existing = world.density[pixel];
+    const existing = densityToResidents(world.density[pixel]);
     const total = existing + addition.population;
-    const cultures = new Map<number, number>(), religions = new Map<number, number>();
-    const humanOrigins: { id: number; weight: number }[] = [];
-    if (existing > 0) {
-      addMix(cultures, world.culture[pixel], existing, world.cultureTable);
-      addMix(religions, world.religion[pixel], existing, world.religionTable as World['cultureTable']);
-      humanOrigins.push({
-        id: world.humanOrigins[pixel] || world.humanOriginTable.single(0, 100),
-        weight: existing,
-      });
+    const cohorts = existing > 0 ? populationCohortsAtPixel(world, pixel, existing) : [];
+    cohorts.push(...addition.cohorts);
+    world.density[pixel] = residentsToDensity(total);
+    setPopulationCohortsAtPixel(world, pixel, cohorts);
+  }
+  if (additions.size > 0) {
+    let x0 = MAP_WIDTH, y0 = MAP_HEIGHT, x1 = -1, y1 = -1;
+    for (const pixel of additions.keys()) {
+      const x = pixel % MAP_WIDTH;
+      const y = Math.floor(pixel / MAP_WIDTH);
+      x0 = Math.min(x0, x);
+      y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x);
+      y1 = Math.max(y1, y);
     }
-    for (const [id, amount] of addition.cultures) cultures.set(id, (cultures.get(id) ?? 0) + amount);
-    for (const [id, amount] of addition.religions) religions.set(id, (religions.get(id) ?? 0) + amount);
-    humanOrigins.push(...addition.humanOrigins);
-    world.density[pixel] = total;
-    world.culture[pixel] = world.cultureTable.intern(
-      new Map([...cultures].map(([id, amount]) => [id, amount * 100 / total])),
-    );
-    world.religion[pixel] = world.religionTable.intern(
-      new Map([...religions].map(([id, amount]) => [id, amount * 100 / total])),
-    );
-    world.humanOrigins[pixel] = combineHumanOriginTableMixes(world.humanOriginTable, humanOrigins);
+    world.contours.changed({ x0, y0, x1, y1 }, ['density', 'culture', 'religion', 'humanOrigins']);
   }
 
-  for (const resident of world.people) if (resident.countryId === nomad.id) setPersonHome(resident, nomad);
+  if (revivedCountry) {
+    if (revivedCountry.ruler.id !== nomad.ruler.id) {
+      appoint(world, revivedCountry, nomad.ruler, year);
+    } else {
+      setPersonHome(nomad.ruler, revivedCountry);
+      revivedCountry.rulerSince = year;
+      revivedCountry.seatSince[nomad.ruler.id] = year;
+      syncRulerTerms(revivedCountry, year);
+    }
+  }
+  for (const resident of world.people) {
+    if (resident.countryId === nomad.id) setPersonHome(resident, settledCountry);
+  }
+  if (revivedCountry) {
+    nomad.type = 'settled';
+    nomad.pixels = 0;
+    nomad.box = [MAP_WIDTH, MAP_HEIGHT, -1, -1];
+    delete nomad.range;
+    delete nomad.cells;
+    delete nomad.sourceCountryId;
+  }
   const transferredOffices = new Set([nomad.ruler.id, ...nomad.coRulerIds]);
   for (const other of world.countries.filter((item) => item.type === 'nomadic')) {
     for (const leaderId of [other.ruler.id, ...other.coRulerIds]) {
@@ -371,19 +417,19 @@ export function settleNomadAsCountry(world: World, nomad: Country, cityPixel: nu
       appoint(world, other, successor, year, leaderId);
     }
   }
-  const city = addCityAndConcentrate(world, nomad.id, cityPixel, true);
+  const city = addCityAndConcentrate(world, settledCountry.id, cityPixel, true);
   if (!city) throw new Error('Validated nomad city site became unavailable during settlement.');
   world.recountCountries();
   world.version += 1;
-  return nomad;
+  return settledCountry;
 }
 
 export function moveNomadCell(world: World, nomad: Country, pixel: number, amount: number): number {
   const current = nomad.cells?.find((cell) => cell.pixel === pixel);
   if (!current || amount <= 0) return 0;
-  const moved = Math.min(current.population, amount);
-  current.population -= moved;
-  if (current.population <= 1e-9) nomad.cells = (nomad.cells ?? []).filter((cell) => cell.population > 1e-9);
+    const moved = Math.min(current.density, amount);
+    current.density -= moved;
+    if (current.density <= 1e-9) nomad.cells = (nomad.cells ?? []).filter((cell) => cell.density > 1e-9);
   world.version += 1;
   return moved;
 }

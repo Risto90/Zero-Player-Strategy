@@ -6,6 +6,7 @@ export interface MapViewHandle {
   zoomBy(factor: number): void;
   fit(): void;
   centerAtPixel(pixel: number): void;
+  focusCountry(countryId: number): void;
 }
 
 export interface MapViewProps {
@@ -22,6 +23,8 @@ export interface ViewTransform {
   scale: number;
   ox: number;
   oy: number;
+  /** Верхний предел масштаба сохраняется после подгонки страны под экран. */
+  maxScale?: number;
 }
 
 export const MAX_SCALE = 32;

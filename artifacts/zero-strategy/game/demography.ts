@@ -1,7 +1,13 @@
 import type { Country, World } from './world';
 import { ensureCityPopulationGroups } from './settlements';
-import { HUMAN_ORIGINS, canonicalizeHumanOrigins, humanOriginMixFromTable, type HumanOriginId, type HumanOriginMix } from './human';
+import { HUMAN_ORIGINS, ancestryProfile, type HumanOriginId, type HumanOriginMix } from './human';
 import { ContourPopulationReader } from './contourPopulation';
+import { MAP_POINT_AREA_KM2, densityToResidents } from './populationUnits';
+import {
+  populationCohortsAtPixel,
+  populationCohortsFromMixes,
+  type PopulationCohortAmount,
+} from './populationCohorts';
 
 export interface DemographicPair { cultureId: number; religionId: number | null; weight: number }
 export interface Demography {
@@ -15,6 +21,8 @@ export interface Demography {
   cultureFragmentation: number;
   religionFragmentation: number;
   humanOrigin: HumanOriginMix;
+  originProfiles: Map<number, number>;
+  populationGroups: PopulationCohortAmount[];
 }
 const cache = new WeakMap<World, Map<string, { version: number; data: Demography }>>();
 export function weighted<T>(items: { value: T; weight: number }[], rng = Math.random): T | null {
@@ -34,72 +42,81 @@ export function demography(world: World, country: Country): Demography {
   const cultures = new Map<number, number>();
   const religions = new Map<number | null, number>();
   const humanOrigins = new Map<HumanOriginId, number>();
-  // Таблицы составов неизменны во время расчёта: один состав преобразуется ровно один раз.
-  const originMixes = new Map<number, HumanOriginMix>();
+  const originProfiles = new Map<number, number>();
+  const populationGroups = new Map<string, PopulationCohortAmount>();
   let population = 0;
   let ruralPopulation = 0;
-  const addPopulationGroup = (cultureId: number, religionId: number | null, amount: number, originMixId: number) => {
+  const addPopulationGroup = (
+    cultureId: number,
+    religionId: number | null,
+    amount: number,
+    originProfileId: number,
+  ) => {
     if (amount <= 0) return;
     population += amount;
     cultures.set(cultureId, (cultures.get(cultureId) ?? 0) + amount);
     religions.set(religionId, (religions.get(religionId) ?? 0) + amount);
-    const key = `${cultureId}/${religionId}`;
-    const entry = pairs.get(key);
+    const pairKey = `${cultureId}/${religionId}`;
+    const entry = pairs.get(pairKey);
     if (entry) entry.weight += amount;
-    else pairs.set(key, { cultureId, religionId, weight: amount });
-    let originMix = originMixes.get(originMixId);
-    if (!originMix) {
-      const originEntry = world.humanOriginTable.entries[originMixId];
-      originMix = originEntry?.total === 100
-        ? humanOriginMixFromTable(originEntry.ids, originEntry.shares)
-        : { ids: [HUMAN_ORIGINS[0].id], shares: [100] };
-      originMixes.set(originMixId, originMix);
-    }
-    originMix.ids.forEach((id, index) => {
-      humanOrigins.set(id, (humanOrigins.get(id) ?? 0) + amount * originMix.shares[index] / 100);
+    else pairs.set(pairKey, { cultureId, religionId, weight: amount });
+    const groupKey = `${cultureId}/${religionId ?? -1}/${originProfileId}`;
+    const previous = populationGroups.get(groupKey);
+    if (previous) previous.population += amount;
+    else populationGroups.set(groupKey, { cultureId, religionId, originProfileId, population: amount });
+    originProfiles.set(originProfileId, (originProfiles.get(originProfileId) ?? 0) + amount);
+    const profile = ancestryProfile(originProfileId).mix;
+    profile.ids.forEach((id, originIndex) => {
+      humanOrigins.set(id, (humanOrigins.get(id) ?? 0) +
+        amount * profile.shares[originIndex] / 100);
     });
   };
   if (country.type === 'nomadic') {
     for (const cell of country.cells ?? []) {
-      if (cell.population <= 0) continue;
-      ruralPopulation += cell.population;
-      const culture = world.cultureTable.entries[cell.cultureMix];
-      const religion = world.religionTable.entries[cell.religionMix];
-      const religionIds: (number | null)[] = [...religion.ids, null];
-      const religionShares = [...religion.shares, 100 - religion.total];
-      culture.ids.forEach((cultureId, ci) => {
-        religionIds.forEach((religionId, ri) => {
-          addPopulationGroup(cultureId, religionId,
-            cell.population * culture.shares[ci] / 100 * religionShares[ri] / 100,
-            cell.humanOriginMix ?? world.humanOriginTable.single(0, 100));
-        });
-      });
+      const cellPopulation = densityToResidents(cell.density);
+      if (cellPopulation <= 0) continue;
+      ruralPopulation += cellPopulation;
+      const cohorts = cell.populationGroups?.map((group) => ({
+        cultureId: group.cultureId,
+        religionId: group.religionId,
+        originProfileId: group.originProfileId,
+        weight: cellPopulation * group.share / 100,
+      })) ?? populationCohortsFromMixes(
+        world,
+        cell.cultureMix,
+        cell.religionMix,
+        cell.humanOriginMix ?? world.humanOriginTable.single(0, 100),
+        cellPopulation,
+      );
+      for (const group of cohorts) {
+        addPopulationGroup(group.cultureId, group.religionId, group.weight, group.originProfileId);
+      }
     }
   } else {
-    new ContourPopulationReader(world, country).forEach((p, amount) => {
-      ruralPopulation += amount;
+    new ContourPopulationReader(world, country).forEach((p, density) => {
+      ruralPopulation += density;
       const city = world.cityAt(p);
       if (city) {
         for (const group of ensureCityPopulationGroups(world, city)) {
-          addPopulationGroup(group.cultureId, group.religionId, group.population, group.humanOriginMix);
+          const origins = world.humanOriginTable.entries[group.humanOriginMix];
+          if (origins?.total > 0) {
+            origins.ids.forEach((originProfileId, index) => {
+              addPopulationGroup(
+                group.cultureId,
+                group.religionId,
+                group.population * origins.shares[index] / origins.total,
+                originProfileId,
+              );
+            });
+          } else {
+            addPopulationGroup(group.cultureId, group.religionId, group.population, 0);
+          }
         }
-        return;
       }
-      const pixelPopulation = amount;
-      const culture = world.cultureTable.entries[world.culture[p]];
-      const religion = world.religionTable.entries[world.religion[p]];
-      const religionIds: (number | null)[] = [...religion.ids, null];
-      const religionShares = [...religion.shares, 100 - religion.total];
-      culture.ids.forEach((cultureId, ci) => {
-        religionIds.forEach((religionId, ri) => {
-          addPopulationGroup(
-            cultureId,
-            religionId,
-            pixelPopulation * culture.shares[ci] / 100 * religionShares[ri] / 100,
-            world.humanOrigins[p] || world.humanOriginTable.single(0, 100),
-          );
-        });
-      });
+      const pixelPopulation = densityToResidents(density);
+      for (const group of populationCohortsAtPixel(world, p, pixelPopulation)) {
+        addPopulationGroup(group.cultureId, group.religionId, group.weight, group.originProfileId);
+      }
     });
   }
   const leading = <T,>(map: Map<T, number>, fallback: T): T => [...map].sort((a, b) => b[1] - a[1])[0]?.[0] ?? fallback;
@@ -107,9 +124,19 @@ export function demography(world: World, country: Country): Demography {
   const religion = leading(religions, country.religionId);
   const data: Demography = {
     pairs: [...pairs.values()], cultures, religions, population,
-    density: ruralPopulation / Math.max(1, country.type === 'nomadic' ? country.range?.length ?? 0 : country.pixels),
+      density: ruralPopulation / Math.max(1, country.type === 'nomadic'
+        ? (country.range?.length ?? 0) * MAP_POINT_AREA_KM2
+        : country.pixels),
     culture, religion,
-    humanOrigin: canonicalizeHumanOrigins(humanOrigins),
+    humanOrigin: {
+      ids: [...humanOrigins.keys()].sort((a, b) =>
+        HUMAN_ORIGINS.findIndex((origin) => origin.id === a) - HUMAN_ORIGINS.findIndex((origin) => origin.id === b)),
+      shares: [...humanOrigins.keys()].sort((a, b) =>
+        HUMAN_ORIGINS.findIndex((origin) => origin.id === a) - HUMAN_ORIGINS.findIndex((origin) => origin.id === b))
+        .map((id) => humanOrigins.get(id)! * 100 / Math.max(1, population)),
+    },
+    originProfiles,
+    populationGroups: [...populationGroups.values()],
     cultureFragmentation: cultures.size * (1 - (cultures.get(culture) ?? 0) / Math.max(1, population)),
     religionFragmentation: religions.size * (1 - (religions.get(religion) ?? 0) / Math.max(1, population)),
   };
@@ -117,7 +144,7 @@ export function demography(world: World, country: Country): Demography {
   return data;
 }
 
-/** Draws only combinations that actually coexist on populated pixels, not independent country totals. */
+/** Выбирает только сочетания групп, реально существующих в населённых точках. */
 export function sampleDemographic(world: World, c: Country): DemographicPair | null {
   const d = demography(world, c), mods = c.modifiers;
   let pairs = d.pairs;
@@ -134,7 +161,7 @@ export function sampleDemographic(world: World, c: Country): DemographicPair | n
     let weight = p.weight;
     if (mods.includes('communist')) weight = p.weight / (cultureWeight.get(p.cultureId) ?? 1) * (p.religionId === null ? 2 : 1);
     else if (mods.includes('liberal')) {
-      // Keep protected culture/religion distributions; equalise only unrestricted dimensions.
+      // Сохраняет защищённые распределения культуры и веры; выравнивает только свободные измерения.
       weight = 1;
       if (c.government === 'tribal' || mods.includes('ethnic') || mods.includes('theocracy')) {
         const group = pairs.filter((x) => (mods.includes('theocracy') ? x.religionId === p.religionId : x.cultureId === p.cultureId));

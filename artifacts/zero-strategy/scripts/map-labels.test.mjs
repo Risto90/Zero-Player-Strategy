@@ -43,6 +43,7 @@ for (let y = 90; y < 120; y += 1) {
 const world = {
   version: 1,
   territoryVersion: 1,
+  geographyRevision: 0,
   owner,
   land,
   culture: new Uint16Array(MAP_PIXELS),
@@ -52,10 +53,12 @@ const world = {
   religionTable: new CompositionTable(),
   humanOriginTable: new CompositionTable(),
   cities: [
-    { id: 10, name: 'Главный город', pixel: 80 * MAP_WIDTH + 80, rank: 6, capital: true },
-    { id: 11, name: 'Соседний город', pixel: 80 * MAP_WIDTH + 80, rank: 6, capital: false },
-    { id: 12, name: 'Малый город', pixel: 80 * MAP_WIDTH + 100, rank: 1, capital: false },
+    { id: 10, countryId: 0, name: 'Главный город', pixel: 80 * MAP_WIDTH + 80, rank: 6, capital: true },
+    { id: 11, countryId: 0, name: 'Соседний город', pixel: 80 * MAP_WIDTH + 80, rank: 6, capital: false },
+    { id: 12, countryId: 0, name: 'Малый город', pixel: 80 * MAP_WIDTH + 100, rank: 1, capital: false },
   ],
+  riverFeatures: [],
+  water: { coastsOf: [] },
   knownRivers: new Uint8Array(MAP_PIXELS),
   isCoastal: () => false,
   cultures: [{ id: 0, name: 'Народ' }],

@@ -10,7 +10,7 @@ import { fmt, pct } from '@/game/format';
 import type { Game, GameSnapshot, LegendRow } from '@/game/game';
 import { HUMAN_ORIGINS } from '@/game/human';
 import { RAMPS } from '@/game/render';
-import { cityRankName } from '@/game/settlements';
+import { cityHasPort, cityRankName } from '@/game/settlements';
 import { cityProfileRoute, countryProfileRoute, cultureProfileRoute, raceProfileRoute, religionProfileRoute } from '@/game/profileRoutes';
 import { openProfile } from '@/game/profileNavigation';
 import { AtheistFlagMark, CityIconLink, EntityCrownLink, EntityFlagLink } from '@/components/profiles/EntityMarks';
@@ -19,9 +19,9 @@ import type { ReactNode } from 'react';
 const c = colors.light;
 const VALUE_NOTE: Record<string, string> = {
   humidity: 'Влажность почвы и воздуха. Ливни поднимают, засуха снижает.',
-  temperature: 'Средняя температура. От ледников до тропиков.',
+  temperature: 'Средняя годовая температура воздуха над сушей и поверхности океана. Значения указаны в °C.',
   drainage: 'Как быстро уходит вода. Низкий дренаж заболачивает.',
-  density: 'Плотность населения на освоенной земле.',
+  density: 'Людей на квадратный километр освоенной земли.',
   elevation: 'Сетка показывает трёхмерный рельеф; глубина моря остаётся на карте отдельной шкалой.',
 };
 const VALUE_TITLE: Record<string, string> = { humidity: 'Влажность', temperature: 'Температура', drainage: 'Дренаж', density: 'Население', elevation: 'Высоты' };
@@ -162,7 +162,7 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
       <View style={styles.listContent}>
         <NameSearch value={search} placeholder="Найти страну" onChangeText={setSearch} />
         {rows.length ? <EntityRows rows={rows} activeId={snap.selectedCountryId}
-          onSelect={(row) => game.showCountryOnMap(row.id)}
+          onSelect={(row) => game.toggleCountrySelectionOnMap(row.id)}
           profileRouteForId={countryProfileRoute}
           leadingMarkForId={(id) => {
             const country = game.world.countries[id];
@@ -248,7 +248,7 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
           trailingMarkForId={(id) => {
             const city = game.world.cities.find((item) => item.id === id);
             if (!city) return null;
-            const hasPort = game.world.isCoastal(city.pixel) || game.world.knownRivers[city.pixel] > 0;
+            const hasPort = cityHasPort(game.world, city);
             return <CityIconLink city={city} hasPort={hasPort} size={32} />;
           }}
           hideProfileButton testPrefix="row-city" /> : <Empty text="Ничего не найдено. Измените запрос или очистите его." />}
@@ -279,11 +279,14 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
     const valueMode = mapMode as keyof typeof RAMPS;
     const stops = RAMPS[valueMode];
     title = VALUE_TITLE[valueMode];
-    sub = 'шкала 0–100';
+    sub = mapMode === 'temperature' ? 'градусы Цельсия' : 'шкала 0–100';
+    const rampLabels = mapMode === 'temperature'
+      ? ['−55 °C', '−10 °C', '0 °C', '18 °C', '31 °C']
+      : [0, 25, 50, 75, 100];
     body = (
       <ScrollView contentContainerStyle={{ padding: 12 }} nestedScrollEnabled>
         <LinearGradient colors={stops as [string, string, ...string[]]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.ramp} />
-        <View style={styles.rampLabels}>{[0, 25, 50, 75, 100].map((value) => <Text key={value} style={styles.rampLabel}>{value}</Text>)}</View>
+        <View style={styles.rampLabels}>{rampLabels.map((value) => <Text key={value} style={styles.rampLabel}>{value}</Text>)}</View>
         <Text style={styles.valueNote}>{VALUE_NOTE[valueMode]}</Text>
         {mapMode === 'density' && <Text style={styles.valueNote}>Всего: {fmt(legend.totalPopulation)} чел.</Text>}
       </ScrollView>
