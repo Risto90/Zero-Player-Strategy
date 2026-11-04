@@ -3,4 +3,16 @@
 
 # No need to store the pnpm store twice.
 .local
+
+# Локальные зависимости и кэши не нужны в контексте публикации.
+node_modules/
+.cache/
+.pythonlibs/
+.ccls-cache/
+.git/
+
+# Эти результаты сборки создаются заново командами production build.
+artifacts/zero-strategy/static-build/
+artifacts/api-server/dist/
+
 artifacts/zero-strategy/generated-artifacts/
