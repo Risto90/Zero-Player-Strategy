@@ -16,3 +16,9 @@ artifacts/zero-strategy/static-build/
 artifacts/api-server/dist/
 
 artifacts/zero-strategy/generated-artifacts/
+
+# Эти рабочие пакеты нужны только для разработки и не входят в production-сборку.
+artifacts/mockup-sandbox/
+lib/api-client-react/
+lib/api-spec/
+lib/db/

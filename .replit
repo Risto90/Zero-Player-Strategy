@@ -1,11 +1,11 @@
-modules = ["nodejs-24", "python-base-3.13", "cpp-clang20", "java-graalvm22.3"]
+modules = ["nodejs-24"]
 
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
 
 [deployment.postBuild]
-args = ["pnpm", "store", "prune"]
+args = ["bash", "deployment/prune-runtime.sh"]
 env = { "CI" = "true" }
 
 [workflows]
@@ -21,4 +21,4 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
-packages = ["emscripten", "cmake", "ninja", "eigen", "gdal"]
+packages = []
