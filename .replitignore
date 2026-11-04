@@ -1,23 +1,20 @@
-# The format of this file is identical to `.dockerignore`.
-# It is used to reduce the size of deployed images to make the process of publishing faster.
+# Формат этого файла совпадает с `.dockerignore`.
+# Он исключает из образа ненужные для публикации файлы.
 
-# No need to store the pnpm store twice.
+# Не нужно копировать кэш pnpm в образ.
 .local
 
-# Локальные зависимости и кэши не нужны в контексте публикации.
+# Локальные зависимости и кэши не нужны в production-образе.
 node_modules/
 .cache/
 .pythonlibs/
 .ccls-cache/
 .git/
 
-# Эти результаты сборки создаются заново командами production build.
-artifacts/zero-strategy/static-build/
-artifacts/api-server/dist/
-
+# Временные результаты тестирования не используются в production.
 artifacts/zero-strategy/generated-artifacts/
 
-# Эти рабочие пакеты нужны только для разработки и не входят в production-сборку.
+# Эти рабочие пакеты нужны только для разработки.
 artifacts/mockup-sandbox/
 lib/api-client-react/
 lib/api-spec/
