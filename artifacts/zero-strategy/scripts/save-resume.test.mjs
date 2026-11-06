@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { Game } from '../game/game.ts';
 import { MAP_WIDTH } from '../game/config.ts';
 import { mulberry32 } from '../game/random.ts';
@@ -753,7 +754,6 @@ try {
   // При распаде на кочевые государства общая запись сохраняется, а ссылка на страну заменяется.
   const collapseFixture = makeFixture();
   collapseFixture.world.cities = [];
-  collapseFixture.world.discoverGeography = () => {};
   const collapseGame = new Game(collapseFixture.world, 'all');
   collapseGame.addLog('История распавшейся страны', [
     { type: 'country', id: collapseFixture.country.id },

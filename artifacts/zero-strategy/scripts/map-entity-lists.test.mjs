@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Game } from '../game/game.ts';
@@ -27,6 +28,8 @@ const rendererSource = readFileSync(resolve(root, 'game/render.ts'), 'utf8');
 const webMap = readFileSync(resolve(root, 'components/map/MapView.web.tsx'), 'utf8');
 const profileMarks = readFileSync(resolve(root, 'components/profiles/EntityMarks.tsx'), 'utf8');
 const emblemPreview = readFileSync(resolve(root, 'components/profiles/EmblemPreview.tsx'), 'utf8');
+const persistedEmblemImage = readFileSync(resolve(root, 'components/profiles/PersistedEmblemImage.tsx'), 'utf8');
+const dynastyPage = readFileSync(resolve(root, 'app/dynasty/[id].tsx'), 'utf8');
 const atheistFlagFile = readFileSync(resolve(root, 'assets/images/atheist-flag.svg'), 'utf8');
 
 assert.match(legendPanel, /function EntityRow/u);
@@ -46,9 +49,9 @@ assert.match(legendPanel, /trailingMarkForId=\{\(id\) => \{[\s\S]*<CityIconLink 
   'значок города размером 32 пикселя заменяет отдельную кнопку перехода');
 assert.match(legendPanel, /<EntityCrownLink[\s\S]*country\.emblemSpec/u,
   'в строке столицы корона и флаг страны находятся перед названием');
-assert.match(legendPanel, /afterNameMarkForId=\{\(id\) => \{[\s\S]*<EntityFlagLink spec=\{city\.emblemSpec\} href=\{cityProfileRoute/u,
+assert.match(legendPanel, /afterNameMarkForId=\{\(id\) => \{[\s\S]*<EntityFlagLink spec=\{city\.emblemSpec\} svg=\{city\.emblemSvg\} href=\{cityProfileRoute/u,
   'собственный герб города показывается после названия и ведёт в карточку города');
-assert.match(legendPanel, /<EntityFlagLink spec=\{country\.emblemSpec\} href=\{countryProfileRoute\(id\)/u,
+assert.match(legendPanel, /<EntityFlagLink spec=\{country\.emblemSpec\} svg=\{country\.emblemSvg\} href=\{countryProfileRoute\(id\)/u,
   'в строках карты показываются ссылки на флаги стран вместо цветовых квадратов');
 assert.match(profileMarks, /export function ProfileEntityList/u,
   'карточки используют общий генератор списков стран, религий и городов');
@@ -58,15 +61,23 @@ assert.match(profileMarks, /<Text style=\{styles\.cityName\}[^>]*>\{item\.city\.
   'в общих списках карточек снова отображается название каждого города');
 assert.match(profileMarks, /item\.city\.capital && item\.country[\s\S]*<EntityCrownLink/u,
   'в общих списках городов корона показывается у столицы');
-assert.match(emblemPreview, /data:image\/svg\+xml/u,
+assert.match(persistedEmblemImage, /data:image\/svg\+xml/u,
   'флаг на странице сущности остаётся изображением с браузерным контекстным меню');
-assert.match(emblemPreview, /createElement\('img'/u,
+assert.match(persistedEmblemImage, /createElement\('img'/u,
   'большой флаг карточки является обычным изображением браузера');
-assert.match(emblemPreview, /onError:[\s\S]*setFailedImageUri/u,
+assert.match(persistedEmblemImage, /onError:[\s\S]*setFailedImageUri/u,
   'если браузер не показывает встроенное изображение, остаётся видимый SVG');
-assert.doesNotMatch(emblemPreview, /showSaveFilePicker|createObjectURL|downloadFlag/u,
+assert.doesNotMatch(persistedEmblemImage, /showSaveFilePicker|createObjectURL|downloadFlag/u,
   'сохранение флага не использует отдельный диалог или загрузчик');
-assert.match(webMap, /renderFlagSpec\(city\.emblemSpec\)/u, 'в браузерных подписях карты отображаются сохранённые флаги городов');
+assert.doesNotMatch(emblemPreview, /borderWidth|borderColor|backgroundColor|padding(?:Vertical|Horizontal)?\s*:/u,
+  'эмблема в карточке не получает рамку, отдельный фон или внутренние поля');
+const dynastyOverlayStyle = dynastyPage.match(/dynastyEmblemOverlay:\s*\{([^}]*)\}/u)?.[1] ?? '';
+assert.doesNotMatch(dynastyOverlayStyle, /border\w*\s*:|backgroundColor\s*:|padding\w*\s*:/u,
+  'герб на странице династии не помещается в рамку с отдельным фоном или полями');
+assert.match(webMap, /const flagSvg = city\.emblemSvg \?\? null/u,
+  'подписи карты используют готовое SVG герба города');
+assert.doesNotMatch(webMap, /renderFlagSpec/u,
+  'отрисовка карты не пересобирает геометрию гербов');
 assert.match(webMap, /MaterialCommunityIcons\.getRawGlyphMap\(\)\.crown/u,
   'браузерная карта использует тот же значок короны, что и карточки персонажей');
 assert.match(webMap, /if \(city\.capital && iconFontsLoaded\) \{\s*drawGoldCrown\([\s\S]*labelY - labelFontSize \* 0\.88 - crownSize \/ 2 - 2/u,

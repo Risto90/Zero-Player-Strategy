@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import './binary-kernel-test-setup.mjs';
 import { FLAG_PROFILE_CONFIG } from '../game/flagProfileConfig.js';
 import { generateProfiledFlag } from '../game/flagProfiledGenerator.js';
 import { parseFlagSpec, serializeFlagSpec, assertValidFlagSpec } from '../game/flagSpec.js';

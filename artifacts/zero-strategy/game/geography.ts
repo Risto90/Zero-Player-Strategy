@@ -8,7 +8,8 @@ import { EARTH_DEG_PER_PX, EARTH_LAND_RLE, EARTH_TOP_LAT } from './data/earthLan
 import { earthMeanHumidityPercent } from './data/earthHumidity';
 import { earthMeanTemperatureDeciC } from './data/earthTemperature';
 import { fractalField, mulberry32, valueNoise } from './random';
-import { DenseMatrix, elementwise } from '../kernel/matrix';
+import { DenseMatrix, executeLinearAlgebra } from '../kernel/matrix';
+import { getBinaryMathKernel } from '../kernel/runtime';
 
 export type MapKind = 'world' | 'random';
 
@@ -150,10 +151,11 @@ function writeRandomLandScoreBlock(
       edgeValues[index] = edge;
     }
   }
-  const scores = elementwise(
+  const scores = executeLinearAlgebra(
+    getBinaryMathKernel(),
+    'hadamard',
     new DenseMatrix(base, rowCount, MAP_WIDTH),
     new DenseMatrix(edgeValues, rowCount, MAP_WIDTH),
-    'multiply',
   );
   score.set(scores.values, firstRow * MAP_WIDTH);
 }

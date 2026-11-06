@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import './binary-kernel-test-setup.mjs';
 import { MAP_POINT_AREA_KM2, MAP_WIDTH } from '../game/config.ts';
 import { ContourArea } from '../game/contours.ts';
 import {
@@ -28,7 +29,6 @@ const world = {
     id: 0,
     name: 'Тестовая река',
     scaleRank: 1,
-    discoveredBy: [1],
     paths: [[{ x: 98, y: 100 }, { x: 110, y: 100 }]],
   }],
   water: { coastsOf: [] },
@@ -148,11 +148,11 @@ assert.equal(maskedIndex.at(portCapital.pixel, true).nearestOwnAnchorPixel, coas
   'маска оставляет только разрешённый береговой якорь');
 
 rivers[portCapital.pixel] = 0;
-world.riverFeatures[0].discoveredBy = [];
+world.riverFeatures[0].paths = [];
 world.version += 1;
 world.geographyRevision += 1;
 assert.equal(cityIsRiverPort(world, riverOnlyCity), false,
-  'недоступный речной контур не считается портом для его страны');
+  'без векторного контура русла речного порта нет');
 assert.equal(cityHasPort(world, riverOnlyCity), false);
 const afterPortChange = new CityInfluenceIndex(world, 1, true);
 assert.equal(cityInfluenceMultiplier(world, portCapital), 4,

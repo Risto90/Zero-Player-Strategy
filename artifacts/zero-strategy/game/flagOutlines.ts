@@ -4,6 +4,16 @@ import {
   type FlagOutlineConfig,
   type OutlineType,
 } from './flagOutlineConfig';
+import {
+  affine,
+  distanceToSegment,
+  flattenEllipseArc,
+  pointInRing,
+  polylineLength,
+  ringSignedArea,
+  segmentLength,
+  vector,
+} from '../kernel/geometry';
 
 export interface OutlinePoint {
   x: number;
@@ -67,7 +77,7 @@ function point(x: number, y: number): Point {
 }
 
 function samePoint(a: Point, b: Point): boolean {
-  return Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
+  return vector.distance(a, b) < 1e-9;
 }
 
 function append(target: Point[], source: Point[]): void {
@@ -77,13 +87,7 @@ function append(target: Point[], source: Point[]): void {
 }
 
 function area(points: Point[]): number {
-  let result = 0;
-  for (let i = 0; i < points.length; i += 1) {
-    const a = points[i];
-    const b = points[(i + 1) % points.length];
-    result += a.x * b.y - b.x * a.y;
-  }
-  return result / 2;
+  return ringSignedArea(points) / 2;
 }
 
 function lineIntersection(p: Point, d: Point, q: Point, e: Point): Point | null {
@@ -102,24 +106,11 @@ function pointOnSegment(p: Point, a: Point, b: Point, tolerance = 1e-7): boolean
 }
 
 function pointInPolygon(p: Point, polygon: Point[]): boolean {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const a = polygon[i];
-    const b = polygon[j];
-    if (pointOnSegment(p, a, b)) return true;
-    if ((a.y > p.y) !== (b.y > p.y)
-      && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
-  }
-  return inside;
+  return pointInRing(p, polygon);
 }
 
 function pointSegmentDistance(p: Point, a: Point, b: Point): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared === 0) return Math.hypot(p.x - a.x, p.y - a.y);
-  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared));
-  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+  return distanceToSegment(p, { start: a, end: b });
 }
 
 function boundaryDistance(p: Point, polygon: Point[]): number {
@@ -222,23 +213,30 @@ export function insetPolygon(input: Point[], margin: number): Point[] {
 }
 
 function outlinePathPoints(radius: number, start: number, end: number, centerX: number, centerY: number, config: FlagOutlineConfig): Point[] {
-  const angle = Math.abs(end - start);
-  const tolerance = config.curveTolerance;
-  const maxAngle = radius <= tolerance
-    ? Math.PI / 8
-    : 2 * Math.acos(Math.max(-1, Math.min(1, 1 - tolerance / radius)));
-  const steps = Math.max(2, Math.ceil(angle / Math.max(maxAngle, 0.01)));
-  return Array.from({ length: steps + 1 }, (_, index) => {
-    const theta = start + (end - start) * index / steps;
-    return point(centerX - radius * Math.cos(theta), centerY + radius * Math.sin(theta));
-  });
+  if (radius <= 0) return [];
+  const center = point(centerX, centerY);
+  const at = (angle: number) => vector.add(
+    center,
+    affine.apply(affine.rotation(-angle), { x: -radius, y: 0 }),
+  );
+  const startPoint = at(start);
+  const endPoint = at(end);
+  return flattenEllipseArc({
+    start: startPoint,
+    end: endPoint,
+    radiusX: radius,
+    radiusY: radius,
+    rotation: 0,
+    largeArc: Math.abs(end - start) > Math.PI,
+    sweep: end < start,
+  }, config.curveTolerance);
 }
 
 function samplePolyline(points: Point[], distance: number): { p: Point; tangent: Point } {
   const lengths: number[] = [];
   let total = 0;
   for (let i = 1; i < points.length; i += 1) {
-    total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    total += segmentLength({ start: points[i - 1], end: points[i] });
     lengths.push(total);
   }
   const clamped = Math.max(0, Math.min(total, distance));
@@ -249,9 +247,10 @@ function samplePolyline(points: Point[], distance: number): { p: Point; tangent:
   const b = points[segment + 1];
   const length = lengths[segment] - before || 1;
   const t = (clamped - before) / length;
-  const dx = (b.x - a.x) / length;
-  const dy = (b.y - a.y) / length;
-  return { p: point(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t), tangent: point(dx, dy) };
+  return {
+    p: vector.lerp(a, b, t),
+    tangent: vector.normalize(vector.subtract(b, a)),
+  };
 }
 
 /** Makes a repeated saw/scallop edge while keeping its outermost extent fixed. */
@@ -262,8 +261,7 @@ function decorateFreeEdge(
   shape: EdgeShape,
   minimumWidth: number,
 ): { points: Point[]; count: number } {
-  const total = points.slice(1).reduce((sum, p, index) =>
-    sum + Math.hypot(p.x - points[index].x, p.y - points[index].y), 0);
+  const total = polylineLength(points);
   const count = Math.min(requestedCount, Math.floor(total / minimumWidth));
   if (count < 1 || total <= 0) return { points: points.map(({ x, y }) => point(x, y)), count: 0 };
 
@@ -279,9 +277,8 @@ function decorateFreeEdge(
       const insetProfile = shape === 'TRIANGLE'
         ? 1 - Math.abs(2 * t - 1)
         : 1 - Math.sqrt(Math.max(0, 1 - (2 * t - 1) ** 2));
-      const normalX = tangent.y;
-      const normalY = -tangent.x;
-      output.push(point(p.x - normalX * depth * insetProfile, p.y - normalY * depth * insetProfile));
+      const normal = vector.scale({ x: tangent.y, y: -tangent.x }, depth * insetProfile);
+      output.push(vector.subtract(p, normal));
     }
   }
   const end = samplePolyline(points, total).p;

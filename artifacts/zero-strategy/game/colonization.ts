@@ -2,7 +2,7 @@ import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from './config';
 import { rasterizePolygonContours } from '../kernel/contour-spans';
 import { quantizeShares } from './composition';
 import { combineHumanOriginTableMixes } from './human';
-import { untrimmedDiscoveredRiverPaths } from './geographyGeometry';
+import { untrimmedRiverPaths } from './geographyGeometry';
 import { forEachNeighbour } from './geography';
 import { ContourArea, type ContourBounds } from './contours';
 import { densityToResidents } from './populationUnits';
@@ -292,7 +292,7 @@ function countryRiverBasins(world: World, countryId: number): ContourArea[] {
   const cachedBasins = cache.get(key);
   if (cachedBasins) return cachedBasins;
   const riverAreas = new Map<number, ContourArea>();
-  for (const segment of untrimmedDiscoveredRiverPaths(world, countryId)) {
+  for (const segment of untrimmedRiverPaths(world)) {
     const area = new ContourArea(rasterizePolygonContours(
       segment.contourPolygons, MAP_WIDTH, MAP_HEIGHT,
     ));

@@ -3,6 +3,15 @@ import { validateFlagEmblem, type EmblemNode, type EmblemPrimitive } from './fla
 import { buildFlagOrdinaryLayers } from './flagOrdinaries';
 import { buildFlagOutline, type OutlinePoint } from './flagOutlines';
 import { assertValidFlagSpec, type FlagFrame, type FlagLayer, type FlagNode, type FlagSpec } from './flagSpec';
+import {
+  affine,
+  circlePoints as binaryCirclePoints,
+  clipPolygonToRect,
+  parseSvgPath,
+  pathToPolygons,
+  ringSignedArea,
+  transformPath,
+} from '../kernel/geometry';
 
 const HEIGHT = 1200;
 const NUMBER_PRECISION = 1;
@@ -63,10 +72,7 @@ function pointPath(points: readonly { x: number; y: number }[]): string {
 }
 
 function signedPolygonArea(points: readonly { x: number; y: number }[]): number {
-  return points.reduce((sum, point, index) => {
-    const next = points[(index + 1) % points.length];
-    return sum + point.x * next.y - next.x * point.y;
-  }, 0) / 2;
+  return ringSignedArea(points);
 }
 
 function compoundPath(polygons: readonly (readonly { x: number; y: number }[])[]): string {
@@ -155,11 +161,14 @@ function emitPolygons(
   return `<g id="${id}">${clippedMarkup(`<path d="${compoundPath(bounded)}" fill="${color}"/>`, context.clips)}</g>`;
 }
 
-function circlePoints(cx: number, cy: number, radius: number, samples = 96): FlagPolygon {
-  return Array.from({ length: samples }, (_, index) => {
-    const angle = index * 2 * Math.PI / samples;
-    return { x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
-  });
+function circlePoints(
+  cx: number,
+  cy: number,
+  radius: number,
+  samples = 96,
+  startAngleDegrees = 0,
+): FlagPolygon {
+  return binaryCirclePoints({ x: cx, y: cy }, radius, samples, startAngleDegrees);
 }
 
 function frameRect(frame: FrameBox): FlagPolygon {
@@ -167,62 +176,42 @@ function frameRect(frame: FrameBox): FlagPolygon {
   return [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
 }
 
-function clipPolygonToBounds(polygon: FlagPolygon, width: number): FlagPolygon {
-  const bounds = [
-    { inside: (p: FlagPoint) => p.x >= -HEIGHT * 0.1, intersect: (a: FlagPoint, b: FlagPoint) => {
-      const x = -HEIGHT * 0.1, t = (x - a.x) / (b.x - a.x);
-      return { x, y: a.y + (b.y - a.y) * t };
-    } },
-    { inside: (p: FlagPoint) => p.x <= width + HEIGHT * 0.1, intersect: (a: FlagPoint, b: FlagPoint) => {
-      const x = width + HEIGHT * 0.1, t = (x - a.x) / (b.x - a.x);
-      return { x, y: a.y + (b.y - a.y) * t };
-    } },
-    { inside: (p: FlagPoint) => p.y >= -HEIGHT * 0.1, intersect: (a: FlagPoint, b: FlagPoint) => {
-      const y = -HEIGHT * 0.1, t = (y - a.y) / (b.y - a.y);
-      return { x: a.x + (b.x - a.x) * t, y };
-    } },
-    { inside: (p: FlagPoint) => p.y <= HEIGHT * 1.1, intersect: (a: FlagPoint, b: FlagPoint) => {
-      const y = HEIGHT * 1.1, t = (y - a.y) / (b.y - a.y);
-      return { x: a.x + (b.x - a.x) * t, y };
-    } },
-  ];
-  let result = polygon;
-  for (const boundary of bounds) {
-    if (result.length === 0) break;
-    const output: FlagPolygon = [];
-    let previous = result[result.length - 1];
-    let previousInside = boundary.inside(previous);
-    for (const current of result) {
-      const currentInside = boundary.inside(current);
-      if (currentInside !== previousInside) output.push(boundary.intersect(previous, current));
-      if (currentInside) output.push(current);
-      previous = current;
-      previousInside = currentInside;
-    }
-    result = output;
-  }
-  return result;
+function openRing(ring: FlagPolygon): FlagPolygon {
+  if (ring.length < 2) return [...ring];
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  return first.x === last.x && first.y === last.y ? ring.slice(0, -1) : [...ring];
 }
 
 function clipPolygonsToSvgRange(polygons: FlagPolygonSet, width: number): FlagPolygonSet {
-  return polygons.map((polygon) => clipPolygonToBounds(polygon, width)).filter((polygon) => polygon.length >= 3);
+  const margin = HEIGHT * 0.1;
+  const bounds = {
+    minX: -margin,
+    minY: -margin,
+    maxX: width + margin,
+    maxY: HEIGHT + margin,
+  };
+  return polygons.map((polygon) => clipPolygonToRect(polygon, bounds))
+    .filter((polygon) => polygon.length >= 3);
 }
 
 function normalizedPoint(raw: unknown, frame: FrameBox): FlagPoint {
+  const mapToFrame = affine.create(frame.width, 0, 0, frame.height, frame.x, frame.y);
+  const map = (x: number, y: number) => affine.apply(mapToFrame, { x, y });
   if (Array.isArray(raw) && raw.length >= 2) {
     const x = Number(raw[0]), y = Number(raw[1]);
     if (!Number.isFinite(x) || !Number.isFinite(y)) throw new TypeError('Clip point must be finite');
     return Math.abs(x) <= 1 && Math.abs(y) <= 1
-      ? { x: frame.x + x * frame.width, y: frame.y + y * frame.height }
+      ? map(x, y)
       : { x, y };
   }
   const value = record(raw);
   if (Number.isFinite(value.u) && Number.isFinite(value.v)) {
-    return { x: frame.x + value.u * frame.width, y: frame.y + value.v * frame.height };
+    return map(value.u, value.v);
   }
   if (Number.isFinite(value.x) && Number.isFinite(value.y)) {
     return Math.abs(value.x) <= 1 && Math.abs(value.y) <= 1
-      ? { x: frame.x + value.x * frame.width, y: frame.y + value.y * frame.height }
+      ? map(value.x, value.y)
       : { x: value.x, y: value.y };
   }
   throw new TypeError('Clip point must use normalized u/v, normalized x/y, or absolute x/y');
@@ -298,14 +287,18 @@ function shapePoints(shapeInput: unknown, frame: FrameBox): { polygons: FlagPoly
   if (scale <= 0) throw new RangeError('Shape scale must be positive');
   const centerX = frame.x + frame.width / 2 + tx * frame.width;
   const centerY = frame.y + frame.height / 2 + ty * frame.height;
-  const apply = (u: number, v: number): FlagPoint => {
-    const dx = (u - 0.5) * frame.width * scale;
-    const dy = (v - 0.5) * frame.height * scale;
-    return {
-      x: centerX + dx * Math.cos(angle) - dy * Math.sin(angle),
-      y: centerY + dx * Math.sin(angle) + dy * Math.cos(angle),
-    };
-  };
+  const transformMatrix = affine.multiply(
+    affine.translation(centerX, centerY),
+    affine.multiply(
+      affine.rotation(angle),
+      affine.multiply(
+        affine.scaling(frame.width * scale, frame.height * scale),
+        affine.translation(-0.5, -0.5),
+      ),
+    ),
+  );
+  const apply = (u: number, v: number): FlagPoint =>
+    affine.apply(transformMatrix, { x: u, y: v });
   const points = (values: unknown): FlagPolygon => {
     if (!Array.isArray(values)) throw new TypeError('Polygon shape requires a points array');
     return values.map((item) => {
@@ -357,31 +350,15 @@ function shapePoints(shapeInput: unknown, frame: FrameBox): { polygons: FlagPoly
     if (!d || /[^MLHVZ0-9.,+\-\s]/i.test(d)) {
       throw new TypeError('Path layer shapes must use closed M, L, H, V, and Z segments');
     }
-    const tokens = d.match(/[A-Za-z]|[-+]?(?:\d*\.?\d+)/g) ?? [];
-    const output: FlagPoint[] = [];
-    let command = '';
-    let index = 0;
-    let cursor = { x: 0, y: 0 };
-    while (index < tokens.length) {
-      if (/^[A-Za-z]$/.test(tokens[index])) command = tokens[index++].toUpperCase();
-      if (command === 'Z') { command = ''; continue; }
-      if (command === 'M' || command === 'L') {
-        cursor = { x: Number(tokens[index++]), y: Number(tokens[index++]) };
-        output.push(apply(cursor.x, cursor.y));
-        if (command === 'M') command = 'L';
-      } else if (command === 'H') {
-        cursor = { ...cursor, x: Number(tokens[index++]) };
-        output.push(apply(cursor.x, cursor.y));
-      } else if (command === 'V') {
-        cursor = { ...cursor, y: Number(tokens[index++]) };
-        output.push(apply(cursor.x, cursor.y));
-      } else {
-        throw new TypeError('Path layer shapes must use M, L, H, V, and Z segments');
-      }
-      if (!Number.isFinite(cursor.x) || !Number.isFinite(cursor.y)) throw new TypeError('Path coordinates must be finite');
+    const parsed = parseSvgPath(d);
+    const transformed = transformPath(parsed, transformMatrix, 0.1);
+    const polygons = pathToPolygons(transformed, 0.1, 'nonzero')
+      .flatMap((polygon) => polygon)
+      .map(openRing);
+    if (!polygons.length || polygons.some((polygon) => polygon.length < 3)) {
+      throw new RangeError('Path shape must contain at least three points');
     }
-    if (output.length < 3) throw new RangeError('Path shape must contain at least three points');
-    return { polygons: [output] };
+    return { polygons };
   }
   throw new TypeError(`Unsupported FlagSpec shape type "${type || '(empty)'}"`);
 }
@@ -485,10 +462,15 @@ function renderEmblemPrimitive(
   maxWidth: number,
   mirror = false,
 ): string {
-  const apply = ({ x, y }: { x: number; y: number }) => ({
-    x: center.x + scale * ((mirror ? -x : x) * Math.cos(angle) - y * Math.sin(angle)),
-    y: center.y + scale * ((mirror ? -x : x) * Math.sin(angle) + y * Math.cos(angle)),
-  });
+  const transformMatrix = affine.multiply(
+    affine.translation(center.x, center.y),
+    affine.multiply(
+      affine.rotation(angle),
+      affine.scaling(mirror ? -scale : scale, scale),
+    ),
+  );
+  const apply = (point: { x: number; y: number }) =>
+    affine.apply(transformMatrix, point);
   if (primitive.kind === 'circle') {
     const p = apply(primitive.center);
     const radius = primitive.radius * scale;
@@ -549,12 +531,15 @@ function placements(patternInput: unknown): RepeatPlacement[] {
   if (type === 'RING' || type === 'RADIAL' || pattern.rotation === 'radial') {
     const radius = finite(pattern.radius, 0.25, 'repeat.radius');
     const start = finite(pattern.startAngle, -90, 'repeat.startAngle');
-    return Array.from({ length: count }, (_, index) => {
-      const angle = (start + index * 360 / count) * Math.PI / 180;
-      return { u: 0.5 + radius * Math.cos(angle), v: 0.5 + radius * Math.sin(angle),
-        rotation: pattern.rotation === 'radial' ? start + index * 360 / count : finite(pattern.itemRotation, 0, 'repeat.itemRotation'),
-        scale: finite(pattern.scale, 1, 'repeat.scale'), mirror: false };
-    });
+    return circlePoints(0.5, 0.5, radius, count, start).map((point, index) => ({
+      u: point.x,
+      v: point.y,
+      rotation: pattern.rotation === 'radial'
+        ? start + index * 360 / count
+        : finite(pattern.itemRotation, 0, 'repeat.itemRotation'),
+      scale: finite(pattern.scale, 1, 'repeat.scale'),
+      mirror: false,
+    }));
   }
   if (type === 'GRID') {
     const rows = Math.round(finite(pattern.rows, Math.ceil(Math.sqrt(count)), 'repeat.rows'));
@@ -641,6 +626,8 @@ function renderNode(state: RenderState, node: FlagNode, context: RenderContext):
     }
     case 'group':
       return node.children.map((child) => renderNode(state, child, context)).join('');
+    case 'frame':
+      return renderFrame(state, node.frame, context);
     case 'mirror': {
       const axis = String(node.axis).toLowerCase();
       const horizontal = ['x', 'vertical', 'mir_v', 'mirror_vertical'].includes(axis);

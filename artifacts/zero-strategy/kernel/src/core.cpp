@@ -38,6 +38,10 @@ extern "C" const char *zk_error_name(zk_error error) {
     return "CONFLICT";
   case ZK_ERROR_INTERNAL:
     return "INTERNAL";
+  case ZK_ERROR_INVALID_PATH_FLAGS:
+    return "INVALID_PATH_FLAGS";
+  case ZK_ERROR_UNSUPPORTED_PATH_COMMAND:
+    return "UNSUPPORTED_PATH_COMMAND";
   }
   return "INTERNAL";
 }
@@ -66,6 +70,10 @@ extern "C" const char *zk_error_message(zk_error error) {
     return "Конфликт ревизии";
   case ZK_ERROR_INTERNAL:
     return "Внутренняя ошибка ядра";
+  case ZK_ERROR_INVALID_PATH_FLAGS:
+    return "Флаги SVG-дуги должны иметь значение 0 или 1";
+  case ZK_ERROR_UNSUPPORTED_PATH_COMMAND:
+    return "Неподдерживаемая команда SVG-пути";
   }
   return "Неизвестная ошибка ядра";
 }

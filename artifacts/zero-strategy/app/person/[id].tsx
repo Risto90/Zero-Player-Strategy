@@ -1,12 +1,12 @@
 import { Feather } from '@expo/vector-icons';
-import { router, useLocalSearchParams, usePathname } from 'expo-router';
+import { useLocalSearchParams, usePathname } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { LogPanel } from '@/components/game/LogPanel';
 import colors, { fonts } from '@/constants/colors';
 import { ageStage, personDeathStatus, type Person } from '@/game/government';
 import { countryProfileRoute } from '@/game/profileRoutes';
-import { closeProfileToMap, openProfile, rememberProfilePath } from '@/game/profileNavigation';
+import { backFromProfile, closeProfileToMap, openProfile, rememberProfilePath } from '@/game/profileNavigation';
 import { useGameSnapshot } from '@/game/useGame';
 import type { Game } from '@/game/game';
 import { currentGame } from '@/game/session';
@@ -23,16 +23,17 @@ type PersonProfileRow =
   | { type: 'empty'; key: string; message: string }
   | { type: 'relative'; key: string; id: number; familyId: number; title: string; note: string };
 
-function RelativeLink({ id, familyId, title, note, spec }: {
+function RelativeLink({ id, familyId, title, note, spec, svg }: {
   id: number;
   familyId: number;
   title: string;
   note?: string;
   spec?: import('@/game/flagSpec').FlagSpec;
+  svg?: string;
 }) {
   return (
     <View style={styles.relative}>
-      {spec ? <DynastyEmblemLink spec={spec} familyId={familyId} focusPersonId={id} label={title} size={16} /> : null}
+      {spec && svg ? <DynastyEmblemLink spec={spec} svg={svg} familyId={familyId} focusPersonId={id} label={title} size={16} /> : null}
       <Pressable onPress={() => openProfile({ pathname: '/person/[id]', params: { id: String(id) } })} style={styles.relativeText}>
         <Text style={styles.link}>{title}</Text>
         {note && <Text style={styles.note}>{note}</Text>}
@@ -56,7 +57,7 @@ export default function PersonPage() {
     return (
       <View style={[styles.screen, styles.center]}>
         <Text style={styles.title}>Персонаж не найден</Text>
-        <Pressable onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>Назад</Text></Pressable>
+        <Pressable onPress={backFromProfile} style={styles.back}><Text style={styles.backText}>Назад</Text></Pressable>
       </View>
     );
   }
@@ -76,6 +77,7 @@ function PersonProfile({
   const [showChronicle, setShowChronicle] = useState(false);
   const world = game.world;
   const dynastyEmblem = world.dynastyEmblems[person.familyId]?.emblemSpec;
+  const dynastyEmblemSvg = world.dynastyEmblems[person.familyId]?.emblemSvg;
   const dynastyFocusId = dynastyFocusPersonId(world.people, person.familyId) ?? person.id;
   const historyObjectOptions = useMemo(
     () => chronicleObjectOptions(world),
@@ -152,8 +154,8 @@ function PersonProfile({
     <View style={styles.detailsHeader}>
       <View style={styles.personTitleRow}>
         <Text style={styles.title}>{person.name}</Text>
-        {dynastyEmblem
-          ? <DynastyEmblemLink spec={dynastyEmblem} familyId={person.familyId}
+        {dynastyEmblem && dynastyEmblemSvg
+          ? <DynastyEmblemLink spec={dynastyEmblem} svg={dynastyEmblemSvg} familyId={person.familyId}
             focusPersonId={person.id} label={person.familyName} size={32} />
           : null}
       </View>
@@ -177,10 +179,10 @@ function PersonProfile({
         </View>
         <View style={styles.factRow}>
           <Text style={styles.fact}>Династия · </Text>
-          {dynastyEmblem
+          {dynastyEmblem && dynastyEmblemSvg
             ? (
               <>
-                <DynastyEmblemLink spec={dynastyEmblem} familyId={person.familyId}
+                <DynastyEmblemLink spec={dynastyEmblem} svg={dynastyEmblemSvg} familyId={person.familyId}
                   focusPersonId={dynastyFocusId} label={person.familyName} size={32} />
                 <Text style={styles.factFamilyPlain}>{person.familyName}</Text>
               </>
@@ -202,7 +204,7 @@ function PersonProfile({
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.back} accessibilityLabel="Назад">
+        <Pressable onPress={backFromProfile} style={styles.back} accessibilityLabel="Назад">
           <Feather name="arrow-left" size={18} color={c.foreground} />
           <Text style={styles.backText}>Назад</Text>
         </Pressable>
@@ -244,7 +246,8 @@ function PersonProfile({
             : item.type === 'empty'
               ? <Text style={styles.note}>{item.message}</Text>
               : <RelativeLink id={item.id} familyId={item.familyId} title={item.title} note={item.note}
-                spec={world.dynastyEmblems[item.familyId]?.emblemSpec} />}
+                spec={world.dynastyEmblems[item.familyId]?.emblemSpec}
+                svg={world.dynastyEmblems[item.familyId]?.emblemSvg} />}
           ListHeaderComponent={detailsHeader}
           ListFooterComponent={person.deathReason
             ? <Text style={styles.note}>Причина смерти · {person.deathReason}</Text>

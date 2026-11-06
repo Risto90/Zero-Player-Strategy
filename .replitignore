@@ -19,3 +19,4 @@ artifacts/mockup-sandbox/
 lib/api-client-react/
 lib/api-spec/
 lib/db/
+artifacts/zero-strategy/public/generated-kernel/

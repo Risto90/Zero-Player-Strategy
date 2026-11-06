@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import './binary-kernel-test-setup.mjs';
 import { World } from '../game/world.ts';
 import { deserializeWorld, serializeWorld } from '../game/persistence.ts';
 import { ColonizationDonorHeap, transferColonizationPopulation } from '../game/colonization.ts';

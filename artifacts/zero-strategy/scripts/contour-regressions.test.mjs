@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { ContourArea, ScalarContourLayer, MapContours } from '../game/contours.ts';
 import { MAP_WIDTH, MAP_HEIGHT, MAP_PIXELS } from '../game/config.ts';
-import { fillRings, rasterizeScalar } from '../game/zones.ts';
+import { CompositionTable } from '../game/composition.ts';
+import { fillRings, linkRings, rasterizeScalar, traceComposition, traceScalar } from '../game/zones.ts';
 import { ContourPopulationReader } from '../game/contourPopulation.ts';
 import { CountryExpansionContourIndex } from '../game/countryExpansionContours.ts';
 import { forEachNeighbour } from '../game/geography.ts';
@@ -12,6 +14,61 @@ const pixels = (area) => {
   return [...result].sort((a, b) => a - b);
 };
 const rectangle = (x0, y0, x1, y1) => ContourArea.rectangle({ x0, y0, x1, y1 });
+const vertexWidth = MAP_WIDTH + 1;
+assert.deepEqual(
+  linkRings([0, 5, (vertexWidth + 1) * 4 + 2, vertexWidth * 4 + 3])
+    .map((ring) => [...ring]),
+  [[0, 0, 1, 0, 1, 1, 0, 1]],
+  'Бинарное ядро связывает ориентированные границы в кольцо',
+);
+const scalarLayer = new Uint8Array(MAP_PIXELS);
+scalarLayer[0] = 1;
+scalarLayer[MAP_WIDTH + 1] = 2;
+scalarLayer[23 * MAP_WIDTH + 7] = 3;
+scalarLayer[24 * MAP_WIDTH + 7] = 3;
+scalarLayer[24 * MAP_WIDTH + 8] = 4;
+const scalarRoundTrip = new Uint8Array(MAP_PIXELS);
+rasterizeScalar(traceScalar(scalarLayer, null, 255), scalarRoundTrip);
+assert.deepEqual(scalarRoundTrip, scalarLayer, 'Бинарная трассировка точно восстанавливает скалярный слой');
+const scalarMask = new Uint8Array(MAP_PIXELS);
+scalarMask.fill(1);
+scalarMask[24 * MAP_WIDTH + 9] = 0;
+scalarLayer[24 * MAP_WIDTH + 9] = 5;
+scalarLayer[25 * MAP_WIDTH + 9] = 255;
+const maskedRoundTrip = new Uint8Array(MAP_PIXELS);
+rasterizeScalar(traceScalar(scalarLayer, scalarMask, 255), maskedRoundTrip);
+assert.equal(maskedRoundTrip[23 * MAP_WIDTH + 7], 3);
+assert.equal(maskedRoundTrip[24 * MAP_WIDTH + 7], 3);
+assert.equal(maskedRoundTrip[24 * MAP_WIDTH + 8], 4);
+assert.equal(maskedRoundTrip[24 * MAP_WIDTH + 9], 0);
+assert.equal(maskedRoundTrip[25 * MAP_WIDTH + 9], 0);
+const compositionTable = new CompositionTable();
+const mixtureA = compositionTable.intern(new Map([[1, 50], [2, 25]]));
+const mixtureB = compositionTable.intern(new Map([[1, 50], [3, 80]]));
+const compositionLayer = new Uint16Array(MAP_PIXELS);
+compositionLayer[0] = mixtureA;
+compositionLayer[1] = mixtureB;
+compositionLayer[23 * MAP_WIDTH + 7] = mixtureA;
+compositionLayer[24 * MAP_WIDTH + 7] = mixtureA;
+compositionLayer[24 * MAP_WIDTH + 8] = mixtureB;
+compositionLayer[25 * MAP_WIDTH + 9] = mixtureB;
+const compositionRoundTrip = new Uint16Array(MAP_PIXELS);
+for (const layer of traceComposition(compositionLayer, compositionTable)) {
+  for (const zone of layer.zones) {
+    fillRings(zone.rings, (pixel) => {
+      compositionRoundTrip[pixel] = compositionTable.withEntry(
+        compositionRoundTrip[pixel],
+        layer.entity,
+        zone.value,
+      );
+    });
+  }
+}
+assert.deepEqual(
+  compositionRoundTrip,
+  compositionLayer,
+  'Бинарная трассировка точно восстанавливает составы на границе пакетов',
+);
 let seed = 137;
 const random = () => {
   seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;

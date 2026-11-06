@@ -2,7 +2,7 @@ import { FLAG_COLOR_CONFIG } from './flagColorConfig';
 import { FLAG_NOVELTY_CONFIG } from './flagNoveltyConfig';
 import { FLAG_PROFILE_CONFIG, type FlagProfileConfig } from './flagProfileConfig';
 import { deltaE76 } from './flagColors';
-import type { FlagNode, FlagSpec } from './flagSpec';
+import type { FlagFrame, FlagNode, FlagSpec } from './flagSpec';
 import { buildFlagField, type FlagFieldOperator } from './flagField';
 import { buildFlagOutline } from './flagOutlines';
 import { flagStageRandom } from './random';
@@ -150,6 +150,7 @@ function object(value: unknown): Record<string, unknown> | null {
 function nodeOperator(node: FlagNode): string[] {
   if (node.kind === 'split') return [node.op, ...node.children.flatMap(nodeOperator)];
   if (node.kind === 'group') return node.children.flatMap(nodeOperator);
+  if (node.kind === 'frame') return [...nodeOperator(node.frame.ground), ...node.frame.layers.flatMap(nodeOperator)];
   if (node.kind === 'repeat' || node.kind === 'mirror' || node.kind === 'counterchange') {
     return node.kind === 'counterchange'
       ? [node.kind, ...node.copies.flatMap((copy) => nodeOperator(copy.child))]
@@ -172,6 +173,9 @@ function walkLayers(node: FlagNode, result: { role: string; shape: unknown; tags
     }
   } else if (node.kind === 'split' || node.kind === 'group') {
     node.children.forEach((child) => walkLayers(child, result));
+  } else if (node.kind === 'frame') {
+    walkLayers(node.frame.ground, result);
+    node.frame.layers.forEach((child) => walkLayers(child, result));
   } else if (node.kind === 'repeat' || node.kind === 'mirror') {
     walkLayers(node.child, result);
   } else if (node.kind === 'counterchange') {
@@ -283,6 +287,37 @@ function containsPolygon(x: number, y: number, points: readonly { x: number; y: 
   return inside;
 }
 
+function paintFrame(spec: FlagSpec, raster: FlagRaster, frame: FlagFrame): void {
+  const x0 = Math.round(frame.x0 * raster.width), y0 = Math.round(frame.y0 * raster.height);
+  const width = Math.max(1, Math.round(frame.w * raster.width));
+  const height = Math.max(1, Math.round(frame.h * raster.height));
+  const local: FlagRaster = { width, height, colors: Array(width * height).fill(null) };
+  paintNode(spec, local, frame.ground);
+  frame.layers.forEach((node) => paintNode(spec, local, node));
+  const polygonGroups = frame.clip.filter((clip) => clip !== 'flag-outline').map((clip) => {
+    if (!Array.isArray(clip)) throw new TypeError('Растеризатор вложенной рамки ожидает координатные полигоны.');
+    const raw = clip as unknown[];
+    const polygons = raw.length && Array.isArray(raw[0]) && Array.isArray(raw[0][0]) ? raw : [raw];
+    return polygons.map((polygon) => (polygon as unknown[]).map((point) => {
+      if (!Array.isArray(point) || point.length < 2) throw new TypeError('Точка обрезки рамки должна содержать x и y.');
+      const x = Number(point[0]), y = Number(point[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new TypeError('Координаты обрезки рамки должны быть конечными.');
+      return { x: Math.abs(x) <= 1 ? x * width : x, y: Math.abs(y) <= 1 ? y * height : y };
+    }));
+  });
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
+    const inside = polygonGroups.every((polygons) => {
+      let crossings = 0;
+      for (const polygon of polygons) if (containsPolygon(x + 0.5, y + 0.5, polygon)) crossings += 1;
+      return crossings % 2 === 1;
+    });
+    const color = local.colors[y * width + x];
+    const targetX = x0 + x, targetY = y0 + y;
+    if (!inside || !color || targetX < 0 || targetY < 0 || targetX >= raster.width || targetY >= raster.height) continue;
+    raster.colors[targetY * raster.width + targetX] = color;
+  }
+}
+
 function drawShape(raster: FlagRaster, shape: unknown, color: string): void {
   const value = object(shape);
   if (!value) throw new TypeError('Для растеризации нужна геометрическая фигура слоя');
@@ -372,8 +407,10 @@ function paintNode(spec: FlagSpec, raster: FlagRaster, node: FlagNode): void {
         Number(translate?.u ?? 0) !== 0 || Number(translate?.v ?? 0) !== 0) {
       throw new TypeError('Преобразования слоя требуют адаптера rasterize');
     }
-    if (node.frame) throw new TypeError('Вложенные рамки требуют адаптера rasterize');
     if (color) drawShape(raster, node.layer.shape, color);
+    if (node.frame) paintFrame(spec, raster, node.frame);
+  } else if (node.kind === 'frame') {
+    paintFrame(spec, raster, node.frame);
   } else {
     throw new TypeError(`Узел "${node.kind}" требует адаптера rasterize`);
   }

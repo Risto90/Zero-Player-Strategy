@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import './binary-kernel-test-setup.mjs';
 import { Game } from '../game/game.ts';
 import { drawSplitCard } from '../game/cards.ts';
 import { MAP_HEIGHT, MAP_WIDTH } from '../game/config.ts';

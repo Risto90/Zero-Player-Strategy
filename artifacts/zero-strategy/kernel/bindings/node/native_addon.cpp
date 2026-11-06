@@ -133,7 +133,10 @@ bool read_matrix_operation(napi_env env, napi_value value,
       "", "transpose", "add", "subtract", "hadamard", "divide",
       "matmul", "matvec", "dot", "outer", "sum", "mean", "normL1",
       "normFrobenius", "trace", "determinant", "rank", "inverse",
-      "pseudoinverse", "solve"};
+      "pseudoinverse", "solve", "minimum", "maximum", "logicalAnd",
+      "logicalOr", "logicalXor", "equal", "lessThan", "reduceMin",
+      "reduceMax", "seededRandom", "sampleIndices", "stencilZero",
+      "stencilClamp", "bilinearInterpolate"};
   for (uint32_t index = 1; index < sizeof(names) / sizeof(names[0]); ++index) {
     if (std::string(name) == names[index]) {
       *operation = static_cast<zk_matrix_operation>(index);
@@ -896,6 +899,53 @@ napi_value sum_population_measure(napi_env env, napi_callback_info info) {
   }
 }
 
+napi_value algebra_query(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+  napi_valuetype type;
+  if (argc != 1 || napi_typeof(env, argv[0], &type) != napi_ok ||
+      type != napi_string)
+    return throw_error(env, "Запрос бинарной алгебры должен быть строкой");
+
+  size_t request_length = 0;
+  if (napi_get_value_string_utf8(env, argv[0], nullptr, 0, &request_length) !=
+          napi_ok ||
+      request_length > ZK_MEMORY_LIMIT_BYTES || request_length > UINT32_MAX)
+    return throw_error(env, "Размер запроса бинарной алгебры превышает лимит");
+  try {
+    std::string request(request_length + 1, '\0');
+    size_t copied = 0;
+    if (napi_get_value_string_utf8(env, argv[0], request.data(),
+                                   request.size(), &copied) != napi_ok)
+      return throw_error(env, "Не удалось прочитать запрос бинарной алгебры");
+    request.resize(copied);
+    std::vector<char> response(1024);
+    uint32_t response_length = 0;
+    zk_error status = zk_algebra_query(
+        request.data(), static_cast<uint32_t>(request.size()), response.data(),
+        static_cast<uint32_t>(response.size()), &response_length);
+    if (status == ZK_ERROR_OUT_OF_RANGE &&
+        response_length > response.size() &&
+        response_length <= ZK_MEMORY_LIMIT_BYTES) {
+      response.resize(response_length);
+      status = zk_algebra_query(
+          request.data(), static_cast<uint32_t>(request.size()),
+          response.data(), static_cast<uint32_t>(response.size()),
+          &response_length);
+    }
+    if (status != ZK_OK)
+      return throw_kernel_error(env, status);
+    napi_value result;
+    if (napi_create_string_utf8(env, response.data(), response_length,
+                                &result) != napi_ok)
+      return throw_error(env, "Не удалось создать ответ бинарной алгебры");
+    return result;
+  } catch (const std::bad_alloc &) {
+    return throw_error(env, "Недостаточно памяти для бинарной алгебры");
+  }
+}
+
 struct BufferFinalizer {
   zk_handle handle;
 };
@@ -1001,6 +1051,8 @@ NAPI_MODULE_INIT() {
        napi_default, nullptr},
       {"sumPopulationMeasure", nullptr, sum_population_measure, nullptr,
        nullptr, nullptr, napi_default, nullptr},
+      {"algebraQuery", nullptr, algebra_query, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"matrixExecute", nullptr, matrix_execute, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"matrixFactorize", nullptr, matrix_factorize, nullptr, nullptr, nullptr,

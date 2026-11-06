@@ -36,6 +36,13 @@ bool valid_size(uint32_t rows, uint32_t columns, size_t *count) {
   return *count <= ZK_MEMORY_LIMIT_BYTES / sizeof(double);
 }
 
+uint32_t next_random_u32(uint32_t &state) {
+  state ^= state << 13;
+  state ^= state >> 17;
+  state ^= state << 5;
+  return state;
+}
+
 bool checked_product3(uint32_t first, uint32_t second, uint32_t third,
                       uint64_t *product) {
   const uint64_t pair = static_cast<uint64_t>(first) * second;
@@ -117,6 +124,13 @@ zk_error execute(zk_matrix_operation operation, const void *left_data,
   const bool needs_right =
       operation == ZK_MATRIX_ADD || operation == ZK_MATRIX_SUBTRACT ||
       operation == ZK_MATRIX_HADAMARD || operation == ZK_MATRIX_DIVIDE ||
+      operation == ZK_MATRIX_MINIMUM || operation == ZK_MATRIX_MAXIMUM ||
+      operation == ZK_MATRIX_LOGICAL_AND || operation == ZK_MATRIX_LOGICAL_OR ||
+      operation == ZK_MATRIX_LOGICAL_XOR || operation == ZK_MATRIX_EQUAL ||
+      operation == ZK_MATRIX_LESS_THAN || operation == ZK_MATRIX_SEEDED_RANDOM ||
+      operation == ZK_MATRIX_SAMPLE_INDICES ||
+      operation == ZK_MATRIX_STENCIL_ZERO || operation == ZK_MATRIX_STENCIL_CLAMP ||
+      operation == ZK_MATRIX_BILINEAR_INTERPOLATE ||
       operation == ZK_MATRIX_MATMUL || operation == ZK_MATRIX_MATVEC ||
       operation == ZK_MATRIX_DOT || operation == ZK_MATRIX_OUTER ||
       operation == ZK_MATRIX_SOLVE;
@@ -139,9 +153,36 @@ zk_error execute(zk_matrix_operation operation, const void *left_data,
   case ZK_MATRIX_SUBTRACT:
   case ZK_MATRIX_HADAMARD:
   case ZK_MATRIX_DIVIDE:
+  case ZK_MATRIX_MINIMUM:
+  case ZK_MATRIX_MAXIMUM:
+  case ZK_MATRIX_LOGICAL_AND:
+  case ZK_MATRIX_LOGICAL_OR:
+  case ZK_MATRIX_LOGICAL_XOR:
+  case ZK_MATRIX_EQUAL:
+  case ZK_MATRIX_LESS_THAN:
     if ((right_rows != left_rows && right_rows != 1) ||
         (right_columns != left_columns && right_columns != 1))
       return ZK_ERROR_INVALID_ARGUMENT;
+    break;
+  case ZK_MATRIX_SEEDED_RANDOM:
+    if (right_rows != 1 || right_columns != 1)
+      return ZK_ERROR_INVALID_ARGUMENT;
+    break;
+  case ZK_MATRIX_SAMPLE_INDICES:
+    if (left_rows != 1 || left_columns != 2 || right_rows != 1)
+      return ZK_ERROR_INVALID_ARGUMENT;
+    result_rows = 1;
+    result_columns = right_columns;
+    break;
+  case ZK_MATRIX_STENCIL_ZERO:
+  case ZK_MATRIX_STENCIL_CLAMP:
+    if (right_rows == 0 || right_columns != 3)
+      return ZK_ERROR_INVALID_ARGUMENT;
+    break;
+  case ZK_MATRIX_BILINEAR_INTERPOLATE:
+    if (right_rows != 1 || right_columns != 2)
+      return ZK_ERROR_INVALID_ARGUMENT;
+    result_rows = result_columns = 1;
     break;
   case ZK_MATRIX_MATMUL:
     if (left_columns != right_rows)
@@ -170,6 +211,8 @@ zk_error execute(zk_matrix_operation operation, const void *left_data,
   case ZK_MATRIX_NORM_FROBENIUS:
   case ZK_MATRIX_DETERMINANT:
   case ZK_MATRIX_RANK:
+  case ZK_MATRIX_REDUCE_MIN:
+  case ZK_MATRIX_REDUCE_MAX:
     result_rows = result_columns = 1;
     break;
   case ZK_MATRIX_TRACE:
@@ -209,7 +252,14 @@ zk_error execute(zk_matrix_operation operation, const void *left_data,
   case ZK_MATRIX_ADD:
   case ZK_MATRIX_SUBTRACT:
   case ZK_MATRIX_HADAMARD:
-  case ZK_MATRIX_DIVIDE: {
+  case ZK_MATRIX_DIVIDE:
+  case ZK_MATRIX_MINIMUM:
+  case ZK_MATRIX_MAXIMUM:
+  case ZK_MATRIX_LOGICAL_AND:
+  case ZK_MATRIX_LOGICAL_OR:
+  case ZK_MATRIX_LOGICAL_XOR:
+  case ZK_MATRIX_EQUAL:
+  case ZK_MATRIX_LESS_THAN: {
     if ((right_rows != left_rows && right_rows != 1) ||
         (right_columns != left_columns && right_columns != 1))
       return ZK_ERROR_INVALID_ARGUMENT;
@@ -225,11 +275,24 @@ zk_error execute(zk_matrix_operation operation, const void *left_data,
           result(row, column) = a - b;
         else if (operation == ZK_MATRIX_HADAMARD)
           result(row, column) = a * b;
-        else {
+        else if (operation == ZK_MATRIX_DIVIDE) {
           if (b == T(0))
             return ZK_ERROR_INVALID_ARGUMENT;
           result(row, column) = a / b;
-        }
+        } else if (operation == ZK_MATRIX_MINIMUM)
+          result(row, column) = std::min(a, b);
+        else if (operation == ZK_MATRIX_MAXIMUM)
+          result(row, column) = std::max(a, b);
+        else if (operation == ZK_MATRIX_LOGICAL_AND)
+          result(row, column) = T(a != T(0) && b != T(0));
+        else if (operation == ZK_MATRIX_LOGICAL_OR)
+          result(row, column) = T(a != T(0) || b != T(0));
+        else if (operation == ZK_MATRIX_LOGICAL_XOR)
+          result(row, column) = T((a != T(0)) != (b != T(0)));
+        else if (operation == ZK_MATRIX_EQUAL)
+          result(row, column) = T(a == b);
+        else
+          result(row, column) = T(a < b);
       }
     }
     break;
@@ -274,6 +337,126 @@ zk_error execute(zk_matrix_operation operation, const void *left_data,
     result.resize(1, 1);
     result(0, 0) = left.norm();
     break;
+  case ZK_MATRIX_REDUCE_MIN:
+    if (left.size() == 0)
+      return ZK_ERROR_INVALID_ARGUMENT;
+    result.resize(1, 1);
+    result(0, 0) = left.minCoeff();
+    break;
+  case ZK_MATRIX_REDUCE_MAX:
+    if (left.size() == 0)
+      return ZK_ERROR_INVALID_ARGUMENT;
+    result.resize(1, 1);
+    result(0, 0) = left.maxCoeff();
+    break;
+  case ZK_MATRIX_SEEDED_RANDOM: {
+    double raw_seed = static_cast<double>(right(0, 0));
+    if (!std::isfinite(raw_seed) || raw_seed < 0 ||
+        raw_seed > static_cast<double>(UINT32_MAX) ||
+        std::floor(raw_seed) != raw_seed)
+      return ZK_ERROR_INVALID_ARGUMENT;
+    uint32_t state = static_cast<uint32_t>(raw_seed);
+    if (state == 0)
+      state = 0x6d2b79f5u;
+    result.resize(left_rows, left_columns);
+    for (Eigen::Index index = 0; index < result.size(); ++index)
+      result.data()[index] =
+          static_cast<T>(static_cast<double>(next_random_u32(state)) /
+                         4294967296.0);
+    break;
+  }
+  case ZK_MATRIX_SAMPLE_INDICES: {
+    const double raw_source_count = static_cast<double>(left(0, 0));
+    const double raw_seed = static_cast<double>(left(0, 1));
+    if (raw_source_count < 0 || raw_source_count > UINT32_MAX ||
+        std::floor(raw_source_count) != raw_source_count ||
+        raw_seed < 0 || raw_seed > static_cast<double>(UINT32_MAX) ||
+        std::floor(raw_seed) != raw_seed ||
+        (right_columns > 0 && raw_source_count == 0))
+      return ZK_ERROR_INVALID_ARGUMENT;
+    uint32_t state = static_cast<uint32_t>(raw_seed);
+    if (state == 0)
+      state = 0x6d2b79f5u;
+    result.resize(1, right_columns);
+    for (uint32_t index = 0; index < right_columns; ++index) {
+      const uint32_t random = next_random_u32(state);
+      const double unit = static_cast<double>(random) / 4294967296.0;
+      result(0, index) = static_cast<T>(
+          std::floor(unit * raw_source_count));
+    }
+    break;
+  }
+  case ZK_MATRIX_STENCIL_ZERO:
+  case ZK_MATRIX_STENCIL_CLAMP: {
+    struct StencilEntry {
+      int32_t row_offset;
+      int32_t column_offset;
+      T weight;
+    };
+    std::vector<StencilEntry> stencil;
+    stencil.reserve(right_rows);
+    for (uint32_t index = 0; index < right_rows; ++index) {
+      const double row_offset = static_cast<double>(right(index, 0));
+      const double column_offset = static_cast<double>(right(index, 1));
+      if (std::floor(row_offset) != row_offset ||
+          std::floor(column_offset) != column_offset ||
+          row_offset < INT32_MIN || row_offset > INT32_MAX ||
+          column_offset < INT32_MIN || column_offset > INT32_MAX)
+        return ZK_ERROR_INVALID_ARGUMENT;
+      stencil.push_back({
+          static_cast<int32_t>(row_offset),
+          static_cast<int32_t>(column_offset),
+          right(index, 2),
+      });
+    }
+    result.resize(left_rows, left_columns);
+    const bool clamp_boundary = operation == ZK_MATRIX_STENCIL_CLAMP;
+    for (uint32_t row = 0; row < left_rows; ++row) {
+      for (uint32_t column = 0; column < left_columns; ++column) {
+        T sum = T(0);
+        T correction = T(0);
+        for (const StencilEntry &point : stencil) {
+          int64_t sample_row = static_cast<int64_t>(row) + point.row_offset;
+          int64_t sample_column =
+              static_cast<int64_t>(column) + point.column_offset;
+          if (clamp_boundary) {
+            sample_row = std::clamp<int64_t>(sample_row, 0, left_rows - 1);
+            sample_column =
+                std::clamp<int64_t>(sample_column, 0, left_columns - 1);
+          }
+          T sample = T(0);
+          if (sample_row >= 0 && sample_row < left_rows &&
+              sample_column >= 0 && sample_column < left_columns)
+            sample = left(static_cast<uint32_t>(sample_row),
+                          static_cast<uint32_t>(sample_column));
+          const T adjusted = sample * point.weight - correction;
+          const T next = sum + adjusted;
+          correction = (next - sum) - adjusted;
+          sum = next;
+        }
+        result(row, column) = sum;
+      }
+    }
+    break;
+  }
+  case ZK_MATRIX_BILINEAR_INTERPOLATE: {
+    const T row = std::clamp(right(0, 0), T(0), static_cast<T>(left_rows - 1));
+    const T column =
+        std::clamp(right(0, 1), T(0), static_cast<T>(left_columns - 1));
+    const uint32_t row0 = static_cast<uint32_t>(std::floor(row));
+    const uint32_t column0 = static_cast<uint32_t>(std::floor(column));
+    const uint32_t row1 = std::min(row0 + 1, left_rows - 1);
+    const uint32_t column1 = std::min(column0 + 1, left_columns - 1);
+    const T row_fraction = row - static_cast<T>(row0);
+    const T column_fraction = column - static_cast<T>(column0);
+    const T top = left(row0, column0) * (T(1) - column_fraction) +
+                  left(row0, column1) * column_fraction;
+    const T bottom = left(row1, column0) * (T(1) - column_fraction) +
+                     left(row1, column1) * column_fraction;
+    result.resize(1, 1);
+    result(0, 0) = top * (T(1) - row_fraction) + bottom * row_fraction;
+    break;
+  }
   case ZK_MATRIX_TRACE:
     if (left_rows != left_columns)
       return ZK_ERROR_INVALID_ARGUMENT;
@@ -674,6 +857,64 @@ extern "C" zk_error zk_matrix_batch_matmul(
       for (double value : result) if (!std::isfinite(value)) return ZK_ERROR_OVERFLOW;
       std::copy(result.begin(), result.end(), out);
     }
+    return ZK_OK;
+  } catch (const std::bad_alloc &) {
+    return ZK_ERROR_OUT_OF_MEMORY;
+  } catch (...) {
+    return ZK_ERROR_INTERNAL;
+  }
+}
+
+extern "C" zk_error zk_matrix_label_components(
+    const uint8_t *mask, uint32_t width, uint32_t height,
+    int32_t *labels, uint32_t output_capacity,
+    uint32_t *component_count) {
+  if (mask == nullptr || labels == nullptr || component_count == nullptr ||
+      width == 0 || height == 0)
+    return ZK_ERROR_INVALID_ARGUMENT;
+  const uint64_t count = static_cast<uint64_t>(width) * height;
+  if (count > output_capacity)
+    return ZK_ERROR_OUT_OF_RANGE;
+  if (count > ZK_MAX_BUFFER_SLOTS * 1024ull)
+    return ZK_ERROR_OUT_OF_RANGE;
+  try {
+    std::fill_n(labels, static_cast<size_t>(count), -1);
+    std::vector<uint32_t> queue;
+    queue.reserve(static_cast<size_t>(count));
+    uint32_t component = 0;
+    for (uint32_t seed = 0; seed < count; ++seed) {
+      if (mask[seed] == 0 || labels[seed] >= 0)
+        continue;
+      if (component > static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))
+        return ZK_ERROR_OUT_OF_RANGE;
+      size_t head = 0;
+      size_t tail = 0;
+      queue.clear();
+      labels[seed] = static_cast<int32_t>(component);
+      queue.push_back(seed);
+      ++tail;
+      while (head < tail) {
+        const uint32_t pixel = queue[head++];
+        const uint32_t x = pixel % width;
+        const auto visit = [&](uint32_t neighbor) {
+          if (mask[neighbor] != 0 && labels[neighbor] < 0) {
+            labels[neighbor] = static_cast<int32_t>(component);
+            queue.push_back(neighbor);
+            ++tail;
+          }
+        };
+        if (x > 0)
+          visit(pixel - 1);
+        if (x + 1 < width)
+          visit(pixel + 1);
+        if (pixel >= width)
+          visit(pixel - width);
+        if (pixel + width < count)
+          visit(pixel + width);
+      }
+      ++component;
+    }
+    *component_count = component;
     return ZK_OK;
   } catch (const std::bad_alloc &) {
     return ZK_ERROR_OUT_OF_MEMORY;

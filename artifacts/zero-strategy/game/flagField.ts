@@ -1,5 +1,6 @@
 import { FLAG_FIELD_CONFIG } from './flagFieldConfig';
 import { styleSharedFlagRegionBoundaries, type FlagLineStyle } from './flagLineStyles';
+import { booleanPolygons, ringSignedArea, vector, type MultiPolygon2 } from '../kernel/geometry';
 
 /**
  * Геометрия композиционных операторов заполнения поля флага (§7).
@@ -110,36 +111,24 @@ function rectPolygon(frame: FlagFieldFrame): FlagPolygon {
 }
 
 export function flagPolygonArea(polygon: FlagPolygon): number {
-  let twice = 0;
-  for (let i = 0; i < polygon.length; i += 1) {
-    const a = polygon[i];
-    const b = polygon[(i + 1) % polygon.length];
-    twice += a.x * b.y - b.x * a.y;
-  }
-  return Math.abs(twice) / 2;
+  return Math.abs(ringSignedArea(polygon));
 }
 
 export function flagPolygonSetArea(polygons: FlagPolygonSet): number {
-  return polygons.reduce((sum, polygon) => sum + flagPolygonArea(polygon), 0);
+  return polygons.reduce((sum, polygon) => sum + ringSignedArea(polygon), 0);
 }
 
 function signedArea(polygon: FlagPolygon): number {
-  let twice = 0;
-  for (let i = 0; i < polygon.length; i += 1) {
-    const a = polygon[i];
-    const b = polygon[(i + 1) % polygon.length];
-    twice += a.x * b.y - b.x * a.y;
-  }
-  return twice / 2;
+  return ringSignedArea(polygon);
 }
 
 function cleanPolygon(polygon: FlagPolygon): FlagPolygon {
   const result: FlagPolygon = [];
   for (const p of polygon) {
     const previous = result[result.length - 1];
-    if (!previous || Math.hypot(previous.x - p.x, previous.y - p.y) > EPSILON) result.push(point(p.x, p.y));
+    if (!previous || vector.distance(previous, p) > EPSILON) result.push(point(p.x, p.y));
   }
-  if (result.length > 1 && Math.hypot(result[0].x - result[result.length - 1].x, result[0].y - result[result.length - 1].y) <= EPSILON) {
+  if (result.length > 1 && vector.distance(result[0], result[result.length - 1]) <= EPSILON) {
     result.pop();
   }
   return result.length >= 3 && flagPolygonArea(result) > EPSILON ? result : [];
@@ -173,94 +162,36 @@ function clipHalfPlane(
 }
 
 function clipConvex(subject: FlagPolygon, clip: FlagPolygon): FlagPolygon {
-  let result = cleanPolygon(subject);
-  if (result.length < 3 || clip.length < 3) return [];
-  const orientation = Math.sign(signedArea(clip)) || 1;
-  for (let i = 0; i < clip.length && result.length >= 3; i += 1) {
-    const a = clip[i];
-    const b = clip[(i + 1) % clip.length];
-    result = clipHalfPlane(result, (p) => orientation * ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)));
-  }
-  return result;
-}
-
-/** Разбивает простой многоугольник на неперекрывающиеся треугольники методом отсечения ушей. */
-function triangulate(input: FlagPolygon): FlagPolygonSet {
-  const polygon = cleanPolygon(input);
-  if (polygon.length < 3) return [];
-  if (polygon.length === 3) return [polygon];
-  const direction = Math.sign(signedArea(polygon)) || 1;
-  const remaining = polygon.map((_, index) => index);
-  const triangles: FlagPolygonSet = [];
-  let guard = polygon.length * polygon.length;
-
-  const inTriangle = (p: FlagPoint, a: FlagPoint, b: FlagPoint, c: FlagPoint): boolean => {
-    const cross = (p1: FlagPoint, p2: FlagPoint, p3: FlagPoint) =>
-      (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
-    const ab = direction * cross(a, b, p);
-    const bc = direction * cross(b, c, p);
-    const ca = direction * cross(c, a, p);
-    return ab >= -EPSILON && bc >= -EPSILON && ca >= -EPSILON;
-  };
-
-  while (remaining.length > 3 && guard > 0) {
-    guard -= 1;
-    let foundEar = false;
-    for (let i = 0; i < remaining.length; i += 1) {
-      const prevIndex = remaining[(i + remaining.length - 1) % remaining.length];
-      const currentIndex = remaining[i];
-      const nextIndex = remaining[(i + 1) % remaining.length];
-      const a = polygon[prevIndex];
-      const b = polygon[currentIndex];
-      const c = polygon[nextIndex];
-      const cross = direction * ((b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x));
-      if (cross <= EPSILON) continue;
-      if (remaining.some((index) =>
-        index !== prevIndex && index !== currentIndex && index !== nextIndex && inTriangle(polygon[index], a, b, c))) continue;
-      triangles.push([a, b, c]);
-      remaining.splice(i, 1);
-      foundEar = true;
-      break;
-    }
-    if (!foundEar) break;
-  }
-  if (remaining.length === 3) {
-    triangles.push(remaining.map((index) => polygon[index]));
-  }
-  if (triangles.length !== polygon.length - 2) {
-    throw new RangeError('flag region must be a simple, non-self-intersecting polygon');
-  }
-  return triangles;
-}
-
-function intersectSets(subject: FlagPolygonSet, clipSet: FlagPolygonSet): FlagPolygonSet {
-  const results: FlagPolygonSet = [];
-  for (const subjectPolygon of subject) {
-    const subjectTriangles = triangulate(subjectPolygon);
-    for (const clipPolygon of clipSet) {
-      const clipTriangles = triangulate(clipPolygon);
-      for (const subjectTriangle of subjectTriangles) {
-        for (const clipTriangle of clipTriangles) {
-          const intersection = clipConvex(subjectTriangle, clipTriangle);
-          if (intersection.length >= 3) results.push(intersection);
-        }
-      }
-    }
-  }
-  return results;
+  const cleanSubject = cleanPolygon(subject);
+  const cleanClip = cleanPolygon(clip);
+  if (cleanSubject.length < 3 || cleanClip.length < 3) return [];
+  const result = booleanPolygons('intersection', [[cleanSubject]], [[cleanClip]]);
+  const rings = result.flatMap((polygon) => polygon);
+  if (rings.length > 1) throw new RangeError('пересечение выпуклых областей неожиданно создало несколько контуров');
+  return rings[0] ? cleanPolygon(rings[0]) : [];
 }
 
 export function clipFlagPolygons(
   polygons: FlagPolygonSet,
   clipChain: FlagPolygonSet[],
 ): FlagPolygonSet {
-  let visible = polygons.map(cleanPolygon).filter((polygon) => polygon.length >= 3);
+  let visible: MultiPolygon2 = polygons
+    .map(cleanPolygon)
+    .filter((polygon) => polygon.length >= 3)
+    .map((polygon) => [polygon]);
   for (const clipSet of clipChain) {
     if (clipSet.length === 0) return [];
-    visible = intersectSets(visible, clipSet);
+    visible = booleanPolygons(
+      'intersection',
+      visible,
+      clipSet.map((polygon) => [polygon]),
+    );
     if (visible.length === 0) break;
   }
-  return visible;
+  return visible.flatMap((polygon) => polygon.map((ring, index) => {
+      const desiredSign = index === 0 ? 1 : -1;
+      return Math.sign(ringSignedArea(ring)) === desiredSign ? ring : [...ring].reverse();
+  }));
 }
 
 function normalizeWeights(weights: number[]): number[] {

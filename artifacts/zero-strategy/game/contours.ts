@@ -2,11 +2,13 @@ import { MAP_HEIGHT, MAP_WIDTH } from './config';
 import { linkRings, type Ring } from './zones';
 import {
   borderContourSpans,
+  classifyClimateSpans,
   freezeContourSpans,
   intersectContourSpans,
   KernelContourDistanceBands,
   normalizeContourSpans,
   offsetContourSpans,
+  replaceContourRegion,
   subtractContourSpans,
   unionContourSpans,
 } from '../kernel/contour-spans';
@@ -253,27 +255,10 @@ export class ContourArea {
 
   /** Заменяет только заданное окно, сохраняя геометрию вне него. */
   replaceRegion(bounds: ContourBounds, replacement: readonly ContourSpan[]): ContourArea {
-    const x0 = Math.max(0, bounds.x0);
-    const xEnd = Math.min(MAP_WIDTH, bounds.x1 + 1);
-    const y0 = Math.max(0, bounds.y0);
-    const y1 = Math.min(MAP_HEIGHT - 1, bounds.y1);
-    if (xEnd <= x0 || y1 < y0) return this;
-    const spans: ContourSpan[] = [];
-    for (const span of this.spans) {
-      if (span.y < y0 || span.y > y1 || span.end <= x0 || span.start >= xEnd) {
-        spans.push(span);
-        continue;
-      }
-      if (span.start < x0) spans.push({ y: span.y, start: span.start, end: x0 });
-      if (span.end > xEnd) spans.push({ y: span.y, start: xEnd, end: span.end });
-    }
-    for (const span of replacement) {
-      if (span.y < y0 || span.y > y1) continue;
-      const start = Math.max(x0, span.start);
-      const end = Math.min(xEnd, span.end);
-      if (end > start) spans.push({ y: span.y, start, end });
-    }
-    return new ContourArea(spans);
+    return new ContourArea(
+      replaceContourRegion(this.spans, replacement, bounds, MAP_WIDTH, MAP_HEIGHT),
+      true,
+    );
   }
 
   /** Отсекает область заданным прямоугольником карты. */
@@ -620,25 +605,6 @@ function queryRows(area: ContourArea): Map<number, readonly ContourSpan[]> {
   return rows;
 }
 
-function intersectContourRows(
-  left: readonly ContourSpan[],
-  right: readonly ContourSpan[],
-): ContourSpan[] {
-  const result: ContourSpan[] = [];
-  let leftIndex = 0;
-  let rightIndex = 0;
-  while (leftIndex < left.length && rightIndex < right.length) {
-    const a = left[leftIndex];
-    const b = right[rightIndex];
-    const start = Math.max(a.start, b.start);
-    const end = Math.min(a.end, b.end);
-    if (end > start) result.push({ y: a.y, start, end });
-    if (a.end <= b.end) leftIndex += 1;
-    else rightIndex += 1;
-  }
-  return result;
-}
-
 function mergeDirtyRange(
   dirtyRows: Map<number, { x0: number; x1: number }>,
   y: number,
@@ -666,8 +632,6 @@ export class MapContours {
   private changeRevision = 0;
   private climateRegionArea: ContourArea | null = null;
   private climateRegionIds: Int32Array | null = null;
-  private climateMapArea: ContourArea | null = null;
-  private globalClimateCache: ClimateQueryCache | null = null;
   private readonly emptyArea = new ContourArea();
 
   constructor(
@@ -692,7 +656,6 @@ export class MapContours {
       this.climateQueryOrder.length = 0;
       this.climateRegionArea = null;
       this.climateRegionIds = null;
-      this.globalClimateCache = null;
       this.knownVersion = this.version();
     }
   }
@@ -760,47 +723,25 @@ export class MapContours {
     this.layer('humidity');
     this.layer('temperature');
     this.layer('drainage');
-    let cached = this.findClimateQuery(area);
+    const cached = this.findClimateQuery(area);
     if (cached) {
       this.touchClimateQuery(cached);
       this.refreshClimateQuery(cached);
       return cached.output;
     }
 
-    const mapQuery = this.globalClimateQuery();
-    if (sameContourArea(area, mapQuery.area)) return mapQuery.output;
     const rows = queryRows(area);
-    const groups = new Map<string, ClimateRowGroup>();
+    const groups = this.computeClimateRow(area.spans);
     const rowGroups = new Map<number, Map<string, ContourSpan[]>>();
-    for (const [y, spans] of rows) {
-      const storedRow = new Map<string, ContourSpan[]>();
-      const mapRow = mapQuery.rowGroups.get(y);
-      if (!mapRow) {
-        rowGroups.set(y, storedRow);
-        continue;
-      }
-      for (const [key, mapSpans] of mapRow) {
-        const rowSpans = intersectContourRows(spans, mapSpans);
-        if (!rowSpans.length) continue;
-        storedRow.set(key, rowSpans);
-        const metadata = mapQuery.regions.get(key);
-        if (!metadata) throw new Error(`Не найдены параметры климатического контура ${key}`);
-        let accumulated = groups.get(key);
-        if (!accumulated) {
-          accumulated = {
-            humidity: metadata.humidity,
-            temperature: metadata.temperature,
-            drainage: metadata.drainage,
-            spans: [],
-          };
-          groups.set(key, accumulated);
-        }
-        accumulated.spans.push(...rowSpans);
-      }
-      rowGroups.set(y, storedRow);
-    }
     const regions = new Map<string, ClimateContour>();
     for (const [key, group] of groups) {
+      for (const span of group.spans) {
+        const row = rowGroups.get(span.y) ?? new Map<string, ContourSpan[]>();
+        const rowSpans = row.get(key) ?? [];
+        rowSpans.push(span);
+        row.set(key, rowSpans);
+        rowGroups.set(span.y, row);
+      }
       regions.set(key, {
         humidity: group.humidity,
         temperature: group.temperature,
@@ -808,7 +749,7 @@ export class MapContours {
         area: new ContourArea(group.spans, true),
       });
     }
-    cached = {
+    const nextCache: ClimateQueryCache = {
       area,
       queryRows: rows,
       rowGroups,
@@ -816,57 +757,8 @@ export class MapContours {
       dirtyRows: new Map(),
       output: [...regions.values()],
     };
-    this.addClimateQuery(cached);
-    return cached.output;
-  }
-
-  private globalClimateQuery(): ClimateQueryCache {
-    this.climateMapArea ??= ContourArea.rectangle({
-      x0: 0,
-      y0: 0,
-      x1: MAP_WIDTH - 1,
-      y1: MAP_HEIGHT - 1,
-    });
-    if (this.globalClimateCache) {
-      this.refreshClimateQuery(this.globalClimateCache);
-      return this.globalClimateCache;
-    }
-
-    const rows = queryRows(this.climateMapArea);
-    const groups = new Map<string, ClimateRowGroup>();
-    const rowGroups = new Map<number, Map<string, ContourSpan[]>>();
-    for (const [y, spans] of rows) {
-      const computed = this.computeClimateRow(spans);
-      const storedRow = new Map<string, ContourSpan[]>();
-      for (const [key, group] of computed) {
-        storedRow.set(key, group.spans);
-        let accumulated = groups.get(key);
-        if (!accumulated) {
-          accumulated = { ...group, spans: [] };
-          groups.set(key, accumulated);
-        }
-        accumulated.spans.push(...group.spans);
-      }
-      rowGroups.set(y, storedRow);
-    }
-    const regions = new Map<string, ClimateContour>();
-    for (const [key, group] of groups) {
-      regions.set(key, {
-        humidity: group.humidity,
-        temperature: group.temperature,
-        drainage: group.drainage,
-        area: new ContourArea(group.spans, true),
-      });
-    }
-    this.globalClimateCache = {
-      area: this.climateMapArea,
-      queryRows: rows,
-      rowGroups,
-      regions,
-      dirtyRows: new Map(),
-      output: [...regions.values()],
-    };
-    return this.globalClimateCache;
+    this.addClimateQuery(nextCache);
+    return nextCache.output;
   }
 
   /** Возвращает полное пересечение заданных климатических контуров внутри геометрической области. */
@@ -883,29 +775,30 @@ export class MapContours {
   }
 
   private computeClimateRow(spans: readonly ContourSpan[]): Map<string, ClimateRowGroup> {
-    const humidity = this.layer('humidity');
-    const temperature = this.layer('temperature');
-    const drainage = this.layer('drainage');
     const groups = new Map<string, ClimateRowGroup>();
-    for (const span of spans) {
-      const rows = [humidity.row(span.y), temperature.row(span.y), drainage.row(span.y)];
-      const cursors = [0, 0, 0];
-      let x = span.start;
-      while (x < span.end) {
-        for (let index = 0; index < rows.length; index += 1) {
-          while (rows[index][cursors[index]].end <= x) cursors[index] += 1;
-        }
-        const h = rows[0][cursors[0]], t = rows[1][cursors[1]], d = rows[2][cursors[2]];
-        const end = Math.min(span.end, h.end, t.end, d.end);
-        const key = climateGroupKey(h.value, t.value, d.value);
-        let group = groups.get(key);
-        if (!group) {
-          group = { humidity: h.value, temperature: t.value, drainage: d.value, spans: [] };
-          groups.set(key, group);
-        }
-        group.spans.push({ y: span.y, start: x, end });
-        x = end;
+    const classified = classifyClimateSpans(
+      spans,
+      this.source('humidity') as Uint8Array,
+      this.source('temperature') as Float32Array,
+      this.source('drainage') as Uint8Array,
+      MAP_WIDTH,
+      MAP_HEIGHT,
+    );
+    for (let index = 0; index < classified.length; index += 6) {
+      const humidity = classified[index];
+      const temperature = classified[index + 1];
+      const drainage = classified[index + 2];
+      const key = climateGroupKey(humidity, temperature, drainage);
+      let group = groups.get(key);
+      if (!group) {
+        group = { humidity, temperature, drainage, spans: [] };
+        groups.set(key, group);
       }
+      group.spans.push({
+        y: classified[index + 3],
+        start: classified[index + 4],
+        end: classified[index + 5],
+      });
     }
     return groups;
   }
@@ -939,10 +832,7 @@ export class MapContours {
   }
 
   private markClimateQueriesDirty(bounds: ContourBounds): void {
-    const caches = this.globalClimateCache
-      ? [...this.climateQueryOrder, this.globalClimateCache]
-      : this.climateQueryOrder;
-    for (const cached of caches) {
+    for (const cached of this.climateQueryOrder) {
       const areaBounds = cached.area.bounds;
       if (areaBounds.y0 > bounds.y1 || areaBounds.y1 < bounds.y0 ||
         areaBounds.x0 > bounds.x1 || areaBounds.x1 < bounds.x0) continue;
@@ -965,6 +855,7 @@ export class MapContours {
 
   private refreshClimateQuery(cached: ClimateQueryCache): void {
     if (!cached.dirtyRows.size) return;
+    const allAffected: ContourSpan[] = [];
     for (const [y, dirty] of cached.dirtyRows) {
       const affected: ContourSpan[] = [];
       for (const span of cached.queryRows.get(y) ?? []) {
@@ -972,15 +863,31 @@ export class MapContours {
         const end = Math.min(span.end, dirty.x1 + 1);
         if (end > start) affected.push({ y, start, end });
       }
-      const updatedGroups = this.computeClimateRow(affected);
+      allAffected.push(...affected);
+    }
+    const updatedGroups = allAffected.length
+      ? this.computeClimateRow(allAffected)
+      : new Map<string, ClimateRowGroup>();
+    const updatedRows = new Map<number, Map<string, ContourSpan[]>>();
+    for (const [key, group] of updatedGroups) {
+      for (const span of group.spans) {
+        const row = updatedRows.get(span.y) ?? new Map<string, ContourSpan[]>();
+        const rowSpans = row.get(key) ?? [];
+        rowSpans.push(span);
+        row.set(key, rowSpans);
+        updatedRows.set(span.y, row);
+      }
+    }
+    for (const [y, dirty] of cached.dirtyRows) {
       const oldRow = cached.rowGroups.get(y) ?? new Map<string, ContourSpan[]>();
+      const updatedRow = updatedRows.get(y) ?? new Map<string, ContourSpan[]>();
       const nextRow = new Map<string, ContourSpan[]>();
-      const keys = new Set([...oldRow.keys(), ...updatedGroups.keys()]);
+      const keys = new Set([...oldRow.keys(), ...updatedRow.keys()]);
       const updateBounds = { x0: dirty.x0, x1: dirty.x1, y0: y, y1: y };
       for (const key of keys) {
         const oldSpans = oldRow.get(key) ?? [];
         const previousArea = cached.regions.get(key)?.area;
-        const updated = updatedGroups.get(key)?.spans ?? [];
+        const updated = updatedRow.get(key) ?? [];
         const oldAffected: ContourSpan[] = [];
         const preserved: ContourSpan[] = [];
         for (const span of oldSpans) {

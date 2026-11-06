@@ -20,15 +20,21 @@ const outputRoot = path.join(appRoot, 'generated-artifacts', 'kernel');
 const wasmRoot = path.join(outputRoot, 'wasm');
 const nodeRoot = path.join(outputRoot, 'node');
 const nativeRoot = path.join(outputRoot, 'native');
+const publicKernelRoot = path.join(appRoot, 'public', 'generated-kernel');
 const emscriptenCache = path.join(outputRoot, 'emscripten-cache');
 const sources = [
   path.join(kernelRoot, 'src', 'core.cpp'),
   path.join(kernelRoot, 'src', 'algebra.cpp'),
+  path.join(kernelRoot, 'src', 'algebra_query.cpp'),
+  path.join(kernelRoot, 'src', 'geometry_primitives.cpp'),
+  path.join(kernelRoot, 'src', 'vector_geometry.cpp'),
+  path.join(kernelRoot, 'src', 'contours.cpp'),
   path.join(kernelRoot, 'src', 'linear_algebra.cpp'),
   path.join(kernelRoot, 'src', 'buffers', 'buffer_store.cpp'),
 ];
 const header = path.join(kernelRoot, 'include');
 const eigenInclude = findEigenInclude();
+const boostInclude = findBoostInclude();
 const cxx = process.env.CXX ?? 'clang++';
 const emcc = process.env.EMCC ?? 'emcc';
 const nodeExecutable = realpathSync(process.execPath);
@@ -57,7 +63,30 @@ const exports = [
   '_zk_set_binary',
   '_zk_measure_binary',
   '_zk_measure_sum',
+  '_zk_measure_take_priority',
+  '_zk_measure_product',
+  '_zk_algebra_query',
+  '_zk_vector_execute',
+  '_zk_affine_execute',
+  '_zk_geometry_primitive_execute',
+  '_zk_contour_spans_execute',
+  '_zk_contour_replace_region',
+  '_zk_contour_rasterize_polygons',
+  '_zk_contour_link_rings',
+  '_zk_contour_trace_scalar_chunk',
+  '_zk_contour_trace_composition_chunk',
+  '_zk_contour_classify_spans',
+  '_zk_geometry_path_parse',
+  '_zk_geometry_path_serialize',
+  '_zk_geometry_path_transform',
+  '_zk_geometry_path_measure',
+  '_zk_geometry_path_flatten',
+  '_zk_geometry_path_intersections',
+  '_zk_geometry_path_to_polygons',
+  '_zk_geometry_polygon_boolean',
+  '_zk_geometry_stroke_polyline',
   '_zk_matrix_execute',
+  '_zk_matrix_label_components',
   '_zk_matrix_factorize',
   '_zk_matrix_batch_matmul',
   '_zk_sparse_matvec',
@@ -74,11 +103,13 @@ const exports = [
 const wasmCommon = [
   '-std=c++20',
   '-O2',
+  '-fexceptions',
   '-DEIGEN_DONT_VECTORIZE',
   '-fno-fast-math',
   '-ffp-contract=off',
   `-I${header}`,
   `-I${eigenInclude}`,
+  `-I${boostInclude}`,
   ...sources,
   '-sMODULARIZE=1',
   '-sEXPORT_ES6=1',
@@ -115,6 +146,7 @@ run(cxx, [
   '-DNODE_GYP_MODULE_NAME=zero_kernel_native',
   `-I${header}`,
   `-I${eigenInclude}`,
+  `-I${boostInclude}`,
   `-I${nodeInclude}`,
   path.join(kernelRoot, 'bindings', 'node', 'native_addon.cpp'),
   ...sources,
@@ -197,6 +229,10 @@ copyFileSync(
   path.join(kernelRoot, 'tests', 'browser.html'),
   path.join(wasmRoot, 'browser.html'),
 );
+mkdirSync(publicKernelRoot, { recursive: true });
+for (const filename of ['zero_kernel.mjs', 'zero_kernel.wasm']) {
+  copyFileSync(path.join(wasmRoot, filename), path.join(publicKernelRoot, filename));
+}
 
 const compilerInfo = readCommand(cxx, ['--version']).split('\n')[0];
 const nodeApiVersion = process.versions.napi ?? 'неизвестна';
@@ -249,6 +285,25 @@ function findEigenInclude() {
     }
   }
   throw new Error('Не найдены заголовки Eigen 3; добавьте пакет eigen или задайте EIGEN3_INCLUDE_DIR.');
+}
+
+function findBoostInclude() {
+  const candidates = [
+    process.env.BOOST_INCLUDE_DIR,
+    process.env.BOOST_ROOT ? path.join(process.env.BOOST_ROOT, 'include') : undefined,
+    '/usr/include',
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (existsSync(path.join(candidate, 'boost', 'geometry.hpp'))) return candidate;
+  }
+  if (existsSync('/nix/store')) {
+    for (const entry of readdirSync('/nix/store')) {
+      if (!entry.includes('-boost-')) continue;
+      const candidate = path.join('/nix/store', entry, 'include');
+      if (existsSync(path.join(candidate, 'boost', 'geometry.hpp'))) return candidate;
+    }
+  }
+  throw new Error('Не найдены заголовки Boost.Geometry; добавьте пакет boost или задайте BOOST_INCLUDE_DIR.');
 }
 
 function assertCompilerVersion() {

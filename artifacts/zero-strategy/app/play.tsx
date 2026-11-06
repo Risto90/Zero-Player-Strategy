@@ -32,7 +32,7 @@ import {
   type GameNotification,
 } from '@/game/notifications';
 import { openProfile } from '@/game/profileNavigation';
-import { continueSavedGame, currentGame, leaveGame } from '@/game/session';
+import { continueSavedGame, currentGame } from '@/game/session';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
 import type { MapMode } from '@/game/render';
 import { isActiveCountry } from '@/game/world';
@@ -61,8 +61,7 @@ declare global {
 }
 
 function goHome() {
-  if (router.canGoBack()) router.back();
-  else router.replace('/');
+  router.replace('/');
 }
 
 function mapListCount(game: Game, snap: GameSnapshot): number | null {
@@ -96,25 +95,9 @@ export default function PlayScreen() {
           else router.replace('/');
         })
         .catch((error: Error) => alive && setFailed(error.message));
-    }
+    } else game.start();
     return () => {
       alive = false;
-    };
-  }, [game]);
-
-  useEffect(() => () => void leaveGame(), []);
-
-  useEffect(() => {
-    if (!game) return;
-    const saveWhenHidden = () => {
-      if (document.visibilityState === 'hidden') void game.saveNow();
-    };
-    const saveBeforeExit = () => void game.saveNow();
-    document.addEventListener('visibilitychange', saveWhenHidden);
-    window.addEventListener('pagehide', saveBeforeExit);
-    return () => {
-      document.removeEventListener('visibilitychange', saveWhenHidden);
-      window.removeEventListener('pagehide', saveBeforeExit);
     };
   }, [game]);
 

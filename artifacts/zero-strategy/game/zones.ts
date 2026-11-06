@@ -8,6 +8,12 @@
  */
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from './config';
 import type { Composition } from './composition';
+import {
+  linkContourRings,
+  rasterizePolygonContours,
+  traceCompositionContourChunk,
+  traceScalarContourChunk,
+} from '../kernel/contour-spans';
 
 /** Доступ только для чтения к таблице смесей, снимок которой не меняется во время трассировки. */
 export interface TableView {
@@ -33,85 +39,52 @@ export interface Zone {
   rings: Ring[];
 }
 
-const VW = MAP_WIDTH + 1;
-const STEP = [1, VW, -1, -VW];
-
 class EdgeBuckets {
   readonly byKey = new Map<number, number[]>();
 
-  /** Добавляет сторону пикселя (x, y) как ориентированное ребро; пиксель остаётся справа. */
-  add(key: number, x: number, y: number, side: number): void {
-    let v: number;
-    if (side === 0) v = y * VW + x;
-    else if (side === 1) v = y * VW + x + 1;
-    else if (side === 2) v = (y + 1) * VW + x + 1;
-    else v = (y + 1) * VW + x;
-    let list = this.byKey.get(key);
+  /** Объединяет уже вычисленные бинарным ядром группы граничных рёбер. */
+  merge(values: Float64Array, offsets: Uint32Array, codes: Uint32Array): void {
+    for (let group = 0; group < values.length; group += 1) {
+      const value = values[group];
+      let list = this.byKey.get(value);
+      if (!list) {
+        list = [];
+        this.byKey.set(value, list);
+      }
+      for (let index = offsets[group]; index < offsets[group + 1]; index += 1) {
+        list.push(codes[index]);
+      }
+    }
+  }
+
+  /** Объединяет одну готовую бинарным ядром группу граничных рёбер. */
+  mergeGroup(value: number, codes: Uint32Array, start: number, end: number): void {
+    let list = this.byKey.get(value);
     if (!list) {
       list = [];
-      this.byKey.set(key, list);
+      this.byKey.set(value, list);
     }
-    list.push(v * 4 + side);
+    for (let index = start; index < end; index += 1) list.push(codes[index]);
   }
 }
 
 /** Соединяет ориентированные единичные рёбра в замкнутые кольца, оставляя только углы. */
 export function linkRings(codes: number[]): Ring[] {
-  const outgoing = new Map<number, number[]>();
-  codes.forEach((code, index) => {
-    const v = Math.floor(code / 4);
-    const list = outgoing.get(v);
-    if (list) list.push(index);
-    else outgoing.set(v, [index]);
-  });
-  const used = new Uint8Array(codes.length);
-  const rings: Ring[] = [];
-  for (let first = 0; first < codes.length; first += 1) {
-    if (used[first]) continue;
-    const startV = Math.floor(codes[first] / 4);
-    const verts: number[] = [];
-    const dirs: number[] = [];
-    let current = first;
-    let prevDir = -1;
-    for (let guard = 0; guard <= codes.length; guard += 1) {
-      used[current] = 1;
-      const code = codes[current];
-      const v = Math.floor(code / 4);
-      const dir = code & 3;
-      if (dir !== prevDir) {
-        verts.push(v);
-        dirs.push(dir);
-      }
-      prevDir = dir;
-      const end = v + STEP[dir];
-      if (end === startV) break;
-      const options = outgoing.get(end);
-      if (!options) break;
-      let next = -1;
-      for (const preferred of [(dir + 1) & 3, dir, (dir + 3) & 3]) {
-        for (const option of options) {
-          if (!used[option] && (codes[option] & 3) === preferred) {
-            next = option;
-            break;
-          }
-        }
-        if (next >= 0) break;
-      }
-      if (next < 0) break;
-      current = next;
+  const binaryCodes = new Uint32Array(codes.length);
+  for (let index = 0; index < codes.length; index += 1) {
+    const code = codes[index];
+    if (!Number.isInteger(code) || code < 0 || code > 0xffff_ffff) {
+      throw new RangeError('Коды рёбер должны быть целыми числами Uint32');
     }
-    // Начальная вершина не является углом, если кольцо входит и выходит из неё в одном направлении.
-    if (verts.length > 1 && dirs[0] === prevDir) {
-      verts.shift();
-    }
-    const ring = new Int32Array(verts.length * 2);
-    verts.forEach((v, i) => {
-      ring[i * 2] = v % VW;
-      ring[i * 2 + 1] = Math.floor(v / VW);
-    });
-    rings.push(ring);
+    binaryCodes[index] = code;
   }
-  return rings;
+  const { coordinates, ringOffsets } = linkContourRings(
+    binaryCodes,
+    MAP_WIDTH,
+    MAP_HEIGHT,
+  );
+  return Array.from({ length: ringOffsets.length - 1 }, (_, ringIndex) =>
+    coordinates.slice(ringOffsets[ringIndex] * 2, ringOffsets[ringIndex + 1] * 2));
 }
 
 function* bucketsToZones(buckets: EdgeBuckets): Steps<Zone[]> {
@@ -133,18 +106,30 @@ export function traceScalar(values: ArrayLike<number>, include: Uint8Array | nul
 
 export function* traceScalarSteps(values: ArrayLike<number>, include: Uint8Array | null, skip: number | null): Steps<Zone[]> {
   const buckets = new EdgeBuckets();
-  const inside = (p: number) => (include === null || include[p] === 1) && values[p] !== skip;
-  for (let y = 0; y < MAP_HEIGHT; y += 1) {
-    for (let x = 0; x < MAP_WIDTH; x += 1) {
-      const p = y * MAP_WIDTH + x;
-      if (!inside(p)) continue;
-      const value = values[p];
-      if (y === 0 || !inside(p - MAP_WIDTH) || values[p - MAP_WIDTH] !== value) buckets.add(value, x, y, 0);
-      if (x === MAP_WIDTH - 1 || !inside(p + 1) || values[p + 1] !== value) buckets.add(value, x, y, 1);
-      if (y === MAP_HEIGHT - 1 || !inside(p + MAP_WIDTH) || values[p + MAP_WIDTH] !== value) buckets.add(value, x, y, 2);
-      if (x === 0 || !inside(p - 1) || values[p - 1] !== value) buckets.add(value, x, y, 3);
-    }
-    if (y % ROWS_PER_STEP === 0) yield;
+  if (values.length !== MAP_PIXELS || (include !== null && include.length !== MAP_PIXELS)) {
+    throw new RangeError('Скалярный слой и маска должны совпадать с размером карты');
+  }
+  const binaryValues = values instanceof Float64Array
+    ? values
+    : Float64Array.from(values);
+  for (let processStart = 0; processStart < MAP_HEIGHT; processStart += ROWS_PER_STEP) {
+    const processEnd = Math.min(MAP_HEIGHT, processStart + ROWS_PER_STEP);
+    const sourceStart = Math.max(0, processStart - 1);
+    const sourceEnd = Math.min(MAP_HEIGHT, processEnd + 1);
+    const startPixel = sourceStart * MAP_WIDTH;
+    const endPixel = sourceEnd * MAP_WIDTH;
+    const result = traceScalarContourChunk(
+      binaryValues.subarray(startPixel, endPixel),
+      include?.subarray(startPixel, endPixel) ?? null,
+      sourceStart,
+      processStart,
+      processEnd,
+      MAP_WIDTH,
+      MAP_HEIGHT,
+      skip,
+    );
+    buckets.merge(result.values, result.offsets, result.codes);
+    yield;
   }
   return yield* bucketsToZones(buckets);
 }
@@ -163,46 +148,74 @@ export function traceComposition(comp: Uint16Array, table: TableView): EntityZon
 }
 
 export function* traceCompositionSteps(comp: Uint16Array, table: TableView): Steps<EntityZones[]> {
+  if (comp.length !== MAP_PIXELS) {
+    throw new RangeError('Слой смесей должен совпадать с размером карты');
+  }
+  if (table.entries.length === 0 || table.entries.length > 65536) {
+    throw new RangeError('Число смесей не помещается в идентификатор Uint16');
+  }
   const perEntity = new Map<number, EdgeBuckets>();
-  const diffCache = new Map<number, number[]>();
-  const diff = (a: number, b: number): number[] => {
-    const key = a * 65536 + b;
-    let cached = diffCache.get(key);
-    if (!cached) {
-      cached = [];
-      const entry = table.entries[a];
-      for (let k = 0; k < entry.ids.length; k += 1) {
-        if (table.shareOf(b, entry.ids[k]) !== entry.shares[k]) cached.push(entry.ids[k], entry.shares[k]);
-      }
-      diffCache.set(key, cached);
+  let entryCount = 0;
+  const compositionOffsets = new Uint32Array(table.entries.length + 1);
+  for (let composition = 0; composition < table.entries.length; composition += 1) {
+    const entry = table.entries[composition];
+    if (entry.ids.length !== entry.shares.length ||
+        entryCount + entry.ids.length > 0xffff_ffff) {
+      throw new RangeError('Таблица смесей имеет несовместимые размеры');
     }
-    return cached;
-  };
-  const emit = (list: number[], x: number, y: number, side: number) => {
-    for (let k = 0; k < list.length; k += 2) {
-      let buckets = perEntity.get(list[k]);
+    entryCount += entry.ids.length;
+    compositionOffsets[composition + 1] = entryCount;
+  }
+  const entityIds = new Uint32Array(entryCount);
+  const shares = new Float64Array(entryCount);
+  let at = 0;
+  for (const entry of table.entries) {
+    for (let index = 0; index < entry.ids.length; index += 1) {
+      const entity = entry.ids[index];
+      const share = entry.shares[index];
+      if (!Number.isInteger(entity) || entity < 0 || entity > 0xffff_ffff ||
+          !Number.isFinite(share) || share <= 0 ||
+          (index > 0 && entity <= entry.ids[index - 1])) {
+        throw new RangeError('Состав смеси должен быть отсортирован и содержать конечные доли');
+      }
+      entityIds[at] = entity;
+      shares[at] = share;
+      at += 1;
+    }
+  }
+  if (compositionOffsets[1] !== 0) {
+    throw new RangeError('Нулевая смесь должна быть пустой');
+  }
+  for (let processStart = 0; processStart < MAP_HEIGHT; processStart += ROWS_PER_STEP) {
+    const processEnd = Math.min(MAP_HEIGHT, processStart + ROWS_PER_STEP);
+    const sourceStart = Math.max(0, processStart - 1);
+    const sourceEnd = Math.min(MAP_HEIGHT, processEnd + 1);
+    const result = traceCompositionContourChunk(
+      comp.subarray(sourceStart * MAP_WIDTH, sourceEnd * MAP_WIDTH),
+      compositionOffsets,
+      entityIds,
+      shares,
+      sourceStart,
+      processStart,
+      processEnd,
+      MAP_WIDTH,
+      MAP_HEIGHT,
+    );
+    for (let group = 0; group < result.entities.length; group += 1) {
+      const entity = result.entities[group];
+      let buckets = perEntity.get(entity);
       if (!buckets) {
         buckets = new EdgeBuckets();
-        perEntity.set(list[k], buckets);
+        perEntity.set(entity, buckets);
       }
-      buckets.add(list[k + 1], x, y, side);
+      buckets.mergeGroup(
+        result.values[group],
+        result.codes,
+        result.offsets[group],
+        result.offsets[group + 1],
+      );
     }
-  };
-  for (let y = 0; y < MAP_HEIGHT; y += 1) {
-    for (let x = 0; x < MAP_WIDTH; x += 1) {
-      const p = y * MAP_WIDTH + x;
-      const a = comp[p];
-      if (a === 0) continue;
-      const up = y === 0 ? 0 : comp[p - MAP_WIDTH];
-      const right = x === MAP_WIDTH - 1 ? 0 : comp[p + 1];
-      const down = y === MAP_HEIGHT - 1 ? 0 : comp[p + MAP_WIDTH];
-      const left = x === 0 ? 0 : comp[p - 1];
-      if (up !== a) emit(diff(a, up), x, y, 0);
-      if (right !== a) emit(diff(a, right), x, y, 1);
-      if (down !== a) emit(diff(a, down), x, y, 2);
-      if (left !== a) emit(diff(a, left), x, y, 3);
-    }
-    if (y % ROWS_PER_STEP === 0) yield;
+    yield;
   }
   const layers: EntityZones[] = [];
   for (const [entity, buckets] of perEntity) layers.push({ entity, zones: yield* bucketsToZones(buckets) });
@@ -211,38 +224,18 @@ export function* traceCompositionSteps(comp: Uint16Array, table: TableView): Ste
 
 /** Вызывает `visit` для пикселей внутри колец по правилу чётности и центрам пикселей. */
 export function fillRings(rings: Ring[], visit: (p: number) => void): void {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const ring of rings) {
-    for (let i = 0; i < ring.length; i += 2) {
-      minX = Math.min(minX, ring[i]);
-      maxX = Math.max(maxX, ring[i]);
-      minY = Math.min(minY, ring[i + 1]);
-      maxY = Math.max(maxY, ring[i + 1]);
+  if (rings.length === 0) return;
+  const polygon = rings.map((ring) => {
+    const points: { x: number; y: number }[] = [];
+    for (let index = 0; index < ring.length; index += 2) {
+      points.push({ x: ring[index], y: ring[index + 1] });
     }
-  }
-  if (!Number.isFinite(minX) || maxX <= minX || maxY <= minY) return;
-  const bw = maxX - minX + 1;
-  const parity = new Uint8Array(bw * (maxY - minY));
-  for (const ring of rings) {
-    const n = ring.length / 2;
-    for (let i = 0; i < n; i += 1) {
-      const j = (i + 1) % n;
-      const x = ring[i * 2];
-      if (x !== ring[j * 2]) continue;
-      const y0 = Math.min(ring[i * 2 + 1], ring[j * 2 + 1]);
-      const y1 = Math.max(ring[i * 2 + 1], ring[j * 2 + 1]);
-      for (let y = y0; y < y1; y += 1) parity[(y - minY) * bw + (x - minX)] ^= 1;
-    }
-  }
-  for (let y = minY; y < maxY; y += 1) {
-    let inside = 0;
-    const row = (y - minY) * bw;
-    for (let x = minX; x < maxX; x += 1) {
-      inside ^= parity[row + x - minX];
-      if (inside) visit(y * MAP_WIDTH + x);
+    return points;
+  });
+  const spans = rasterizePolygonContours([polygon], MAP_WIDTH, MAP_HEIGHT);
+  for (const span of spans) {
+    for (let x = span.start; x < span.end; x += 1) {
+      visit(span.y * MAP_WIDTH + x);
     }
   }
 }

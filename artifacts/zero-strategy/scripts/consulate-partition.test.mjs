@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { readFileSync } from 'node:fs';
 import { consulDeathChoices, governmentEventWeight } from '../game/cards.ts';
 import { createFamilyId, createPerson } from '../game/government.ts';

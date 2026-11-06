@@ -38,6 +38,7 @@ export default function ReligionPage() {
       name: game.world.religions[religion.parentId].name,
       note: 'Исходная вера',
       spec: game.world.religions[religion.parentId].emblemSpec,
+      svg: game.world.religions[religion.parentId].emblemSvg,
       href: religionProfileRoute(religion.parentId),
     }] : []),
     ...branches.map((child) => ({
@@ -46,12 +47,13 @@ export default function ReligionPage() {
       name: child.name,
       note: 'Ветвь',
       spec: child.emblemSpec,
+      svg: child.emblemSvg,
       href: religionProfileRoute(child.id),
     })),
   ];
   const details = (
     <>
-      <ProfileIntro mark={<EmblemPreview spec={religion.emblemSpec} label={`Флаг ${religion.name}`} />}>
+      <ProfileIntro mark={<EmblemPreview spec={religion.emblemSpec} svg={religion.emblemSvg} label={`Флаг ${religion.name}`} />}>
         <View style={styles.facts}>
           <ProfileFact><Text style={{ color: religion.color }}>■ </Text>Население · {fmt(population)} чел.</ProfileFact>
           <ProfileFact>Возникла в {religion.foundedYear} году</ProfileFact>
@@ -70,6 +72,7 @@ export default function ReligionPage() {
           key: String(country.id),
           name: `${country.rank} ${country.name}`,
           spec: country.emblemSpec,
+          svg: country.emblemSvg,
           href: countryProfileRoute(country.id),
         }))} />
       </ProfileSection>

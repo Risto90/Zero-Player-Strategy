@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import './binary-kernel-test-setup.mjs';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from '../game/config.ts';
 import { MapContours } from '../game/contours.ts';
 import { CompositionTable } from '../game/composition.ts';
@@ -59,7 +60,6 @@ const world = {
   ],
   riverFeatures: [],
   water: { coastsOf: [] },
-  knownRivers: new Uint8Array(MAP_PIXELS),
   isCoastal: () => false,
   cultures: [{ id: 0, name: 'Народ' }],
   religions: [{ id: 0, name: 'Вера' }],

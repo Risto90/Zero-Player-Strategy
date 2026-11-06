@@ -18,7 +18,7 @@ export interface RiverPathSegment {
   bounds: [number, number, number, number];
 }
 
-const discoveredPathCache = new WeakMap<World, {
+const riverPathCache = new WeakMap<World, {
   geographyRevision: number;
   segments: RiverPathSegment[];
 }>();
@@ -292,13 +292,10 @@ function splitAtMapSeam(
   appendSegment(output, river, current, strength);
 }
 
-export function discoveredRiverPaths(world: World, countryId?: number): RiverPathSegment[] {
-  const cached = discoveredPathCache.get(world);
+export function riverPaths(world: World): RiverPathSegment[] {
+  const cached = riverPathCache.get(world);
   if (cached?.geographyRevision === world.geographyRevision) {
-    return countryId === undefined
-      ? cached.segments
-      : cached.segments.filter((segment) =>
-        world.riverFeatures[segment.riverId]?.discoveredBy.includes(countryId));
+    return cached.segments;
   }
   const lines: {
     river: RiverFeature;
@@ -308,7 +305,6 @@ export function discoveredRiverPaths(world: World, countryId?: number): RiverPat
     bounds: ReturnType<typeof pathBounds>;
   }[] = [];
   for (const river of world.riverFeatures) {
-    if (river.discoveredBy.length === 0) continue;
     const strength = riverStrengthForRank(river.scaleRank);
     for (const path of river.paths) {
       if (path.length >= 2) {
@@ -341,28 +337,21 @@ export function discoveredRiverPaths(world: World, countryId?: number): RiverPat
     }));
     splitAtMapSeam(line.river, wrapped, line.strength, segments);
   }
-  discoveredPathCache.set(world, {
+  riverPathCache.set(world, {
     geographyRevision: world.geographyRevision,
     segments,
   });
-  return countryId === undefined
-    ? segments
-    : segments.filter((segment) =>
-      world.riverFeatures[segment.riverId]?.discoveredBy.includes(countryId));
+  return segments;
 }
 
 /** Возвращает полные русла для расчёта речных бассейнов без графической обрезки у слияний. */
-export function untrimmedDiscoveredRiverPaths(world: World, countryId?: number): RiverPathSegment[] {
+export function untrimmedRiverPaths(world: World): RiverPathSegment[] {
   const cached = untrimmedPathCache.get(world);
   if (cached?.geographyRevision === world.geographyRevision) {
-    return countryId === undefined
-      ? cached.segments
-      : cached.segments.filter((segment) =>
-        world.riverFeatures[segment.riverId]?.discoveredBy.includes(countryId));
+    return cached.segments;
   }
   const segments: RiverPathSegment[] = [];
   for (const river of world.riverFeatures) {
-    if (river.discoveredBy.length === 0) continue;
     const strength = riverStrengthForRank(river.scaleRank);
     for (const path of river.paths) {
       if (path.length < 2) continue;
@@ -377,8 +366,5 @@ export function untrimmedDiscoveredRiverPaths(world: World, countryId?: number):
     geographyRevision: world.geographyRevision,
     segments,
   });
-  return countryId === undefined
-    ? segments
-    : segments.filter((segment) =>
-      world.riverFeatures[segment.riverId]?.discoveredBy.includes(countryId));
+  return segments;
 }

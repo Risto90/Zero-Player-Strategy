@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import './binary-kernel-test-setup.mjs';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { dissolveCountryIntoNomadicCountries, settleNomadAsCountry } from '../game/nomads.ts';

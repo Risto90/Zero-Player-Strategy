@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { Game } from '../game/game.ts';
 import { advancePeople } from '../game/characters.ts';
 import {

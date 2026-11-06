@@ -31,7 +31,7 @@ import { apportionIntegerTotal } from '../kernel/proportions';
 import { labelGridComponents } from '../kernel/matrix';
 import { MAP_POINT_AREA_KM2, densityToResidents, residentsToDensity, roundResidents } from './populationUnits';
 import { rasterizePolygonContours } from '../kernel/contour-spans';
-import { untrimmedDiscoveredRiverPaths } from './geographyGeometry';
+import { untrimmedRiverPaths } from './geographyGeometry';
 import { sumPopulationMeasures } from './populationMeasures';
 
 /** Радиус, при котором 10% плотности 1 чел./км² дают около 250 жителей. */
@@ -74,7 +74,7 @@ function riverContourArea(world: World, countryId: number): ContourArea {
   const cached = cache.get(key);
   if (cached) return cached;
   const spans: ContourSpan[] = [];
-  for (const segment of untrimmedDiscoveredRiverPaths(world, countryId)) {
+  for (const segment of untrimmedRiverPaths(world)) {
     for (const span of rasterizePolygonContours(
       segment.contourPolygons, MAP_WIDTH, MAP_HEIGHT,
     )) spans.push(span);

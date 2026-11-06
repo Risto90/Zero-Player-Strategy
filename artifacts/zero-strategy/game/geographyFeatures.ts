@@ -15,7 +15,6 @@ export interface GeographyFeature {
   pixel: number;
   elevation: number;
   name: string | null;
-  discoveredBy: number[];
   active?: boolean;
   activityIntervalYears?: number;
   eruptionIntensity?: number;
@@ -27,7 +26,6 @@ export interface RiverFeature {
   paths: { x: number; y: number }[][];
   pixels: number[];
   name: string | null;
-  discoveredBy: number[];
 }
 
 export interface GeneratedGeography {
@@ -97,7 +95,6 @@ function pointFeatureRows(encoded: string, isVolcano: boolean): GeographyFeature
       pixel: y * MAP_WIDTH + x,
       elevation,
       name: null,
-      discoveredBy: [],
       ...(active === undefined ? {} : { active }),
       ...(active === undefined || !activityBytes ? {} : {
         activityIntervalYears: activityBytes[id * 2],
@@ -138,7 +135,6 @@ function earthRiverFeatures(): RiverFeature[] {
       paths,
       pixels: [...pixels],
       name: null,
-      discoveredBy: [],
     });
   }
   return result;
@@ -274,7 +270,7 @@ function randomPointFeatures(elevation: Int16Array, land: Uint8Array, seed: numb
           }
         }
       }
-      if (maximum) candidates.push({ id: 0, pixel, elevation: height, name: null, discoveredBy: [] });
+      if (maximum) candidates.push({ id: 0, pixel, elevation: height, name: null });
     }
   }
   candidates.sort((a, b) => b.elevation - a.elevation);
@@ -299,7 +295,6 @@ function randomPointFeatures(elevation: Int16Array, land: Uint8Array, seed: numb
       pixel: candidate.pixel,
       elevation: candidate.elevation,
       name: null,
-      discoveredBy: [],
       active,
       ...(active ? {
         activityIntervalYears: Math.round(1 + random() * 120),
@@ -323,7 +318,6 @@ function randomRiverFeatures(
         paths: [pixels.map((pixel) => ({ x: pixel % MAP_WIDTH, y: Math.floor(pixel / MAP_WIDTH) }))],
         pixels,
         name: null,
-        discoveredBy: [],
       };
     });
   }
@@ -361,7 +355,6 @@ function randomRiverFeatures(
       paths: [],
       pixels,
       name: null,
-      discoveredBy: [],
     });
   }
   return result;

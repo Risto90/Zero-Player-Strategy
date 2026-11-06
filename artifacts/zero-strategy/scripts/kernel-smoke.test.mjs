@@ -24,6 +24,23 @@ assert.equal(wasmModule._zk_execution_mode(), 1);
 assert.equal(wasm.addI32(19, 23), 42);
 assert.equal(wasm.sumI32(new Int32Array([8, -3, 37])), 42n);
 assert.throws(() => wasm.addI32(2_147_483_647, 1), /OVERFLOW/);
+const sampledCircle = wasm.geometryPrimitiveExecute(
+  'circlePoints',
+  new Float64Array([0, 0, 2, 4, 0]),
+);
+assert.ok(
+  [...sampledCircle].every((value, index) =>
+    Math.abs(value - [2, 0, 0, 2, -2, 0, 0, -2][index]) < 1e-12),
+  'точки окружности вычисляются в бинарной геометрии с допустимой погрешностью float',
+);
+assert.deepEqual(
+  [...wasm.geometryPrimitiveExecute(
+    'clipPolygonRect',
+    new Float64Array([0, 0, 1, 1, 4, -2, 0, 2, 0, 2, 2, -2, 2]),
+  )],
+  [0, 1, 0, 0, 1, 0, 1, 1],
+  'бинарная обрезка сохраняет порядок вершин и геометрию исходного контура',
+);
 const matrixProduct = wasm.matrixExecute(
   'matmul',
   new Float64Array([4, 1, 2, 3]),
@@ -257,6 +274,64 @@ assert.deepEqual(
   [1, 3, 13],
 );
 assert.throws(() => wasm.setAlgebra('difference', new Uint32Array([2, 1]), new Uint32Array([1])), /INVALID_ARGUMENT/);
+assert.deepEqual(
+  [...wasm.vectorExecute('add', new Float64Array([2, -3, 4, 7]))],
+  [6, 4],
+);
+assert.deepEqual(
+  [...wasm.affineExecute('apply', new Float64Array([1, 0, 0, 1, 9, -4, 2, 0]))],
+  [11, -4],
+);
+assert.deepEqual(
+  wasm.contourSpansExecute(
+    'offset',
+    [{ y: 2, start: 2, end: 3 }],
+    [],
+    8,
+    8,
+    1,
+  ),
+  [
+    { y: 1, start: 2, end: 3 },
+    { y: 2, start: 1, end: 4 },
+    { y: 3, start: 2, end: 3 },
+  ],
+);
+const rectanglePath = wasm.pathParse('M0 0 L10 0 L10 10 L0 10 Z');
+const normalizedRectangle = wasm.pathSerialize(rectanglePath);
+assert.deepEqual(
+  [...wasm.pathMeasure('length', wasm.pathParse(normalizedRectangle), 0.01)],
+  [40],
+);
+assert.deepEqual(
+  [...wasm.pathMeasure('bounds', rectanglePath, 0.01)],
+  [0, 0, 10, 10],
+);
+const rectanglePolygons = wasm.pathToPolygons(rectanglePath, 0.01, 'nonzero');
+assert.deepEqual([...rectanglePolygons.ringOffsets], [0, 4]);
+assert.deepEqual([...rectanglePolygons.polygonOffsets], [0, 1]);
+const overlappingRectangle = wasm.pathToPolygons(
+  wasm.pathParse('M5 5 L15 5 L15 15 L5 15 Z'),
+  0.01,
+  'nonzero',
+);
+const polygonIntersection = wasm.polygonBoolean(
+  'intersection',
+  [rectanglePolygons, overlappingRectangle],
+);
+assert.deepEqual([...polygonIntersection.ringOffsets], [0, 4]);
+const overlapCoordinates = polygonIntersection.coordinates;
+const overlapArea = Math.abs(
+  overlapCoordinates[0] * overlapCoordinates[3] -
+  overlapCoordinates[2] * overlapCoordinates[1] +
+  overlapCoordinates[2] * overlapCoordinates[5] -
+  overlapCoordinates[4] * overlapCoordinates[3] +
+  overlapCoordinates[4] * overlapCoordinates[7] -
+  overlapCoordinates[6] * overlapCoordinates[5] +
+  overlapCoordinates[6] * overlapCoordinates[1] -
+  overlapCoordinates[0] * overlapCoordinates[7],
+) / 2;
+assert.equal(overlapArea, 25);
 
 const populationA = {
   keys: new Uint32Array([1, 0xffff_ffff, 4, 2, 1, 7, 4, 2, 1, 7, 4, 2]),
@@ -339,6 +414,18 @@ assert.equal(native.backend, 'native');
 assert.equal(native.addI32(10, 32), 42);
 assert.equal(native.sumI32(new Int32Array([5, -2, 39])), 42n);
 assert.equal(await native.queueAddI32(20, 22), 42);
+const nativeAlgebra = JSON.parse(native.algebraQuery(JSON.stringify({
+  inputs: {
+    left: { columns: ['id'], rows: [[1], [2]] },
+    right: { columns: ['id'], rows: [[2], [3]] },
+  },
+  operations: [{
+    op: 'set', id: 'combined', mode: 'set', kind: 'union',
+    left: 'left', right: 'right',
+  }],
+})));
+assert.equal(nativeAlgebra.ok, true);
+assert.deepEqual(nativeAlgebra.result.tables.combined.rows, [[1], [2], [3]]);
 assert.deepEqual(
   [...native.matrixExecute(
     'matmul',
@@ -351,6 +438,56 @@ assert.deepEqual(
   ).values],
   [7, 12, 11, 16],
 );
+const elementwiseLeft = new Float64Array([1, 0, 3, 4]);
+const elementwiseRight = new Float64Array([2, 5, 3, -1]);
+assert.deepEqual(
+  [...native.matrixExecute('minimum', elementwiseLeft, 2, 2, elementwiseRight, 2, 2).values],
+  [1, 0, 3, -1],
+);
+assert.deepEqual(
+  [...native.matrixExecute('logicalAnd', elementwiseLeft, 2, 2, elementwiseRight, 2, 2).values],
+  [1, 0, 1, 1],
+);
+assert.deepEqual(
+  [...native.matrixExecute('reduceMin', elementwiseLeft, 2, 2).values],
+  [0],
+);
+assert.deepEqual(
+  [...native.matrixExecute('reduceMax', elementwiseLeft, 2, 2).values],
+  [4],
+);
+const seededInput = new Float64Array(4);
+const seedInput = new Float64Array([1234]);
+assert.deepEqual(
+  [...native.matrixExecute('seededRandom', seededInput, 1, 4, seedInput, 1, 1).values],
+  [...wasm.matrixExecute('seededRandom', seededInput, 1, 4, seedInput, 1, 1).values],
+);
+const sampleInput = new Float64Array([3, 23]);
+const sampleShape = new Float64Array(20);
+assert.deepEqual(
+  [...native.matrixExecute('sampleIndices', sampleInput, 1, 2, sampleShape, 1, 20).values],
+  [...wasm.matrixExecute('sampleIndices', sampleInput, 1, 2, sampleShape, 1, 20).values],
+);
+const stencilInput = new Float64Array([1, 2, 3, 4]);
+const northStencilInput = new Float64Array([-1, 0, 1]);
+assert.deepEqual(
+  [...native.matrixExecute('stencilZero', stencilInput, 2, 2, northStencilInput, 1, 3).values],
+  [0, 0, 1, 2],
+);
+assert.deepEqual(
+  [...native.matrixExecute('stencilClamp', stencilInput, 2, 2, northStencilInput, 1, 3).values],
+  [1, 2, 1, 2],
+);
+const bilinearInput = new Float64Array([0, 10, 20, 30]);
+const bilinearCoordinates = new Float64Array([0.5, 0.5]);
+const nativeBilinear = native.matrixExecute(
+  'bilinearInterpolate', bilinearInput, 2, 2, bilinearCoordinates, 1, 2,
+);
+const wasmBilinear = wasm.matrixExecute(
+  'bilinearInterpolate', bilinearInput, 2, 2, bilinearCoordinates, 1, 2,
+);
+assert.deepEqual([...nativeBilinear.values], [15]);
+assert.deepEqual([...nativeBilinear.values], [...wasmBilinear.values]);
 assert.deepEqual(
   [native.matrixFactorize('cholesky', new Float64Array([4, 2, 2, 3]), 2, 2).a.rows,
     native.matrixFactorize('symmetricEigen', new Float64Array([2, 1, 1, 2]), 2, 2).a.rows],

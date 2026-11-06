@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { INK, MAP_POINT_AREA_KM2, RANKS, RANK_AREA_BY_NAME, countryRankForArea } from '../game/config.ts';
 import { firstCreateCard } from '../game/cards.ts';
 import { World } from '../game/world.ts';

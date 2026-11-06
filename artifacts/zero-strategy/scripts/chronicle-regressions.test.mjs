@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { readFileSync } from 'node:fs';
 import {
   CHRONICLE_OBJECT_HISTORY_LIMIT,

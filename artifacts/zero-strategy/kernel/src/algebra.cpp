@@ -5,6 +5,8 @@
 #include <cmath>
 #include <map>
 #include <new>
+#include <set>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -248,4 +250,255 @@ extern "C" zk_error zk_measure_sum(const uint32_t *keys, const double *mass,
   } catch (const std::bad_alloc &) {
     return ZK_ERROR_OUT_OF_MEMORY;
   }
+}
+
+extern "C" zk_error zk_measure_take_priority(
+    const uint32_t *source_keys, const double *source_mass,
+    uint32_t source_count, const uint32_t *reference_keys,
+    const double *reference_mass, uint32_t reference_count,
+    const uint32_t priority_order[3], double amount,
+    uint32_t *selected_keys, double *selected_mass,
+    uint32_t selected_capacity, uint32_t *selected_count,
+    uint32_t *remaining_keys, double *remaining_mass,
+    uint32_t remaining_capacity, uint32_t *remaining_count) {
+  if (selected_count == nullptr || remaining_count == nullptr ||
+      priority_order == nullptr || !std::isfinite(amount) || amount < 0.0 ||
+      (source_count != 0 && (source_keys == nullptr || source_mass == nullptr)) ||
+      (reference_count != 0 &&
+       (reference_keys == nullptr || reference_mass == nullptr)) ||
+      source_count > ZK_MAX_BUFFER_SLOTS * 1024u ||
+      reference_count > ZK_MAX_BUFFER_SLOTS * 1024u)
+    return ZK_ERROR_INVALID_ARGUMENT;
+
+  bool seen[3] = {false, false, false};
+  for (uint32_t index = 0; index < 3; ++index) {
+    if (priority_order[index] >= 3 || seen[priority_order[index]])
+      return ZK_ERROR_INVALID_ARGUMENT;
+    seen[priority_order[index]] = true;
+  }
+
+  try {
+    struct Entry {
+      PopulationKey key{};
+      std::vector<double> parts;
+      double mass = 0.0;
+      double selected = 0.0;
+      uint32_t tier = 2;
+    };
+    std::vector<Entry> entries;
+    std::map<PopulationKey, size_t> positions;
+    entries.reserve(source_count);
+    for (uint32_t index = 0; index < source_count; ++index) {
+      const double value = source_mass[index];
+      if (!std::isfinite(value) || value < 0.0)
+        return ZK_ERROR_INVALID_ARGUMENT;
+      if (value == 0.0)
+        continue;
+      PopulationKey key{};
+      for (uint32_t field = 0; field < ZK_POPULATION_KEY_WIDTH; ++field)
+        key[field] = source_keys[static_cast<size_t>(index) *
+                                     ZK_POPULATION_KEY_WIDTH +
+                                 field];
+      auto [found, inserted] = positions.emplace(key, entries.size());
+      if (inserted)
+        entries.push_back(Entry{key});
+      entries[found->second].parts.push_back(value);
+    }
+
+    std::set<uint32_t> cultures;
+    std::set<uint32_t> religions;
+    std::set<std::pair<uint32_t, uint32_t>> pairs;
+    for (uint32_t index = 0; index < reference_count; ++index) {
+      const double value = reference_mass[index];
+      if (!std::isfinite(value) || value < 0.0)
+        return ZK_ERROR_INVALID_ARGUMENT;
+      if (value == 0.0)
+        continue;
+      const uint32_t culture = reference_keys[
+          static_cast<size_t>(index) * ZK_POPULATION_KEY_WIDTH];
+      const uint32_t religion = reference_keys[
+          static_cast<size_t>(index) * ZK_POPULATION_KEY_WIDTH + 1];
+      cultures.insert(culture);
+      religions.insert(religion);
+      pairs.emplace(culture, religion);
+    }
+
+    std::vector<double> all_masses;
+    all_masses.reserve(entries.size());
+    for (Entry &entry : entries) {
+      entry.mass = stable_sum(std::move(entry.parts));
+      if (!std::isfinite(entry.mass))
+        return ZK_ERROR_OVERFLOW;
+      all_masses.push_back(entry.mass);
+      const bool same_culture = cultures.contains(entry.key[0]);
+      const bool same_religion = religions.contains(entry.key[1]);
+      const bool same_pair = pairs.contains({entry.key[0], entry.key[1]});
+      entry.tier = same_culture && same_religion && same_pair
+                       ? 0u
+                       : (same_culture || same_religion ? 1u : 2u);
+    }
+    double left = std::min(amount, stable_sum(std::move(all_masses)));
+    for (uint32_t priority = 0; priority < 3; ++priority) {
+      if (left <= 0.0)
+        break;
+      const uint32_t tier = priority_order[priority];
+      std::vector<size_t> bucket;
+      std::vector<double> weights;
+      for (size_t index = 0; index < entries.size(); ++index) {
+        if (entries[index].tier == tier) {
+          bucket.push_back(index);
+          weights.push_back(entries[index].mass);
+        }
+      }
+      if (bucket.empty())
+        continue;
+      const double total = stable_sum(weights);
+      const double taken = std::min(left, total);
+      if (taken <= 0.0 || total <= 0.0)
+        continue;
+      const double ratio = taken / total;
+      double allocated = 0.0;
+      double selected_sum = 0.0;
+      for (size_t offset = 0; offset < bucket.size(); ++offset) {
+        Entry &entry = entries[bucket[offset]];
+        const double value = offset + 1 == bucket.size()
+                                 ? taken - allocated
+                                 : entry.mass * ratio;
+        entry.selected = std::min(entry.mass, std::max(0.0, value));
+        allocated += value;
+        selected_sum += entry.selected;
+      }
+      left -= selected_sum;
+    }
+
+    uint32_t selected_required = 0;
+    uint32_t remaining_required = 0;
+    for (const Entry &entry : entries) {
+      if (entry.selected > 0.0)
+        ++selected_required;
+      if (entry.mass - entry.selected > 0.0)
+        ++remaining_required;
+    }
+    *selected_count = selected_required;
+    *remaining_count = remaining_required;
+    if (selected_required > selected_capacity ||
+        remaining_required > remaining_capacity ||
+        (selected_required != 0 &&
+         (selected_keys == nullptr || selected_mass == nullptr)) ||
+        (remaining_required != 0 &&
+         (remaining_keys == nullptr || remaining_mass == nullptr)))
+      return ZK_ERROR_OUT_OF_RANGE;
+
+    uint32_t selected_index = 0;
+    uint32_t remaining_index = 0;
+    for (const Entry &entry : entries) {
+      if (entry.selected > 0.0) {
+        for (uint32_t field = 0; field < ZK_POPULATION_KEY_WIDTH; ++field)
+          selected_keys[static_cast<size_t>(selected_index) *
+                            ZK_POPULATION_KEY_WIDTH +
+                        field] = entry.key[field];
+        selected_mass[selected_index++] = entry.selected;
+      }
+      const double remaining = entry.mass - entry.selected;
+      if (remaining > 0.0) {
+        for (uint32_t field = 0; field < ZK_POPULATION_KEY_WIDTH; ++field)
+          remaining_keys[static_cast<size_t>(remaining_index) *
+                             ZK_POPULATION_KEY_WIDTH +
+                         field] = entry.key[field];
+        remaining_mass[remaining_index++] = remaining;
+      }
+    }
+    return ZK_OK;
+  } catch (const std::bad_alloc &) {
+    return ZK_ERROR_OUT_OF_MEMORY;
+  }
+}
+
+extern "C" zk_error zk_measure_product(
+    const uint32_t *left_keys, const double *left_mass, uint32_t left_count,
+    const uint32_t *right_keys, const double *right_mass,
+    uint32_t right_count, const uint32_t output_sources[4],
+    double product_divisor, double multiplier, double final_divisor,
+    uint32_t divide_by_right_total, uint32_t drop_zero_mass,
+    uint32_t *output_keys, double *output_mass, uint32_t output_capacity,
+    uint32_t *result_count) {
+  if (result_count == nullptr || output_sources == nullptr ||
+      (left_count != 0 && (left_keys == nullptr || left_mass == nullptr)) ||
+      (right_count != 0 && (right_keys == nullptr || right_mass == nullptr)) ||
+      !std::isfinite(product_divisor) || product_divisor <= 0.0 ||
+      !std::isfinite(multiplier) || multiplier < 0.0 ||
+      !std::isfinite(final_divisor) || final_divisor <= 0.0 ||
+      divide_by_right_total > 1u || drop_zero_mass > 1u ||
+      left_count > ZK_MAX_BUFFER_SLOTS * 1024u ||
+      right_count > ZK_MAX_BUFFER_SLOTS * 1024u)
+    return ZK_ERROR_INVALID_ARGUMENT;
+
+  for (uint32_t field = 0; field < ZK_POPULATION_KEY_WIDTH; ++field) {
+    if (output_sources[field] > 8u)
+      return ZK_ERROR_INVALID_ARGUMENT;
+  }
+  const uint64_t product_count =
+      static_cast<uint64_t>(left_count) * static_cast<uint64_t>(right_count);
+  if (product_count > ZK_MAX_BUFFER_SLOTS * 1024ull)
+    return ZK_ERROR_OUT_OF_RANGE;
+  if (product_count > output_capacity ||
+      (product_count != 0 && (output_keys == nullptr || output_mass == nullptr)))
+    return ZK_ERROR_OUT_OF_RANGE;
+
+  double right_total = 0.0;
+  for (uint32_t index = 0; index < left_count; ++index) {
+    if (!std::isfinite(left_mass[index]) || left_mass[index] < 0.0)
+      return ZK_ERROR_INVALID_ARGUMENT;
+  }
+  for (uint32_t index = 0; index < right_count; ++index) {
+    if (!std::isfinite(right_mass[index]) || right_mass[index] < 0.0)
+      return ZK_ERROR_INVALID_ARGUMENT;
+    if (divide_by_right_total) {
+      right_total += right_mass[index];
+      if (!std::isfinite(right_total))
+        return ZK_ERROR_OVERFLOW;
+    }
+  }
+  const double denominator =
+      divide_by_right_total ? right_total : final_divisor;
+  if (divide_by_right_total && denominator <= 0.0)
+    return ZK_ERROR_INVALID_ARGUMENT;
+
+  uint32_t output_index = 0;
+  for (uint32_t left_index = 0; left_index < left_count; ++left_index) {
+    const double left_value = left_mass[left_index];
+    for (uint32_t right_index = 0; right_index < right_count; ++right_index) {
+      const double right_value = right_mass[right_index];
+      double value = left_value * right_value;
+      if (!std::isfinite(value))
+        return ZK_ERROR_OVERFLOW;
+      value /= product_divisor;
+      value *= multiplier;
+      value /= denominator;
+      if (!std::isfinite(value))
+        return ZK_ERROR_OVERFLOW;
+      if (drop_zero_mass && value == 0.0)
+        continue;
+
+      for (uint32_t field = 0; field < ZK_POPULATION_KEY_WIDTH; ++field) {
+        const uint32_t source = output_sources[field];
+        const uint32_t key = source < ZK_POPULATION_KEY_WIDTH
+                                 ? left_keys[static_cast<size_t>(left_index) *
+                                                 ZK_POPULATION_KEY_WIDTH +
+                                             source]
+                                 : source < 2u * ZK_POPULATION_KEY_WIDTH
+                                       ? right_keys[
+                                             static_cast<size_t>(right_index) *
+                                                 ZK_POPULATION_KEY_WIDTH +
+                                             (source - ZK_POPULATION_KEY_WIDTH)]
+                                       : 0u;
+        output_keys[static_cast<size_t>(output_index) *
+                        ZK_POPULATION_KEY_WIDTH +
+                    field] = key;
+      }
+      output_mass[output_index++] = value;
+    }
+  }
+  *result_count = output_index;
+  return ZK_OK;
 }

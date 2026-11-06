@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { countryCharacters, normalizePolitics } from '../game/characters.ts';

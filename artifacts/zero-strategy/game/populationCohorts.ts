@@ -1,6 +1,7 @@
 import { quantizeShares, type CompositionTable } from './composition';
 import { sumPopulationMeasures, takePopulationMeasure } from './populationMeasures';
-import { runAlgebraQuery } from '../kernel/algebra';
+import type { KernelPopulationMeasure } from '../kernel/bindings/contracts';
+import { getBinaryMathKernel } from '../kernel/runtime';
 import {
   ancestryProfile,
   ancestryProfileId,
@@ -22,6 +23,44 @@ export interface PopulationCohortWeight extends Omit<PopulationCohortShare, 'sha
 
 export interface PopulationCohortAmount extends Omit<PopulationCohortShare, 'share'> {
   population: number;
+}
+
+function makePopulationMeasure(
+  keyColumns: readonly ArrayLike<number | null>[],
+  masses: ArrayLike<number>,
+): KernelPopulationMeasure {
+  if (keyColumns.length > 4 || keyColumns.some((column) => column.length !== masses.length)) {
+    throw new TypeError('Измерения состава населения имеют несовместимые размеры.');
+  }
+  const keys = new Uint32Array(masses.length * 4);
+  for (let row = 0; row < masses.length; row += 1) {
+    for (let column = 0; column < keyColumns.length; column += 1) {
+      const key = keyColumns[column][row];
+      if (key === null) {
+        keys[row * 4 + column] = 0xffff_ffff;
+      } else if (!Number.isSafeInteger(key) || key < 0 || key >= 0xffff_ffff) {
+        throw new RangeError('Ключ состава населения должен быть uint32, кроме зарезервированного неверия.');
+      } else {
+        keys[row * 4 + column] = key;
+      }
+    }
+  }
+  return { keys, mass: Float64Array.from(masses) };
+}
+
+function populationWeightsFromMeasure(measure: KernelPopulationMeasure): PopulationCohortWeight[] {
+  const groups: PopulationCohortWeight[] = [];
+  for (let index = 0; index < measure.mass.length; index += 1) {
+    const offset = index * 4;
+    const religionId = measure.keys[offset + 1];
+    groups.push({
+      cultureId: measure.keys[offset],
+      religionId: religionId === 0xffff_ffff ? null : religionId,
+      originProfileId: measure.keys[offset + 2],
+      weight: measure.mass[index],
+    });
+  }
+  return groups;
 }
 
 /** Уменьшает только создаваемое население и перераспределяет его доли по климату точки. */
@@ -140,73 +179,31 @@ export function populationCohortsFromMixes(
   const culture = world.cultureTable.entries[cultureMixId];
   const religion = world.religionTable.entries[religionMixId];
   const origin = world.humanOriginTable.entries[originMixId];
-  const religions = {
-    columns: ['religionId', 'share'],
-    rows: [
-      ...religion.ids.map((religionId, index) => [religionId, religion.shares[index]]),
-      [null, Math.max(0, 100 - religion.total)],
-    ],
-  };
-  const origins = origin?.total > 0
-    ? {
-      columns: ['originProfileId', 'share'],
-      rows: origin.ids.map((originProfileId, index) => [originProfileId, origin.shares[index]]),
-    }
-    : {
-      columns: ['originProfileId', 'share'],
-      rows: [[0, 100]],
-    };
-  const intersections = runAlgebraQuery({
-    inputs: {
-      cultures: {
-        columns: ['cultureId', 'share'],
-        rows: culture.ids.map((cultureId, index) => [cultureId, culture.shares[index]]),
-      },
-      religions,
-      origins,
-    },
-    operations: [
-      {
-        op: 'product',
-        id: 'cultureReligions',
-        left: 'cultures',
-        right: 'religions',
-        columns: [
-          { from: 'left', column: 'cultureId', as: 'cultureId' },
-          { from: 'left', column: 'share', as: 'cultureShare' },
-          { from: 'right', column: 'religionId', as: 'religionId' },
-          { from: 'right', column: 'share', as: 'religionShare' },
-        ],
-      },
-      {
-        op: 'product',
-        id: 'populationGroups',
-        left: 'cultureReligions',
-        right: 'origins',
-        columns: [
-          { from: 'left', column: 'cultureId', as: 'cultureId' },
-          { from: 'left', column: 'cultureShare', as: 'cultureShare' },
-          { from: 'left', column: 'religionId', as: 'religionId' },
-          { from: 'left', column: 'religionShare', as: 'religionShare' },
-          { from: 'right', column: 'originProfileId', as: 'originProfileId' },
-          { from: 'right', column: 'share', as: 'originShare' },
-        ],
-      },
-    ],
-  }).tables.populationGroups;
-  return intersections.rows.flatMap((row) => {
-    const [cultureId, cultureShare, religionId, religionShare, originProfileId, originShare] = row;
-    if (typeof cultureId !== 'number' || typeof cultureShare !== 'number' ||
-        (typeof religionId !== 'number' && religionId !== null) ||
-        typeof religionShare !== 'number' || typeof originProfileId !== 'number' ||
-        typeof originShare !== 'number') {
-      throw new TypeError('Ядро вернуло некорректное пересечение состава населения.');
-    }
-    const share = cultureShare * religionShare * originShare / 10_000;
-    return share > 0
-      ? [{ cultureId, religionId, originProfileId, weight: population * share / 100 }]
-      : [];
-  });
+  const religionIds = [...religion.ids, null];
+  const religionShares = [...religion.shares, Math.max(0, 100 - religion.total)];
+  const originIds = origin?.total > 0 ? origin.ids : [0];
+  const originShares = origin?.total > 0 ? origin.shares : [100];
+  const kernel = getBinaryMathKernel();
+  const cultureAndReligion = kernel.measureProduct(
+    makePopulationMeasure([culture.ids], culture.shares),
+    makePopulationMeasure([religionIds], religionShares),
+    new Uint32Array([0, 4, 8, 8]),
+    1,
+    1,
+    1,
+    false,
+    true,
+  );
+  return populationWeightsFromMeasure(kernel.measureProduct(
+    cultureAndReligion,
+    makePopulationMeasure([originIds], originShares),
+    new Uint32Array([0, 1, 4, 8]),
+    10_000,
+    population,
+    100,
+    false,
+    true,
+  ));
 }
 
 export function populationCohortsAtPixel(
@@ -396,9 +393,7 @@ export function expectedExpansionPopulationCohorts(
 
   const religions = [...religionCounts]
     .filter(([, population]) => Number.isFinite(population) && population > 0);
-  const religionTotal = religions.reduce((sum, [, population]) => sum + population, 0);
-  const childTotal = children.reduce((sum, group) => sum + group.population, 0);
-  if (!(childTotal > 0) || !(religionTotal > 0)) {
+  if (!children.length || !religions.length) {
     return sourceGroups
       .filter((group) => group.population > 0)
       .map((group) => ({
@@ -409,43 +404,21 @@ export function expectedExpansionPopulationCohorts(
       }));
   }
 
-  const product = runAlgebraQuery({
-    inputs: {
-      children: {
-        columns: ['cultureId', 'originProfileId', 'population'],
-        rows: children.map((child) => [child.cultureId, child.humanOriginMix, child.population]),
-      },
-      religions: {
-        columns: ['religionId', 'population'],
-        rows: religions.map(([religionId, population]) => [religionId, population]),
-      },
-    },
-    operations: [{
-      op: 'product',
-      id: 'newPopulationGroups',
-      left: 'children',
-      right: 'religions',
-      columns: [
-        { from: 'left', column: 'cultureId', as: 'cultureId' },
-        { from: 'left', column: 'originProfileId', as: 'originProfileId' },
-        { from: 'left', column: 'population', as: 'childPopulation' },
-        { from: 'right', column: 'religionId', as: 'religionId' },
-        { from: 'right', column: 'population', as: 'religionPopulation' },
-      ],
-    }],
-  }).tables.newPopulationGroups;
-  return product.rows.map((row) => {
-    const [cultureId, originProfileId, childPopulation, religionId, religionPopulation] = row;
-    if (typeof cultureId !== 'number' || typeof originProfileId !== 'number' ||
-        typeof childPopulation !== 'number' || typeof religionPopulation !== 'number' ||
-        (typeof religionId !== 'number' && religionId !== null)) {
-      throw new TypeError('Ядро вернуло некорректное пересечение состава населения.');
-    }
-    return {
-      cultureId,
-      originProfileId,
-      religionId: religionId === null || religionId < 0 ? null : religionId,
-      weight: childPopulation * religionPopulation / religionTotal,
-    };
-  });
+  const product = getBinaryMathKernel().measureProduct(
+    makePopulationMeasure(
+      [children.map((child) => child.cultureId), children.map((child) => child.humanOriginMix)],
+      children.map((child) => child.population),
+    ),
+    makePopulationMeasure(
+      [religions.map(([religionId]) => religionId)],
+      religions.map(([, population]) => population),
+    ),
+    new Uint32Array([0, 4, 1, 8]),
+    1,
+    1,
+    1,
+    true,
+    false,
+  );
+  return populationWeightsFromMeasure(product);
 }

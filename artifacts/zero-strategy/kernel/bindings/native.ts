@@ -59,6 +59,9 @@ export function createNativeKernel(binding: NativeKernelBinding) {
     sumPopulationMeasure(input: KernelPopulationMeasure): KernelPopulationMeasure {
       return binding.sumPopulationMeasure(input);
     },
+    algebraQuery(request: string): string {
+      return binding.algebraQuery(request);
+    },
     matrixExecute(
       operation: KernelMatrixOperation,
       left: KernelMatrixScalar,

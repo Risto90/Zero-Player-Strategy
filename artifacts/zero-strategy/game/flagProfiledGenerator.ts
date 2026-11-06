@@ -4582,6 +4582,7 @@ export interface GenerateProfiledFlagOptions {
 
 export interface FlagEntityGenerationContext {
   world_seed: number;
+  flag_seed?: number;
   entity_type: 'country' | 'religion' | 'city' | 'culture' | 'dynasty';
   entity_id: number;
   generation_purpose: 'country-flag' | 'religion-symbol' | 'city-coat' | 'culture-style' | 'dynasty-coat';

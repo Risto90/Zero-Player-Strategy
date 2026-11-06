@@ -17,7 +17,7 @@ import {
 const land = new Uint8Array(MAP_PIXELS).fill(1);
 const elevation = new Int16Array(MAP_PIXELS);
 const depth = new Uint16Array(MAP_PIXELS);
-const knownRivers = new Uint8Array(MAP_PIXELS);
+const rivers = new Uint8Array(MAP_PIXELS);
 for (let y = 0; y < MAP_HEIGHT; y += 1) {
   for (let x = 0; x < MAP_WIDTH / 5; x += 1) {
     const pixel = y * MAP_WIDTH + x;
@@ -48,10 +48,10 @@ for (let y = 300; y < 720; y += 1) {
 }
 for (let y = 180; y < 840; y += 1) {
   const pixel = y * MAP_WIDTH + 1024;
-  knownRivers[pixel] = 3;
+  rivers[pixel] = 3;
 }
 
-const world = { land, elevation, depth, knownRivers, terrainRevision: 0 };
+const world = { land, elevation, depth, rivers, terrainRevision: 0 };
 const geometry = buildTerrainGeometry(world);
 const positions = geometry.getAttribute('position');
 const indices = geometry.getIndex();

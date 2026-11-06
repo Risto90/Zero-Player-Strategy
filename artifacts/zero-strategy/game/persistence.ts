@@ -13,9 +13,11 @@ import {
 } from './populationCohorts';
 import {
   cultureTags,
+  ensureEmblemSvg,
   ensureFlagIdentity,
   ensureStyleProfile,
 } from './flagIdentity';
+import { createCityHeraldry } from './flagHeraldry';
 
 /**
  * Сохранённая карта хранит каждый слой замкнутыми контурами, а не значениями отдельных точек.
@@ -43,6 +45,10 @@ export interface SavedWorld {
   temperatureUnit?: 'celsius-v1';
   mapKind: MapKind;
   seed: number;
+  /** Отдельный seed эмблем; отсутствует в старых сохранениях. */
+  flagSeed?: number;
+  currentMove?: number;
+  generatedFlagKeys?: string[];
   countries: Country[];
   cities?: City[];
   nextCityChronicleId?: number;
@@ -101,6 +107,9 @@ interface LegacyNomadSave {
 export interface WorldCopy {
   mapKind: MapKind;
   seed: number;
+  flagSeed: number;
+  currentMove: number;
+  generatedFlagKeys: string[];
   terrainOverrides: TerrainOverride[];
   land: Uint8Array;
   owner: Uint16Array;
@@ -127,7 +136,7 @@ export interface WorldCopy {
   geography: SavedGeographyState;
 }
 
-function copyFlagged<T extends { emblemSpec?: Country['emblemSpec']; flagIdentity?: Country['flagIdentity']; styleProfile?: Country['styleProfile'] }>(entity: T): T {
+function copyFlagged<T extends { emblemSpec?: Country['emblemSpec']; emblemSvg?: string; flagIdentity?: Country['flagIdentity']; styleProfile?: Country['styleProfile'] }>(entity: T): T {
   return {
     ...entity,
     ...(entity.emblemSpec ? { emblemSpec: JSON.parse(JSON.stringify(entity.emblemSpec)) } : {}),
@@ -160,6 +169,9 @@ export function copyWorld(world: World): WorldCopy {
   return {
     mapKind: world.mapKind,
     seed: world.seed,
+    flagSeed: world.flagSeed,
+    currentMove: world.currentMove,
+    generatedFlagKeys: [...world.generatedFlagKeys],
     terrainOverrides: [...world.terrainOverrides.values()].sort((a, b) => a.pixel - b.pixel),
     land: world.land,
     owner: world.owner.slice(),
@@ -229,6 +241,9 @@ export function* serializeSteps(copy: WorldCopy): Steps<SavedWorld> {
       temperatureUnit: 'celsius-v1',
     mapKind: copy.mapKind,
     seed: copy.seed,
+    flagSeed: copy.flagSeed,
+    currentMove: copy.currentMove,
+    generatedFlagKeys: copy.generatedFlagKeys,
     countries: copy.countries,
     cities: copy.cities,
     nextCityChronicleId: copy.nextCityChronicleId,
@@ -296,8 +311,10 @@ export function deserializeWorld(saved: SavedWorld): World {
     humidity,
     temperature,
     drainage: rasterize(layers.drainage, new Uint8Array(MAP_PIXELS)),
-  });
+  }, undefined, saved.flagSeed ?? saved.seed);
   world.restoreTerrainOverrides(saved.terrainOverrides ?? []);
+  world.currentMove = saved.currentMove ?? 1;
+  world.generatedFlagKeys = [...(saved.generatedFlagKeys ?? [])];
   const restoreCompositionTable = (
     table: World['cultureTable'],
     entries: SavedWorld['cultureTable'],
@@ -414,6 +431,7 @@ export function deserializeWorld(saved: SavedWorld): World {
       'culture-style',
       cultureTags(culture.id),
       culture.parentId === null ? null : world.cultures[culture.parentId] ?? null,
+      world.flagSeed,
     );
   }
   for (const religion of world.religions) {
@@ -424,6 +442,7 @@ export function deserializeWorld(saved: SavedWorld): World {
       'religion-symbol',
       [],
       religion.parentId === null ? null : world.religions[religion.parentId] ?? null,
+      world.flagSeed,
     );
     ensureFlagIdentity(
       world.seed,
@@ -432,6 +451,8 @@ export function deserializeWorld(saved: SavedWorld): World {
       'religion-symbol',
       religion.styleProfile,
       religion.parentId === null ? null : world.religions[religion.parentId] ?? null,
+      undefined,
+      world.flagSeed,
     );
   }
   for (const country of world.countries) {
@@ -441,6 +462,9 @@ export function deserializeWorld(saved: SavedWorld): World {
       'country',
       'country-flag',
       world.cultures[country.cultureId]?.styleProfile,
+      undefined,
+      undefined,
+      world.flagSeed,
     );
   }
   rasterizeScalar(layers.political, world.owner);
@@ -503,16 +527,32 @@ export function deserializeWorld(saved: SavedWorld): World {
     if (!city.name) Object.assign(city, generateCityIdentity(world, city.pixel));
     if (city.rank >= 2 && city.rank <= 6) {
       const country = world.countries[city.countryId];
-      ensureFlagIdentity(
-        world.seed,
-        city,
-        'city',
-        'city-coat',
-        world.cultures[country?.cultureId ?? -1]?.styleProfile,
-        undefined,
-        city.rank,
-      );
+      if (!city.emblemSpec) {
+        if (!country) throw new Error(`У города ${city.id} не найдена страна для эмблемы.`);
+        Object.assign(city, createCityHeraldry(world, country, city));
+      } else {
+        ensureFlagIdentity(
+          world.seed,
+          city,
+          'city',
+          'city-coat',
+          city.styleProfile,
+          undefined,
+          city.rank,
+          world.flagSeed,
+        );
+      }
     }
+  }
+  for (const entity of [
+    ...world.countries,
+    ...world.religions,
+    ...world.cities,
+    ...Object.values(world.dynastyEmblems),
+  ]) {
+    ensureEmblemSvg(entity);
+    const spec = entity.emblemSpec;
+    if (spec) world.reserveGeneratedFlag(spec.era, spec.profile_id, spec.seed);
   }
   world.recountCountries();
   world.restoreGeographyState(saved.geography);

@@ -627,7 +627,13 @@ class ContourTerritoryStrategy {
 
 /** Оценивает отдачу от одного центра кисти на единицу фактической стоимости. */
 class AutoPaintCenterScorer {
+  private readonly pixelCache = new Map<number, { impact: number; inkCost: number }>();
+
   constructor(private readonly painter: CardPainter) {}
+
+  beginBatch(): void {
+    this.pixelCache.clear();
+  }
 
   score(pixel: number, radius: number): number {
     const { world, card } = this.painter;
@@ -641,8 +647,17 @@ class AutoPaintCenterScorer {
       const y = cy + offsets[offset + 1];
       if (x < 0 || x >= MAP_WIDTH || y < 0 || y >= MAP_HEIGHT) continue;
       const scorePixel = y * MAP_WIDTH + x;
-      const impact = this.painter.strategyImpactAt(scorePixel);
-      ink += this.painter.strategyInkCostAt(scorePixel, impact);
+      let sample = this.pixelCache.get(scorePixel);
+      if (!sample) {
+        const impact = this.painter.strategyImpactAt(scorePixel);
+        sample = {
+          impact,
+          inkCost: this.painter.strategyInkCostAt(scorePixel, impact),
+        };
+        this.pixelCache.set(scorePixel, sample);
+      }
+      ink += sample.inkCost;
+      const impact = sample.impact;
       score += impact;
       // Новая страна начинает с одной исходной точки; далее действует обычное расширение.
       if (card.type === 'create' && world.countries[card.newCountryId ?? -1]?.pixels === 0 && impact > 0) {
@@ -875,6 +890,7 @@ class AutoPaintStrategy {
   }
 
   private rankCandidates(radius: number): { pixel: number; score: number }[] {
+    this.scorer.beginBatch();
     return this.candidates.bounded()
       .map((pixel) => ({ pixel, score: this.scorer.score(pixel, radius) }))
       .filter((candidate) => candidate.score > 0)

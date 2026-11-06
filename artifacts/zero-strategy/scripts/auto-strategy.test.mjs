@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { autoPaint } from '../game/autoPaint.ts';
 import { selectCompetitiveContour } from '../game/autoPaintCandidates.ts';
 import { CardPainter } from '../game/brush.ts';
@@ -324,7 +325,6 @@ function colonizationContourFixture() {
     paths: [[{ x: x0 + 19.5, y: y0 + 20 }, { x: x0 + 19.5, y: y0 + 130 }]],
     pixels: riverPixels,
     name: 'Тестовая река',
-    discoveredBy: [],
   };
   world.riverFeatures.push(testRiver);
   const branchPixels = [];
@@ -339,7 +339,6 @@ function colonizationContourFixture() {
     paths: [[{ x: x0 + 19.5, y: y0 + 80 }, { x: x0 + 70, y: y0 + 80 }]],
     pixels: branchPixels,
     name: 'Первая притока',
-    discoveredBy: [country.id],
   };
   world.riverFeatures.push(firstTributary);
   const secondBranchPixels = [];
@@ -354,7 +353,6 @@ function colonizationContourFixture() {
     paths: [[{ x: x0 + 70, y: y0 + 50 }, { x: x0 + 70, y: y0 + 80 }]],
     pixels: secondBranchPixels,
     name: 'Вторая притока',
-    discoveredBy: [country.id],
   });
   world.recountCountries();
   const ownCityPixel = (y0 + 1) * MAP_WIDTH + x0 + 19;
@@ -423,18 +421,13 @@ function colonizationContourFixture() {
 }
 
 const colonizationFixtureData = colonizationContourFixture();
-const undiscoveredRiverPlan = colonizationPlan(colonizationFixtureData.world, colonizationFixtureData.country);
-assert.equal(undiscoveredRiverPlan.targets[colonizationFixtureData.preferredPixel], 0,
-  'an undiscovered river does not make its adjacent inland target available');
-assert.equal(colonizationFixtureData.world.discoverGeography(), true,
-  'territorial expansion reveals the adjacent river through the game path');
 const colonizationPlanData = colonizationPlan(
   colonizationFixtureData.world,
   colonizationFixtureData.country,
 );
 assert.ok(colonizationPlanData.targetCount > 0, 'речная область содержит подходящие цели колонизации');
 assert.equal(colonizationPlanData.targets[colonizationFixtureData.preferredPixel], 1,
-  'предпочтительный климатический контур доступен по реке');
+  'векторное русло доступно расчёту климатического контура');
 assert.equal(colonizationPlanData.targets[colonizationFixtureData.blockedPixel], 1,
   'точка внутри чужой городской сферы есть в географическом плане для проверки городского запрета');
 assert.ok(colonizationPlanData.routePoints.length > 0,
@@ -615,7 +608,6 @@ assert.ok(influenceAreas.own.contains(overlapPixel) && influenceAreas.foreign.co
 assert.equal(colonizationArea.contains(overlapPixel), true,
   'своя городская сфера разрешает колонизацию точки внутри чужой сферы');
 const playerCaptureFixture = colonizationContourFixture();
-assert.equal(playerCaptureFixture.world.discoverGeography(), true);
 const playerCapturePlan = colonizationPlan(playerCaptureFixture.world, playerCaptureFixture.country);
 const playerCapturePixel = playerCaptureFixture.cityCapturePixel;
 assert.equal(playerCapturePlan.targets[playerCapturePixel], 1,
@@ -675,7 +667,6 @@ const disconnectedRiverCountry = disconnectedRiverFixture.country;
 disconnectedRiverWorld.cities = disconnectedRiverWorld.cities.filter(
   (city) => city.countryId === disconnectedRiverCountry.id,
 );
-assert.equal(disconnectedRiverWorld.discoverGeography(), true);
 const disconnectedRiverPlan = colonizationPlan(disconnectedRiverWorld, disconnectedRiverCountry);
 const disconnectedRiverPixel = disconnectedRiverFixture.remoteRiverPixel;
 assert.equal(disconnectedRiverPlan.targets[disconnectedRiverPixel], 1,
@@ -757,7 +748,6 @@ for (const enemyId of climateOnlyEnemyIds) {
 climateOnlyFixture.world.cities = climateOnlyFixture.world.cities
   .filter((city) => city.countryId === climateOnlyFixture.country.id);
 climateOnlyFixture.world.recountCountries();
-assert.equal(climateOnlyFixture.world.discoverGeography(), true);
 const climateOnlyPlan = colonizationPlan(climateOnlyFixture.world, climateOnlyFixture.country);
 const climateOnlyCard = climateCard(
   'colonization', climateOnlyFixture.country.id, -1, 0.02,

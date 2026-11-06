@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import {
   affine,
   booleanPolygons,
@@ -45,9 +46,71 @@ import { renderFlagSpec } from '../game/flagRenderer.ts';
 import { MAP_WIDTH } from '../game/config.ts';
 import { ContourArea, ContourDistanceBands } from '../game/contours.ts';
 import { CITY_BASE_INFLUENCE_AREA_PIXELS, cityInfluenceArea, cityInfluenceMultiplier, cityInfluenceRadius } from '../game/settlements.ts';
+import {
+  classifyClimateSpans,
+  rasterizePolygonContours,
+} from '../kernel/contour-spans.ts';
 
 const near = (actual, expected, tolerance = 1e-8, message = '') =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${message} ожидалось ${expected}, получено ${actual}`);
+assert.deepEqual(
+  rasterizePolygonContours([[[{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 4 }, { x: 0, y: 4 }]]], 4, 4),
+  [{ y: 0, start: 0, end: 4 }, { y: 1, start: 0, end: 4 },
+    { y: 2, start: 0, end: 4 }, { y: 3, start: 0, end: 4 }],
+  'заливка бинарным ядром включает центры ячеек внутри кольца',
+);
+assert.deepEqual(
+  rasterizePolygonContours([[
+    [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 4 }, { x: 0, y: 4 }],
+    [{ x: 1, y: 1 }, { x: 3, y: 1 }, { x: 3, y: 3 }, { x: 1, y: 3 }],
+  ]], 4, 4),
+  [{ y: 0, start: 0, end: 4 }, { y: 1, start: 0, end: 1 },
+    { y: 1, start: 3, end: 4 }, { y: 2, start: 0, end: 1 },
+    { y: 2, start: 3, end: 4 }, { y: 3, start: 0, end: 4 }],
+  'заливка бинарным ядром сохраняет отверстия колец',
+);
+const climateHumidity = new Uint8Array([1, 1, 1, 2, 1, 2, 2, 2]);
+const climateTemperature = new Float32Array([10, 10, 11, 11, 10, 11, 11, 12]);
+const climateDrainage = new Uint8Array([0, 0, 0, 0, 1, 0, 0, 0]);
+assert.deepEqual(
+  Array.from(classifyClimateSpans(
+    [{ y: 0, start: 0, end: 4 }, { y: 1, start: 0, end: 4 }],
+    climateHumidity,
+    climateTemperature,
+    climateDrainage,
+    4,
+    2,
+  )),
+  [
+    1, 10, 0, 0, 0, 2,
+    1, 11, 0, 0, 2, 3,
+    2, 11, 0, 0, 3, 4,
+    1, 10, 1, 1, 0, 1,
+    2, 11, 0, 1, 1, 3,
+    2, 12, 0, 1, 3, 4,
+  ],
+  'группировка климатических интервалов сохраняет точные значения и порядок обхода',
+);
+assert.equal(
+  classifyClimateSpans(
+    [],
+    climateHumidity,
+    climateTemperature,
+    climateDrainage,
+    4,
+    2,
+  ).length,
+  0,
+  'пустой климатический запрос не выделяет выходные интервалы',
+);
+assert.deepEqual(
+  new ContourArea([{ y: 0, start: 1, end: 6 }]).replaceRegion(
+    { x0: 3, y0: 0, x1: 4, y1: 0 },
+    [],
+  ).spans,
+  [{ y: 0, start: 1, end: 3 }, { y: 0, start: 5, end: 6 }],
+  'бинарная замена сохраняет только интервалы вне заданного окна',
+);
 const boxPath = (x, y, width, height) => parseSvgPath(
   `M${x} ${y} h${width} v${height} h-${width} z`,
 );
@@ -281,7 +344,6 @@ const rulesWorld = {
     paths: [[{ x: 7, y: 0 }, { x: 7, y: 10 }]],
     pixels: [7],
     name: 'Тестовая река',
-    discoveredBy: [0],
   }],
 };
 const portCapital = { countryId: 0, pixel: 7, rank: 1, capital: true };

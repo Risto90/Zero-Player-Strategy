@@ -1,3 +1,4 @@
+import './binary-kernel-test-setup.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';

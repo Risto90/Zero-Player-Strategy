@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { FLAG_REFERENCE_CORPUS } from '../game/flagReferences.ts';
 import { renderFlagSpec } from '../game/flagRenderer.ts';
 import { parseFlagSpec, serializeFlagSpec } from '../game/flagSpec.ts';
@@ -40,6 +41,25 @@ for (const { id, spec } of FLAG_REFERENCE_CORPUS) {
   assert.equal(svg, renderFlagSpec(reverseObjectKeyOrder(spec)), `${id} output ignores object key insertion order`);
   inspectSvg(svg);
 }
+
+for (let warmup = 0; warmup < 2; warmup += 1) {
+  for (const { spec } of FLAG_REFERENCE_CORPUS) renderFlagSpec(spec);
+}
+const corpusRunMs = [];
+for (let run = 0; run < 8; run += 1) {
+  const startedAt = performance.now();
+  for (const { spec } of FLAG_REFERENCE_CORPUS) renderFlagSpec(spec);
+  corpusRunMs.push(performance.now() - startedAt);
+}
+const sortedCorpusRunMs = [...corpusRunMs].sort((left, right) => left - right);
+const meanCorpusRunMs = corpusRunMs.reduce((sum, duration) => sum + duration, 0) /
+  corpusRunMs.length;
+const p90CorpusRunMs = sortedCorpusRunMs[Math.ceil(sortedCorpusRunMs.length * 0.9) - 1];
+console.log(
+  `Сквозной замер JavaScript → бинарная геометрия → SVG, 51 эталон: ` +
+  `медиана ${sortedCorpusRunMs[Math.floor(sortedCorpusRunMs.length / 2)].toFixed(2)} мс, ` +
+  `среднее ${meanCorpusRunMs.toFixed(2)} мс, p90 ${p90CorpusRunMs.toFixed(2)} мс.`,
+);
 
 const source = FLAG_REFERENCE_CORPUS.find(({ id }) => id === 'japan').spec;
 const clone = () => structuredClone(source);

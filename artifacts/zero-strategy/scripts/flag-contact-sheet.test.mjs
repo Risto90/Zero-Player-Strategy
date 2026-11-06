@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { FLAG_REFERENCE_CORPUS } from '../game/flagReferences.ts';
 import { renderFlagContactSheet } from '../game/flagContactSheet.ts';
 

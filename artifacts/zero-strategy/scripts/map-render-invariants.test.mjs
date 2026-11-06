@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { BIOMES, MAP_PIXELS, MAP_WIDTH, biomeFor } from '../game/config.ts';
 import { MapContours } from '../game/contours.ts';
 import { MapRenderer, seaDepthPackedColor, temperaturePackedColor } from '../game/render.ts';

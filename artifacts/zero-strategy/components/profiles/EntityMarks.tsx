@@ -4,15 +4,16 @@ import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 import { SvgXml } from 'react-native-svg';
 import colors, { fonts } from '@/constants/colors';
 import { CITY_ICON_SOURCES, cityIconIndex } from '@/components/map/cityIcons';
-import { renderFlagSpec } from '@/game/flagRenderer';
 import type { FlagSpec } from '@/game/flagSpec';
 import { ATHEIST_FLAG_SVG } from '@/game/atheistFlag';
 import type { City, Country } from '@/game/world';
 import { cityProfileRoute, countryProfileRoute } from '@/game/profileRoutes';
 import { openProfile } from '@/game/profileNavigation';
+import { PersistedEmblemImage } from './PersistedEmblemImage';
 
 type EntityLinkProps = {
   spec?: FlagSpec;
+  svg?: string;
   href: Href;
   label: string;
   size?: number;
@@ -20,16 +21,15 @@ type EntityLinkProps = {
   testID?: string;
 };
 
-export function EntityFlagLink({ spec, href, label, size = 32, fit = 'square', testID }: EntityLinkProps) {
-  if (!spec) return null;
-  const xml = renderFlagSpec(spec);
+export function EntityFlagLink({ spec, svg, href, label, size = 32, fit = 'square', testID }: EntityLinkProps) {
+  if (!spec || !svg) return null;
   const ratio = Math.max(0.5, Math.min(2.6, Number(spec.outline.aspect) || 1));
   const width = fit === 'height' ? size * ratio : ratio >= 1 ? size : size * ratio;
   const height = fit === 'height' ? size : ratio >= 1 ? size / ratio : size;
   return (
     <Pressable onPress={() => openProfile(href)} style={[styles.markBox, { width: fit === 'height' ? width : size, height: fit === 'height' ? size : size }]}
       accessibilityRole="link" accessibilityLabel={`Открыть карточку: ${label}`} testID={testID}>
-      <SvgXml xml={xml} width={width} height={height} />
+      <PersistedEmblemImage svg={svg} label={label} width={width} height={height} testID={testID ? `${testID}-image` : undefined} />
     </Pressable>
   );
 }
@@ -71,29 +71,31 @@ function dynastyEmblemDimensions(spec: FlagSpec, size: number) {
     : { width: size * ratio, height: size };
 }
 
-export function DynastyEmblemMark({ spec, size = 32, testID }: {
+export function DynastyEmblemMark({ spec, svg, size = 32, testID }: {
   spec?: FlagSpec;
+  svg?: string;
   size?: number;
   testID?: string;
 }) {
-  if (!spec) return null;
+  if (!spec || !svg) return null;
   const dimensions = dynastyEmblemDimensions(spec, size);
   return (
     <View style={[styles.markBox, { width: size, height: size }]} accessibilityLabel="Герб династии" testID={testID}>
-      <SvgXml xml={renderFlagSpec(spec)} {...dimensions} />
+      <PersistedEmblemImage svg={svg} label="Герб династии" {...dimensions} testID={testID ? `${testID}-image` : undefined} />
     </View>
   );
 }
 
-export function DynastyEmblemLink({ spec, familyId, focusPersonId, label, size = 32, testID }: {
+export function DynastyEmblemLink({ spec, svg, familyId, focusPersonId, label, size = 32, testID }: {
   spec?: FlagSpec;
+  svg?: string;
   familyId: number;
   focusPersonId?: number;
   label: string;
   size?: number;
   testID?: string;
 }) {
-  if (!spec) return null;
+  if (!spec || !svg) return null;
   const dimensions = dynastyEmblemDimensions(spec, size);
   return (
     <Pressable
@@ -112,7 +114,7 @@ export function DynastyEmblemLink({ spec, familyId, focusPersonId, label, size =
       accessibilityLabel={`Открыть древо династии ${label}`}
       testID={testID}
     >
-      <SvgXml xml={renderFlagSpec(spec)} {...dimensions} />
+      <PersistedEmblemImage svg={svg} label={label} {...dimensions} testID={testID ? `${testID}-image` : undefined} />
     </Pressable>
   );
 }
@@ -127,7 +129,7 @@ export function AtheistFlagMark({ size = 32, testID }: { size?: number; testID?:
 }
 
 export type ProfileEntityListItem =
-  | { kind: 'country' | 'religion'; key: string; name: string; note?: string; spec?: FlagSpec; href: Href }
+  | { kind: 'country' | 'religion'; key: string; name: string; note?: string; spec?: FlagSpec; svg?: string; href: Href }
   | { kind: 'city'; key: string; city: City; hasPort: boolean; country?: Country }
   | { kind: 'atheists'; key: string; name: string; note?: string };
 
@@ -142,7 +144,7 @@ export function ProfileEntityList({ items, emptyText = 'Нет данных.' }:
         <View key={item.key} style={styles.row} testID={`entity-list-${item.kind}-${item.key}`}>
           {item.kind === 'country' || item.kind === 'religion' ? (
             <>
-              <EntityFlagLink spec={item.spec} href={item.href} label={item.name} />
+              <EntityFlagLink spec={item.spec} svg={item.svg} href={item.href} label={item.name} />
               <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
               {item.note ? <Text style={styles.note}>{item.note}</Text> : null}
             </>
@@ -152,13 +154,13 @@ export function ProfileEntityList({ items, emptyText = 'Нет данных.' }:
                 <EntityCrownLink href={countryProfileRoute(item.country.id)} label={item.country.name} />
               ) : null}
               {item.country?.emblemSpec ? (
-                <EntityFlagLink spec={item.country.emblemSpec} href={countryProfileRoute(item.country.id)}
+                <EntityFlagLink spec={item.country.emblemSpec} svg={item.country.emblemSvg} href={countryProfileRoute(item.country.id)}
                   label={item.country.name} />
               ) : null}
               <CityIconLink city={item.city} hasPort={item.hasPort} />
               <Text style={styles.cityName} numberOfLines={1}>{item.city.name ?? `Город ${item.city.id + 1}`}</Text>
               {item.city.emblemSpec
-                ? <EntityFlagLink spec={item.city.emblemSpec} href={cityProfileRoute(item.city.id)}
+                ? <EntityFlagLink spec={item.city.emblemSpec} svg={item.city.emblemSvg} href={cityProfileRoute(item.city.id)}
                   label={item.city.name ?? 'Город'} />
                 : null}
             </>

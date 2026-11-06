@@ -5,7 +5,7 @@ import { ContourArea, type ContourChange, type ContourLayerName, type ContourSpa
 import { brushOptionFor, CardPainter, finalizeSplitCities, PartitionBrush, validateSplitPartition, validateSplitTerritory,
   type BrushMode, type BrushOption, type Card, type CardChoice, type CardPainterState, type CharacterEvent } from './brush';
 import { drawCountryCard, drawWorldCard, ensureTemperatureCardPower, firstCreateCard } from './cards';
-import { createEntityEmblem } from './flagIdentity';
+import { createCityHeraldry } from './flagHeraldry';
 import { BIOMES, BRUSH_SIZES, MAX_COUNTRIES, type BrushSize, LOG_LIMIT, MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH, PALETTE, TURN_SECONDS } from './config';
 import { forEachNeighbour, type MapKind } from './geography';
 import { copyWorld, deserializeWorld, serializeSteps, type SavedWorld } from './persistence';
@@ -269,6 +269,29 @@ function onSaveFile<T>(op: () => Promise<T>): Promise<T> {
 /** Даёт интерфейсу обновиться между отрезками работы. */
 export const nextFrame = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
+type EmblemSvgRecord = { emblemSvg?: string };
+
+function hasUnpersistedEmblemSvg(saved: SavedWorld, restored: World): boolean {
+  const changed = (
+    before: readonly EmblemSvgRecord[] | undefined,
+    after: readonly EmblemSvgRecord[],
+  ) => after.some((entity, index) =>
+    entity.emblemSvg !== undefined && before?.[index]?.emblemSvg !== entity.emblemSvg,
+  );
+  if (
+    changed(saved.countries, restored.countries) ||
+    changed(saved.cities, restored.cities) ||
+    changed(saved.cultures, restored.cultures) ||
+    changed(saved.religions, restored.religions)
+  ) return true;
+
+  const savedDynasties = saved.dynastyEmblems ?? {};
+  return Object.entries(restored.dynastyEmblems).some(([familyId, emblem]) =>
+    emblem.emblemSvg !== undefined &&
+    savedDynasties[Number(familyId)]?.emblemSvg !== emblem.emblemSvg,
+  );
+}
+
 export class Game {
   readonly renderer: MapRenderer;
   private role: PlayerRole;
@@ -344,7 +367,7 @@ export class Game {
     if (!deferMapPreparation) this.redrawAll();
   }
 
-  /** Перерисовывает всю карту (например, при открытии её экрана); таймер ждёт её отображения. */
+  /** Помечает всю карту для отрисовки; ход игры от завершения отрисовки не зависит. */
   redrawAll(): void {
     this.renderer.markAll();
     this.drawing = true;
@@ -439,6 +462,7 @@ export class Game {
     refreshHeirs(game.world, saved.year);
     ensureDynastyEmblems(game.world);
     game.turn = saved.turn;
+    game.world.currentMove = saved.turn;
     game.focusCountryId = saved.focusCountryId;
     const legacyNomadIds = new Map<number, number>();
     for (const legacy of saved.world.nomads ?? []) legacyNomadIds.set(legacy.id, saved.world.countries.length + legacy.id);
@@ -466,7 +490,10 @@ export class Game {
       ? 'elevation'
       : savedMapMode === 'colonization' || savedMapMode === 'nomads' ? 'political' : savedMapMode;
     game.paused = saved.paused ?? false;
+    game.secondsLeft = saved.role === 'observer' ? OBSERVER_SECONDS : TURN_SECONDS;
     game.renderer.setView(game.mapMode, null);
+    // Старые сохранения один раз дополняются готовыми SVG, чтобы при следующих загрузках не запускать генератор.
+    if (hasUnpersistedEmblemSvg(saved.world, game.world)) await game.saveNow();
     return game;
   }
 
@@ -599,7 +626,7 @@ export class Game {
   }
 
   private tick(): void {
-    if (this.paused || this.busy || this.drawing) return;
+    if (this.paused || this.busy) return;
     this.secondsLeft = Math.max(0, this.secondsLeft - 1);
     if (this.secondsLeft <= 0) void this.nextTurn(true);
     else this.emit();
@@ -1232,6 +1259,7 @@ export class Game {
       }
       if (this.queue.length > 0 && this.startNextPlayerCard()) return;
       this.turn += 1;
+      this.world.currentMove = this.turn;
       this.year += 1;
       advancePeople(this.world, this.year);
       refreshHeirs(this.world, this.year);
@@ -1302,7 +1330,6 @@ export class Game {
           sliceStart = Date.now();
         }
       }
-      this.world.discoverGeography();
       this.dissolveCountriesWithoutCities();
       ensureDynastyEmblems(this.world);
       this.queue = this.playerSlots();
@@ -1673,16 +1700,7 @@ export class Game {
         if (city && target && city.countryId === target.id && canUpgradeCityRank(w, target.id, city.rank)) {
           city.rank = (city.rank + 1) as City['rank'];
           if (city.rank >= 2 && city.rank <= 6 && !city.emblemSpec) {
-            const culture = w.cultures[target.cultureId];
-            Object.assign(city, createEntityEmblem(
-              w.seed,
-              'city',
-              city.chronicleId,
-              'city-coat',
-              culture?.styleProfile,
-              undefined,
-              city.rank,
-            ));
+            Object.assign(city, createCityHeraldry(w, target, city));
           }
           concentrateCityPopulation(w, city);
           this.markCityArea(city);
@@ -2069,7 +2087,7 @@ export class Game {
     }
     const a = person(w, ids[0]);
     if (event.kind === 'trait' && a && a.traits.length === 0) {
-      const traits = ['Фанатик', 'Циник', 'Космополит', 'Националист', 'Плодовитый', 'Дальновидный', 'Решительный', 'Уступчивый', 'Осторожный', 'Харизматичный'];
+      const traits = ['Фанатик', 'Циник', 'Космополит', 'Националист', 'Расист', 'Плодовитый', 'Дальновидный', 'Решительный', 'Уступчивый', 'Осторожный', 'Харизматичный'];
       a.trait = randomItem(traits); a.traits.push(a.trait);
       this.addLog(`${country.name}: у ${a.name} проявилась черта «${a.trait}».`,
         [polityChronicleReference(country), ...personChronicleReferences(a)]);
@@ -2598,9 +2616,8 @@ export class Game {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      // Сначала дождаться отрисовки карты: она и сохранение используют один поток JavaScript.
-      if (this.drawing) this.scheduleSave();
-      else void this.save();
+      // Сохранение выполняется частями и не ждёт холст, которого может не быть на странице.
+      void this.save();
     }, 1500);
   }
 

@@ -1,4 +1,5 @@
 import { FLAG_LINE_STYLE_CONFIG } from './flagLineStyleConfig';
+import { affine, polylineLength, segmentLength, vector } from '../kernel/geometry';
 
 export interface BoundaryPoint {
   x: number;
@@ -44,10 +45,10 @@ function pointAtDistance(path: BoundaryPoint[], distance: number): BoundaryPoint
   for (let index = 0; index < path.length - 1; index += 1) {
     const a = path[index];
     const b = path[index + 1];
-    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    const length = segmentLength({ start: a, end: b });
     if (remaining <= length + EPSILON) {
       const t = length <= EPSILON ? 0 : Math.max(0, Math.min(1, remaining / length));
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      return vector.lerp(a, b, t);
     }
     remaining -= length;
   }
@@ -59,12 +60,10 @@ function tangentAtDistance(path: BoundaryPoint[], distance: number): BoundaryPoi
   for (let index = 0; index < path.length - 1; index += 1) {
     const a = path[index];
     const b = path[index + 1];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const length = Math.hypot(dx, dy);
+    const length = segmentLength({ start: a, end: b });
     if (remaining <= length + EPSILON || index === path.length - 2) {
       if (length <= EPSILON) return { x: 1, y: 0 };
-      return { x: dx / length, y: dy / length };
+      return vector.normalize(vector.subtract(b, a));
     }
     remaining -= length;
   }
@@ -124,8 +123,7 @@ export function generateFlagBoundary(
     throw new TypeError('boundary path must contain at least two finite points');
   }
   const path = sourcePath.map(({ x, y }) => ({ x, y }));
-  const length = path.slice(1).reduce((sum, p, index) =>
-    sum + Math.hypot(p.x - path[index].x, p.y - path[index].y), 0);
+  const length = polylineLength(path);
   if (length <= EPSILON) throw new RangeError('boundary path must have positive length');
 
   const style = resolveFlagLineStyle(input, canvasHeight);
@@ -147,7 +145,7 @@ export function generateFlagBoundary(
     const distance = t * length;
     const base = pointAtDistance(path, distance);
     const tangent = tangentAtDistance(path, distance);
-    const normal = { x: -tangent.y, y: tangent.x };
+    const normal = affine.apply(affine.rotation(Math.PI / 2), tangent);
     const unit = Math.min(periods - 1, Math.floor(Math.min(t * periods, periods - EPSILON)));
     const phase = Math.min(1, t * periods - unit);
     let offset = 0;
@@ -163,23 +161,25 @@ export function generateFlagBoundary(
       case 'WAVY': {
         // A sine wave with an envelope that makes the complete profile
         // mirror-symmetric while retaining an integral number of periods.
-        const value = Math.sin(2 * Math.PI * periods * t) * Math.cos(Math.PI * t);
+        const wave = affine.apply(affine.rotation(2 * Math.PI * periods * t), { x: 1, y: 0 });
+        const envelope = affine.apply(affine.rotation(Math.PI * t), { x: 1, y: 0 });
+        const value = wave.y * envelope.x;
         offset = style.amplitude * value;
         break;
       }
       case 'ENGRAILED':
-        offset = style.amplitude * Math.sqrt(Math.max(0, 1 - (2 * phase - 1) ** 2));
+        offset = style.amplitude * affine.apply(affine.rotation(Math.PI * phase), { x: 1, y: 0 }).y;
         break;
       case 'INVECTED':
-        offset = -style.amplitude * Math.sqrt(Math.max(0, 1 - (2 * phase - 1) ** 2));
+        offset = -style.amplitude * affine.apply(affine.rotation(Math.PI * phase), { x: 1, y: 0 }).y;
         break;
       case 'NEBULY':
         offset = style.amplitude * symmetricPeriodSign(unit, periods) *
-          Math.sqrt(Math.max(0, 1 - (2 * phase - 1) ** 2));
+          affine.apply(affine.rotation(Math.PI * phase), { x: 1, y: 0 }).y;
         break;
     }
 
-    points.push({ x: base.x + normal.x * offset, y: base.y + normal.y * offset });
+    points.push(vector.add(base, vector.scale(normal, offset)));
   }
   points[0] = { ...path[0] };
   points[points.length - 1] = { ...path[path.length - 1] };

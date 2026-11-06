@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { Game } from '../game/game.ts';
 import { fractalField, mulberry32 } from '../game/random.ts';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from '../game/config.ts';
@@ -93,6 +94,8 @@ try {
     assert.ok(sync.elevation.some((height) => height > 0), `${mapKind} has positive terrain elevation`);
     assert.ok(sync.elevation.some((height) => height < 0), `${mapKind} has negative elevation or bathymetry`);
     if (mapKind === 'random') {
+      assert.ok(sync.peaks.length > 0, 'в случайном мире формируются вершины-точки');
+      assert.ok(sync.volcanoes.length > 0, 'в случайном мире формируются вулканы-точки');
       sameRaster(sync.land, legacyRandomLand(RANDOM_MAP_SEED),
         'Матричный расчёт случайного мира сохраняет исходный результат зерна');
       const connectedPixels = new Set();
@@ -105,25 +108,17 @@ try {
 
       const river = sync.riverFeatures.find((feature) => feature.pixels.length > 0);
       assert.ok(river, 'the random map has a river feature');
-      const discovererId = sync.countries.length;
-      sync.countries.push({ id: discovererId, type: 'settled' });
       const riverPixel = river.pixels[0];
-      assert.equal(sync.knownRivers[riverPixel], 0, 'undiscovered rivers do not enter the known-river layer');
-      sync.owner[riverPixel] = discovererId + 1;
-      sync.territoryVersion += 1;
-      assert.equal(sync.discoverGeography(), true, 'territorial expansion discovers nearby geography');
-      assert.ok(river.discoveredBy.includes(discovererId), 'the discovering country is recorded');
-      assert.ok(sync.knownRivers[riverPixel] > 0, 'discovered rivers enter the known-river layer');
+      assert.ok(sync.rivers[riverPixel] > 0, 'сформированное русло хранится независимо от имён');
 
       sync.nameGeographyFeature('river', river.id, 'Испытательная');
       const savedGeography = sync.geographySaveState();
       river.name = null;
-      river.discoveredBy = [];
-      sync.knownRivers.fill(0);
+      assert.equal('discoveredBy' in savedGeography.rivers[river.id], false,
+        'сохранение не содержит сведений о том, кто открыл реку');
       sync.restoreGeographyState(savedGeography);
       assert.equal(river.name, 'Испытательная', 'geography names survive saving and restoring');
-      assert.ok(river.discoveredBy.includes(discovererId), 'discovery records survive saving and restoring');
-      assert.ok(sync.knownRivers[riverPixel] > 0, 'the known-river layer is restored');
+      assert.equal('discoveredBy' in river, false, 'игровой объект не хранит сведения об открытии');
     }
   }
 
@@ -138,6 +133,11 @@ try {
       assert.equal(snapshot.role, role, `${mapKind}/${role}: selected role`);
       if (role === 'observer') {
         assert.ok(game.world.countries.length > 0, `${mapKind}/${role}: the first automatic card created a country`);
+        game.drawing = true;
+        game.secondsLeft = 2;
+        game.tick();
+        assert.equal(game.getSnapshot().secondsLeft, 1,
+          `${mapKind}/${role}: pending map drawing must not stop the simulation timer`);
       } else {
         assert.ok(snapshot.card, `${mapKind}/${role}: the initial card is available`);
       }
@@ -156,13 +156,14 @@ try {
 
   // Запущенная игра сохраняется и загружает своё состояние после перезапуска.
   Game.persist = true;
-  const game = await withSeed(9127, () => startNewGameCooperative('world', 'all'));
+  const game = await withSeed(9127, () => startNewGameCooperative('world', 'observer'));
   assert.equal(currentGame(), game);
   await game.saveNow();
   const restored = await Game.load();
   assert.ok(restored, 'the generated game can be restored from its save');
   assert.equal(restored.getSnapshot().mapKind, 'world');
-  assert.equal(restored.getSnapshot().role, 'all');
+  assert.equal(restored.getSnapshot().role, 'observer');
+  assert.equal(restored.getSnapshot().secondsLeft, 3, 'a restored observer keeps the observer turn interval');
   sameRaster(game.world.land, restored.world.land, 'saved land');
   sameRaster(game.world.humidity, restored.world.humidity, 'saved climate');
   restored.discard();

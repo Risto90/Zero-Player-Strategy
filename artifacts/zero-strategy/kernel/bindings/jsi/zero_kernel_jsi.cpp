@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace zero_kernel {
 
@@ -90,6 +91,50 @@ void install(Runtime &runtime, const std::shared_ptr<RuntimeBuffers> &buffers) {
       });
   runtime.global().setProperty(runtime, "zeroKernelCreateBuffer",
                                std::move(create));
+
+  auto algebra = Function::createFromHostFunction(
+      runtime,
+      facebook::jsi::PropNameID::forAscii(runtime, "zeroKernelAlgebraQuery"),
+      1,
+      [](Runtime &rt, const Value &, const Value *args,
+         size_t count) -> Value {
+        if (count != 1 || !args[0].isString())
+          throw facebook::jsi::JSError(
+              rt, "Запрос бинарной алгебры должен быть строкой");
+        const std::string request = args[0].asString(rt).utf8(rt);
+        if (request.size() > ZK_MEMORY_LIMIT_BYTES ||
+            request.size() > UINT32_MAX)
+          throw facebook::jsi::JSError(
+              rt, "Размер запроса бинарной алгебры превышает лимит");
+        try {
+          std::vector<char> response(1024);
+          uint32_t response_length = 0;
+          zk_error status = zk_algebra_query(
+              request.data(), static_cast<uint32_t>(request.size()),
+              response.data(), static_cast<uint32_t>(response.size()),
+              &response_length);
+          if (status == ZK_ERROR_OUT_OF_RANGE &&
+              response_length > response.size() &&
+              response_length <= ZK_MEMORY_LIMIT_BYTES) {
+            response.resize(response_length);
+            status = zk_algebra_query(
+                request.data(), static_cast<uint32_t>(request.size()),
+                response.data(), static_cast<uint32_t>(response.size()),
+                &response_length);
+          }
+          if (status != ZK_OK)
+            throw facebook::jsi::JSError(rt, zk_error_message(status));
+          response.resize(response_length);
+          return String::createFromUtf8(
+              rt, reinterpret_cast<const uint8_t *>(response.data()),
+              response.size());
+        } catch (const std::bad_alloc &) {
+          throw facebook::jsi::JSError(
+              rt, "Недостаточно памяти для бинарной алгебры");
+        }
+      });
+  runtime.global().setProperty(runtime, "zeroKernelAlgebraQuery",
+                               std::move(algebra));
 
   auto release = Function::createFromHostFunction(
       runtime, facebook::jsi::PropNameID::forAscii(runtime, "zeroKernelRelease"), 1,

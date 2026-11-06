@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { World } from '../game/world.ts';
 import { CardPainter } from '../game/brush.ts';
 import { firstCreateCard } from '../game/cards.ts';
@@ -360,4 +361,4 @@ assert.deepEqual(oldWorld.people[0].humanOrigin, european, 'old people get a det
 assert.deepEqual(ensureCityPopulationGroups(oldWorld, oldWorld.cities[0])[0].humanOriginMix,
   oldWorld.humanOrigins[pixel], 'old city groups fall back to the migrated map mix');
 
-console.log('Human origins, age inheritance, pair frequencies, climate scoring, and save compatibility passed.');
+console.log('Проверки происхождения людей, наследования возраста, частот пар, климатической оценки и совместимости сохранений пройдены.');

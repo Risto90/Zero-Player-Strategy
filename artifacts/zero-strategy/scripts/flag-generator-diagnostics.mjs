@@ -1,3 +1,4 @@
+import './binary-kernel-test-setup.mjs';
 import { generateProfiledFlag } from '../game/flagProfiledGenerator.js';
 
 const args = process.argv.slice(2).filter((argument) => argument !== '--');

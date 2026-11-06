@@ -68,7 +68,7 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
   );
   const details = (
     <>
-      <ProfileIntro mark={<EmblemPreview spec={country.emblemSpec} label={`Флаг ${country.name}`} />}>
+      <ProfileIntro mark={<EmblemPreview spec={country.emblemSpec} svg={country.emblemSvg} label={`Флаг ${country.name}`} />}>
         <View style={styles.facts}>
           <ProfileFact>Тип · {country.type === 'nomadic' ? 'кочевая страна' : 'оседлая страна'}</ProfileFact>
           <ProfileFact>Площадь · {fmt(country.type === 'nomadic' ? country.range?.length ?? 0 : country.pixels)} земель</ProfileFact>
@@ -120,6 +120,7 @@ function CountryDetails({ game, country }: { game: Game; country: Country }) {
             name: group.name,
             note: pct(group.percent),
             spec: game.world.religions[group.id]?.emblemSpec,
+            svg: game.world.religions[group.id]?.emblemSvg,
             href: religionProfileRoute(group.id),
           })} />
       </ProfileSection>

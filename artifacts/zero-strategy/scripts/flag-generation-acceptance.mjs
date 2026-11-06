@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import './binary-kernel-test-setup.mjs';
 import { describeFlagNovelty } from '../game/flagNovelty.js';
 import { FLAG_NOVELTY_CONFIG } from '../game/flagNoveltyConfig.js';
 import { FLAG_PROFILE_CONFIG } from '../game/flagProfileConfig.js';

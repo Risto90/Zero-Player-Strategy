@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import './binary-kernel-test-setup.mjs';
 import { Game } from '../game/game.ts';
 import {
   drawBuildCityCard,

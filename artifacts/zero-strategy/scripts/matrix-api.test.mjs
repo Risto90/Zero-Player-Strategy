@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+await import('./binary-kernel-test-setup.mjs');
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = '/tmp/zero-strategy-matrix-api.mjs';
@@ -175,7 +176,13 @@ assert.deepEqual(
   matrix.convolve2D(DenseMatrix.fromRows([[1, 1, 1], [1, 1, 1], [1, 1, 1]]), kernel).toRows(),
   [[-2, -1, -2], [-1, 0, -1], [-2, -1, -2]],
 );
+const stencilSource = DenseMatrix.fromRows([[1, 2], [3, 4]]);
+const northStencil = [{ rowOffset: -1, columnOffset: 0, weight: 1 }];
+assert.deepEqual(matrix.stencil2D(stencilSource, northStencil, 'zero').toRows(), [[0, 0], [1, 2]]);
+assert.deepEqual(matrix.stencil2D(stencilSource, northStencil, 'clamp').toRows(), [[1, 2], [1, 2]]);
 assert.equal(matrix.interpolateBilinear(DenseMatrix.fromRows([[0, 10], [20, 30]]), 0.5, 0.5), 15);
+assert.equal(matrix.interpolateBilinear(DenseMatrix.fromRows([[0, 10], [20, 30]]), 0.5, 1.5), 20);
+assert.equal(matrix.interpolateBilinear(DenseMatrix.fromRows([[0, 10], [20, 30]]), -2, 0.5), 5);
 assert.deepEqual(matrix.normalizeMinMax(DenseMatrix.fromRows([[4, 6], [8, 10]])).toRows(), [
   [0, 1 / 3],
   [2 / 3, 1],
@@ -184,10 +191,31 @@ assert.deepEqual(
   [...matrix.seededMatrix(1, 4, 1234).values],
   [...matrix.seededMatrix(1, 4, 1234).values],
 );
+function referenceSeededValues(count, seed) {
+  let state = (seed >>> 0) || 0x6d2b79f5;
+  return Array.from({ length: count }, () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return (state >>> 0) / 0x1_0000_0000;
+  });
+}
+assert.deepEqual(
+  [...matrix.seededMatrix(1, 4, 1234).values],
+  referenceSeededValues(4, 1234),
+);
+assert.deepEqual(
+  [...matrix.seededMatrix(1, 4, 0).values],
+  referenceSeededValues(4, 0),
+);
 assert.notDeepEqual(
   [...matrix.seededMatrix(1, 4, 1234).values],
   [...matrix.seededMatrix(1, 4, 1235).values],
 );
-assert.equal(matrix.sampleWithSeed(new Float64Array([10, 20, 30]), 20, 23).length, 20);
+const sampleValues = new Float64Array([10, 20, 30]);
+assert.deepEqual(
+  [...matrix.sampleWithSeed(sampleValues, 20, 23)],
+  referenceSeededValues(20, 23).map((value) => sampleValues[Math.floor(value * sampleValues.length)]),
+);
 
 console.log('Плотные, разреженные и пакетные представления матриц прошли независимые проверки.');

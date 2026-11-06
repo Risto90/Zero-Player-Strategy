@@ -4,9 +4,12 @@ import type { FlagProfileConfig } from './flagProfileConfig';
 import { areFlagTagSetsCompatible, availableFlagProfiles } from './flagProfiles';
 import { generateProfiledFlag } from './flagProfiledGenerator';
 import type { FlagSpec } from './flagSpec';
+import { flagStageRandom } from './random';
+import { renderFlagSpec } from './flagRenderer';
 
 export interface FlagIdentity {
   worldSeed: number;
+  flagSeed?: number;
   entityType: FlagEntityType;
   entityId: number;
   generationPurpose: FlagGenerationPurpose;
@@ -38,16 +41,103 @@ export interface FlagEntityStyleSource {
 export interface FlaggedEntity {
   id: number;
   emblemSpec?: FlagSpec;
+  emblemSvg?: string;
   flagIdentity?: FlagIdentity;
   styleProfile?: FlagStyleProfile;
 }
 
-function stableHash(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193);
+export interface FlagGenerationSelection {
+  era?: number;
+  profileId?: string;
+  generationSeed?: string | number;
+  tags?: readonly string[];
+}
+
+function profilesAllowedForTags(
+  profiles: readonly FlagProfileConfig[],
+  tags: readonly string[],
+): FlagProfileConfig[] {
+  return profiles.filter((profile) =>
+    (profile.tags_allowed === null ? tags.length === 0 : tags.every((tag) => profile.tags_allowed!.includes(tag))) &&
+    areFlagTagSetsCompatible(tags),
+  );
+}
+
+function profilesForEra(era: number, tags: readonly string[]): FlagProfileConfig[] {
+  const profiles = availableFlagProfiles(era);
+  const eligible = profilesAllowedForTags(profiles, tags);
+  return eligible.length ? eligible : tags.length === 0 ? profiles : [];
+}
+
+export function compatibleFlagProfileIds(era: number, tags: readonly string[] = []): string[] {
+  return profilesForEra(era, tags).map(({ id }) => id);
+}
+
+export function selectFlagProfileId(
+  purpose: FlagGenerationPurpose,
+  era: number,
+  tags: readonly string[],
+  selectionSeed: string | number,
+  customWeights?: Readonly<Record<string, number>>,
+  excludedProfileIds: readonly string[] = [],
+): string {
+  const candidates = profilesForEra(era, tags)
+    .filter(({ id }) => !excludedProfileIds.includes(id));
+  if (!candidates.length) throw new Error(`Для эпохи ${era} и назначения «${purpose}» не настроен ни один профиль флага.`);
+  const configuredWeights = FLAG_IDENTITY_CONFIG.profileWeightsByPurpose[purpose];
+  const weights = candidates.map(({ id }) => customWeights
+    ? Math.max(0, customWeights[id] ?? 0)
+    : Math.max(0, configuredWeights[id as keyof typeof configuredWeights] ?? 1));
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  if (total <= 0) throw new Error(`Для эпохи ${era} и назначения «${purpose}» у профилей нулевой общий вес.`);
+  let point = flagStageRandom(`${selectionSeed}|${purpose}:${era}:${tags.join(',')}`, 'S0_PROFILE')() * total;
+  for (let index = 0; index < candidates.length; index += 1) {
+    point -= weights[index];
+    if (point < 0) return candidates[index].id;
   }
-  return (hash >>> 0).toString(16).padStart(8, '0');
+  return candidates[candidates.length - 1].id;
+}
+
+function chooseProfileAndEra(
+  purpose: FlagGenerationPurpose,
+  tags: readonly string[],
+  preferredProfileId: string | undefined,
+  selectionSeed: string,
+  requestedEra?: number,
+): { profile: FlagProfileConfig; era: number } {
+  const preferredProfiles = preferredProfileId
+    ? Array.from({ length: 7 }, (_, era) => availableFlagProfiles(era))
+      .flat()
+      .filter(({ id }, index, all) => id === preferredProfileId && all.findIndex((entry) => entry.id === id) === index)
+    : [];
+  const preferred = preferredProfiles[0];
+  if (preferred) {
+    if (preferred.tags_allowed === null ? tags.length > 0 : !tags.every((tag) => preferred.tags_allowed!.includes(tag))) {
+      throw new Error(`Профиль ${preferred.id} не допускает заданные культурные теги.`);
+    }
+    if (!areFlagTagSetsCompatible(tags)) throw new Error('Заданные культурные теги несовместимы.');
+  } else if (preferredProfileId) {
+    throw new Error(`Неизвестный профиль флага ${preferredProfileId}.`);
+  }
+
+  const eras = (requestedEra === undefined
+    ? preferred ? preferred.eras : Array.from({ length: 7 }, (_, era) => era)
+    : [requestedEra])
+    .filter((era, index, all) => Number.isInteger(era) && era >= 0 && era <= 6 && all.indexOf(era) === index)
+    .filter((era) => preferred
+      ? preferred.eras.includes(era)
+      : profilesForEra(era, tags).length > 0);
+  if (!eras.length) {
+    throw new Error(requestedEra === undefined
+      ? `Для назначения «${purpose}» не найдено допустимых эпох.`
+      : `Для назначения «${purpose}» нет профиля в эпохе ${requestedEra}.`);
+  }
+  const eraIndex = Math.floor(flagStageRandom(`${selectionSeed}|${purpose}`, 'S0_ERA')() * eras.length);
+  const era = eras[eraIndex];
+  const profileId = preferred?.id ?? selectFlagProfileId(purpose, era, tags, selectionSeed);
+  const profile = availableFlagProfiles(era).find(({ id }) => id === profileId);
+  if (!profile) throw new Error(`Для эпохи ${era} и назначения «${purpose}» не найден профиль ${profileId}.`);
+  return { profile, era };
 }
 
 function profileFor(
@@ -80,10 +170,10 @@ function profileFor(
   const weights = candidates.map(({ id }) => Math.max(0, configuredWeights[id as keyof typeof configuredWeights] ?? 1));
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   if (total <= 0) throw new Error(`Для назначения «${purpose}» у профилей эпохи ${era} нулевой общий вес.`);
-  let point = Number.parseInt(
-    stableHash(`${selectionSeed}|${purpose}:${era}:${tags.join(',')}`).slice(0, 8),
-    16,
-  ) / 0xffffffff * total;
+  let point = flagStageRandom(
+    `${selectionSeed}|${purpose}:${era}:${tags.join(',')}`,
+    'S0_PROFILE',
+  )() * total;
   for (let index = 0; index < candidates.length; index += 1) {
     point -= weights[index];
     if (point < 0) return candidates[index];
@@ -97,16 +187,22 @@ function buildIdentity(
   entityId: number,
   purpose: FlagGenerationPurpose,
   profile: FlagProfileConfig,
+  era: number,
   tags: readonly string[],
   parentStyleRef: string | null = null,
   relationshipType: FlagIdentity['relationshipType'] = null,
   variationSalt = 0,
+  flagSeed = worldSeed,
+  generationSeed?: string | number,
 ): FlagIdentity {
-  const stableIdentity = `${worldSeed}|${entityType}|${entityId}|${purpose}`;
-  const seed = `zero-strategy|${stableIdentity}`;
-  const variationSeed = `${seed}|parent=${parentStyleRef ?? 'root'}|variation=${variationSalt}`;
+  const stableIdentity = `${worldSeed}|flagSeed=${flagSeed}|${entityType}|${entityId}|${purpose}|profile=${profile.id}|era=${era}`;
+  const seed = generationSeed === undefined ? `zero-strategy|${stableIdentity}` : String(generationSeed);
+  const variationSeed = generationSeed === undefined
+    ? `${seed}|parent=${parentStyleRef ?? 'root'}|variation=${variationSalt}`
+    : seed;
   return {
     worldSeed,
+    flagSeed,
     entityType,
     entityId,
     generationPurpose: purpose,
@@ -114,7 +210,7 @@ function buildIdentity(
     variationSeed,
     generatorVersion: FLAG_GENERATOR_CONFIG.generatorVersion,
     profileId: profile.id,
-    era: FLAG_IDENTITY_CONFIG.eraByPurpose[purpose] ?? FLAG_IDENTITY_CONFIG.defaultEra,
+    era,
     tags: [...tags],
     parentStyleRef,
     relationshipType,
@@ -128,27 +224,44 @@ export function createFlagStyleProfile(
   purpose: 'culture-style' | 'religion-symbol',
   tags: readonly string[] = [],
   parent?: FlagEntityStyleSource | null,
+  flagSeed = worldSeed,
+  selection: FlagGenerationSelection = {},
 ): FlagStyleProfile {
   const parentProfile = parent?.styleProfile;
   const configuredTags = entityType === 'culture'
     ? FLAG_IDENTITY_CONFIG.cultureTagsById[entityId]
     : undefined;
-  const resolvedTags = configuredTags ?? (tags.length ? [...tags] : parentProfile?.tags ?? []);
+  const resolvedTags = configuredTags ?? (selection.tags ? [...selection.tags] : tags.length ? [...tags] : parentProfile?.tags ?? []);
   const mappedProfile = entityType === 'culture'
     ? FLAG_IDENTITY_CONFIG.cultureProfilesById[entityId]
     : undefined;
-  const era = parentProfile?.era ?? FLAG_IDENTITY_CONFIG.eraByPurpose[purpose];
-  const selectionSeed = `${worldSeed}|${entityType}|${entityId}|${purpose}`;
-  const profile = profileFor(purpose, era, resolvedTags, parentProfile?.profileId ?? mappedProfile, selectionSeed);
+  const selectionSeed = `${flagSeed}|${entityType}|${entityId}|${purpose}`;
+  const selected = parentProfile && selection.profileId === undefined
+    ? {
+      profile: profileFor(purpose, parentProfile.era, resolvedTags, parentProfile.profileId, selectionSeed),
+      era: parentProfile.era,
+    }
+    : chooseProfileAndEra(
+      purpose,
+      resolvedTags,
+      selection.profileId ?? mappedProfile,
+      selectionSeed,
+      selection.era,
+    );
+  const { profile, era } = selected;
   const identity = buildIdentity(
     worldSeed,
     entityType,
     entityId,
     purpose,
     profile,
+    era,
     resolvedTags,
     parentProfile ? `${entityType}:${parent!.id}:${parentProfile.profileId}` : null,
     parentProfile ? (entityType === 'culture' ? 'culture-branch' : 'religion-branch') : null,
+    0,
+    flagSeed,
+    selection.generationSeed,
   );
   return {
     profileId: profile.id,
@@ -167,15 +280,29 @@ export function createEntityEmblem(
   styleProfile?: FlagStyleProfile,
   parent?: FlaggedEntity | null,
   cityRank?: number,
-): { emblemSpec: FlagSpec; flagIdentity: FlagIdentity; styleProfile: FlagStyleProfile } {
+  flagSeed = worldSeed,
+  selection: FlagGenerationSelection = {},
+): { emblemSpec: FlagSpec; emblemSvg: string; flagIdentity: FlagIdentity; styleProfile: FlagStyleProfile } {
   if (entityType === 'city' && (!Number.isInteger(cityRank) || (cityRank ?? 0) < 2 || (cityRank ?? 0) > 6)) {
     throw new Error('Герб создаётся только для города ранга 2–6.');
   }
   const parentProfile = parent?.styleProfile;
-  const profileId = parentProfile?.profileId ?? styleProfile?.profileId;
-  const tags = parentProfile?.tags ?? styleProfile?.tags ?? [];
-  const era = parentProfile?.era ?? styleProfile?.era ?? FLAG_IDENTITY_CONFIG.eraByPurpose[purpose];
-  const profile = profileFor(purpose, era, tags, profileId);
+  const tags = selection.tags ? [...selection.tags] : parentProfile?.tags ?? styleProfile?.tags ?? [];
+  const inheritedProfile = parentProfile ?? styleProfile;
+  const selectionSeed = `${flagSeed}|${entityType}|${entityId}|${purpose}`;
+  const selected = inheritedProfile && selection.profileId === undefined
+    ? {
+      profile: profileFor(purpose, inheritedProfile.era, tags, inheritedProfile.profileId, selectionSeed),
+      era: inheritedProfile.era,
+    }
+    : chooseProfileAndEra(
+      purpose,
+      tags,
+      selection.profileId,
+      selectionSeed,
+      selection.era ?? inheritedProfile?.era,
+    );
+  const { profile, era } = selected;
   const parentStyleRef = parent?.flagIdentity
     ? `${parent.flagIdentity.entityType}:${parent.flagIdentity.entityId}:${parent.flagIdentity.profileId}`
     : parentProfile
@@ -185,43 +312,50 @@ export function createEntityEmblem(
     ? entityType === 'religion' ? 'religion-branch' : 'culture-branch'
     : null;
 
-  let result: ReturnType<typeof generateProfiledFlag> | null = null;
-  let identity: FlagIdentity | null = null;
-  const attempts = parentStyleRef ? FLAG_IDENTITY_CONFIG.relatedVariationAttempts : 1;
-  for (let variation = 0; variation < attempts; variation += 1) {
-    identity = buildIdentity(
-      worldSeed, entityType, entityId, purpose, profile, tags, parentStyleRef, relationshipType, variation,
-    );
-    if (styleProfile?.identity.entityType === 'culture') {
-      identity.cultureId = styleProfile.identity.entityId;
-    }
-    result = generateProfiledFlag({
-      seed: identity.variationSeed,
-      profileId: profile.id,
-      era,
-      generator_version: FLAG_IDENTITY_CONFIG.generatorVersion,
-      generation_context: {
-        world_seed: worldSeed,
-        entity_type: entityType,
-        entity_id: entityId,
-        generation_purpose: purpose,
-        ...(entityType === 'city' ? { city_rank: cityRank ?? 2 } : {}),
-        ...(styleProfile?.identity.entityType === 'culture'
-          ? { culture_id: styleProfile.identity.entityId, culture_tags: [...tags] }
-          : {}),
-        ...(parentStyleRef ? {
-          parent_style_ref: parentStyleRef,
-          relationship_type: relationshipType ?? undefined,
-        } : {}),
-        variation_seed: identity.variationSeed,
-        variation_policy: FLAG_IDENTITY_CONFIG.variationPolicy,
-      },
-    });
-    if (!parent?.emblemSpec || result.flag.meta.visual_hash !== parent.emblemSpec.meta.visual_hash) break;
+  const identity = buildIdentity(
+    worldSeed,
+    entityType,
+    entityId,
+    purpose,
+    profile,
+    era,
+    tags,
+    parentStyleRef,
+    relationshipType,
+    0,
+    flagSeed,
+    selection.generationSeed,
+  );
+  if (styleProfile?.identity.entityType === 'culture') {
+    identity.cultureId = styleProfile.identity.entityId;
   }
-  if (!result || !identity) throw new Error(`Не удалось создать эмблему ${entityType}:${entityId}.`);
+  const result = generateProfiledFlag({
+    seed: identity.variationSeed,
+    profileId: profile.id,
+    era,
+    generator_version: FLAG_IDENTITY_CONFIG.generatorVersion,
+    generation_context: {
+      world_seed: worldSeed,
+      flag_seed: flagSeed,
+      entity_type: entityType,
+      entity_id: entityId,
+      generation_purpose: purpose,
+      ...(entityType === 'city' ? { city_rank: cityRank ?? 2 } : {}),
+      ...(styleProfile?.identity.entityType === 'culture'
+        ? { culture_id: styleProfile.identity.entityId, culture_tags: [...tags] }
+        : {}),
+      ...(parentStyleRef ? {
+        parent_style_ref: parentStyleRef,
+        relationship_type: relationshipType ?? undefined,
+      } : {}),
+      variation_seed: identity.variationSeed,
+      variation_policy: FLAG_IDENTITY_CONFIG.variationPolicy,
+    },
+  });
+  if (!result.svg) throw new Error(`Генератор не вернул SVG для эмблемы ${entityType}:${entityId}.`);
   return {
     emblemSpec: result.flag,
+    emblemSvg: result.svg,
     flagIdentity: identity,
     styleProfile: {
       profileId: profile.id,
@@ -233,6 +367,14 @@ export function createEntityEmblem(
   };
 }
 
+/** Однократно восстанавливает SVG старого сохранения из его сохранённой спецификации. */
+export function ensureEmblemSvg<T extends FlaggedEntity>(entity: T): T {
+  if (entity.emblemSpec && !entity.emblemSvg) {
+    entity.emblemSvg = renderFlagSpec(entity.emblemSpec);
+  }
+  return entity;
+}
+
 export function ensureFlagIdentity<T extends FlaggedEntity>(
   worldSeed: number,
   entity: T,
@@ -241,6 +383,8 @@ export function ensureFlagIdentity<T extends FlaggedEntity>(
   styleProfile?: FlagStyleProfile,
   parent?: FlaggedEntity | null,
   cityRank?: number,
+  flagSeed = worldSeed,
+  selection: FlagGenerationSelection = {},
 ): T {
   if (entityType === 'city' && ((cityRank ?? 1) < 2 || (cityRank ?? 1) > 6)) return entity;
   if (entity.emblemSpec && entity.flagIdentity && entity.styleProfile) return entity;
@@ -263,9 +407,14 @@ export function ensureFlagIdentity<T extends FlaggedEntity>(
             entity.emblemSpec.era,
             entity.emblemSpec.tags,
             entity.emblemSpec.profile_id,
-            `${worldSeed}|${entityType}|${entity.id}|${purpose}`,
+            `${flagSeed}|${entityType}|${entity.id}|${purpose}`,
           ),
+          entity.emblemSpec.era,
           entity.emblemSpec.tags,
+          null,
+          null,
+          0,
+          flagSeed,
         ),
         seed: String(entity.emblemSpec.seed),
         variationSeed: String(entity.emblemSpec.seed),
@@ -283,8 +432,19 @@ export function ensureFlagIdentity<T extends FlaggedEntity>(
     return entity;
   }
 
-  const generated = createEntityEmblem(worldSeed, entityType, entity.id, purpose, resolvedStyle, parent, cityRank);
+  const generated = createEntityEmblem(
+    worldSeed,
+    entityType,
+    entity.id,
+    purpose,
+    resolvedStyle,
+    parent,
+    cityRank,
+    flagSeed,
+    selection,
+  );
   entity.emblemSpec = generated.emblemSpec;
+  entity.emblemSvg = generated.emblemSvg;
   entity.flagIdentity = generated.flagIdentity;
   entity.styleProfile = generated.styleProfile;
   return entity;
@@ -297,6 +457,8 @@ export function ensureStyleProfile(
   purpose: 'culture-style' | 'religion-symbol',
   tags: readonly string[] = [],
   parent?: FlagEntityStyleSource | null,
+  flagSeed = worldSeed,
+  selection: FlagGenerationSelection = {},
 ): FlagStyleProfile {
   if (entity.styleProfile) return entity.styleProfile;
   if (entity.emblemSpec) {
@@ -316,9 +478,14 @@ export function ensureStyleProfile(
             entity.emblemSpec.era,
             entity.emblemSpec.tags,
             entity.emblemSpec.profile_id,
-            `${worldSeed}|${entityType}|${entity.id}|${purpose}`,
+            `${flagSeed}|${entityType}|${entity.id}|${purpose}`,
           ),
+          entity.emblemSpec.era,
           entity.emblemSpec.tags,
+          null,
+          null,
+          0,
+          flagSeed,
         ),
         seed: String(entity.emblemSpec.seed),
         variationSeed: String(entity.emblemSpec.seed),
@@ -328,7 +495,7 @@ export function ensureStyleProfile(
     entity.flagIdentity ??= entity.styleProfile.identity;
     return entity.styleProfile;
   }
-  entity.styleProfile = createFlagStyleProfile(worldSeed, entityType, entity.id, purpose, tags, parent);
+  entity.styleProfile = createFlagStyleProfile(worldSeed, entityType, entity.id, purpose, tags, parent, flagSeed, selection);
   entity.flagIdentity ??= entity.styleProfile.identity;
   return entity.styleProfile;
 }

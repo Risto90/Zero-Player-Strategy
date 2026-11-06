@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import {
-  discoveredRiverPaths,
+  riverPaths,
   riverStrengthForRank,
   riverVisibilityScale,
 } from '../game/geographyGeometry.ts';
@@ -45,7 +46,6 @@ const world = {
       ]],
       pixels: [],
       name: 'Открытая река',
-      discoveredBy: [0],
     },
     {
       id: 1,
@@ -53,7 +53,6 @@ const world = {
       paths: [[{ x: 100, y: 100 }, { x: 120, y: 110 }]],
       pixels: [],
       name: null,
-      discoveredBy: [],
     },
     {
       id: 2,
@@ -61,7 +60,6 @@ const world = {
       paths: [[{ x: MAP_WIDTH - 8, y: 200 }, { x: 6, y: 204 }]],
       pixels: [],
       name: 'Приток',
-      discoveredBy: [1],
     },
     {
       id: 3,
@@ -69,7 +67,6 @@ const world = {
       paths: [[{ x: 35, y: 58 }, { x: 35, y: 26 }]],
       pixels: [],
       name: 'Впадающая река',
-      discoveredBy: [0],
     },
     {
       id: 4,
@@ -77,7 +74,6 @@ const world = {
       paths: [[{ x: 100, y: 100 }, { x: 110, y: 80 }, { x: 125, y: 60 }]],
       pixels: [],
       name: 'Главное русло',
-      discoveredBy: [0],
     },
     {
       id: 5,
@@ -85,7 +81,6 @@ const world = {
       paths: [[{ x: 100, y: 130 }, { x: 100, y: 100 }]],
       pixels: [],
       name: 'Равный по рангу приток',
-      discoveredBy: [0],
     },
   ],
 };
@@ -97,15 +92,16 @@ assert.equal(riverVisibilityScale(0.4, 3), 0.4, 'large rivers are visible at the
 assert.ok(Math.abs(riverVisibilityScale(0.4, 2) - 0.64) < 1e-9, 'secondary rivers wait until 1.6× the base map scale');
 assert.ok(Math.abs(riverVisibilityScale(0.4, 1) - 0.96) < 1e-9, 'small tributaries wait until 2.4× the base map scale');
 
-const visible = discoveredRiverPaths(world);
-assert.equal(visible.length, 6, 'undiscovered rivers are omitted from map geometry');
-assert.ok(visible.every((segment) => segment.riverId !== 1), 'an unnamed, undiscovered river stays hidden');
+const visible = riverPaths(world);
+assert.equal(visible.length, 7, 'все векторные русла входят в геометрию карты');
+assert.ok(visible.some((segment) => segment.riverId === 1),
+  'безымянная река строится из векторного русла');
 assert.equal(visible.filter((segment) => segment.riverId === 2).length, 2,
   'a river crossing the map edge is split into two edge segments');
 assert.ok(visible.filter((segment) => segment.riverId === 2).every((segment) => segment.length < 20),
   'a seam crossing never draws a line across the entire map');
 const tributary = visible.find((segment) => segment.riverId === 3);
-assert.ok(tributary, 'a discovered tributary remains visible');
+assert.ok(tributary, 'контур притока строится из векторного русла');
 assert.ok(tributary.contourPath.endsWith('Z') && tributary.contourPoints.length >= 4,
   'river overlays are closed filled contours');
 assert.ok(tributary.points.at(-1).y < 29,
@@ -114,15 +110,15 @@ const equalRankTributary = visible.find((segment) => segment.riverId === 5);
 assert.ok(equalRankTributary, 'a tributary with the same scale rank remains visible');
 assert.ok(equalRankTributary.points.at(-1).y > 100 && equalRankTributary.points.at(-1).y < 130,
   'at equal rank, the shorter tributary is clipped at the longer main river');
-assert.equal(discoveredRiverPaths(world), visible, 'unchanged geography reuses its prepared paths');
+assert.equal(riverPaths(world), visible, 'неизменённая география повторно использует подготовленные пути');
 
 world.territoryVersion += 1;
-assert.equal(discoveredRiverPaths(world), visible,
+assert.equal(riverPaths(world), visible,
   'изменение только территории повторно использует неизменную геометрию рек');
-world.riverFeatures[1].discoveredBy.push(0);
+world.riverFeatures[1].name = 'Названная река';
 world.geographyRevision += 1;
 world.version += 1;
-assert.ok(discoveredRiverPaths(world).some((segment) => segment.riverId === 1),
-  'обнаруженная река появляется в геометрии после изменения географической версии');
+assert.equal(riverPaths(world).find((segment) => segment.riverId === 1)?.name, 'Названная река',
+  'версия географии обновляет подписи после именования реки');
 
-console.log('River discovery, zoom hierarchy, and map-edge geometry checks passed.');
+console.log('Проверены векторные русла, их контуры и разрезание у края карты.');

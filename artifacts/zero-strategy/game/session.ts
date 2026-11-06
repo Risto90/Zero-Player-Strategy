@@ -3,6 +3,7 @@ import type { MapKind } from './geography';
 
 /** The one game running in the app, shared between screens. */
 let current: Game | null = null;
+let loading: Promise<Game | null> | null = null;
 
 export function currentGame(): Game | null {
   return current;
@@ -27,18 +28,29 @@ export async function startNewGameCooperative(
   return current;
 }
 
-/** Loads the saved game from this device. Returns null if there is none. */
-export async function continueSavedGame(): Promise<Game | null> {
+/** Loads the saved game once and shares the in-flight restore across routes. */
+export function continueSavedGame(): Promise<Game | null> {
   if (current) {
     current.start();
-    return current;
+    return Promise.resolve(current);
   }
-  const loaded = await Game.load();
-  if (loaded) {
-    current = loaded;
-    current.start();
-  }
-  return current;
+  if (loading) return loading;
+  loading = Game.load()
+    .then((loaded) => {
+      if (current) {
+        current.start();
+        return current;
+      }
+      if (loaded) {
+        current = loaded;
+        current.start();
+      }
+      return current;
+    })
+    .finally(() => {
+      loading = null;
+    });
+  return loading;
 }
 
 export async function hasSavedGame(): Promise<boolean> {

@@ -3,7 +3,7 @@ import { contours } from 'd3-contour';
 import { difference, intersection, type MultiPolygon } from 'polygon-clipping';
 import { MAP_HEIGHT, MAP_WIDTH } from '../../game/config';
 import type { Game } from '../../game/game';
-import { discoveredRiverPaths, riverVisibilityScale } from '../../game/geographyGeometry';
+import { riverPaths, riverVisibilityScale } from '../../game/geographyGeometry';
 import { ELEVATION_COLOR_STOPS, seaDepthPackedColor } from '../../game/render';
 import type { ViewTransform } from './types';
 
@@ -117,7 +117,7 @@ function riverCarveMeters(world: World, x: number, y: number): number {
     if (py < 0 || py >= MAP_HEIGHT) continue;
     for (let dx = -4; dx <= 4; dx += 2) {
       const px = (Math.round(x + dx) + MAP_WIDTH) % MAP_WIDTH;
-      const strength = world.knownRivers[py * MAP_WIDTH + px];
+      const strength = world.rivers[py * MAP_WIDTH + px];
       if (strength === 0) continue;
       const weight = Math.max(0, 1 - Math.hypot(dx, dy) / 6);
       if (weight > bestWeight) {
@@ -555,7 +555,7 @@ export class Terrain3DRenderer {
       }),
     };
 
-    for (const segment of discoveredRiverPaths(world)) {
+    for (const segment of riverPaths(world)) {
       for (const polygonRings of segment.contourPolygons) {
         const rings = polygonRings.map((ring) => {
           const contour = ring.slice();

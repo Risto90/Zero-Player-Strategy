@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
+import './binary-kernel-test-setup.mjs';
 import { renderFlagSpec } from '../game/flagRenderer.js';
 import { assertValidFlagSpec } from '../game/flagSpec.js';
 

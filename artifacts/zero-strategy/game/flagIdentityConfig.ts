@@ -6,18 +6,10 @@ export type FlagEntityType = 'country' | 'religion' | 'city' | 'culture' | 'dyna
 
 /**
  * Правила связи игровых данных со стилями. Пустые таблицы означают равные веса
- * доступных профилей, а не скрытое историческое сопоставление.
+ * всех совместимых профилей; эпоха выбирается среди разрешённых профилю.
  */
 export const FLAG_IDENTITY_CONFIG = {
   generatorVersion: FLAG_GENERATOR_CONFIG.generatorVersion,
-  defaultEra: 6,
-  eraByPurpose: {
-    'country-flag': 6,
-    'religion-symbol': 6,
-    'city-coat': 6,
-    'culture-style': 6,
-    'dynasty-coat': 6,
-  } satisfies Record<FlagGenerationPurpose, number>,
   profileWeightsByPurpose: {
     'country-flag': {} as Partial<Record<FlagProfileId, number>>,
     'religion-symbol': {} as Partial<Record<FlagProfileId, number>>,

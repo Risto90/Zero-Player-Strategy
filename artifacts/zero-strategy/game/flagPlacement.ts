@@ -875,6 +875,9 @@ export function supportsFlagSymmetry(node: FlagNode, symmetry: FlagSymmetryClass
     case 'layer': return node.frame
       ? supportsFlagSymmetry(node.frame.ground, symmetry) && node.frame.layers.every((layer) => supportsFlagSymmetry(layer, symmetry))
       : true;
+    case 'frame': return symmetry === 'NONE' &&
+      supportsFlagSymmetry(node.frame.ground, symmetry) &&
+      node.frame.layers.every((layer) => supportsFlagSymmetry(layer, symmetry));
     case 'split': return node.children.every((child) => supportsFlagSymmetry(child, symmetry));
     case 'group': return node.children.every((child) => supportsFlagSymmetry(child, symmetry));
     case 'repeat': return supportsFlagSymmetry(node.child, symmetry);

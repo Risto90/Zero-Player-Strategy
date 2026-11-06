@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { generateProfiledFlag } from '../game/flagProfiledGenerator.js';
 import { assertValidFlagSpec } from '../game/flagSpec.js';
 

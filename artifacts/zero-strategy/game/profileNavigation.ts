@@ -1,5 +1,6 @@
 import { router, type Href } from 'expo-router';
 import { clearProfileHistory, hasVisitedProfilePath, rememberProfilePath } from './profileRouteHistory';
+import { currentGame } from './session';
 
 function routePath(href: Href): string | null {
   if (typeof href === 'string') return href.split(/[?#]/, 1)[0] ?? null;
@@ -23,4 +24,13 @@ export function openProfile(href: Href): void {
 export function closeProfileToMap(): void {
   clearProfileHistory();
   router.replace('/play');
+}
+
+/** Возвращает к предыдущей странице, а при прямом открытии — к игре или меню. */
+export function backFromProfile(): void {
+  if (router.canGoBack()) {
+    router.back();
+    return;
+  }
+  router.replace(currentGame() ? '/play' : '/');
 }

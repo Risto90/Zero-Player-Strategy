@@ -195,7 +195,7 @@ export function legacySurnameAffixForCulture(cultureId: number): SurnameAffix {
   const index = Math.abs(Math.floor(Number.isFinite(cultureId) ? cultureId : 0)) % SURNAME_AFFIXES.length;
   return { ...SURNAME_AFFIXES[index] };
 }
-const TRAITS = ['Дальновидный', 'Решительный', 'Уступчивый', 'Амбициозный', 'Осторожный', 'Харизматичный', 'Фанатик', 'Циник', 'Космополит', 'Националист', 'Плодовитый'];
+const TRAITS = ['Дальновидный', 'Решительный', 'Уступчивый', 'Амбициозный', 'Осторожный', 'Харизматичный', 'Фанатик', 'Циник', 'Космополит', 'Националист', 'Расист', 'Плодовитый'];
 let nextPersonId = 1;
 export function personIdSequence(): number { return nextPersonId; }
 export function restorePersonIdSequence(id: number): void { nextPersonId = id; }

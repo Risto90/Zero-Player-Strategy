@@ -4,6 +4,7 @@ import type {
   KernelMatrixResult,
   KernelMatrixScalar,
 } from './bindings/contracts';
+import { getBinaryMathKernel } from './runtime';
 
 export type MatrixValues =
   | Uint8Array
@@ -74,37 +75,7 @@ const MAX_MATRIX_ELEMENTS = 64 * 1024 * 1024;
 
 /** Размечает четырёхсвязные компоненты ненулевых ячеек построчной матрицы. */
 export function labelGridComponents(mask: Uint8Array, width: number, height: number): Int32Array {
-  if (!Number.isSafeInteger(width) || width <= 0 ||
-      !Number.isSafeInteger(height) || height <= 0 ||
-      width * height !== mask.length) {
-    throw new RangeError('Размеры матрицы компонентов не совпадают с маской');
-  }
-  const labels = new Int32Array(mask.length).fill(-1);
-  const queue = new Int32Array(mask.length);
-  let component = 0;
-  for (let seed = 0; seed < mask.length; seed += 1) {
-    if (!mask[seed] || labels[seed] >= 0) continue;
-    let head = 0;
-    let tail = 0;
-    labels[seed] = component;
-    queue[tail++] = seed;
-    while (head < tail) {
-      const pixel = queue[head++];
-      const x = pixel % width;
-      const visit = (neighbor: number) => {
-        if (mask[neighbor] && labels[neighbor] < 0) {
-          labels[neighbor] = component;
-          queue[tail++] = neighbor;
-        }
-      };
-      if (x > 0) visit(pixel - 1);
-      if (x + 1 < width) visit(pixel + 1);
-      if (pixel >= width) visit(pixel - width);
-      if (pixel + width < mask.length) visit(pixel + width);
-    }
-    component += 1;
-  }
-  return labels;
+  return getBinaryMathKernel().labelGridComponents(mask, width, height);
 }
 
 /** Построчная плотная матрица или представление с шагом без копирования. */
@@ -444,31 +415,16 @@ export class CsrMatrix {
   ): Float32Array | Float64Array {
     if (vector.length !== this.columns) throw new TypeError('Форма вектора не совпадает с CSR-матрицей');
     assertFinite(vector);
-    if (backend?.sparseMatvec &&
-        (this.values instanceof Float32Array || this.values instanceof Float64Array) &&
-        this.values.constructor === vector.constructor) {
-      return backend.sparseMatvec(
-        this.rows, this.columns, this.rowOffsets, this.columnIndices, this.values, vector,
-      ) as Float32Array | Float64Array;
+    const operationBackend = backend ?? getBinaryMathKernel();
+    if (!operationBackend.sparseMatvec) {
+      throw new Error('Вычислительное ядро не поддерживает разреженное умножение вектора');
     }
-    const output = new (this.values.constructor as FloatArrayConstructor)(this.rows);
-    for (let row = 0; row < this.rows; row += 1) {
-      let sum = 0;
-      let correction = 0;
-      for (let index = this.rowOffsets[row]; index < this.rowOffsets[row + 1]; index += 1) {
-        const product = this.values[index] * vector[this.columnIndices[index]];
-        const adjusted = product - correction;
-        const next = sum + adjusted;
-        correction = (next - sum) - adjusted;
-        sum = next;
-      }
-      if (!Number.isFinite(sum)) throw new RangeError('Переполнение при разреженном умножении');
-      if (output instanceof Float32Array && !Number.isFinite(Math.fround(sum))) {
-        throw new RangeError('Переполнение float32 при разреженном умножении');
-      }
-      output[row] = sum;
+    if (this.values.constructor !== vector.constructor) {
+      throw new TypeError('Типы CSR-матрицы и вектора должны совпадать');
     }
-    return output;
+    return operationBackend.sparseMatvec(
+      this.rows, this.columns, this.rowOffsets, this.columnIndices, this.values, vector,
+    ) as Float32Array | Float64Array;
   }
 
   multiplyDense(
@@ -477,110 +433,69 @@ export class CsrMatrix {
   ): DenseMatrix {
     if (right.rows !== this.columns) throw new TypeError('Формы CSR и плотной матрицы несовместимы');
     const denseRight = right.toContiguous();
-    if (backend?.sparseMatmul &&
-        (this.values instanceof Float32Array || this.values instanceof Float64Array) &&
-        (denseRight.values instanceof Float32Array || denseRight.values instanceof Float64Array) &&
-        this.values.constructor === denseRight.values.constructor) {
-      const result = backend.sparseMatmul(
-        this.rows,
-        this.columns,
-        this.rowOffsets,
-        this.columnIndices,
-        this.values,
-        denseRight.values,
-        right.columns,
-      );
-      return new DenseMatrix(result.values, result.rows, result.columns);
+    const operationBackend = backend ?? getBinaryMathKernel();
+    if (!operationBackend.sparseMatmul) {
+      throw new Error('Вычислительное ядро не поддерживает умножение CSR-матрицы');
     }
-    const output = new (this.values.constructor as FloatArrayConstructor)(this.rows * right.columns);
-    for (let row = 0; row < this.rows; row += 1) {
-      const sums = new Float64Array(right.columns);
-      const corrections = new Float64Array(right.columns);
-      for (let index = this.rowOffsets[row]; index < this.rowOffsets[row + 1]; index += 1) {
-        const leftValue = this.values[index];
-        const inner = this.columnIndices[index];
-        for (let column = 0; column < right.columns; column += 1) {
-          const term = leftValue * denseRight.values[inner * right.columns + column];
-          const adjusted = term - corrections[column];
-          const next = sums[column] + adjusted;
-          corrections[column] = (next - sums[column]) - adjusted;
-          sums[column] = next;
-        }
-      }
-      for (let column = 0; column < right.columns; column += 1) {
-        const value = sums[column];
-        if (!Number.isFinite(value)) throw new RangeError('Переполнение при умножении CSR');
-        if (output instanceof Float32Array && !Number.isFinite(Math.fround(value))) {
-          throw new RangeError('Переполнение float32 при умножении CSR');
-        }
-        output[row * right.columns + column] = value;
-      }
+    if (this.values.constructor !== denseRight.values.constructor) {
+      throw new TypeError('Типы CSR-матрицы и плотной матрицы должны совпадать');
     }
-    return new DenseMatrix(output, this.rows, right.columns);
+    const result = operationBackend.sparseMatmul(
+      this.rows,
+      this.columns,
+      this.rowOffsets,
+      this.columnIndices,
+      this.values,
+      denseRight.values as KernelMatrixScalar,
+      right.columns,
+    );
+    return new DenseMatrix(result.values, result.rows, result.columns);
   }
 
   sum(): number {
-    let total = 0;
-    let correction = 0;
-    for (const value of this.values) {
-      const adjusted = value - correction;
-      const next = total + adjusted;
-      correction = (next - total) - adjusted;
-      total = next;
-    }
-    if (!Number.isFinite(total)) throw new RangeError('Переполнение суммы CSR');
-    return total;
+    return reduce(new DenseMatrix(this.values, 1, this.values.length), 'sum');
   }
 
   normL1(): number {
-    let total = 0;
-    let correction = 0;
-    for (const value of this.values) {
-      const adjusted = Math.abs(value) - correction;
-      const next = total + adjusted;
-      correction = (next - total) - adjusted;
-      total = next;
-    }
-    if (!Number.isFinite(total)) throw new RangeError('Переполнение нормы CSR');
-    return total;
+    return reduce(new DenseMatrix(this.values, 1, this.values.length), 'normL1');
   }
 
   mean(): number {
     const count = this.rows * this.columns;
     if (count === 0) throw new RangeError('Среднее пустой CSR-матрицы не определено');
-    return this.sum() / count;
+    const kernel = getBinaryMathKernel();
+    const result = kernel.matrixExecute(
+      'divide',
+      new Float64Array([this.sum()]),
+      1,
+      1,
+      new Float64Array([count]),
+      1,
+      1,
+    );
+    return result.values[0];
   }
 
   min(): number {
     if (this.rows * this.columns === 0) throw new RangeError('Минимум пустой CSR-матрицы не определён');
-    let result = this.values.length < this.rows * this.columns ? 0 : this.values[0];
-    for (const value of this.values) result = Math.min(result, value);
-    return result;
+    if (this.values.length === 0) return 0;
+    const minimum = reduce(new DenseMatrix(this.values, 1, this.values.length), 'min');
+    return this.values.length < this.rows * this.columns
+      ? reduce(DenseMatrix.fromRows([[0, minimum]]), 'min')
+      : minimum;
   }
 
   max(): number {
     if (this.rows * this.columns === 0) throw new RangeError('Максимум пустой CSR-матрицы не определён');
-    let result = this.values.length < this.rows * this.columns ? 0 : this.values[0];
-    for (const value of this.values) result = Math.max(result, value);
-    return result;
+    if (this.values.length === 0) return 0;
+    const maximum = reduce(new DenseMatrix(this.values, 1, this.values.length), 'max');
+    return this.values.length < this.rows * this.columns
+      ? reduce(DenseMatrix.fromRows([[0, maximum]]), 'max')
+      : maximum;
   }
 
   normFrobenius(): number {
-    let scale = 0;
-    let squares = 1;
-    for (const value of this.values) {
-      const absolute = Math.abs(value);
-      if (absolute === 0) continue;
-      if (scale < absolute) {
-        squares = 1 + squares * (scale / absolute) ** 2;
-        scale = absolute;
-      } else {
-        squares += (absolute / scale) ** 2;
-      }
-    }
-    const result = scale === 0 ? 0 : scale * Math.sqrt(squares);
-    if (!Number.isFinite(result)) throw new RangeError('Переполнение нормы CSR');
-    return result;
+    return reduce(new DenseMatrix(this.values, 1, this.values.length), 'normFrobenius');
   }
 }
 
@@ -790,16 +705,36 @@ export function elementwiseSparse(
       throw new TypeError('Смещение ненулевым скаляром не сохраняет разреженность');
     }
     if (operation === 'divide' && right === 0) throw new RangeError('Деление CSR на ноль');
+    if (operation === 'add' || operation === 'subtract') {
+      return new CsrMatrix(
+        left.rows,
+        left.columns,
+        left.rowOffsets.slice(),
+        left.columnIndices.slice(),
+        left.values.slice() as Float32Array | Float64Array,
+      );
+    }
+    if (operation === 'multiply' && right === 0) {
+      return new CsrMatrix(
+        left.rows,
+        left.columns,
+        new Uint32Array(left.rows + 1),
+        new Uint32Array(),
+        new (left.values.constructor as FloatArrayConstructor)(0),
+      );
+    }
+    const transformed = elementwise(
+      new DenseMatrix(left.values, 1, left.values.length),
+      right,
+      operation,
+    );
     const values: number[] = [];
     const indices: number[] = [];
     const rowOffsets = new Uint32Array(left.rows + 1);
+    let valueIndex = 0;
     for (let row = 0; row < left.rows; row += 1) {
       for (let index = left.rowOffsets[row]; index < left.rowOffsets[row + 1]; index += 1) {
-        const value = operation === 'add' ? left.values[index]
-          : operation === 'subtract' ? left.values[index]
-            : operation === 'multiply' ? left.values[index] * right
-              : left.values[index] / right;
-        const checked = checkedValue(left.values, value);
+        const checked = checkedValue(left.values, transformed.values[valueIndex++]);
         if (checked !== 0) {
           indices.push(left.columnIndices[index]);
           values.push(checked);
@@ -821,9 +756,10 @@ export function elementwiseSparse(
   if (operation === 'divide' && right.values.length !== right.rows * right.columns) {
     throw new RangeError('Деление CSR требует ненулевой плотной правой матрицы');
   }
-  const rowOffsets = new Uint32Array(left.rows + 1);
-  const indices: number[] = [];
-  const values: number[] = [];
+  const rowEntryOffsets = new Uint32Array(left.rows + 1);
+  const columns: number[] = [];
+  const leftOperands: number[] = [];
+  const rightOperands: number[] = [];
   for (let row = 0; row < left.rows; row += 1) {
     let a = left.rowOffsets[row];
     let b = right.rowOffsets[row];
@@ -837,16 +773,27 @@ export function elementwiseSparse(
         if (av !== 0) throw new RangeError('Деление CSR на ноль');
         throw new RangeError('Результат деления CSR неразрежен из-за нулевого знаменателя');
       }
-      const value = operation === 'add' ? av + bv
-        : operation === 'subtract' ? av - bv
-          : operation === 'multiply' ? av * bv
-            : operation === 'divide' ? av / bv
-              : operation === 'and' ? Number(av !== 0 && bv !== 0)
-                : operation === 'or' ? Number(av !== 0 || bv !== 0)
-                  : Number((av !== 0) !== (bv !== 0));
-      const checked = checkedValue(left.values, value);
+      columns.push(column);
+      leftOperands.push(av);
+      rightOperands.push(bv);
+    }
+    rowEntryOffsets[row + 1] = columns.length;
+  }
+  const calculated = columns.length === 0
+    ? new Uint8Array()
+    : elementwise(
+      new DenseMatrix(Float64Array.from(leftOperands), 1, columns.length),
+      new DenseMatrix(Float64Array.from(rightOperands), 1, columns.length),
+      operation,
+    ).values;
+  const rowOffsets = new Uint32Array(left.rows + 1);
+  const indices: number[] = [];
+  const values: number[] = [];
+  for (let row = 0; row < left.rows; row += 1) {
+    for (let index = rowEntryOffsets[row]; index < rowEntryOffsets[row + 1]; index += 1) {
+      const checked = checkedValue(left.values, calculated[index]);
       if (checked !== 0) {
-        indices.push(column);
+        indices.push(columns[index]);
         values.push(checked);
       }
     }
@@ -861,19 +808,16 @@ export function mask(matrix: DenseMatrix, selected: Uint8Array): DenseMatrix {
   if (selected.length !== matrix.rows * matrix.columns) {
     throw new TypeError('Размер маски должен совпадать с количеством элементов матрицы');
   }
-  const result = DenseMatrix.zeros(matrix.rows, matrix.columns, matrix.values);
-  for (let index = 0; index < selected.length; index += 1) {
-    if (selected[index] !== 0 && selected[index] !== 1) {
-      throw new TypeError('Маска должна содержать только 0 и 1');
-    }
-    if (selected[index]) {
-      result.values[index] = matrix.get(
-        Math.floor(index / matrix.columns),
-        index % matrix.columns,
-      );
-    }
+  for (const value of selected) {
+    if (value !== 0 && value !== 1) throw new TypeError('Маска должна содержать только 0 и 1');
   }
-  return result;
+  const maskValues = new (matrix.values.constructor as MatrixValuesConstructor)(selected.length);
+  maskValues.set(selected);
+  return elementwise(
+    matrix,
+    new DenseMatrix(maskValues, matrix.rows, matrix.columns),
+    'multiply',
+  );
 }
 
 export type ElementwiseOperation = 'add' | 'subtract' | 'multiply' | 'divide' |
@@ -894,40 +838,48 @@ export function elementwise(
       !['and', 'or', 'xor', 'equal', 'lessThan'].includes(operation)) {
     throw new TypeError('Типы матриц не совпадают');
   }
+  if (operation === 'divide') {
+    const denominators = typeof right === 'number'
+      ? [right]
+      : right.toContiguous().values;
+    if (denominators.some((value) => value === 0)) {
+      throw new RangeError('Деление матрицы на ноль');
+    }
+  }
+  const operationMap: Record<ElementwiseOperation, KernelMatrixOperation> = {
+    add: 'add',
+    subtract: 'subtract',
+    multiply: 'hadamard',
+    divide: 'divide',
+    min: 'minimum',
+    max: 'maximum',
+    and: 'logicalAnd',
+    or: 'logicalOr',
+    xor: 'logicalXor',
+    equal: 'equal',
+    lessThan: 'lessThan',
+  };
+  const leftValues = Float64Array.from(left.toContiguous().values);
+  const rightValues = typeof right === 'number'
+    ? new Float64Array([right])
+    : Float64Array.from(right.toContiguous().values);
+  const result = getBinaryMathKernel().matrixExecute(
+    operationMap[operation],
+    leftValues,
+    left.rows,
+    left.columns,
+    rightValues,
+    typeof right === 'number' ? 1 : right.rows,
+    typeof right === 'number' ? 1 : right.columns,
+  );
   const outputType = ['and', 'or', 'xor', 'equal', 'lessThan'].includes(operation)
     ? new Uint8Array()
     : left.values;
-  const result = DenseMatrix.zeros(left.rows, left.columns, outputType);
-  for (let row = 0; row < left.rows; row += 1) {
-    for (let column = 0; column < left.columns; column += 1) {
-      const a = left.get(row, column);
-      const b = typeof right === 'number'
-        ? right
-        : right.get(right.rows === 1 ? 0 : row, right.columns === 1 ? 0 : column);
-      if (!Number.isFinite(a) || !Number.isFinite(b)) {
-        throw new TypeError('Операция матрицы содержит NaN или бесконечность');
-      }
-      let value: number;
-      switch (operation) {
-        case 'add': value = a + b; break;
-        case 'subtract': value = a - b; break;
-        case 'multiply': value = a * b; break;
-        case 'divide':
-          if (b === 0) throw new RangeError('Деление матрицы на ноль');
-          value = a / b;
-          break;
-        case 'min': value = Math.min(a, b); break;
-        case 'max': value = Math.max(a, b); break;
-        case 'and': value = Number(Boolean(a) && Boolean(b)); break;
-        case 'or': value = Number(Boolean(a) || Boolean(b)); break;
-        case 'xor': value = Number(Boolean(a) !== Boolean(b)); break;
-        case 'equal': value = Number(a === b); break;
-        case 'lessThan': value = Number(a < b); break;
-      }
-      result.values[row * left.columns + column] = checkedValue(result.values, value);
-    }
+  const output = DenseMatrix.zeros(left.rows, left.columns, outputType);
+  for (let index = 0; index < result.values.length; index += 1) {
+    output.values[index] = checkedValue(output.values, result.values[index]);
   }
-  return result;
+  return output;
 }
 
 export function elementwiseSparseBroadcast(
@@ -942,26 +894,16 @@ export function reduce(
   matrix: DenseMatrix,
   operation: 'sum' | 'mean' | 'min' | 'max' | 'normL1' | 'normFrobenius',
 ): number {
-  let result = operation === 'min' ? Infinity : operation === 'max' ? -Infinity : 0;
-  let correction = 0;
-  for (let row = 0; row < matrix.rows; row += 1) {
-    for (let column = 0; column < matrix.columns; column += 1) {
-      const value = matrix.get(row, column);
-      if (!Number.isFinite(value)) throw new TypeError('Матрица содержит NaN или бесконечность');
-      if (operation === 'min') result = Math.min(result, value);
-      else if (operation === 'max') result = Math.max(result, value);
-      else {
-        const term = operation === 'normL1' ? Math.abs(value)
-          : operation === 'normFrobenius' ? value * value : value;
-        const adjusted = term - correction;
-        const next = result + adjusted;
-        correction = (next - result) - adjusted;
-        result = next;
-      }
-    }
+  if (operation !== 'sum' && matrix.rows * matrix.columns === 0) {
+    throw new RangeError('Редукция пустой матрицы не определена');
   }
-  if (operation === 'mean') result /= matrix.rows * matrix.columns;
-  if (operation === 'normFrobenius') result = Math.sqrt(result);
+  const kernelOperation: KernelMatrixOperation = operation === 'min' ? 'reduceMin'
+    : operation === 'max' ? 'reduceMax'
+      : operation;
+  const input = Float64Array.from(matrix.toContiguous().values);
+  const result = getBinaryMathKernel().matrixExecute(
+    kernelOperation, input, matrix.rows, matrix.columns,
+  ).values[0];
   if (operation === 'sum' &&
       !(matrix.values instanceof Float32Array || matrix.values instanceof Float64Array) &&
       !Number.isSafeInteger(result)) {
@@ -1050,31 +992,30 @@ export function stencil2D(
         !Number.isInteger(point.columnOffset) || !Number.isFinite(point.weight))) {
     throw new TypeError('Стенсил должен содержать конечные целочисленные смещения и веса');
   }
-  const result = DenseMatrix.zeros(matrix.rows, matrix.columns, matrix.values);
-  for (let row = 0; row < matrix.rows; row += 1) {
-    for (let column = 0; column < matrix.columns; column += 1) {
-      let sum = 0;
-      let correction = 0;
-      for (const point of stencil) {
-        let y = row + point.rowOffset;
-        let x = column + point.columnOffset;
-        if (boundary === 'clamp') {
-          y = Math.max(0, Math.min(matrix.rows - 1, y));
-          x = Math.max(0, Math.min(matrix.columns - 1, x));
-        }
-        const sample = y < 0 || y >= matrix.rows || x < 0 || x >= matrix.columns
-          ? 0
-          : matrix.get(y, x);
-        const adjusted = sample * point.weight - correction;
-        const next = sum + adjusted;
-        correction = (next - sum) - adjusted;
-        sum = next;
-      }
-      if (!Number.isFinite(sum)) throw new RangeError('Переполнение при вычислении стенсила');
-      result.values[row * matrix.columns + column] = checkedValue(result.values, sum);
-    }
+  if (matrix.rows * matrix.columns === 0) {
+    return DenseMatrix.zeros(matrix.rows, matrix.columns, matrix.values);
   }
-  return result;
+  const input = Float64Array.from(matrix.toContiguous().values);
+  const stencilValues = new Float64Array(stencil.length * 3);
+  stencil.forEach((point, index) => {
+    stencilValues[index * 3] = point.rowOffset;
+    stencilValues[index * 3 + 1] = point.columnOffset;
+    stencilValues[index * 3 + 2] = point.weight;
+  });
+  const kernelResult = getBinaryMathKernel().matrixExecute(
+    boundary === 'clamp' ? 'stencilClamp' : 'stencilZero',
+    input,
+    matrix.rows,
+    matrix.columns,
+    stencilValues,
+    stencil.length,
+    3,
+  );
+  const output = DenseMatrix.zeros(matrix.rows, matrix.columns, matrix.values);
+  for (let index = 0; index < kernelResult.values.length; index += 1) {
+    output.values[index] = checkedValue(output.values, kernelResult.values[index]);
+  }
+  return output;
 }
 
 export function convolve2D(
@@ -1102,54 +1043,58 @@ export function interpolateBilinear(matrix: DenseMatrix, row: number, column: nu
       matrix.rows === 0 || matrix.columns === 0) {
     throw new RangeError('Нужны конечные координаты и непустая матрица');
   }
-  const y = Math.max(0, Math.min(matrix.rows - 1, row));
-  const x = Math.max(0, Math.min(matrix.columns - 1, column));
-  const y0 = Math.floor(y), x0 = Math.floor(x);
-  const y1 = Math.min(matrix.rows - 1, y0 + 1);
-  const x1 = Math.min(matrix.columns - 1, x0 + 1);
-  const fy = y - y0, fx = x - x0;
-  return (matrix.get(y0, x0) * (1 - fx) + matrix.get(y0, x1) * fx) * (1 - fy) +
-    (matrix.get(y1, x0) * (1 - fx) + matrix.get(y1, x1) * fx) * fy;
+  const result = getBinaryMathKernel().matrixExecute(
+    'bilinearInterpolate',
+    Float64Array.from(matrix.toContiguous().values),
+    matrix.rows,
+    matrix.columns,
+    new Float64Array([row, column]),
+    1,
+    2,
+  );
+  return result.values[0];
 }
 
 export function normalizeMinMax(matrix: DenseMatrix): DenseMatrix {
   if (matrix.rows * matrix.columns === 0) return matrix.toContiguous();
-  let minimum = Infinity;
-  let maximum = -Infinity;
-  for (let row = 0; row < matrix.rows; row += 1) {
-    for (let column = 0; column < matrix.columns; column += 1) {
-      const value = matrix.get(row, column);
-      if (!Number.isFinite(value)) throw new TypeError('Матрица содержит NaN или бесконечность');
-      minimum = Math.min(minimum, value);
-      maximum = Math.max(maximum, value);
-    }
-  }
-  const result = DenseMatrix.zeros(matrix.rows, matrix.columns, new Float64Array());
-  const scale = maximum - minimum;
+  const source = new DenseMatrix(
+    Float64Array.from(matrix.toContiguous().values),
+    matrix.rows,
+    matrix.columns,
+  );
+  const minimum = reduce(source, 'min');
+  const maximum = reduce(source, 'max');
+  const scale = getBinaryMathKernel().matrixExecute(
+    'subtract',
+    new Float64Array([maximum]),
+    1,
+    1,
+    new Float64Array([minimum]),
+    1,
+    1,
+  ).values[0];
   if (!Number.isFinite(scale)) throw new RangeError('Переполнение диапазона нормализации');
-  for (let row = 0; row < matrix.rows; row += 1) {
-    for (let column = 0; column < matrix.columns; column += 1) {
-      result.values[row * matrix.columns + column] =
-        scale === 0 ? 0 : (matrix.get(row, column) - minimum) / scale;
-    }
-  }
-  return result;
+  if (scale === 0) return DenseMatrix.zeros(matrix.rows, matrix.columns, new Float64Array());
+  return elementwise(elementwise(source, minimum, 'subtract'), scale, 'divide');
 }
 
 export function seededMatrix(rows: number, columns: number, seed: number): DenseMatrix {
   validateShape(rows, columns);
   if (!Number.isInteger(seed) || seed < 0 || seed > 0xffff_ffff) {
-    throw new RangeError('Seed должен быть uint32');
+    throw new RangeError('Зерно должно быть uint32');
   }
-  let state = (seed >>> 0) || 0x6d2b79f5;
+  if (rows * columns === 0) return DenseMatrix.zeros(rows, columns, new Float64Array());
   const values = new Float64Array(rows * columns);
-  for (let index = 0; index < values.length; index += 1) {
-    state ^= state << 13;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    values[index] = (state >>> 0) / 0x1_0000_0000;
-  }
-  return new DenseMatrix(values, rows, columns);
+  const result = getBinaryMathKernel().matrixExecute(
+    'seededRandom',
+    values,
+    rows,
+    columns,
+    new Float64Array([seed]),
+    1,
+    1,
+  );
+  return new DenseMatrix(result.values as Float64Array, result.rows, result.columns);
 }
 
 export function sampleWithSeed(
@@ -1160,11 +1105,22 @@ export function sampleWithSeed(
   validateShape(count, values.length === 0 ? 0 : 1);
   assertFinite(values);
   if (values.length === 0 && count !== 0) throw new RangeError('Нельзя выбирать из пустой выборки');
-  const source = new DenseMatrix(values, 1, values.length);
-  const random = seededMatrix(1, count, seed).values;
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffff_ffff) {
+    throw new RangeError('Зерно должно быть uint32');
+  }
+  if (count === 0) return new (values.constructor as FloatArrayConstructor)(0);
+  const random = getBinaryMathKernel().matrixExecute(
+    'sampleIndices',
+    new Float64Array([values.length, seed]),
+    1,
+    2,
+    new Float64Array(count),
+    1,
+    count,
+  ).values;
   const output = new (values.constructor as FloatArrayConstructor)(count);
   for (let index = 0; index < count; index += 1) {
-    output[index] = source.get(0, Math.floor(random[index] * values.length));
+    output[index] = values[random[index]];
   }
   return output;
 }

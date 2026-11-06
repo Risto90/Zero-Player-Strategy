@@ -100,6 +100,7 @@ export const FLAG_PLACEMENT_CONFIG = {
       repeat: ['NONE', 'MIR_H', 'MIR_V', 'BOTH', 'ROT180'],
       mirror: ['NONE', 'MIR_H', 'MIR_V', 'BOTH', 'ROT180'],
       counterchange: ['NONE', 'MIR_H', 'MIR_V', 'BOTH', 'ROT180'],
+      frame: ['NONE'],
     },
     mirrorAxes: {
       MIR_H: ['x'],

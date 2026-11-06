@@ -1,5 +1,4 @@
 import { Feather } from '@expo/vector-icons';
-import { router } from 'expo-router';
 import type { ReactNode } from 'react';
 import { FlatList, Pressable, ScrollView, Text, View } from 'react-native';
 import colors, { fonts } from '@/constants/colors';
@@ -9,7 +8,7 @@ import type { Country, World } from '@/game/world';
 import type { Game } from '@/game/game';
 import { countryCandidates, countryRulerHistory, type CountryCandidate } from '@/game/succession';
 import { ProfileFact, ProfileSection } from './ProfileLayout';
-import { openProfile } from '@/game/profileNavigation';
+import { backFromProfile, openProfile } from '@/game/profileNavigation';
 import { DynastyEmblemLink } from './EntityMarks';
 
 const c = colors.light;
@@ -26,10 +25,11 @@ function PersonProfileRow({ person, title = person.name, note, world, bordered =
   bordered?: boolean;
 }) {
   const emblem = world.dynastyEmblems[person.familyId]?.emblemSpec;
+  const emblemSvg = world.dynastyEmblems[person.familyId]?.emblemSvg;
   return (
     <View style={[styles.personRow, !bordered && styles.personRowWithoutBorder]}>
-      {emblem
-        ? <DynastyEmblemLink spec={emblem} familyId={person.familyId} focusPersonId={person.id}
+      {emblem && emblemSvg
+        ? <DynastyEmblemLink spec={emblem} svg={emblemSvg} familyId={person.familyId} focusPersonId={person.id}
           label={person.familyName} size={16} />
         : null}
       <Pressable onPress={() => openPerson(person.id)} accessibilityRole="link" style={styles.personRowText}>
@@ -131,7 +131,7 @@ export function CountryDirectoryPage({
   return (
     <View style={styles.directory}>
       <View style={styles.directoryHeader}>
-        <Pressable onPress={() => router.back()} style={styles.back} accessibilityLabel="Назад">
+        <Pressable onPress={backFromProfile} style={styles.back} accessibilityLabel="Назад">
           <Feather name="arrow-left" size={18} color={c.foreground} />
           <Text style={styles.backText}>Назад</Text>
         </Pressable>

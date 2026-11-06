@@ -88,6 +88,7 @@ type CardDrawOption = {
   key: string;
   weight: number;
   baseWeight?: number;
+  adaptive?: boolean;
   available?: (world: World, polity: Polity | null) => boolean;
   value: (world: World, polity: Polity | null) => Card;
   /** Внутренние индивидуальные карты персонажей, свёрнутые в одну запись по виду события. */
@@ -222,7 +223,7 @@ function traceCardDraw(
       drawOptions.map((option) => ({
         key: option.key,
         weight: option.weight,
-        ...(option.adaptiveContributions ? { adaptiveMultiplier: 1 } : {}),
+        ...(option.adaptiveContributions || option.adaptive === false ? { adaptiveMultiplier: 1 } : {}),
       })),
       world.cardMultipliers,
       scope,
@@ -234,7 +235,7 @@ function traceCardDraw(
         weight: option.adaptiveContributions
           ? option.adaptiveContributions.reduce((sum, contribution) => sum + contribution.baselineWeight, 0)
           : option.baseWeight ?? 1,
-        ...(option.adaptiveContributions ? { adaptiveMultiplier: 1 } : {}),
+        ...(option.adaptiveContributions || option.adaptive === false ? { adaptiveMultiplier: 1 } : {}),
       })),
       world.cardMultipliers,
       scope,
@@ -251,9 +252,11 @@ function traceCardDraw(
         baseWeight,
         programmedWeight: option.weight,
         programmedMultiplier: adaptiveBaseWeight > 0 ? option.weight / adaptiveBaseWeight : null,
-        adaptiveMultiplier: option.adaptiveContributions
-          ? (baseWeight > 0 ? adaptiveBaseWeight / baseWeight : 1)
-          : world.cardMultipliers[`${scope}:${option.key}`] ?? 1,
+        adaptiveMultiplier: option.adaptive === false
+          ? 1
+          : option.adaptiveContributions
+            ? (baseWeight > 0 ? adaptiveBaseWeight / baseWeight : 1)
+            : world.cardMultipliers[`${scope}:${option.key}`] ?? 1,
         baseProbability: baselineByKey.get(option.key) ?? 0,
         actualProbability: actualByKey.get(option.key) ?? 0,
       };
@@ -298,6 +301,7 @@ export function updateCardDrawMultipliers(
 
   for (const candidate of probabilities) {
     const option = optionByKey.get(candidate.key);
+    if (option?.adaptive === false) continue;
     if (option?.adaptiveContributions?.length && option.weight > 0) {
       for (const contribution of option.adaptiveContributions) {
         const key = `${scope}:${contribution.key}`;
@@ -365,7 +369,7 @@ function drawGeographyNamingCard(
     'nameGeography',
     0,
     country,
-    `${country.name} присваивает название обнаруженному объекту: ${kind}.`,
+    `${country.name} присваивает название объекту: ${kind}.`,
     -1,
   );
   card.geographyTarget = { kind: target.kind, id: target.id };
@@ -398,7 +402,7 @@ function drawNomadicCountryCard(world: World, nomad: Country, year: number): Car
     : nomad.modifiers.includes('coRule') ? 0.5 : 1;
   const options: CardDrawOption[] = [
     ...countryCharacterEventOptions(world, nomad, year),
-    { key: 'nameGeography', value: (_w, p) =>
+    { key: 'nameGeography', adaptive: false, value: (_w, p) =>
       requireCard(drawGeographyNamingCard(_w, p as Country, nameableGeography), 'nameGeography'),
     weight: nameableGeography.length, baseWeight: 1, available: () => nameableGeography.length > 0 },
     { key: 'nomadExpand', value: (_w, p) => requireCard(drawNomadExpansionCard(_w, p as Country), 'nomadExpand'),
@@ -1437,7 +1441,7 @@ function drawFaith(world: World, country: Country | null, year: number): Card | 
   const parentReligion = FLAG_IDENTITY_CONFIG.religionParentSource === 'current-country' && country && country.religionId !== null
     ? world.religions[country.religionId] ?? null
     : null;
-  const religion = world.newReligion(year, parentReligion);
+  const religion = world.newReligion(year, parentReligion, country ?? undefined);
   const where = country ? `в ${country.name}` : 'в любых государствах';
   const card = makeCard('faith', count, country, `Вера «${religion.name}» распространяется ${where}: каждый мазок обращает 40% жителей.`, hint);
   card.newReligionId = religion.id;
@@ -1573,7 +1577,7 @@ function drawFirstApplicable(
     candidates.map((option) => ({
       key: option.key,
       weight: option.weight,
-      ...(option.adaptiveContributions ? { adaptiveMultiplier: 1 } : {}),
+      ...(option.adaptiveContributions || option.adaptive === false ? { adaptiveMultiplier: 1 } : {}),
     })),
     world.cardMultipliers,
     scope,
@@ -1671,7 +1675,7 @@ export function drawCountryCard(world: World, country: Country, year: number): C
   const unrestScale = country.modifiers.includes('confederation') ? 1 / 3 : country.modifiers.includes('federation') ? 1 / 2 : 1;
   const options: CardDrawOption[] = [
     ...countryCharacterEventOptions(world, country, year),
-    { key: 'nameGeography', value: (w, p) =>
+    { key: 'nameGeography', adaptive: false, value: (w, p) =>
       requireCard(drawGeographyNamingCard(w, p as Country, nameableGeography), 'nameGeography'),
     weight: nameableGeography.length, baseWeight: 1, available: () => nameableGeography.length > 0 },
     { key: 'expand', value: (w, p) => drawExpand(w, p as Country, expansionPlan),

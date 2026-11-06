@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from '../game/config.ts';
 import { earthMeanHumidityPercent } from '../game/data/earthHumidity.ts';
 import { EARTH_DEG_PER_PX, EARTH_TOP_LAT } from '../game/data/earthLand.ts';

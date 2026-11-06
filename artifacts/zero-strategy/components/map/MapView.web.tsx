@@ -20,7 +20,7 @@ import {
   visibleCityLabelIds,
   volcanoVisibilityScale,
 } from '@/game/mapLabels';
-import { discoveredRiverPaths } from '@/game/geographyGeometry';
+import { riverPaths } from '@/game/geographyGeometry';
 import { elevationPackedColor, seaDepthPackedColor, STRIP_H } from '@/game/render';
 import { cityInfluenceRadius } from '@/game/settlements';
 import { CITY_ICON_SOURCES, cityIconIndex, cityVisibilityRank } from './cityIcons';
@@ -39,7 +39,6 @@ import {
   zoomAround,
 } from './viewMath';
 
-import { renderFlagSpec } from '@/game/flagRenderer';
 
 const crownGlyph = String.fromCodePoint(Number(MaterialCommunityIcons.getRawGlyphMap().crown));
 const crownFontFamily = MaterialCommunityIcons.getFontFamily();
@@ -154,7 +153,7 @@ function drawRivers(
   view: ViewTransform,
   baseScale: number,
 ) {
-  const paths = discoveredRiverPaths(game.world);
+  const paths = riverPaths(game.world);
   if (paths.length === 0 || view.scale < baseScale) return;
   ctx.save();
   for (const segment of paths) {
@@ -347,8 +346,8 @@ function drawRiverNames(
   occupiedLabels: LabelScreenBounds[] = [],
   additionalObstacles: readonly LabelScreenBounds[] = [],
 ) {
-  const byRiver = new Map<number, ReturnType<typeof discoveredRiverPaths>>();
-  for (const segment of discoveredRiverPaths(game.world)) {
+  const byRiver = new Map<number, ReturnType<typeof riverPaths>>();
+  for (const segment of riverPaths(game.world)) {
     if (!segment.name || view.scale < riverVisibilityScale(baseScale, segment.strength)) continue;
     const paths = byRiver.get(segment.riverId) ?? [];
     paths.push(segment);
@@ -357,7 +356,7 @@ function drawRiverNames(
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (const segments of byRiver.values()) {
-    let visibleSegment: ReturnType<typeof discoveredRiverPaths>[number] | null = null;
+    let visibleSegment: ReturnType<typeof riverPaths>[number] | null = null;
     let screenPoints: ScreenPoint[] | null = null;
     let visibleLength = 0;
     for (const segment of segments) {
@@ -596,7 +595,6 @@ function drawMapLabels(
     size: number;
   }[] = [];
   if (shouldShowGeographyMarks(snapshot.mapMode)) for (const feature of [...game.world.peaks, ...game.world.volcanoes]) {
-    if (!feature.discoveredBy.length) continue;
     const isVolcano = game.world.volcanoes.includes(feature);
     const active = isVolcano && feature.active === true;
     if (isVolcano && !active) continue;
@@ -880,7 +878,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         ctx.textBaseline = 'bottom';
         const labelY = y - size / 2 - Math.max(2, labelFontSize * 0.22);
         const textWidth = ctx.measureText(city.name).width;
-        const flagSvg = city.emblemSpec ? renderFlagSpec(city.emblemSpec) : null;
+        const flagSvg = city.emblemSvg ?? null;
         const flagImage = flagSvg
           ? cachedSvgImage(flagSvg, svgImagesRef.current, () => redrawRef.current())
           : null;

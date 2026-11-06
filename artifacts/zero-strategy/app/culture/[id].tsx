@@ -58,6 +58,7 @@ export default function CulturePage() {
           key: String(country.id),
           name: `${country.rank} ${country.name}`,
           spec: country.emblemSpec,
+          svg: country.emblemSvg,
           href: countryProfileRoute(country.id),
         }))} />
       </ProfileSection>

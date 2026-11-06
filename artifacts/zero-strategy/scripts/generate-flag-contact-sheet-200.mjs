@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import './binary-kernel-test-setup.mjs';
 import { FLAG_PROFILE_CONFIG } from '../game/flagProfileConfig.ts';
 import { renderFlagContactSheet } from '../game/flagContactSheet.ts';
 import { generateProfiledFlag } from '../game/flagProfiledGenerator.ts';

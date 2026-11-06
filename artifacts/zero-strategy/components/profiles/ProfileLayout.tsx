@@ -1,5 +1,5 @@
 import { Feather } from '@expo/vector-icons';
-import { router, usePathname } from 'expo-router';
+import { usePathname } from 'expo-router';
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LogPanel } from '@/components/game/LogPanel';
 import colors, { fonts } from '@/constants/colors';
 import type { ChronicleEntry, ChronicleObjectOption, ChronicleReference } from '@/game/chronicle';
-import { closeProfileToMap, rememberProfilePath } from '@/game/profileNavigation';
+import { backFromProfile, closeProfileToMap, rememberProfilePath } from '@/game/profileNavigation';
 import type { World } from '@/game/world';
 
 const c = colors.light;
@@ -50,7 +50,7 @@ export function ProfileLayout({
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.back} accessibilityLabel="Назад">
+        <Pressable onPress={backFromProfile} style={styles.back} accessibilityLabel="Назад">
           <Feather name="arrow-left" size={18} color={c.foreground} />
           <Text style={styles.backText}>Назад</Text>
         </Pressable>
@@ -159,7 +159,7 @@ export function MissingProfile({ title }: { title: string }) {
   return (
     <View style={[styles.screen, styles.missing]}>
       <Text style={styles.title}>{title}</Text>
-      <Pressable onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>Назад</Text></Pressable>
+      <Pressable onPress={backFromProfile} style={styles.back}><Text style={styles.backText}>Назад</Text></Pressable>
     </View>
   );
 }

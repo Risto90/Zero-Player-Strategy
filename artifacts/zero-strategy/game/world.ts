@@ -13,23 +13,56 @@ import {
   type WaterInfo,
   WORLD_SEED,
 } from './geography';
-import { randomItem } from './random';
+import { flagStageRandom, randomItem } from './random';
 import { initialGovernment, randomNameStyle, randomSurnameAffix, type GovernmentId, type NameStyleId, type Person, type PoliticalState, type SurnameAffix } from './government';
 import { generateCityIdentity } from './cityNames';
-import type { HumanOriginId } from './human';
 import { MapContours } from './contours';
 import { generateGeography, type GeographyFeature, type RiverFeature } from './geographyFeatures';
-import { riverStrengthForRank } from './geographyGeometry';
+import { nameableGeographyForCountry } from './geographyNamingGeometry';
 import { apportionIntegerTotal } from '../kernel/proportions';
 import { densityToWholeResidents, roundResidents } from './populationUnits';
+import { HUMAN_ORIGINS, type HumanOriginId } from './human';
+import { composeDerivedEmblem, createCityHeraldry } from './flagHeraldry';
 import {
   PopulationCohortTable,
   populationCohortsAtPixel,
   type PopulationCohortShare,
 } from './populationCohorts';
-import { createEntityEmblem, createFlagStyleProfile, cultureTags, ensureFlagIdentity } from './flagIdentity';
+import {
+  compatibleFlagProfileIds,
+  createFlagStyleProfile,
+  cultureTags,
+  ensureFlagIdentity,
+  selectFlagProfileId,
+  type FlagGenerationSelection,
+} from './flagIdentity';
 import type { FlagIdentity, FlagStyleProfile } from './flagIdentity';
 import type { FlagSpec } from './flagSpec';
+
+let latestFlagStartTime = 0;
+
+function nextFlagStartTime(): number {
+  latestFlagStartTime = Math.max(Date.now(), latestFlagStartTime + 1);
+  return latestFlagStartTime;
+}
+
+function flagGenerationKey(era: number, profileId: string, seed: string | number): string {
+  return `${era}|${profileId}|${String(seed)}`;
+}
+
+function numericFlagSeed(seed: string | number): number {
+  if (typeof seed === 'number' && Number.isFinite(seed)) return seed;
+  const text = String(seed);
+  const parts = text.split('+').map((part) => Number(part.replace(/^\[|\]$/g, '')));
+  if (parts.length > 1 && parts.every(Number.isFinite)) {
+    return Math.round(parts.reduce((sum, part) => sum + part, 0) / parts.length);
+  }
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) return numeric;
+  let hash = 2166136261;
+  for (const character of text) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0;
+  return hash;
+}
 
 export type GeographyObjectKind = 'river' | 'peak' | 'volcano';
 export interface GeographyNameTarget {
@@ -40,9 +73,9 @@ export interface GeographyNameTarget {
   active?: boolean;
 }
 export interface SavedGeographyState {
-  rivers: { id: number; name: string | null; discoveredBy: number[] }[];
-  peaks: { id: number; name: string | null; discoveredBy: number[] }[];
-  volcanoes: { id: number; name: string | null; discoveredBy: number[] }[];
+  rivers: { id: number; name: string | null }[];
+  peaks: { id: number; name: string | null }[];
+  volcanoes: { id: number; name: string | null }[];
 }
 
 export interface TerrainOverride {
@@ -73,6 +106,7 @@ export interface Country extends PoliticalState {
   /** Историческое место происхождения для летописи; не используется как текущее место жительства. */
   sourceCountryId?: number | null;
   emblemSpec?: FlagSpec;
+  emblemSvg?: string;
   flagIdentity?: FlagIdentity;
   styleProfile?: FlagStyleProfile;
 }
@@ -101,6 +135,7 @@ export interface City {
   namingCultureId?: number;
   namingStyleId?: NameStyleId;
   emblemSpec?: FlagSpec;
+  emblemSvg?: string;
   flagIdentity?: FlagIdentity;
   styleProfile?: FlagStyleProfile;
 }
@@ -140,6 +175,7 @@ export interface Culture {
   foundedYear: number;
   traits?: string[];
   emblemSpec?: FlagSpec;
+  emblemSvg?: string;
   flagIdentity?: FlagIdentity;
   styleProfile?: FlagStyleProfile;
 }
@@ -149,6 +185,7 @@ export type Religion = Culture;
 export interface DynastyHeraldry {
   id: number;
   emblemSpec: FlagSpec;
+  emblemSvg?: string;
   flagIdentity: FlagIdentity;
   styleProfile: FlagStyleProfile;
 }
@@ -164,8 +201,7 @@ export class World {
   readonly landIndex: Int32Array;
   /** Детерминированный слой рек: 0 — нет реки, 1 — приток, 2–3 — крупное русло. */
   readonly rivers: Uint8Array;
-  /** Отображаются только реки, уже обнаруженные хотя бы одним государством. */
-  readonly knownRivers = new Uint8Array(MAP_PIXELS);
+  /** Векторные русла рек для отрисовки и геометрических проверок. */
   riverFeatures: RiverFeature[];
   peaks: GeographyFeature[];
   volcanoes: GeographyFeature[];
@@ -199,9 +235,14 @@ export class World {
   dynastyEmblems: Record<number, DynastyHeraldry> = {};
   /** Увеличивается при каждом изменении карты; по нему обновляются кеши. */
   version = 0;
+  /** Отдельный seed эмблем; для обычной карты он меняется между новыми играми. */
+  readonly flagSeed: number;
+  /** Текущий ход, используемый формулами сидов новых гербов и флагов. */
+  currentMove = 1;
+  /** Все когда-либо использованные сочетания эпохи, профиля и сида. */
+  generatedFlagKeys: string[] = [];
   /** Увеличивается только при расширении территории государства или кочевого ареала. */
   territoryVersion = 0;
-  private geographyScanVersion = 0;
   private geographyVersion = 0;
   private terrainVersion = 0;
   private readonly geographyNameCache = new Map<number, {
@@ -214,12 +255,12 @@ export class World {
     () => this.version,
   );
 
-  /** Версия меняется только при открытии новых географических контуров. */
+  /** Версия имён и геометрии подписей географических объектов. */
   get geographyRevision(): number {
     return this.geographyVersion;
   }
 
-  /** Меняется только при изменении высоты или глубины, а не при открытии географии. */
+  /** Меняется только при изменении высоты или глубины. */
   get terrainRevision(): number {
     return this.terrainVersion;
   }
@@ -233,7 +274,9 @@ export class World {
       water: WaterInfo;
       landIndex: Int32Array;
     },
+    flagSeed = seed,
   ) {
+    this.flagSeed = flagSeed;
     this.land = land;
     this.water = prepared?.water ?? labelWater(land);
     const geography = generateGeography(land, seed, mapKind);
@@ -265,8 +308,9 @@ export class World {
 
   static create(mapKind: MapKind, seed?: number): World {
     const actualSeed = mapKind === 'world' ? WORLD_SEED : (seed ?? Math.floor(Math.random() * 2 ** 31));
+    const flagSeed = seed ?? nextFlagStartTime();
     const land = mapKind === 'world' ? decodeEarthLand() : makeRandomLand(actualSeed);
-    return new World(mapKind, actualSeed, land, null);
+    return new World(mapKind, actualSeed, land, null, undefined, flagSeed);
   }
 
   static async createCooperative(
@@ -276,6 +320,7 @@ export class World {
   ): Promise<World> {
     if (mapKind !== 'world' && mapKind !== 'random') throw new Error('Неизвестный тип карты.');
     const actualSeed = mapKind === 'world' ? WORLD_SEED : (seed ?? Math.floor(Math.random() * 2 ** 31));
+    const flagSeed = seed ?? nextFlagStartTime();
     onProgress?.('Создаём сушу');
     const land = mapKind === 'world' ? decodeEarthLand() : await makeRandomLandCooperative(actualSeed);
     onProgress?.('Размечаем моря');
@@ -299,7 +344,7 @@ export class World {
     return new World(mapKind, actualSeed, land, climate, {
       water,
       landIndex,
-    });
+    }, flagSeed);
   }
 
   biomeAt(p: number): number {
@@ -412,34 +457,7 @@ export class World {
     if (cached?.geographyVersion === this.geographyVersion &&
       cached.territoryVersion === this.territoryVersion) return cached.targets;
     const country = this.countries[countryId];
-    const nomadicRange = country?.type === 'nomadic' ? new Set(country.range ?? []) : null;
-    const onCountryTerritory = (pixel: number) => country !== undefined &&
-      (nomadicRange
-        ? nomadicRange.has(pixel)
-        : this.owner[pixel] === countryId + 1);
-    const result: GeographyNameTarget[] = [];
-    for (const feature of this.riverFeatures) {
-      if (!feature.name && feature.discoveredBy.includes(countryId) &&
-        feature.pixels.some(onCountryTerritory)) {
-        result.push({ kind: 'river', id: feature.id, pixel: feature.pixels[Math.floor(feature.pixels.length / 2)] ?? -1, elevation: 0 });
-      }
-    }
-    for (const feature of this.peaks) {
-      if (!feature.name && feature.discoveredBy.includes(countryId) && onCountryTerritory(feature.pixel)) {
-        result.push({ kind: 'peak', id: feature.id, pixel: feature.pixel, elevation: feature.elevation });
-      }
-    }
-    for (const feature of this.volcanoes) {
-      if (!feature.name && feature.discoveredBy.includes(countryId) && onCountryTerritory(feature.pixel)) {
-        result.push({
-          kind: 'volcano',
-          id: feature.id,
-          pixel: feature.pixel,
-          elevation: feature.elevation,
-          active: feature.active,
-        });
-      }
-    }
+    const result = country ? nameableGeographyForCountry(this, country) : [];
     this.geographyNameCache.set(countryId, {
       geographyVersion: this.geographyVersion,
       territoryVersion: this.territoryVersion,
@@ -463,7 +481,6 @@ export class World {
     const copy = (features: (GeographyFeature | RiverFeature)[]) => features.map((feature) => ({
       id: feature.id,
       name: feature.name,
-      discoveredBy: [...feature.discoveredBy],
     }));
     return {
       rivers: copy(this.riverFeatures),
@@ -473,19 +490,15 @@ export class World {
   }
 
   restoreGeographyState(state?: SavedGeographyState): void {
-    if (!state) {
-      this.geographyScanVersion = this.territoryVersion - 1;
-      return;
-    }
+    if (!state) return;
     const restore = (
       features: (GeographyFeature | RiverFeature)[],
-      saved: SavedGeographyState['rivers'],
+      saved: SavedGeographyState['rivers'] | undefined,
     ) => {
-      for (const value of saved) {
+      for (const value of saved ?? []) {
         const feature = features[value.id];
         if (!feature) continue;
         feature.name = value.name;
-        feature.discoveredBy = value.discoveredBy.filter((id) => !!this.countries[id]);
       }
     };
     restore(this.riverFeatures, state.rivers);
@@ -493,77 +506,6 @@ export class World {
     restore(this.volcanoes, state.volcanoes);
     this.geographyVersion += 1;
     this.geographyNameCache.clear();
-    this.knownRivers.fill(0);
-    for (const feature of this.riverFeatures) {
-      if (feature.discoveredBy.length === 0) continue;
-       const strength = riverStrengthForRank(feature.scaleRank);
-      for (const pixel of feature.pixels) {
-        this.knownRivers[pixel] = Math.max(this.knownRivers[pixel], this.rivers[pixel] || strength);
-      }
-    }
-    this.geographyScanVersion = this.territoryVersion;
-  }
-
-  /** Выявляет географические объекты только после расширения территории в этом ходу. */
-  discoverGeography(): boolean {
-    if (this.geographyScanVersion === this.territoryVersion) return false;
-    this.geographyScanVersion = this.territoryVersion;
-
-    const nomadsAtPixel = new Map<number, number[]>();
-    for (const country of this.countries) {
-      if (country.type !== 'nomadic') continue;
-      for (const pixel of country.range ?? []) {
-        const ids = nomadsAtPixel.get(pixel) ?? [];
-        ids.push(country.id);
-        nomadsAtPixel.set(pixel, ids);
-      }
-    }
-
-    let discovered = false;
-    const checkArea = (pixels: number[], feature: GeographyFeature | RiverFeature): void => {
-      const known = new Set(feature.discoveredBy);
-      for (const pixel of pixels) {
-        const x = pixel % MAP_WIDTH;
-        const y = Math.floor(pixel / MAP_WIDTH);
-        for (let dy = -1; dy <= 1; dy += 1) {
-          const ny = y + dy;
-          if (ny < 0 || ny >= MAP_HEIGHT) continue;
-          for (let dx = -1; dx <= 1; dx += 1) {
-            const nx = (x + dx + MAP_WIDTH) % MAP_WIDTH;
-            const nearby = ny * MAP_WIDTH + nx;
-            const ownerId = this.owner[nearby] - 1;
-            if (ownerId >= 0) known.add(ownerId);
-            for (const nomadId of nomadsAtPixel.get(nearby) ?? []) known.add(nomadId);
-          }
-        }
-        if (known.size >= this.countries.length) break;
-      }
-      const nextDiscoverers = [...known].filter((id) => !!this.countries[id]);
-      if (nextDiscoverers.length === feature.discoveredBy.length &&
-        nextDiscoverers.every((id) => feature.discoveredBy.includes(id))) return;
-      feature.discoveredBy = nextDiscoverers;
-      if (feature.discoveredBy.length > 0) discovered = true;
-      if ('paths' in feature) {
-         const strength = riverStrengthForRank(feature.scaleRank);
-        for (const riverPixel of feature.pixels) {
-          this.knownRivers[riverPixel] = Math.max(
-            this.knownRivers[riverPixel],
-            this.rivers[riverPixel] || strength,
-          );
-        }
-      }
-    };
-
-    for (const feature of this.riverFeatures) checkArea(feature.pixels, feature);
-    for (const feature of this.peaks) checkArea([feature.pixel], feature);
-    for (const feature of this.volcanoes) checkArea([feature.pixel], feature);
-
-    if (discovered) {
-      this.geographyVersion += 1;
-      this.geographyNameCache.clear();
-      this.version += 1;
-    }
-    return discovered;
   }
 
   cityAt(p: number): City | null {
@@ -598,16 +540,7 @@ export class World {
       ...generateCityIdentity(this, pixel),
     };
     if (rank >= 2) {
-      const culture = this.cultures[country.cultureId];
-      Object.assign(city, createEntityEmblem(
-        this.seed,
-        'city',
-        city.chronicleId,
-        'city-coat',
-        culture?.styleProfile,
-        undefined,
-        rank,
-      ));
+      Object.assign(city, createCityHeraldry(this, country, city));
     }
     if (capital) for (const existing of this.cities) if (existing.countryId === countryId) existing.capital = false;
     this.cities.push(city);
@@ -671,6 +604,29 @@ export class World {
     return new Set(items.map((item) => item.color.toLowerCase()));
   }
 
+  generationSeedFor(era: number, profileId: string, requested: string | number): string | number {
+    const used = new Set(this.generatedFlagKeys);
+    const requestedKey = flagGenerationKey(era, profileId, requested);
+    if (!used.has(requestedKey)) return requested;
+    const nearest = Math.round(numericFlagSeed(requested));
+    for (let distance = 0; ; distance += 1) {
+      const candidates = distance === 0 ? [nearest] : [nearest - distance, nearest + distance];
+      for (const candidate of candidates) {
+        const key = flagGenerationKey(era, profileId, candidate);
+        if (!used.has(key)) return candidate;
+      }
+    }
+  }
+
+  reserveGeneratedFlag(era: number, profileId: string, seed: string | number): void {
+    const key = flagGenerationKey(era, profileId, seed);
+    if (!this.generatedFlagKeys.includes(key)) this.generatedFlagKeys.push(key);
+  }
+
+  hasGeneratedFlag(era: number, profileId: string, seed: string | number): boolean {
+    return this.generatedFlagKeys.includes(flagGenerationKey(era, profileId, seed));
+  }
+
   newCountry(fields: Pick<Country, 'rank' | 'cultureId' | 'religionId' | 'density' | 'foundedYear' | 'parentId'> & { government?: GovernmentId }): Country {
     const used = new Set(this.countries.map((c) => c.name));
     const culture = this.cultures[fields.cultureId];
@@ -688,13 +644,45 @@ export class World {
       rank: countryRankForArea(0),
     };
     const cultureStyle = culture?.styleProfile;
+    const sourceCountry = fields.parentId === null ? undefined : this.countries[fields.parentId];
+    const sourceStyle = sourceCountry?.styleProfile ?? cultureStyle;
+    if (!sourceStyle) throw new Error(`Для страны ${country.id} не найден исходный стилевой профиль.`);
+    const era = sourceStyle.era;
+    const tags = sourceStyle.tags;
+    let profileId = sourceStyle.profileId;
+    const sourceFlagSeed = sourceCountry?.flagIdentity?.seed ?? sourceStyle.identity.seed;
+    const requestedSeed = sourceCountry
+      ? numericFlagSeed(sourceFlagSeed) + this.currentMove + country.id
+      : sourceStyle.identity.seed;
+    if (sourceCountry && flagStageRandom(requestedSeed, 'S0_DERIVED_PROFILE')() < 0.5) {
+      const alternatives = compatibleFlagProfileIds(era, tags).filter((candidate) => candidate !== profileId);
+      if (alternatives.length) {
+        profileId = selectFlagProfileId(
+          'country-flag',
+          era,
+          tags,
+          requestedSeed,
+          undefined,
+          [sourceStyle.profileId],
+        );
+      }
+    }
+    const generationSeed = this.generationSeedFor(era, profileId, requestedSeed);
+    const selection: FlagGenerationSelection = { era, profileId, generationSeed };
     Object.assign(country, ensureFlagIdentity(
       this.seed,
       country,
       'country',
       'country-flag',
-      cultureStyle,
+      sourceStyle,
+      sourceCountry,
+      undefined,
+      this.flagSeed,
+      selection,
     ));
+    if (!sourceCountry || !composeDerivedEmblem(this, country, sourceCountry, sourceCountry)) {
+      this.reserveGeneratedFlag(era, profileId, country.flagIdentity?.seed ?? generationSeed);
+    }
     this.countries.push(country);
     country.ruler.countryId = country.id;
     country.ruler.formerRulerOf = [country.id];
@@ -717,7 +705,7 @@ export class World {
     const culture: Culture = {
       id: this.cultures.length,
       name: name.charAt(0).toUpperCase() + name.slice(1),
-      ...(foundingRaceId ? { foundingRaceId } : {}),
+      ...(foundingRaceId !== undefined ? { foundingRaceId } : {}),
       nameStyleId: randomNameStyle(),
       surnameAffix: randomSurnameAffix(Math.random, this.cultures.map((culture) => culture.surnameAffix).filter((affix): affix is SurnameAffix => !!affix)),
       color: pickUniqueColor(PALETTE.culture, this.usedColors(this.cultures)),
@@ -725,6 +713,17 @@ export class World {
       foundedYear: year,
       traits: Math.random() < 0.25 ? [randomItem(['warlike', 'peaceful', 'genderEqual'])] : [],
     };
+    const raceIndex = foundingRaceId === undefined
+      ? -1
+      : HUMAN_ORIGINS.findIndex((origin) => origin.id === foundingRaceId);
+    const generationSeed = parent
+      ? numericFlagSeed(parent.flagIdentity?.seed ?? parent.styleProfile?.identity.seed ?? this.flagSeed) +
+        this.currentMove + culture.id
+      : foundingRaceId === undefined
+        ? this.flagSeed + this.currentMove * culture.id * (this.countries.length + 1) * 2
+        : this.flagSeed + this.currentMove * culture.id * (this.countries.length + 1) * (raceIndex + 2);
+    const era = parent?.styleProfile?.era ??
+      (foundingRaceId === undefined ? undefined : this.firstCultureEraForRace(foundingRaceId, generationSeed));
     culture.styleProfile = createFlagStyleProfile(
       this.seed,
       'culture',
@@ -732,13 +731,15 @@ export class World {
       'culture-style',
       cultureTags(culture.id),
       parent,
+      this.flagSeed,
+      { era, generationSeed },
     );
     culture.flagIdentity = culture.styleProfile.identity;
     this.cultures.push(culture);
     return culture;
   }
 
-  newReligion(year: number, parent: Religion | null = null): Religion {
+  newReligion(year: number, parent: Religion | null = null, sourceCountry?: Country): Religion {
     const used = new Set(this.religions.map((r) => r.name));
     const religion: Religion = {
       id: this.religions.length,
@@ -748,6 +749,49 @@ export class World {
       foundedYear: year,
       traits: Math.random() < 0.25 ? [randomItem(['maleClergy', 'femaleClergy', 'equalClergy'])] : [],
     };
+    const inheritedStyle = parent?.styleProfile;
+    const requestedSeed = inheritedStyle
+      ? numericFlagSeed(parent?.flagIdentity?.seed ?? inheritedStyle.identity.seed) +
+        this.currentMove + religion.id + (sourceCountry?.id ?? 0)
+      : this.flagSeed + this.currentMove * religion.id * (this.countries.length + 2) + (sourceCountry?.id ?? 0);
+    const era = inheritedStyle?.era ?? sourceCountry?.styleProfile?.era ??
+      Math.floor(flagStageRandom(requestedSeed, 'S0_ERA')() * 7);
+    const tags = inheritedStyle?.tags ?? [];
+    let profileId = inheritedStyle?.profileId;
+    let profileIsInherited = !!inheritedStyle;
+    if (inheritedStyle && flagStageRandom(requestedSeed, 'S0_DERIVED_PROFILE')() < 0.5) {
+      const alternatives = compatibleFlagProfileIds(era, tags).filter((candidate) => candidate !== inheritedStyle.profileId);
+      if (alternatives.length) {
+        profileId = selectFlagProfileId(
+          'religion-symbol',
+          era,
+          tags,
+          requestedSeed,
+          undefined,
+          [inheritedStyle.profileId],
+        );
+        profileIsInherited = false;
+      }
+    }
+    if (!profileId) {
+      profileId = selectFlagProfileId(
+        'religion-symbol',
+        era,
+        tags,
+        requestedSeed,
+      );
+      profileIsInherited = false;
+    }
+    if (sourceCountry?.styleProfile) {
+      const countryProfileId = sourceCountry.styleProfile.profileId;
+      const countryProfileFits = compatibleFlagProfileIds(era, tags).includes(countryProfileId);
+      const replaceWithCountry = sourceCountry.modifiers.includes('theocracy') ||
+        (!profileIsInherited &&
+          flagStageRandom(`${requestedSeed}|religion-country-profile`, 'S0_COUNTRY_PROFILE')() < 0.5);
+      if (countryProfileFits && replaceWithCountry) profileId = countryProfileId;
+    }
+    const generationSeed = this.generationSeedFor(era, profileId, requestedSeed);
+    const selection: FlagGenerationSelection = { era, profileId, generationSeed };
     religion.styleProfile = createFlagStyleProfile(
       this.seed,
       'religion',
@@ -755,6 +799,8 @@ export class World {
       'religion-symbol',
       [],
       parent,
+      this.flagSeed,
+      selection,
     );
     Object.assign(religion, ensureFlagIdentity(
       this.seed,
@@ -763,9 +809,34 @@ export class World {
       'religion-symbol',
       religion.styleProfile,
       parent,
+      undefined,
+      this.flagSeed,
+      selection,
     ));
+    if (!parent || !composeDerivedEmblem(this, religion, parent, parent)) {
+      this.reserveGeneratedFlag(era, profileId, religion.flagIdentity?.seed ?? generationSeed);
+    }
     this.religions.push(religion);
     return religion;
+  }
+
+  private firstCultureEraForRace(raceId: HumanOriginId, generationSeed: number): number {
+    const eraByRace = new Map<HumanOriginId, number>();
+    for (const culture of this.cultures) {
+      if (culture.parentId !== null || culture.foundingRaceId === undefined || !culture.styleProfile) continue;
+      if (!eraByRace.has(culture.foundingRaceId)) eraByRace.set(culture.foundingRaceId, culture.styleProfile.era);
+    }
+    const assignedEra = eraByRace.get(raceId);
+    if (assignedEra !== undefined) return assignedEra;
+
+    const raceCounts = Array.from({ length: 7 }, () => 0);
+    for (const era of eraByRace.values()) {
+      if (Number.isInteger(era) && era >= 0 && era < raceCounts.length) raceCounts[era] += 1;
+    }
+    const leastRepresented = Math.min(...raceCounts);
+    const candidates = raceCounts.flatMap((count, era) => count === leastRepresented ? [era] : []);
+    const index = Math.floor(flagStageRandom(generationSeed, 'S0_ERA')() * candidates.length);
+    return candidates[index];
   }
 
   /** Удаляет последнюю неиспользованную сущность, созданную картой, которая ничего не закрасила. */

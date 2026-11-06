@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import './binary-kernel-test-setup.mjs';
 import { renderFlagContactSheet } from '../game/flagContactSheet.ts';
 import { FLAG_REFERENCE_CORPUS } from '../game/flagReferences.ts';
 

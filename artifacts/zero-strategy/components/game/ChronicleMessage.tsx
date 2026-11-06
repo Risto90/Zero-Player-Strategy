@@ -24,10 +24,12 @@ type MentionEntity = {
   kind: ChronicleReference['type'];
   href: Href;
   spec?: FlagSpec;
+  svg?: string;
   city?: City;
   hasPort?: boolean;
   familyId?: number;
   dynastySpec?: FlagSpec;
+  dynastySvg?: string;
 };
 
 function entityForReference(world: World, reference: ChronicleReference): MentionEntity | null {
@@ -39,6 +41,7 @@ function entityForReference(world: World, reference: ChronicleReference): Mentio
       kind: 'country',
       href: countryProfileRoute(country.id),
       spec: country.emblemSpec,
+      svg: country.emblemSvg,
     } : null;
   }
   if (reference.type === 'religion') {
@@ -49,6 +52,7 @@ function entityForReference(world: World, reference: ChronicleReference): Mentio
       kind: 'religion',
       href: religionProfileRoute(religion.id),
       spec: religion.emblemSpec,
+      svg: religion.emblemSvg,
     } : null;
   }
   if (reference.type === 'culture') {
@@ -69,6 +73,7 @@ function entityForReference(world: World, reference: ChronicleReference): Mentio
       href: { pathname: '/person/[id]', params: { id: String(person.id) } },
       familyId: person.familyId,
       dynastySpec: world.dynastyEmblems[person.familyId]?.emblemSpec,
+      dynastySvg: world.dynastyEmblems[person.familyId]?.emblemSvg,
     } : null;
   }
   const city = world.cities.find((item) => item.chronicleId === reference.id);
@@ -95,7 +100,7 @@ function stripCountryPrefix(text: string, countryName: string): string {
 function InlineMark({ entity }: { entity: MentionEntity }) {
   if (entity.kind === 'country' || entity.kind === 'religion') {
     return entity.spec
-      ? <EntityFlagLink spec={entity.spec} href={entity.href} label={entity.name} size={16} />
+      ? <EntityFlagLink spec={entity.spec} svg={entity.svg} href={entity.href} label={entity.name} size={16} />
       : (
         <Pressable onPress={() => openProfile(entity.href)} style={styles.inlineMark}
           accessibilityRole="link" accessibilityLabel={`Открыть карточку: ${entity.name}`}>
@@ -112,8 +117,8 @@ function InlineMark({ entity }: { entity: MentionEntity }) {
   if (entity.kind === 'person') {
     return (
       <View style={styles.personMarks}>
-        {entity.familyId !== undefined && entity.dynastySpec
-          ? <DynastyEmblemLink spec={entity.dynastySpec} familyId={entity.familyId}
+        {entity.familyId !== undefined && entity.dynastySpec && entity.dynastySvg
+          ? <DynastyEmblemLink spec={entity.dynastySpec} svg={entity.dynastySvg} familyId={entity.familyId}
             focusPersonId={entity.reference.id} label={entity.name} size={16} />
           : null}
         <Pressable onPress={() => openProfile(entity.href)} style={styles.inlineMark}

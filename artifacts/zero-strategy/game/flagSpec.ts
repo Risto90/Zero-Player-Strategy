@@ -60,6 +60,11 @@ export interface GroupNode {
   children: FlagNode[];
 }
 
+export interface FrameNode {
+  kind: 'frame';
+  frame: FlagFrame;
+}
+
 export interface RepeatNode {
   kind: 'repeat';
   pattern: JsonValue;
@@ -92,6 +97,7 @@ export type FlagNode =
   | SplitNode
   | LayerNode
   | GroupNode
+  | FrameNode
   | RepeatNode
   | MirrorNode
   | CounterchangeNode;
@@ -170,7 +176,7 @@ const LAYER_ROLES = new Set<FlagLayerRole>([
   'border',
   'ornament',
 ]);
-const NODE_KINDS = new Set(['fill', 'split', 'layer', 'group', 'repeat', 'mirror', 'counterchange']);
+const NODE_KINDS = new Set(['fill', 'split', 'layer', 'group', 'frame', 'repeat', 'mirror', 'counterchange']);
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -316,6 +322,9 @@ function validateNode(
       } else {
         node.children.forEach((child, index) => validateNode(child, slots, `${path}.children[${index}]`, frameDepth, issues));
       }
+      break;
+    case 'frame':
+      validateFrame(node.frame, slots, `${path}.frame`, frameDepth + 1, issues);
       break;
     case 'repeat':
       if (!Object.hasOwn(node, 'pattern')) add(issues, `${path}.pattern`, 'is required');

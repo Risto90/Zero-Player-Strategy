@@ -35,14 +35,14 @@ export default function CityPage() {
     <>
       <View style={styles.identityRow} testID="city-identity-marks">
         {country?.emblemSpec
-          ? <EntityFlagLink spec={country.emblemSpec} href={countryProfileRoute(country.id)}
+          ? <EntityFlagLink spec={country.emblemSpec} svg={country.emblemSvg} href={countryProfileRoute(country.id)}
             label={country.name} size={40} fit="height" />
           : <View style={styles.markPlaceholder} />}
         <Image source={cityIcon} style={styles.cityIcon} resizeMode="contain" accessibilityLabel={`Значок города ${city.name ?? 'Город'}`} />
         {city.emblemSpec
-          ? <EmblemPreview spec={city.emblemSpec} label={`Герб ${city.name ?? 'города'}`} shape="coat" frameHeight={40} />
+          ? <EmblemPreview spec={city.emblemSpec} svg={city.emblemSvg} label={`Герб ${city.name ?? 'города'}`} shape="coat" frameHeight={40} />
           : country?.emblemSpec
-            ? <EntityFlagLink spec={country.emblemSpec} href={countryProfileRoute(country.id)}
+            ? <EntityFlagLink spec={country.emblemSpec} svg={country.emblemSvg} href={countryProfileRoute(country.id)}
               label={country.name} size={40} fit="height" />
             : <View style={styles.markPlaceholder} />}
       </View>
@@ -60,6 +60,7 @@ export default function CityPage() {
             key: String(country.id),
             name: `${country.rank} ${country.name}`,
             spec: country.emblemSpec,
+            svg: country.emblemSvg,
             href: countryProfileRoute(country.id),
           }]} />
         ) : <ProfileFact>Страна не найдена.</ProfileFact>}
@@ -81,6 +82,7 @@ export default function CityPage() {
             name: game.world.religions[religionId]?.name ?? 'Неизвестная вера',
             note: pct(percent),
             spec: game.world.religions[religionId]?.emblemSpec,
+            svg: game.world.religions[religionId]?.emblemSvg,
             href: religionProfileRoute(religionId),
           })} />
       </ProfileSection>

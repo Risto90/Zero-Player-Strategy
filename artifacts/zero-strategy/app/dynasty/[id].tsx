@@ -17,7 +17,7 @@ import { DynastyEmblemLink, DynastyEmblemMark } from '@/components/profiles/Enti
 import colors, { fonts } from '@/constants/colors';
 import type { Person } from '@/game/government';
 import { countryProfileRoute } from '@/game/profileRoutes';
-import { closeProfileToMap, openProfile, rememberProfilePath } from '@/game/profileNavigation';
+import { backFromProfile, closeProfileToMap, openProfile, rememberProfilePath } from '@/game/profileNavigation';
 import {
   buildDynastyTree,
   centerDynastyPoint,
@@ -99,7 +99,7 @@ export default function DynastyPage() {
 
 function BackButton() {
   return (
-    <Pressable onPress={() => router.back()} style={styles.back}>
+    <Pressable onPress={backFromProfile} style={styles.back}>
       <Feather name="arrow-left" size={18} color={c.foreground} />
       <Text style={styles.backText}>Назад</Text>
     </Pressable>
@@ -147,6 +147,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
 
   const familyMembers = game.world.people.filter((person) => person.familyId === familyId);
   const dynastyEmblem = game.world.dynastyEmblems[familyId]?.emblemSpec;
+  const dynastyEmblemSvg = game.world.dynastyEmblems[familyId]?.emblemSvg;
   const model = useMemo(
     () => buildDynastyTree(game.world.people, familyId, collapsedPeople, collapsedPairs),
     [game.world.version, familyId, collapsedPeople, collapsedPairs],
@@ -338,7 +339,9 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
         <View style={styles.titleBlock}>
           <View style={styles.dynastyTitleLine}>
             <Text numberOfLines={1} style={styles.title}>{familyName}</Text>
-            <DynastyEmblemMark spec={dynastyEmblem} size={32} />
+            {dynastyEmblem && dynastyEmblemSvg
+              ? <DynastyEmblemMark spec={dynastyEmblem} svg={dynastyEmblemSvg} size={32} />
+              : null}
           </View>
           <Text style={styles.subtitle}>Династия · {familyMembers.length} персонажей</Text>
         </View>
@@ -470,6 +473,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
               {model.nodes.map((node) => {
                 const person = node.person;
                 const personDynastyEmblem = game.world.dynastyEmblems[person.familyId]?.emblemSpec;
+                const personDynastyEmblemSvg = game.world.dynastyEmblems[person.familyId]?.emblemSvg;
                 const crown = crowns.get(person.id);
                 const crownExpanded = expandedCrownPersonId === person.id;
                 const externalChild = !node.isDynastyMember &&
@@ -525,10 +529,10 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                           <MaterialCommunityIcons name="crown" size={12} color={crownColor[crown.role]} />
                         </Pressable>
                       )}
-                      {personDynastyEmblem
+                      {personDynastyEmblem && personDynastyEmblemSvg
                         ? node.isDynastyMember
-                          ? <DynastyEmblemMark spec={personDynastyEmblem} size={16} />
-                          : <DynastyEmblemLink spec={personDynastyEmblem} familyId={person.familyId}
+                          ? <DynastyEmblemMark spec={personDynastyEmblem} svg={personDynastyEmblemSvg} size={16} />
+                          : <DynastyEmblemLink spec={personDynastyEmblem} svg={personDynastyEmblemSvg} familyId={person.familyId}
                             focusPersonId={person.id} label={person.familyName} size={16} />
                         : null}
                       <Pressable
@@ -596,9 +600,9 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
                       </Text>
                     )}
                     {externalChild && (
-                      personDynastyEmblem
+                      personDynastyEmblem && personDynastyEmblemSvg
                         ? (
-                          <DynastyEmblemLink spec={personDynastyEmblem} familyId={person.familyId}
+                          <DynastyEmblemLink spec={personDynastyEmblem} svg={personDynastyEmblemSvg} familyId={person.familyId}
                             focusPersonId={person.id} label={person.familyName} size={64}
                             testID={`external-dynasty-emblem-${person.id}`} />
                         )
@@ -622,7 +626,7 @@ function DynastyTree({ game, familyId, focusId }: { game: Game; familyId: number
             </Animated.View>
             {dynastyEmblem ? (
               <View pointerEvents="box-none" style={styles.dynastyEmblemOverlay}>
-                <EmblemPreview spec={dynastyEmblem} label={`Герб династии ${familyName}`} frameHeight={88} />
+                <EmblemPreview spec={dynastyEmblem} svg={dynastyEmblemSvg} label={`Герб династии ${familyName}`} frameHeight={88} />
               </View>
             ) : null}
           </View>
@@ -661,7 +665,7 @@ const styles = StyleSheet.create({
   parentLine: { borderColor: c.border },
   legendText: { fontFamily: fonts.sans, fontSize: 8, color: c.mutedForeground },
   viewport: { flex: 1, overflow: 'hidden', backgroundColor: c.card },
-  dynastyEmblemOverlay: { position: 'absolute', top: 8, left: 8, zIndex: 5, padding: 4, borderWidth: 1, borderColor: c.border, backgroundColor: c.background },
+  dynastyEmblemOverlay: { position: 'absolute', top: 8, left: 8, zIndex: 5 },
   treeCanvas: { position: 'absolute', left: 0, top: 0, transformOrigin: 'top left' },
   personCard: { position: 'absolute', padding: 5, gap: 2, backgroundColor: c.background, borderWidth: 1, borderColor: c.border, borderRadius: 3, zIndex: 1 },
   dynastyPersonCard: { borderTopWidth: 3, borderTopColor: c.primary },

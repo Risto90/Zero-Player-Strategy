@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './binary-kernel-test-setup.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { dynastyFocusPersonId, ensureDynastyEmblems } from '../game/dynastyHeraldry.js';
@@ -74,12 +75,17 @@ assert.deepEqual(ensureDynastyEmblems(world), [], 'повторная прове
 const saved = serializeWorld(world);
 assert.equal(saved.dynastyEmblems[familyId].emblemSpec.meta.visual_hash, heraldry.emblemSpec.meta.visual_hash,
   'спецификация герба попадает в сохранение');
+assert.equal(saved.dynastyEmblems[familyId].emblemSvg, heraldry.emblemSvg,
+  'готовое SVG династии попадает в сохранение');
 const loaded = deserializeWorld(saved);
 assert.equal(loaded.dynastyEmblems[familyId].emblemSpec.meta.visual_hash, heraldry.emblemSpec.meta.visual_hash,
   'загрузка сохраняет уже выданный герб');
+assert.equal(loaded.dynastyEmblems[familyId].emblemSvg, heraldry.emblemSvg,
+  'загрузка не пересоздаёт сохранённое SVG династии');
 
 const legacy = JSON.parse(JSON.stringify(saved));
 delete legacy.dynastyEmblems;
+delete legacy.generatedFlagKeys;
 const legacyLoaded = deserializeWorld(legacy);
 assert.deepEqual(legacyLoaded.dynastyEmblems, {}, 'старое сохранение читается без нового поля');
 assert.deepEqual(ensureDynastyEmblems(legacyLoaded), [familyId], 'миграция старого сохранения дополняет недостающий герб');

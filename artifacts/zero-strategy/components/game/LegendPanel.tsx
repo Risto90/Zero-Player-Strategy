@@ -166,7 +166,7 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
           profileRouteForId={countryProfileRoute}
           leadingMarkForId={(id) => {
             const country = game.world.countries[id];
-            return country ? <EntityFlagLink spec={country.emblemSpec} href={countryProfileRoute(id)} label={country.name} /> : null;
+            return country ? <EntityFlagLink spec={country.emblemSpec} svg={country.emblemSvg} href={countryProfileRoute(id)} label={country.name} /> : null;
           }}
           hideProfileButton showSwatch={false} testPrefix="row-country" /> : <Empty text="Ничего не найдено. Измените запрос или очистите его." />}
       </View>
@@ -195,7 +195,7 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
           profileRouteForId={profileRouteForId}
           leadingMarkForId={isReligion ? (id) => {
             const religion = game.world.religions[id];
-            return religion ? <EntityFlagLink spec={religion.emblemSpec} href={religionProfileRoute(id)} label={religion.name} /> : null;
+            return religion ? <EntityFlagLink spec={religion.emblemSpec} svg={religion.emblemSvg} href={religionProfileRoute(id)} label={religion.name} /> : null;
           } : undefined}
           hideProfileButton={isReligion} showSwatch={!isReligion}
           footer={footer} testPrefix={`row-${kind}`} /> : <Empty text="Ничего не найдено. Измените запрос или очистите его." />}
@@ -234,7 +234,7 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
                   ? <EntityCrownLink href={countryProfileRoute(country.id)} label={country.name} />
                   : null}
                 {country?.emblemSpec
-                  ? <EntityFlagLink spec={country.emblemSpec} href={countryProfileRoute(country.id)} label={country.name} />
+                  ? <EntityFlagLink spec={country.emblemSpec} svg={country.emblemSvg} href={countryProfileRoute(country.id)} label={country.name} />
                   : null}
               </View>
             );
@@ -242,7 +242,7 @@ export function LegendPanel({ game, snap, onCityPress, mode: modeOverride }: {
           afterNameMarkForId={(id) => {
             const city = game.world.cities.find((item) => item.id === id);
             return city?.emblemSpec
-              ? <EntityFlagLink spec={city.emblemSpec} href={cityProfileRoute(city.id)} label={city.name ?? 'Город'} />
+              ? <EntityFlagLink spec={city.emblemSpec} svg={city.emblemSvg} href={cityProfileRoute(city.id)} label={city.name ?? 'Город'} />
               : null;
           }}
           trailingMarkForId={(id) => {
