@@ -55,6 +55,7 @@ Thumbs.db
 .local/
 artifacts/zero-strategy/static-build/
 /artifacts/zero-strategy/generated-artifacts/
+/artifacts/zero-strategy/public/generated-kernel/
 
 # Локальные инструкции и память агентов не публикуются в GitHub.
 /.agents/
