@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { contours } from 'd3-contour';
 import { difference, intersection, type MultiPolygon } from 'polygon-clipping';
 import { MAP_HEIGHT, MAP_WIDTH } from '../../game/config';
+import { inhabitedTerritory } from '../../game/inhabitedTerritory';
 import type { Game } from '../../game/game';
 import { riverPaths, riverVisibilityScale } from '../../game/geographyGeometry';
 import { ELEVATION_COLOR_STOPS, seaDepthPackedColor } from '../../game/render';
+import { pathToPolygons, type MultiPolygon2 } from '../../kernel/geometry';
 import type { ViewTransform } from './types';
 
 type World = Game['world'];
@@ -27,7 +29,6 @@ const HEIGHT_SCALE = 0.00003;
 const HEIGHT_CONTOUR_STEP_METERS = 250;
 const MAX_TERRAIN_TRIANGLE_EDGE = 0.03;
 const MAX_TERRAIN_SUBDIVISION_DEPTH = 6;
-const RIVER_CARVE_BASE_METERS = 180;
 const CAMERA_FOV = 42;
 const LAND_SURFACE_OFFSET = 0.00015;
 const MIN_ELEVATION_TEXTURE_HEIGHT = 0;
@@ -109,31 +110,8 @@ function sampleSurfaceElevation(world: World, x: number, y: number): number {
   return weight > 0 ? elevation / weight : sampleElevation(world, x, y);
 }
 
-function riverCarveMeters(world: World, x: number, y: number): number {
-  let strongest = 0;
-  let bestWeight = 0;
-  for (let dy = -4; dy <= 4; dy += 2) {
-    const py = Math.round(y + dy);
-    if (py < 0 || py >= MAP_HEIGHT) continue;
-    for (let dx = -4; dx <= 4; dx += 2) {
-      const px = (Math.round(x + dx) + MAP_WIDTH) % MAP_WIDTH;
-      const strength = world.rivers[py * MAP_WIDTH + px];
-      if (strength === 0) continue;
-      const weight = Math.max(0, 1 - Math.hypot(dx, dy) / 6);
-      if (weight > bestWeight) {
-        bestWeight = weight;
-        strongest = strength;
-      }
-    }
-  }
-  if (bestWeight === 0) return 0;
-  return (RIVER_CARVE_BASE_METERS + strongest * 55) * bestWeight;
-}
-
 function terrainElevation(world: World, x: number, y: number): number {
-  const elevation = sampleSurfaceElevation(world, x, y);
-  if (elevation < 0) return elevation;
-  return Math.max(0, elevation - riverCarveMeters(world, x, y));
+  return sampleSurfaceElevation(world, x, y);
 }
 
 function terrainHeight(world: World, x: number, y: number): number {
@@ -143,18 +121,53 @@ function terrainHeight(world: World, x: number, y: number): number {
     : elevation * HEIGHT_SCALE + LAND_SURFACE_OFFSET;
 }
 
-function mapPosition(world: World, x: number, y: number, carveRiver = false): THREE.Vector3 {
-  const elevation = carveRiver ? terrainHeight(world, x, y) : sampleSurfaceElevation(world, x, y);
-  const height = carveRiver
-    ? elevation
-    : elevation < 0
-      ? elevation * HEIGHT_SCALE
-      : elevation * HEIGHT_SCALE + LAND_SURFACE_OFFSET;
+function mapPosition(world: World, x: number, y: number): THREE.Vector3 {
+  const elevation = sampleSurfaceElevation(world, x, y);
+  const height = elevation < 0
+    ? elevation * HEIGHT_SCALE
+    : elevation * HEIGHT_SCALE + LAND_SURFACE_OFFSET;
   return new THREE.Vector3(
     (x / (MAP_WIDTH - 1)) * 2 - 1,
     height,
     (y / (MAP_HEIGHT - 1)) - 0.5,
   );
+}
+
+function clippingMultiPolygon(polygons: MultiPolygon2): MultiPolygon {
+  return polygons.map((polygon) => polygon.map((ring) => {
+    const coordinates: [number, number][] = ring.map(({ x, y }) => [x, y]);
+    if (coordinates.length > 0) {
+      const first = coordinates[0];
+      const last = coordinates[coordinates.length - 1];
+      if (first[0] !== last[0] || first[1] !== last[1]) {
+        coordinates.push([...first]);
+      }
+    }
+    return coordinates;
+  }));
+}
+
+/** Обрезает русло контуром нынешней населённой территории; прошлое открытие не учитывается. */
+export function clipRiverPolygonsToTerritory(
+  riverPolygons: MultiPolygon2,
+  territoryPolygons: MultiPolygon2,
+): MultiPolygon2 {
+  if (!riverPolygons.length || !territoryPolygons.length) return [];
+  const clipped = intersection(
+    clippingMultiPolygon(riverPolygons),
+    clippingMultiPolygon(territoryPolygons),
+  );
+  return clipped.map((polygon) => polygon.map((ring) => ring.map(([x, y]) => ({ x, y }))));
+}
+
+function riverMayMeetTerritory(
+  riverBounds: readonly [number, number, number, number],
+  territoryBounds: { x0: number; y0: number; x1: number; y1: number },
+): boolean {
+  const [riverX0, riverY0, riverX1, riverY1] = riverBounds;
+  if (riverY1 < territoryBounds.y0 || riverY0 > territoryBounds.y1) return false;
+  return [-MAP_WIDTH, 0, MAP_WIDTH].some((offset) =>
+    riverX1 + offset >= territoryBounds.x0 && riverX0 + offset <= territoryBounds.x1);
 }
 
 /**
@@ -429,6 +442,7 @@ export class Terrain3DRenderer {
   private world: World | null = null;
   private terrainDataRevision = -1;
   private riverGeographyVersion = -1;
+  private riverTerritoryVersion = -1;
   private lastRenderWorld: World | null = null;
   private lastRenderKey = '';
   private width = 1;
@@ -511,10 +525,15 @@ export class Terrain3DRenderer {
       this.terrainDataRevision = world.terrainRevision;
     }
 
-    if (changedWorld) this.riverGeographyVersion = -1;
-    if (this.riverGeographyVersion !== world.geographyRevision) {
+    if (changedWorld) {
+      this.riverGeographyVersion = -1;
+      this.riverTerritoryVersion = -1;
+    }
+    if (this.riverGeographyVersion !== world.geographyRevision ||
+      this.riverTerritoryVersion !== world.territoryVersion) {
       this.rebuildRivers(world);
       this.riverGeographyVersion = world.geographyRevision;
+      this.riverTerritoryVersion = world.territoryVersion;
     }
   }
 
@@ -555,8 +574,19 @@ export class Terrain3DRenderer {
       }),
     };
 
+    const territory = inhabitedTerritory(world);
+    const territoryPolygons = territory.area.size > 0
+      ? pathToPolygons(territory.path, 0.25, 'evenodd')
+      : [];
+    const territoryBounds = territory.area.bounds;
     for (const segment of riverPaths(world)) {
-      for (const polygonRings of segment.contourPolygons) {
+      if (territory.area.size === 0 ||
+        !riverMayMeetTerritory(segment.bounds, territoryBounds)) continue;
+      const visiblePolygons = clipRiverPolygonsToTerritory(
+        segment.contourPolygons,
+        territoryPolygons,
+      );
+      for (const polygonRings of visiblePolygons) {
         const rings = polygonRings.map((ring) => {
           const contour = ring.slice();
           if (contour.length > 1) {
@@ -578,7 +608,7 @@ export class Terrain3DRenderer {
         const vertices = rings.flat();
         const positions = new Float32Array(vertices.length * 3);
         vertices.forEach((point, index) => {
-          const position = mapPosition(world, point.x, point.y, true);
+          const position = mapPosition(world, point.x, point.y);
           positions[index * 3] = position.x;
           positions[index * 3 + 1] = position.y + 0.0015;
           positions[index * 3 + 2] = position.z;
@@ -639,7 +669,7 @@ export class Terrain3DRenderer {
     const riverZoom = view.scale;
     const renderKey = [
       view.ox, view.oy, view.scale, size.width, size.height, size.dpr, baseScale,
-      this.yaw, this.pitch, world.terrainRevision, world.geographyRevision,
+      this.yaw, this.pitch, world.terrainRevision, world.geographyRevision, world.territoryVersion,
     ].join('/');
     if (this.lastRenderWorld === world && this.lastRenderKey === renderKey) return;
     for (const river of this.riverGroup.children) {
@@ -662,7 +692,7 @@ export class Terrain3DRenderer {
     size: Pick<ViewSize, 'width' | 'height'>,
     world: World,
   ): ScreenPoint | null {
-    const point = mapPosition(world, x, y, true).project(this.camera);
+    const point = mapPosition(world, x, y).project(this.camera);
     if (point.z < -1 || point.z > 1 || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
       return null;
     }

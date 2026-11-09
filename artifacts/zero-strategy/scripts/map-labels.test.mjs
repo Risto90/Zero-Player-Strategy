@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import './binary-kernel-test-setup.mjs';
 import { MAP_HEIGHT, MAP_PIXELS, MAP_WIDTH } from '../game/config.ts';
 import { MapContours } from '../game/contours.ts';
+import { inhabitedTerritory } from '../game/inhabitedTerritory.ts';
 import { CompositionTable } from '../game/composition.ts';
 import { cityLabelFontSize } from '../game/cityVisibility.ts';
 import { fitLabelToVisibleContour } from '../game/labelGeometry.ts';
@@ -79,6 +80,16 @@ for (let y = 20; y < 60; y += 1) for (let x = 20; x < 140; x += 1) {
   world.humanOrigins[pixel] = originMix;
 }
 world.contours = new MapContours((name) => world[name], () => world.version);
+
+const inhabited = inhabitedTerritory(world);
+assert.equal(inhabited.area.contains(40 * MAP_WIDTH + 40), true,
+  'осёдлая территория считается местом, где доступны географические объекты');
+assert.equal(inhabited.area.contains(110 * MAP_WIDTH + 310), true,
+  'текущий ареал кочевой страны также считается населённой территорией');
+assert.equal(inhabited.area.contains(90 * MAP_WIDTH + 450), false,
+  'ненаселённая область не раскрывает географические объекты');
+assert.equal(inhabitedTerritory(world), inhabited,
+  'контур населённой территории кэшируется до изменения владения');
 
 const zoomedOut = countryMapLabels(world, 0.3, 'political', 1);
 const zoomedIn = countryMapLabels(world, 2, 'political', 1);
@@ -345,5 +356,18 @@ assert.equal(clippedAwayLabel, null, 'слишком узкая видимая �
 assert.ok(MAP_HEIGHT * MAP_WIDTH === MAP_PIXELS, 'аннотации используют полный размер карты');
 assert.notEqual(seaDepthPackedColor(-9000), seaDepthPackedColor(-100),
   'цвета различают глубокое море и мелководье у берега');
+
+const lostTerritoryPixel = 25 * MAP_WIDTH + 25;
+world.owner[lostTerritoryPixel] = 0;
+world.territoryVersion += 1;
+world.contours.changed(
+  { x0: 25, y0: 25, x1: 25, y1: 25 },
+  ['owner'],
+);
+const updatedInhabited = inhabitedTerritory(world);
+assert.notEqual(updatedInhabited, inhabited,
+  'изменение текущих границ перестраивает контур видимой населённой области');
+assert.equal(updatedInhabited.area.contains(lostTerritoryPixel), false,
+  'после утраты территории объект в ней больше не считается известным');
 
 console.log('Подписи карты и пороги видимости объектов проверены.');

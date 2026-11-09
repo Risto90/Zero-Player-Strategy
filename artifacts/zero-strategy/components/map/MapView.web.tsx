@@ -455,6 +455,8 @@ function drawRiverNames(
       (territoryPath !== undefined && !ctx.isPointInPath(territoryPath, glyph.x, glyph.y, 'evenodd')))) continue;
     occupiedLabels.push(...glyphs.map((glyph) => glyph.bounds));
 
+    ctx.save();
+    if (territoryPath) ctx.clip(territoryPath, 'evenodd');
     for (const glyph of glyphs) {
       ctx.save();
       ctx.translate(glyph.x, glyph.y);
@@ -466,33 +468,60 @@ function drawRiverNames(
       ctx.fillText(glyph.character, 0, 0);
       ctx.restore();
     }
+    ctx.restore();
   }
 }
+
+const screenTerritoryPathCache = new WeakMap<InhabitedTerritory, {
+  key: string;
+  path: Path2D;
+}>();
 
 function screenTerritoryPath(
   territory: InhabitedTerritory,
   view: ViewTransform,
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
 ): Path2D {
-  const path = new Path2D();
-  for (const ring of territory.area.rings()) {
-    const count = ring.length / 2;
-    if (count < 3) continue;
-    const points = Array.from({ length: count }, (_, index) => {
-      const x = ring[index * 2];
-      const y = ring[index * 2 + 1];
-      return projectMapPoint
-        ? projectMapPoint(x, y)
-        : { x: view.ox + x * view.scale, y: view.oy + y * view.scale };
-    });
-    if (points.some((point) => point === null)) continue;
-    points.forEach((point, index) => {
-      if (!point) return;
-      if (index === 0) path.moveTo(point.x, point.y);
-      else path.lineTo(point.x, point.y);
-    });
-    path.closePath();
+  const key = `${view.ox}/${view.oy}/${view.scale}`;
+  if (!projectMapPoint) {
+    const cached = screenTerritoryPathCache.get(territory);
+    if (cached?.key === key) return cached.path;
   }
+  const path = new Path2D();
+  let ringPoints: (ScreenPoint | null)[] = [];
+  const finishRing = () => {
+    if (ringPoints.length >= 3 && ringPoints.every((point) => point !== null)) {
+      const points = ringPoints as ScreenPoint[];
+      path.moveTo(points[0].x, points[0].y);
+      for (let index = 1; index < points.length; index += 1) {
+        path.lineTo(points[index].x, points[index].y);
+      }
+      path.closePath();
+    }
+    ringPoints = [];
+  };
+  for (const command of territory.path) {
+    if (command.type === 'move') {
+      finishRing();
+      ringPoints.push(projectMapPoint
+        ? projectMapPoint(command.point.x, command.point.y)
+        : {
+          x: view.ox + command.point.x * view.scale,
+          y: view.oy + command.point.y * view.scale,
+        });
+    } else if (command.type === 'line') {
+      ringPoints.push(projectMapPoint
+        ? projectMapPoint(command.point.x, command.point.y)
+        : {
+          x: view.ox + command.point.x * view.scale,
+          y: view.oy + command.point.y * view.scale,
+        });
+    } else if (command.type === 'close') {
+      finishRing();
+    }
+  }
+  finishRing();
+  if (!projectMapPoint) screenTerritoryPathCache.set(territory, { key, path });
   return path;
 }
 
@@ -751,6 +780,8 @@ function drawMapLabels(
     );
   }
 
+  ctx.save();
+  ctx.clip(territoryPath, 'evenodd');
   for (const { feature, active, isVolcano, x, y, size } of featureMarks) {
     ctx.beginPath();
     ctx.moveTo(x, y - size);
@@ -780,6 +811,7 @@ function drawMapLabels(
       }
     }
   }
+  ctx.restore();
 
   drawRiverNames(
     ctx,

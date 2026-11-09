@@ -6,6 +6,7 @@ import {
   buildElevationColorTexture,
   buildTerrainColorTexture,
   buildTerrainGeometry,
+  clipRiverPolygonsToTerritory,
   ELEVATION_TEXTURE_WIDTH,
   SEA_DEPTH_TEXTURE_HEIGHT,
   SEA_DEPTH_TEXTURE_WIDTH,
@@ -13,6 +14,34 @@ import {
   TERRAIN_CONTOUR_ROWS,
   terrainDataNeedsRebuild,
 } from '../components/map/Terrain3DRenderer.ts';
+
+const riverPolygon = [[
+  { x: 4, y: 4 },
+  { x: 10, y: 4 },
+  { x: 10, y: 10 },
+  { x: 4, y: 10 },
+  { x: 4, y: 4 },
+]];
+const territoryPolygon = [[
+  { x: 2, y: 2 },
+  { x: 8, y: 2 },
+  { x: 8, y: 8 },
+  { x: 2, y: 8 },
+  { x: 2, y: 2 },
+]];
+const clippedRiver = clipRiverPolygonsToTerritory([riverPolygon], [territoryPolygon]);
+assert.equal(clippedRiver.length, 1, 'русло пересекается с текущей территорией страны');
+const clippedRiverPoints = clippedRiver[0].flat();
+assert.equal(Math.min(...clippedRiverPoints.map(({ x }) => x)), 4,
+  'обрезанное русло не выходит за западную границу территории');
+assert.equal(Math.max(...clippedRiverPoints.map(({ x }) => x)), 8,
+  'обрезанное русло заканчивается на восточной границе территории');
+assert.equal(Math.min(...clippedRiverPoints.map(({ y }) => y)), 4,
+  'обрезанное русло не выходит за северную границу территории');
+assert.equal(Math.max(...clippedRiverPoints.map(({ y }) => y)), 8,
+  'обрезанное русло заканчивается на южной границе территории');
+assert.deepEqual(clipRiverPolygonsToTerritory([riverPolygon], []), [],
+  'при отсутствии населённой территории русло не отображается');
 
 const land = new Uint8Array(MAP_PIXELS).fill(1);
 const elevation = new Int16Array(MAP_PIXELS);
