@@ -5,6 +5,7 @@ import { Asset } from 'expo-asset';
 import colors from '@/constants/colors';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/game/config';
 import type { ContourChange } from '@/game/contours';
+import { inhabitedTerritory, type InhabitedTerritory } from '@/game/inhabitedTerritory';
 import { cityLabelFontSize } from '@/game/cityVisibility';
 import { cityHasPort } from '@/game/settlements';
 import { Terrain3DRenderer } from './Terrain3DRenderer';
@@ -152,10 +153,13 @@ function drawRivers(
   game: MapViewProps['game'],
   view: ViewTransform,
   baseScale: number,
+  territory: InhabitedTerritory,
+  territoryPath: Path2D,
 ) {
   const paths = riverPaths(game.world);
-  if (paths.length === 0 || view.scale < baseScale) return;
+  if (paths.length === 0 || territory.area.size === 0 || view.scale < baseScale) return;
   ctx.save();
+  ctx.clip(territoryPath, 'evenodd');
   for (const segment of paths) {
     if (view.scale < riverVisibilityScale(baseScale, segment.strength)) continue;
     const [minX, minY, maxX, maxY] = segment.bounds;
@@ -345,6 +349,7 @@ function drawRiverNames(
   projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
   occupiedLabels: LabelScreenBounds[] = [],
   additionalObstacles: readonly LabelScreenBounds[] = [],
+  territoryPath?: Path2D,
 ) {
   const byRiver = new Map<number, ReturnType<typeof riverPaths>>();
   for (const segment of riverPaths(game.world)) {
@@ -445,7 +450,9 @@ function drawRiverNames(
       cursor += characterWidth + chosen.tracking;
     }
     const obstacles = [...occupiedLabels, ...additionalObstacles];
-    if (glyphs.some((glyph) => obstacles.some((other) => labelBoundsOverlap(glyph.bounds, other)))) continue;
+    if (glyphs.some((glyph) =>
+      obstacles.some((other) => labelBoundsOverlap(glyph.bounds, other)) ||
+      (territoryPath !== undefined && !ctx.isPointInPath(territoryPath, glyph.x, glyph.y, 'evenodd')))) continue;
     occupiedLabels.push(...glyphs.map((glyph) => glyph.bounds));
 
     for (const glyph of glyphs) {
@@ -460,6 +467,33 @@ function drawRiverNames(
       ctx.restore();
     }
   }
+}
+
+function screenTerritoryPath(
+  territory: InhabitedTerritory,
+  view: ViewTransform,
+  projectMapPoint?: (x: number, y: number) => ScreenPoint | null,
+): Path2D {
+  const path = new Path2D();
+  for (const ring of territory.area.rings()) {
+    const count = ring.length / 2;
+    if (count < 3) continue;
+    const points = Array.from({ length: count }, (_, index) => {
+      const x = ring[index * 2];
+      const y = ring[index * 2 + 1];
+      return projectMapPoint
+        ? projectMapPoint(x, y)
+        : { x: view.ox + x * view.scale, y: view.oy + y * view.scale };
+    });
+    if (points.some((point) => point === null)) continue;
+    points.forEach((point, index) => {
+      if (!point) return;
+      if (index === 0) path.moveTo(point.x, point.y);
+      else path.lineTo(point.x, point.y);
+    });
+    path.closePath();
+  }
+  return path;
 }
 
 const countryTextWidthFactorCache = new Map<string, number>();
@@ -489,6 +523,8 @@ function drawMapLabels(
   avoidToolOverlay = false,
 ): LabelScreenBounds[] {
   const snapshot = game.getSnapshot();
+  const territory = inhabitedTerritory(game.world);
+  const territoryPath = screenTerritoryPath(territory, view, projectMapPoint);
   const ratio = view.scale / Math.max(baseScale, 0.0001);
   const text = (value: string, x: number, y: number, size: number, color: string, maxWidth?: number) => {
     if (x < -100 || y < -30 || x > width + 100 || y > height + 30) return;
@@ -594,7 +630,8 @@ function drawMapLabels(
     y: number;
     size: number;
   }[] = [];
-  if (shouldShowGeographyMarks(snapshot.mapMode)) for (const feature of [...game.world.peaks, ...game.world.volcanoes]) {
+  if (territory.area.size > 0 && shouldShowGeographyMarks(snapshot.mapMode)) for (const feature of [...game.world.peaks, ...game.world.volcanoes]) {
+    if (!territory.area.contains(feature.pixel)) continue;
     const isVolcano = game.world.volcanoes.includes(feature);
     const active = isVolcano && feature.active === true;
     if (isVolcano && !active) continue;
@@ -744,7 +781,18 @@ function drawMapLabels(
     }
   }
 
-  drawRiverNames(ctx, game, view, baseScale, width, height, projectMapPoint, occupiedLabels, cityIconBounds);
+  drawRiverNames(
+    ctx,
+    game,
+    view,
+    baseScale,
+    width,
+    height,
+    projectMapPoint,
+    occupiedLabels,
+    cityIconBounds,
+    territoryPath,
+  );
   return occupiedLabels;
 }
 
@@ -797,6 +845,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     const { width, height, dpr } = sizeRef.current;
     const view = viewRef.current;
     const mapMode = game.getSnapshot().mapMode;
+    const territory = inhabitedTerritory(game.world);
+    const territoryPath = screenTerritoryPath(territory, view);
     const isElevation = mapMode === 'elevation';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (isElevation) {
@@ -828,7 +878,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       ctx.fillRect(0, 0, width, height);
       ctx.imageSmoothingEnabled = view.scale < 1;
       ctx.drawImage(offscreen, view.ox, view.oy, MAP_WIDTH * view.scale, MAP_HEIGHT * view.scale);
-      drawRivers(ctx, game, view, baseScaleRef.current);
+      drawRivers(ctx, game, view, baseScaleRef.current, territory, territoryPath);
     }
     drawCityInfluence(ctx, game, view, width, height, baseScaleRef.current);
     const projectMapPoint = isElevation && terrainRendererRef.current
