@@ -4,6 +4,7 @@ title: Продакшен APK опубликованной версии
 issue_number: 11
 relationship: parent|replit-task-237
 relationship: blocked_by|replit-task-202
+
 subtask: step-01|01. Разрешить точный commit опубликованной веб-версии|Получить commit/version metadata опубликованной через GitHub Pages игры и завершить сборку ошибкой, если однозначное соответствие исходников доказать нельзя.|
 subtask: step-02|02. Собрать production APK из того же commit через Cargo и Extendr|Восстановить Cargo/renv lock-файлы для точной опубликованной ревизии и собрать автономную release APK без тестового меню, Expo, Metro или Node.js.|
 subtask: step-03|03. Применить единую версию релиза и проверить Android versionCode|Использовать базовую версию NorthSea из workflow задачи #237 и отдельный монотонный Android versionCode; проверить package ID и подпись.|
