@@ -8,6 +8,7 @@ relationship: blocked_by|replit-task-237
 subtask: pages-build|01. Собрать статический WebR и Rust/WASM сайт|Собрать все browser runtime артефакты, ресурсы и release metadata в отдельный каталог публикации.
 subtask: pages-path|02. Настроить путь проекта для GitHub Pages|Обеспечить корректные URL, base path и загрузку ресурсов из страницы репозитория, а не только из корня домена.
 subtask: pages-deploy|03. Развернуть и проверить сайт после успешных тестов|Использовать GitHub Pages Actions и проверить опубликованный URL на загрузку игры и корректный WebGPU/WebGL выбор.
+
 ---
 
 ## Что и зачем
