@@ -1,14 +1,14 @@
 ---
-id: replit-task-203
+id: published-version-apk
 title: Продакшен APK опубликованной версии
 issue_number: 11
-relationship: parent|replit-task-237
-relationship: blocked_by|replit-task-202
+relationship: parent|cargo-package-release
+relationship: blocked_by|android-test-apk-logs
 
-subtask: step-01|01. Разрешить точный commit опубликованной веб-версии|Получить commit/version metadata опубликованной через GitHub Pages игры и завершить сборку ошибкой, если однозначное соответствие исходников доказать нельзя.|
-subtask: step-02|02. Собрать production APK из того же commit через Cargo и Extendr|Восстановить Cargo/renv lock-файлы для точной опубликованной ревизии и собрать автономную release APK без тестового меню, Expo, Metro или Node.js.|
-subtask: step-03|03. Применить единую версию релиза и проверить Android versionCode|Использовать базовую версию NorthSea из workflow задачи #237 и отдельный монотонный Android versionCode; проверить package ID и подпись.|
-subtask: step-04|04. Установить APK и проверить игровой сценарий опубликованной версии|Установить подписанный APK в проверочной ARM64 среде, пройти автономный запуск и сравнить версию/игровые данные с опубликованным commit.|
+subtask: step-01|01. Разрешить точный commit опубликованной веб-версии|Получить commit/version metadata опубликованной через GitHub Pages игры и завершить сборку ошибкой, если однозначное соответствие исходников доказать нельзя.|45
+subtask: step-02|02. Собрать production APK из того же commit через Cargo и Extendr|Восстановить Cargo/renv lock-файлы для точной опубликованной ревизии и собрать автономную release APK без тестового меню, Expo, Metro или Node.js.|46
+subtask: step-03|03. Применить единую версию релиза и проверить Android versionCode|Использовать базовую версию NorthSea из workflow задачи #237 и отдельный монотонный Android versionCode; проверить package ID и подпись.|47
+subtask: step-04|04. Установить APK и проверить игровой сценарий опубликованной версии|Установить подписанный APK в проверочной ARM64 среде, пройти автономный запуск и сравнить версию/игровые данные с опубликованным commit.|48
 ---
 
 <!-- replit-task:203 -->
