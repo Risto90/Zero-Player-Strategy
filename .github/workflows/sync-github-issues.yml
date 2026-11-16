@@ -1,0 +1,31 @@
+name: Синхронизация задач GitHub
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: sync-github-issues-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Обработать файлы задач и директивы коммитов
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Получить историю коммитов
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Синхронизировать Issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASKS_BEFORE: ${{ github.event.before }}
+          TASKS_AFTER: ${{ github.sha }}
+        run: bash .github/scripts/sync-github-issues.sh
