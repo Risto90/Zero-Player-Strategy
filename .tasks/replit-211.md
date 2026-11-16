@@ -2,6 +2,7 @@
 id: replit-task-211
 title: Размеры мира и расширяемые координаты
 issue_number: 13
+relationship: blocked_by|replit-task-230
 relationship: blocked_by|#12
 relationship: blocked_by|#7
 subtask: step-01|01. Перевести реальные координаты и размеры на данные мира и разреженную контурную модель|Перевести реальные координаты и размеры на данные мира и разреженную контурную модель.|

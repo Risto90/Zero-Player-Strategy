@@ -2,6 +2,7 @@
 id: replit-task-201
 title: Приёмка библиотеки на пятидесяти ИИ
 issue_number: 9
+relationship: blocked_by|replit-task-230
 relationship: blocked_by|#5
 relationship: blocked_by|#7
 relationship: blocked_by|#6

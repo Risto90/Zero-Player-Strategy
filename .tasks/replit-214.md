@@ -2,6 +2,7 @@
 id: replit-task-214
 title: Асинхронный мост мира и интерфейса
 issue_number: 16
+relationship: blocked_by|replit-task-230
 relationship: blocked_by|#15
 relationship: blocked_by|#6
 subtask: step-01|01. Подключить безопасный асинхронный протокол к существующему исполнителю|Подключить безопасный асинхронный протокол к существующему исполнителю.|
